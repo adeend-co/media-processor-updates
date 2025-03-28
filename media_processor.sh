@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v1.6.10(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v1.6.11(Experimental)" # <<< 版本號更新
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
 DEFAULT_URL="https://www.youtube.com/watch?v=siNFnlqtd8M"
 THREADS=4
@@ -920,46 +920,56 @@ setup_termux_autostart() {
 
     # 使用 cat 和 EOF 將配置寫入 .bashrc
     # 注意：EOF 內的 $target_script_path 會被正確解析
-cat > "$HOME/.bashrc" << EOF
-# ~/.bashrc - 由媒體處理器腳本自動產生
-
-# (可選) 在此處加入您其他的 .bashrc 自訂內容
+cat > ~/.bashrc << 'EOF'
+# ~/.bashrc - v2 (Revised Color Handling)
 
 # --- 媒體處理器啟動設定 ---
 
-# 1. 定義別名，方便手動啟動
-alias media='$target_script_path'
+# 1. 定義別名 (保持不變)
+#    確保路徑正確
+alias media='/data/data/com.termux/files/home/scripts/media_processor.sh' 
+#    或者使用 ~ (推薦)
+# alias media='~/scripts/media_processor.sh'
 
 # 2. 僅在交互式 Shell 啟動時顯示提示
-if [[ \$- == *i* ]]; then
-    # 定義顏色代碼
-    local C_GREEN='\033[0;32m'
-    local C_YELLOW='\033[1;33m'
-    local C_RED='\033[0;31m'
-    local C_CYAN='\033[0;36m'
-    local C_RESET='\033[0m'
-    
-    echo "" 
-    echo -e "\${C_CYAN}歡迎使用 Termux!\${C_RESET}"
-    echo -e "\${C_YELLOW}是否要啟動媒體處理器？\${C_RESET}"
-    echo -e "1) \${C_GREEN}立即啟動\${C_RESET}"
-    echo -e "2) \${C_YELLOW}稍後啟動 (輸入 'media' 命令啟動)\${C_RESET}"
-    echo -e "0) \${C_RED}不啟動\${C_RESET}"
-    
-    read -t 15 -p "請選擇 (0-2) [15秒後自動選 2]: " choice
-    choice=\${choice:-2} 
+if [[ $- == *i* ]]; then
+    # --- 在此處定義此 if 塊內使用的顏色變數 ---
+    #     不加 local，讓它們在此 if 塊的範圍內可用
+    #     使用標準 ANSI 顏色代碼
+    CLR_RESET='\033[0m'
+    CLR_GREEN='\033[0;32m'
+    CLR_YELLOW='\033[1;33m' # 加粗黃色，更醒目
+    CLR_RED='\033[0;31m'
+    CLR_CYAN='\033[0;36m'
+    # --- 顏色定義結束 ---
 
-    case \$choice in
+    echo "" 
+    # 使用雙引號 "..." 確保變數 $CLR_... 被展開
+    # 使用 echo -e 確保 \033 被解釋為 ESCAPE 字元
+    echo -e "${CLR_CYAN}歡迎使用 Termux!${CLR_RESET}"
+    echo -e "${CLR_YELLOW}是否要啟動媒體處理器？${CLR_RESET}"
+    echo -e "1) ${CLR_GREEN}立即啟動${CLR_RESET}"
+    echo -e "2) ${CLR_YELLOW}稍後啟動 (輸入 'media' 命令啟動)${CLR_RESET}"
+    echo -e "0) ${CLR_RED}不啟動${CLR_RESET}"
+    
+    # read 命令保持不變
+    read -t 15 -p "請選擇 (0-2) [15秒後自動選 2]: " choice
+    choice=${choice:-2} 
+
+    case $choice in
         1) 
-            echo -e "\n\${C_GREEN}正在啟動媒體處理器...\${C_RESET}"
-            # 執行腳本
-            "$target_script_path"
+            # 確保 echo -e 和雙引號的使用
+            echo -e "\n${CLR_GREEN}正在啟動媒體處理器...${CLR_RESET}"
+            # 執行腳本 (確保 alias media 定義的路徑是正確的)
+            media 
+            # 或者直接用完整路徑，避免依賴 alias
+            # ~/scripts/media_processor.sh
             ;;
         2) 
-            echo -e "\n\${C_YELLOW}您可以隨時輸入 'media' 命令啟動媒體處理器\${C_RESET}" 
+            echo -e "\n${CLR_YELLOW}您可以隨時輸入 'media' 命令啟動媒體處理器${CLR_RESET}" 
             ;;
         *) 
-            echo -e "\n\${C_RED}已取消啟動媒體處理器\${C_RESET}" 
+            echo -e "\n${CLR_RED}已取消啟動媒體處理器${CLR_RESET}" 
             ;;
     esac
     echo ""
@@ -970,6 +980,7 @@ fi
 # (可選) 在此處加入您其他的 .bashrc 自訂內容
 
 EOF
+
     # 檢查寫入是否成功 (基本檢查)
     if [ $? -eq 0 ]; then
         log_message "SUCCESS" "Termux 啟動設定已成功寫入 ~/.bashrc"
