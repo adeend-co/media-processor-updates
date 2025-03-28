@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v1.6.9(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v1.6.10(Experimental)" # <<< 版本號更新
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
 DEFAULT_URL="https://www.youtube.com/watch?v=siNFnlqtd8M"
 THREADS=4
@@ -12,6 +12,27 @@ COLOR_ENABLED=true
 REMOTE_VERSION_URL="https://raw.githubusercontent.com/adeend-co/media-processor-updates/refs/heads/main/latest_version.txt" # <<< 請務必修改此 URL
 REMOTE_SCRIPT_URL="https://raw.githubusercontent.com/adeend-co/media-processor-updates/refs/heads/main/media_processor.sh"   # <<< 請務必修改此 URL
 SCRIPT_INSTALL_PATH="$HOME/scripts/media_processor.sh"
+
+# <<< 修改：確保腳本安裝目錄存在，僅在創建時顯示訊息 >>>
+SCRIPT_DIR=$(dirname "$SCRIPT_INSTALL_PATH") # 從完整路徑獲取目錄名稱 (~/scripts)
+
+# 檢查目錄是否不存在
+if [ ! -d "$SCRIPT_DIR" ]; then
+    # 如果不存在，才顯示嘗試創建的訊息
+    echo -e "\033[0;33m偵測到腳本目錄 '$SCRIPT_DIR' 不存在，正在創建... \033[0m"
+    
+    # 執行 mkdir -p
+    if mkdir -p "$SCRIPT_DIR"; then
+        # 創建成功後，顯示成功訊息
+        echo -e "\033[0;32m目錄 '$SCRIPT_DIR' 創建成功。\033[0m"
+        sleep 1 # 短暫停留讓使用者看到
+    else
+        # 如果創建失敗，顯示錯誤並退出
+        echo -e "\033[0;31m錯誤：無法創建腳本目錄 '$SCRIPT_DIR'！請檢查權限。腳本無法繼續。\033[0m" >&2
+        exit 1
+    fi
+# 如果目錄一開始就存在，則不執行上面 if 區塊內的任何操作，保持安靜
+fi
 
 # 顏色代碼
 if [ "$COLOR_ENABLED" = true ]; then
