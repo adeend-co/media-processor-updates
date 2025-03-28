@@ -8,15 +8,19 @@ THREADS=4
 MAX_THREADS=8
 MIN_THREADS=1
 COLOR_ENABLED=true
-# 自動更新設定保留
-REMOTE_VERSION_URL="https://raw.githubusercontent.com/adeend-co/media-processor-updates/refs/heads/main/latest_version.txt" # <<< 請務必修改此 URL
-REMOTE_SCRIPT_URL="https://raw.githubusercontent.com/adeend-co/media-processor-updates/refs/heads/main/media_processor.sh"   # <<< 請務必修改此 URL
-SCRIPT_INSTALL_PATH="$HOME/scripts/media_processor.sh"
 
-# --- 移除舊的路徑直接設定 ---
-# DOWNLOAD_PATH="/sdcard/Termux/downloads" # <<< 刪除或註解掉
-# LOG_FILE="$DOWNLOAD_PATH/script_log.txt" # <<< 刪除或註解掉
-# TEMP_DIR="/data/data/com.termux/files/usr/tmp" # <<< 刪除或註解掉
+# --- 腳本更新設定 ---
+# 將下面的 URL 替換成你實際的 GitHub Raw URL 或 GCS 公開 URL
+REMOTE_VERSION_URL="https://raw.githubusercontent.com/YourUsername/YourRepoName/main/latest_version.txt" # <<< 請務必修改此 URL
+REMOTE_SCRIPT_URL="https://raw.githubusercontent.com/YourUsername/YourRepoName/main/media_processor.sh"   # <<< 請務必修改此 URL
+
+# 校驗和檔案的 URL - 自動從腳本 URL 生成 (假設檔名為 .sha256)
+# 例如，如果腳本 URL 是 .../script.sh，這個會變成 .../script.sha256
+REMOTE_CHECKSUM_URL="${REMOTE_SCRIPT_URL%.*}.sha256"
+
+# 腳本的實際安裝路徑 - 更新時會覆蓋這個檔案
+# 確保這個路徑與你實際存放和執行腳本的路徑一致
+SCRIPT_INSTALL_PATH="$HOME/scripts/media_processor.sh"
 
 # 顏色代碼
 if [ "$COLOR_ENABLED" = true ]; then
