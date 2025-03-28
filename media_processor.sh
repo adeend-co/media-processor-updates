@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v1.6.2(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v1.6.3(Experimental)" # <<< 版本號更新
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
 DEFAULT_URL="https://www.youtube.com/watch?v=siNFnlqtd8M"
 THREADS=4
