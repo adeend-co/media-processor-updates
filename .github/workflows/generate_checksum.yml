@@ -17,12 +17,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4 # 使用最新版本的 checkout action
 
-      # 步驟 2：生成 SHA256 校驗和檔案
-      # 計算 media_processor.sh 的校驗和，並儲存到 media_processor.sh.sha256
+        # 步驟 2：生成 SHA256 校驗和檔案 (只包含校驗和值)
       - name: Generate SHA256 Checksum
         run: |
-          sha256sum media_processor.sh > media_processor.sh.sha256
-          echo "Checksum generated:"
+          sha256sum media_processor.sh | awk '{print $1}' > media_processor.sh.sha256
+          echo "Checksum generated (value only):"
           cat media_processor.sh.sha256
 
       # 步驟 3：配置 Git 並提交校驗和檔案
