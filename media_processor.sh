@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v1.6.5(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v1.6.6(Experimental)" # <<< 版本號更新
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
 DEFAULT_URL="https://www.youtube.com/watch?v=siNFnlqtd8M"
 THREADS=4
@@ -12,11 +12,6 @@ COLOR_ENABLED=true
 REMOTE_VERSION_URL="https://raw.githubusercontent.com/adeend-co/media-processor-updates/refs/heads/main/latest_version.txt" # <<< 請務必修改此 URL
 REMOTE_SCRIPT_URL="https://raw.githubusercontent.com/adeend-co/media-processor-updates/refs/heads/main/media_processor.sh"   # <<< 請務必修改此 URL
 SCRIPT_INSTALL_PATH="$HOME/scripts/media_processor.sh"
-
-# --- 移除舊的路徑直接設定 ---
-# DOWNLOAD_PATH="/sdcard/Termux/downloads" # <<< 刪除或註解掉
-# LOG_FILE="$DOWNLOAD_PATH/script_log.txt" # <<< 刪除或註解掉
-# TEMP_DIR="/data/data/com.termux/files/usr/tmp" # <<< 刪除或註解掉
 
 # 顏色代碼
 if [ "$COLOR_ENABLED" = true ]; then
@@ -206,18 +201,6 @@ auto_update_script() {
     echo -e "${YELLOW}正在從 $REMOTE_SCRIPT_URL 下載新版本腳本...${RESET}"
     if curl -Ls "$REMOTE_SCRIPT_URL" -o "$temp_script" --fail --connect-timeout 30; then
         log_message "INFO" "新版本腳本下載成功：$temp_script"
-
-        # --- (可選) 校驗和驗證 ---
-        # 如果你有提供校驗和文件，可以在這裡下載並驗證
-        # echo -e "${YELLOW}正在驗證檔案完整性...${RESET}"
-        # if sha256sum "$temp_script" | grep -q "$expected_checksum"; then
-        #     echo -e "${GREEN}校驗和驗證通過。${RESET}"
-        # else
-        #     log_message "ERROR" "校驗和驗證失敗！下載的檔案可能已損壞或被篡改。"
-        #     echo -e "${RED}錯誤：校驗和驗證失敗！取消更新。${RESET}"
-        #     rm -f "$temp_script"
-        #     return 1
-        # fi
 
         # --- 5. 替換舊腳本 ---
         echo -e "${YELLOW}正在替換舊腳本：$SCRIPT_INSTALL_PATH ${RESET}"
