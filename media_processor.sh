@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v1.6.5(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v1.6.6(Experimental)" # <<< 版本號更新
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
 DEFAULT_URL="https://www.youtube.com/watch?v=siNFnlqtd8M"
 THREADS=4
@@ -11,7 +11,7 @@ COLOR_ENABLED=true
 
 # --- 腳本更新設定 ---
 # 將下面的 URL 替換成你實際的 GitHub Raw URL 或 GCS 公開 URL
-REMOTE_VERSION_URL="https://raw.githubusercontent.com/YourUsername/YourRepoName/main/latest_version.txt" # <<< 請務必修改此 URL
+REMOTE_VERSION_URL="https://raw.githubusercontent.com/adeend-co/media-processor-updates/refs/heads/main/latest_version.txt" # <<< 請務必修改此 URL
 REMOTE_SCRIPT_URL="https://raw.githubusercontent.com/adeend-co/media-processor-updates/refs/heads/main/media_processor.sh"   # <<< 請務必修改此 URL
 
 # 校驗和檔案的 URL - 自動從腳本 URL 生成 (假設檔名為 .sha256)
