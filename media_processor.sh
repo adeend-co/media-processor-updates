@@ -12,7 +12,7 @@ COLOR_ENABLED=true
 # --- 腳本更新設定 ---
 # 將下面的 URL 替換成你實際的 GitHub Raw URL 或 GCS 公開 URL
 REMOTE_VERSION_URL="https://raw.githubusercontent.com/YourUsername/YourRepoName/main/latest_version.txt" # <<< 請務必修改此 URL
-REMOTE_SCRIPT_URL="https://raw.githubusercontent.com/YourUsername/YourRepoName/main/media_processor.sh"   # <<< 請務必修改此 URL
+REMOTE_SCRIPT_URL="https://raw.githubusercontent.com/adeend-co/media-processor-updates/refs/heads/main/media_processor.sh"   # <<< 請務必修改此 URL
 
 # 校驗和檔案的 URL - 自動從腳本 URL 生成 (假設檔名為 .sha256)
 # 例如，如果腳本 URL 是 .../script.sh，這個會變成 .../script.sha256
