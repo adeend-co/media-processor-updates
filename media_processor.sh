@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v1.6.11(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v1.6.12(Experimental)" # <<< 版本號更新
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
 DEFAULT_URL="https://www.youtube.com/watch?v=siNFnlqtd8M"
 THREADS=4
@@ -156,6 +156,7 @@ detect_platform_and_set_vars() {
 
 ############################################
 # 腳本自我更新函數 (手動觸發)
+# MODIFIED: Added Checksum Verification (v2 - Simplified expected checksum reading)
 ############################################
 auto_update_script() {
     # 與其他選單選項行為一致
@@ -168,54 +169,53 @@ auto_update_script() {
     local remote_version_raw="" # 用於儲存原始下載內容
     local remote_version_file="$TEMP_DIR/remote_version.txt"
     local temp_script="$TEMP_DIR/media_processor_new.sh"
+    # --- 新增：定義校驗和相關變數 ---
+    local temp_checksum_file="$TEMP_DIR/media_processor_new.sh.sha256"
+    # 假設校驗和檔案與腳本檔案在同一目錄下，名稱為腳本檔名加上 .sha256
+    # 請確保 REMOTE_SCRIPT_URL 指向你的 media_processor.sh 原始檔 URL
+    local remote_checksum_url="${REMOTE_SCRIPT_URL}.sha256"
 
     # --- 1. 獲取遠程版本號 ---
     echo -e "${YELLOW}正在從 $REMOTE_VERSION_URL 獲取最新版本號...${RESET}"
     if curl -Ls "$REMOTE_VERSION_URL" -o "$remote_version_file" --fail --connect-timeout 5; then
-        # 讀取版本號，移除可能的回車換行符
         remote_version_raw=$(tr -d '\r\n' < "$remote_version_file")
-        # <<< 新增：移除 UTF-8 BOM (EF BB BF) >>>
-        # sed 使用十六進制 \xEF\xBB\xBF 匹配 BOM 並將其替換為空
+        # 移除 UTF-8 BOM (如果有的話)
         remote_version=$(echo "$remote_version_raw" | sed 's/^\xEF\xBB\xBF//')
 
-        # 檢查非空 (現在檢查處理 BOM 之後的 remote_version)
         if [ -z "$remote_version" ]; then
              log_message "ERROR" "無法從遠程文件讀取有效的版本號。"
              echo -e "${RED}錯誤：無法讀取遠程版本號。${RESET}"
              rm -f "$remote_version_file"
-             return 1 # 返回到主選單
+             return 1
         fi
-        log_message "INFO" "獲取的遠程版本號：$remote_version" # 現在日誌應該不會有 BOM 了
+        log_message "INFO" "獲取的遠程版本號：$remote_version"
         rm -f "$remote_version_file"
     else
-        log_message "ERROR" "無法下載版本文件：$REMOTE_VERSION_URL (Curl failed)"
+        log_message "ERROR" "無法下載版本文件：$REMOTE_VERSION_URL (Curl failed with code $?)"
         echo -e "${RED}錯誤：無法下載版本文件，請檢查網路連線或 URL。${RESET}"
-        rm -f "$remote_version_file" # 確保清理
-        return 1 # 返回到主選單
+        # rm -f "$remote_version_file" # 文件可能未創建或為空，無需清理
+        return 1
     fi
 
     # --- 2. 比較版本號 ---
-    # 清理版本號中的非比較部分，例如 (Experimental)
     local local_version_clean=$(echo "$local_version" | sed 's/([^)]*)//g')
-    local remote_version_clean=$(echo "$remote_version" | sed 's/([^)]*)//g') # 現在 remote_version 已無 BOM
+    local remote_version_clean=$(echo "$remote_version" | sed 's/([^)]*)//g')
+    latest_version=$(printf '%s\n%s\n' "$remote_version_clean" "$local_version_clean" | sort -V | tail -n 1)
 
-    # 使用 sort -V 進行版本比較
-    latest_version=$(printf '%s\n' "$remote_version_clean" "$local_version_clean" | sort -V | tail -n 1)
-
-    # 修改判斷條件：如果清理後的版本相同，或本地版本是 sort -V 認為最新的，則認為無需更新
-    if [[ "$local_version_clean" == "$remote_version_clean" ]] || [[ "$local_version_clean" == "$latest_version" ]]; then
+    # 使用字串比較和 sort -V 聯合判斷
+    if [[ "$local_version_clean" == "$remote_version_clean" ]] || [[ "$local_version_clean" == "$latest_version" && "$local_version_clean" != "$remote_version_clean" ]]; then
         log_message "INFO" "腳本已是最新版本 ($local_version)。"
         echo -e "${GREEN}腳本已是最新版本 ($local_version)。${RESET}"
-        return 0 # 返回到主選單
+        return 0
     fi
 
     # --- 3. 確認更新 ---
-    echo -e "${YELLOW}發現新版本：$remote_version (當前版本：$local_version)。${RESET}" # 這裡顯示的 remote_version 也無 BOM
+    echo -e "${YELLOW}發現新版本：$remote_version (當前版本：$local_version)。${RESET}"
     read -p "是否要立即下載並更新腳本？ (y/n): " confirm_update
     if [[ ! "$confirm_update" =~ ^[Yy]$ ]]; then
         log_message "INFO" "使用者取消更新。"
         echo -e "${YELLOW}已取消更新。${RESET}"
-        return 0 # 返回到主選單
+        return 0
     fi
 
     # --- 4. 下載新腳本 ---
@@ -223,36 +223,69 @@ auto_update_script() {
     if curl -Ls "$REMOTE_SCRIPT_URL" -o "$temp_script" --fail --connect-timeout 30; then
         log_message "INFO" "新版本腳本下載成功：$temp_script"
 
-        # --- 5. 替換舊腳本 ---
-        echo -e "${YELLOW}正在替換舊腳本：$SCRIPT_INSTALL_PATH ${RESET}"
-        # 賦予新腳本執行權限
-        chmod +x "$temp_script"
-        
-        # <<< 新增：確保目標目錄存在 >>>
-        mkdir -p "$(dirname "$SCRIPT_INSTALL_PATH")"
-
-        # 嘗試移動替換
-        if mv "$temp_script" "$SCRIPT_INSTALL_PATH"; then
-            log_message "SUCCESS" "腳本已成功更新至版本 $remote_version。"
-            echo -e "${GREEN}腳本更新成功！版本：$remote_version ${RESET}"
-            echo -e "${CYAN}請重新啟動腳本 ('media' 或執行 '$SCRIPT_INSTALL_PATH') 以載入新版本。${RESET}"
-            # 成功更新後退出腳本，強制使用者重新啟動
-            exit 0
-        else
-            log_message "ERROR" "無法替換舊腳本 '$SCRIPT_INSTALL_PATH'。請檢查權限。"
-            echo -e "${RED}錯誤：無法替換舊腳本。請檢查權限。${RESET}"
-            echo -e "${YELLOW}下載的新腳本保留在：$temp_script ${RESET}" # 提示使用者手動替換
-            # 不刪除 temp_script，方便手動處理
-            return 1 # 返回到主選單，但提示錯誤
+        # --- 4.1 新增：下載校驗和檔案 ---
+        echo -e "${YELLOW}正在從 $remote_checksum_url 下載校驗和檔案...${RESET}"
+        if ! curl -Ls "$remote_checksum_url" -o "$temp_checksum_file" --fail --connect-timeout 5; then
+            log_message "ERROR" "下載校驗和檔案失敗：$remote_checksum_url (Curl failed with code $?)"
+            echo -e "${RED}錯誤：下載校驗和檔案失敗，請檢查網路連線或 URL。取消更新。${RESET}"
+            # 清理已下載的腳本檔案
+            rm -f "$temp_script"
+            return 1
         fi
-    else
-        log_message "ERROR" "下載新腳本失敗：$REMOTE_SCRIPT_URL (Curl failed)"
+        log_message "INFO" "校驗和檔案下載成功：$temp_checksum_file"
+
+        # --- 4.2 新增：校驗和驗證 ---
+        echo -e "${YELLOW}正在驗證檔案完整性...${RESET}"
+        # 計算本地下載腳本的 SHA256 校驗和
+        local calculated_checksum=$(sha256sum "$temp_script" | awk '{print $1}')
+        # 讀取從伺服器下載的預期校驗和 (因為伺服器端已處理，直接 cat 即可)
+        local expected_checksum=$(cat "$temp_checksum_file")
+
+        # 比較校驗和
+        if [[ "$calculated_checksum" == "$expected_checksum" ]]; then
+            echo -e "${GREEN}校驗和驗證通過。檔案完整且未被篡改。${RESET}"
+            log_message "SUCCESS" "校驗和驗證通過 (SHA256: $calculated_checksum)"
+            # 驗證通過後，刪除臨時校驗和檔案
+            rm -f "$temp_checksum_file"
+
+            # --- 5. 替換舊腳本 (校驗和驗證通過後才執行) ---
+            echo -e "${YELLOW}正在替換舊腳本：$SCRIPT_INSTALL_PATH ${RESET}"
+            # 賦予新腳本執行權限
+            chmod +x "$temp_script"
+            # 確保目標目錄存在
+            mkdir -p "$(dirname "$SCRIPT_INSTALL_PATH")"
+
+            # 嘗試移動替換
+            if mv "$temp_script" "$SCRIPT_INSTALL_PATH"; then
+                log_message "SUCCESS" "腳本已成功更新至版本 $remote_version。"
+                echo -e "${GREEN}腳本更新成功！版本：$remote_version ${RESET}"
+                echo -e "${CYAN}請重新啟動腳本 ('media' 或執行 '$SCRIPT_INSTALL_PATH') 以載入新版本。${RESET}"
+                # 成功更新後退出腳本，強制使用者重新啟動
+                exit 0
+            else
+                log_message "ERROR" "無法替換舊腳本 '$SCRIPT_INSTALL_PATH'。請檢查權限。"
+                echo -e "${RED}錯誤：無法替換舊腳本。請檢查權限。${RESET}"
+                echo -e "${YELLOW}下載的新腳本保留在：$temp_script ${RESET}" # 提示使用者手動替換
+                # 不刪除 temp_script，方便手動處理
+                return 1 # 返回到主選單，但提示錯誤
+            fi
+
+        else # 校驗和驗證失敗
+            log_message "ERROR" "校驗和驗證失敗！下載的檔案可能已損壞或被篡改。"
+            log_message "ERROR" "預期校驗和 (來自伺服器): $expected_checksum"
+            log_message "ERROR" "計算出的校驗和 (本地下載): $calculated_checksum"
+            echo -e "${RED}錯誤：校驗和驗證失敗！下載的檔案可能已損壞或被篡改。取消更新。${RESET}"
+            # 清理下載的腳本檔案和校驗和檔案
+            rm -f "$temp_script" "$temp_checksum_file"
+            return 1 # 返回到主選單
+        fi
+    else # 下載新腳本失敗
+        log_message "ERROR" "下載新腳本失敗：$REMOTE_SCRIPT_URL (Curl failed with code $?)"
         echo -e "${RED}錯誤：下載新腳本失敗。${RESET}"
-        rm -f "$temp_script" # 清理下載失敗的檔案
-        return 1 # 返回到主選單
+        # 此處無需清理 $temp_script，因為下載就失敗了
+        return 1
     fi
 }
-
 
 # 高解析度封面圖片下載函數（僅用於 YouTube 下載）
 download_high_res_thumbnail() {
