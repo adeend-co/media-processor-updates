@@ -138,79 +138,110 @@ detect_platform_and_set_vars() {
      sleep 1 # 短暫顯示檢測結果
 }
 
-
 ############################################
 # 腳本自我更新函數 (手動觸發)
 ############################################
 auto_update_script() {
-    # --- 函數邏輯不變 ---
+    # 與其他選單選項行為一致
     clear
     echo -e "${CYAN}--- 開始檢查腳本更新 ---${RESET}"
     log_message "INFO" "使用者觸發檢查腳本更新。"
 
     local local_version="$SCRIPT_VERSION"
     local remote_version=""
+    local remote_version_raw="" # 用於儲存原始下載內容
     local remote_version_file="$TEMP_DIR/remote_version.txt"
     local temp_script="$TEMP_DIR/media_processor_new.sh"
 
+    # --- 1. 獲取遠程版本號 ---
     echo -e "${YELLOW}正在從 $REMOTE_VERSION_URL 獲取最新版本號...${RESET}"
     if curl -Ls "$REMOTE_VERSION_URL" -o "$remote_version_file" --fail --connect-timeout 5; then
-        remote_version=$(tr -d '\r\n' < "$remote_version_file")
+        # 讀取版本號，移除可能的回車換行符
+        remote_version_raw=$(tr -d '\r\n' < "$remote_version_file")
+        # <<< 新增：移除 UTF-8 BOM (EF BB BF) >>>
+        # sed 使用十六進制 \xEF\xBB\xBF 匹配 BOM 並將其替換為空
+        remote_version=$(echo "$remote_version_raw" | sed 's/^\xEF\xBB\xBF//')
+
+        # 檢查非空 (現在檢查處理 BOM 之後的 remote_version)
         if [ -z "$remote_version" ]; then
              log_message "ERROR" "無法從遠程文件讀取有效的版本號。"
              echo -e "${RED}錯誤：無法讀取遠程版本號。${RESET}"
              rm -f "$remote_version_file"
-             return 1
+             return 1 # 返回到主選單
         fi
-        log_message "INFO" "獲取的遠程版本號：$remote_version"
+        log_message "INFO" "獲取的遠程版本號：$remote_version" # 現在日誌應該不會有 BOM 了
         rm -f "$remote_version_file"
     else
         log_message "ERROR" "無法下載版本文件：$REMOTE_VERSION_URL (Curl failed)"
         echo -e "${RED}錯誤：無法下載版本文件，請檢查網路連線或 URL。${RESET}"
-        rm -f "$remote_version_file"
-        return 1
+        rm -f "$remote_version_file" # 確保清理
+        return 1 # 返回到主選單
     fi
 
+    # --- 2. 比較版本號 ---
+    # 清理版本號中的非比較部分，例如 (Experimental)
     local local_version_clean=$(echo "$local_version" | sed 's/([^)]*)//g')
-    local remote_version_clean=$(echo "$remote_version" | sed 's/([^)]*)//g')
+    local remote_version_clean=$(echo "$remote_version" | sed 's/([^)]*)//g') # 現在 remote_version 已無 BOM
+
+    # 使用 sort -V 進行版本比較
     latest_version=$(printf '%s\n' "$remote_version_clean" "$local_version_clean" | sort -V | tail -n 1)
 
-    if [[ "$local_version_clean" == "$latest_version" ]]; then
+    # 修改判斷條件：如果清理後的版本相同，或本地版本是 sort -V 認為最新的，則認為無需更新
+    if [[ "$local_version_clean" == "$remote_version_clean" ]] || [[ "$local_version_clean" == "$latest_version" ]]; then
         log_message "INFO" "腳本已是最新版本 ($local_version)。"
         echo -e "${GREEN}腳本已是最新版本 ($local_version)。${RESET}"
-        return 0
+        return 0 # 返回到主選單
     fi
 
-    echo -e "${YELLOW}發現新版本：$remote_version (當前版本：$local_version)。${RESET}"
+    # --- 3. 確認更新 ---
+    echo -e "${YELLOW}發現新版本：$remote_version (當前版本：$local_version)。${RESET}" # 這裡顯示的 remote_version 也無 BOM
     read -p "是否要立即下載並更新腳本？ (y/N): " confirm_update
     if [[ ! "$confirm_update" =~ ^[Yy]$ ]]; then
         log_message "INFO" "使用者取消更新。"
         echo -e "${YELLOW}已取消更新。${RESET}"
-        return 0
+        return 0 # 返回到主選單
     fi
 
+    # --- 4. 下載新腳本 ---
     echo -e "${YELLOW}正在從 $REMOTE_SCRIPT_URL 下載新版本腳本...${RESET}"
     if curl -Ls "$REMOTE_SCRIPT_URL" -o "$temp_script" --fail --connect-timeout 30; then
         log_message "INFO" "新版本腳本下載成功：$temp_script"
+
         # --- (可選) 校驗和驗證 ---
+        # 如果你有提供校驗和文件，可以在這裡下載並驗證
+        # echo -e "${YELLOW}正在驗證檔案完整性...${RESET}"
+        # if sha256sum "$temp_script" | grep -q "$expected_checksum"; then
+        #     echo -e "${GREEN}校驗和驗證通過。${RESET}"
+        # else
+        #     log_message "ERROR" "校驗和驗證失敗！下載的檔案可能已損壞或被篡改。"
+        #     echo -e "${RED}錯誤：校驗和驗證失敗！取消更新。${RESET}"
+        #     rm -f "$temp_script"
+        #     return 1
+        # fi
+
+        # --- 5. 替換舊腳本 ---
         echo -e "${YELLOW}正在替換舊腳本：$SCRIPT_INSTALL_PATH ${RESET}"
+        # 賦予新腳本執行權限
         chmod +x "$temp_script"
+        # 嘗試移動替換
         if mv "$temp_script" "$SCRIPT_INSTALL_PATH"; then
             log_message "SUCCESS" "腳本已成功更新至版本 $remote_version。"
             echo -e "${GREEN}腳本更新成功！版本：$remote_version ${RESET}"
             echo -e "${CYAN}請重新啟動腳本 ('media' 或執行 '$SCRIPT_INSTALL_PATH') 以載入新版本。${RESET}"
+            # 成功更新後退出腳本，強制使用者重新啟動
             exit 0
         else
             log_message "ERROR" "無法替換舊腳本 '$SCRIPT_INSTALL_PATH'。請檢查權限。"
             echo -e "${RED}錯誤：無法替換舊腳本。請檢查權限。${RESET}"
-            echo -e "${YELLOW}下載的新腳本保留在：$temp_script ${RESET}"
-            return 1
+            echo -e "${YELLOW}下載的新腳本保留在：$temp_script ${RESET}" # 提示使用者手動替換
+            # 不刪除 temp_script，方便手動處理
+            return 1 # 返回到主選單，但提示錯誤
         fi
     else
         log_message "ERROR" "下載新腳本失敗：$REMOTE_SCRIPT_URL (Curl failed)"
         echo -e "${RED}錯誤：下載新腳本失敗。${RESET}"
-        rm -f "$temp_script"
-        return 1
+        rm -f "$temp_script" # 清理下載失敗的檔案
+        return 1 # 返回到主選單
     fi
 }
 
