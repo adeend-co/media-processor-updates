@@ -863,6 +863,107 @@ adjust_threads() {
 }
 
 ############################################
+# 新增：設定 Termux 啟動時詢問 (僅限 Termux)
+############################################
+setup_termux_autostart() {
+    # 僅在 Termux 環境下執行此功能
+    if [[ "$OS_TYPE" != "termux" ]]; then
+        log_message "WARNING" "此功能僅適用於 Termux 環境。"
+        echo -e "${YELLOW}警告：此功能僅適用於 Termux 環境。${RESET}"
+        sleep 2
+        return 1
+    fi
+
+    clear
+    echo -e "${CYAN}--- 設定 Termux 啟動時詢問 ---${RESET}"
+    echo -e "${YELLOW}此操作將修改您的 '$HOME/.bashrc' 文件。${RESET}"
+    echo -e "${RED}${BOLD}警告：這將覆蓋您現有的 .bashrc 內容！${RESET}"
+    echo -e "${YELLOW}如果您有自訂的 .bashrc 設定，請先備份。${RESET}"
+    echo ""
+    read -p "您確定要繼續嗎？ (y/n): " confirm_setup
+    echo ""
+
+    if [[ ! "$confirm_setup" =~ ^[Yy]$ ]]; then
+        log_message "INFO" "使用者取消了 Termux 啟動設定。"
+        echo -e "${YELLOW}已取消設定。${RESET}"
+        return 1
+    fi
+
+    # 再次確認腳本安裝路徑 (與腳本開頭 SCRIPT_INSTALL_PATH 保持一致)
+    local target_script_path="$SCRIPT_INSTALL_PATH" 
+    # 如果 SCRIPT_INSTALL_PATH 可能是相對路徑，最好轉成絕對路徑
+    # 但在這個例子中， $HOME/scripts/... 已經是絕對路徑了
+
+    log_message "INFO" "開始設定 Termux 啟動腳本..."
+    echo -e "${YELLOW}正在寫入設定到 ~/.bashrc ...${RESET}"
+
+    # 使用 cat 和 EOF 將配置寫入 .bashrc
+    # 注意：EOF 內的 $target_script_path 會被正確解析
+cat > "$HOME/.bashrc" << EOF
+# ~/.bashrc - 由媒體處理器腳本自動產生
+
+# (可選) 在此處加入您其他的 .bashrc 自訂內容
+
+# --- 媒體處理器啟動設定 ---
+
+# 1. 定義別名，方便手動啟動
+alias media='$target_script_path'
+
+# 2. 僅在交互式 Shell 啟動時顯示提示
+if [[ \$- == *i* ]]; then
+    # 定義顏色代碼
+    local C_GREEN='\033[0;32m'
+    local C_YELLOW='\033[1;33m'
+    local C_RED='\033[0;31m'
+    local C_CYAN='\033[0;36m'
+    local C_RESET='\033[0m'
+    
+    echo "" 
+    echo -e "\${C_CYAN}歡迎使用 Termux!\${C_RESET}"
+    echo -e "\${C_YELLOW}是否要啟動媒體處理器？\${C_RESET}"
+    echo -e "1) \${C_GREEN}立即啟動\${C_RESET}"
+    echo -e "2) \${C_YELLOW}稍後啟動 (輸入 'media' 命令啟動)\${C_RESET}"
+    echo -e "0) \${C_RED}不啟動\${C_RESET}"
+    
+    read -t 15 -p "請選擇 (0-2) [15秒後自動選 2]: " choice
+    choice=\${choice:-2} 
+
+    case \$choice in
+        1) 
+            echo -e "\n\${C_GREEN}正在啟動媒體處理器...\${C_RESET}"
+            # 執行腳本
+            "$target_script_path"
+            ;;
+        2) 
+            echo -e "\n\${C_YELLOW}您可以隨時輸入 'media' 命令啟動媒體處理器\${C_RESET}" 
+            ;;
+        *) 
+            echo -e "\n\${C_RED}已取消啟動媒體處理器\${C_RESET}" 
+            ;;
+    esac
+    echo ""
+fi
+
+# --- 媒體處理器啟動設定結束 ---
+
+# (可選) 在此處加入您其他的 .bashrc 自訂內容
+
+EOF
+    # 檢查寫入是否成功 (基本檢查)
+    if [ $? -eq 0 ]; then
+        log_message "SUCCESS" "Termux 啟動設定已成功寫入 ~/.bashrc"
+        echo -e "${GREEN}設定成功！${RESET}"
+        echo -e "${CYAN}請重新啟動 Termux 或執行 'source ~/.bashrc' 來讓設定生效。${RESET}"
+    else
+        log_message "ERROR" "寫入 ~/.bashrc 失敗！"
+        echo -e "${RED}錯誤：寫入設定失敗！請檢查權限。${RESET}"
+        return 1
+    fi
+    
+    return 0
+}
+
+############################################
 # 設定選單
 ############################################
 config_menu() {
@@ -1032,9 +1133,8 @@ check_environment() {
     return 0
 }
 
-
 ############################################
-# 主選單 (修改 - 與上次相同)
+# 主選單 (修改 - 添加 Termux 啟動設定選項)
 ############################################
 main_menu() {
     while true; do
@@ -1049,12 +1149,24 @@ main_menu() {
         echo -e " 3. 設定參數"
         echo -e " 4. 檢視操作日誌"
         echo -e " 6. ${BOLD}檢查並更新依賴套件${RESET}"
-        echo -e " ${BOLD}8. 檢查腳本更新${RESET}" # <<< 更新選項
+        echo -e " ${BOLD}8. 檢查腳本更新${RESET}" 
+        # <<< 新增：僅在 Termux 環境下顯示選項 9 >>>
+        if [[ "$OS_TYPE" == "termux" ]]; then
+            echo -e " ${BOLD}9. 設定 Termux 啟動時詢問${RESET}" 
+        fi
         echo -e "---------------------------------------------"
         echo -e " 5. 關於此工具"
         echo -e " 0. ${RED}退出腳本${RESET}"
         echo -e "---------------------------------------------"
-        read -p "輸入選項 (0-8 或 2-1): " choice # <<< 修改範圍
+        # <<< 修改：更新選項範圍提示 >>>
+        #     根據是否顯示選項 9，動態調整提示
+        local prompt_range="0-8"
+        if [[ "$OS_TYPE" == "termux" ]]; then
+            prompt_range="0-9 或 2-1"
+        else
+            prompt_range="0-8 或 2-1"
+        fi
+        read -p "輸入選項 (${prompt_range}): " choice 
 
         case $choice in
             1) process_mp3 ;;
@@ -1063,9 +1175,21 @@ main_menu() {
             7) process_other_site_media_playlist ;;
             3) config_menu ;;
             4) view_log ;;
-            6) update_dependencies ;; # 依賴更新
-            8) # 腳本自我更新
+            6) update_dependencies ;; 
+            8) 
                auto_update_script
+               read -p "按 Enter 返回主選單..." 
+               ;;
+            # <<< 新增：處理選項 9 >>>
+            9) 
+               # 再次檢查是否為 Termux，以防萬一
+               if [[ "$OS_TYPE" == "termux" ]]; then
+                   setup_termux_autostart
+               else
+                   # 如果因為某些原因選了 9 但不是 Termux，顯示錯誤
+                   echo -e "${RED}錯誤：此選項僅適用於 Termux。${RESET}"
+                   sleep 1
+               fi
                read -p "按 Enter 返回主選單..." # 提示返回
                ;;
             5) show_about ;;
@@ -1074,7 +1198,6 @@ main_menu() {
         esac
     done
 }
-
 
 # --- 在主要函數執行前，調用檢測函數並初始化路徑 ---
 # <<< 新增：調用平台檢測函數 >>>
