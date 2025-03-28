@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v1.6.7(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v1.6.8(Experimental)" # <<< 版本號更新
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
 DEFAULT_URL="https://www.youtube.com/watch?v=siNFnlqtd8M"
 THREADS=4
@@ -206,6 +206,10 @@ auto_update_script() {
         echo -e "${YELLOW}正在替換舊腳本：$SCRIPT_INSTALL_PATH ${RESET}"
         # 賦予新腳本執行權限
         chmod +x "$temp_script"
+        
+        # <<< 新增：確保目標目錄存在 >>>
+        mkdir -p "$(dirname "$SCRIPT_INSTALL_PATH")"
+
         # 嘗試移動替換
         if mv "$temp_script" "$SCRIPT_INSTALL_PATH"; then
             log_message "SUCCESS" "腳本已成功更新至版本 $remote_version。"
