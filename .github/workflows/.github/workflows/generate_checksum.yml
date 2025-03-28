@@ -1,0 +1,57 @@
+name: Generate Checksum on Push or Release # 工作流程名稱
+
+on:
+  push:
+    branches: [ main ] # 當程式碼被推送到 main 分支時觸發
+    paths:
+      - 'media_processor.sh' # 只有當 media_processor.sh 這個檔案變更時才觸發 (提高效率)
+  release:
+    types: [ published ] # 當新的 Release 被發布時觸發
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest # 指定運行環境為最新的 Ubuntu
+
+    steps:
+    - name: Checkout code # 第一步：簽出儲存庫的程式碼
+      uses: actions/checkout@v3 # 使用官方的 checkout action
+
+    - name: Generate SHA256 Checksum # 第二步：生成校驗和
+      run: |
+        sha256sum media_processor.sh > media_processor.sh.sha256
+        echo "Checksum generated:"
+        cat media_processor.sh.sha256
+
+    # 第三步 (可選但推薦)：將校驗和檔案作為 Release 的 Asset 上傳
+    # 只有在觸發事件是 release 時才執行這一步
+    - name: Upload Checksum to Release Asset
+      if: github.event_name == 'release'
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 使用 GitHub 自動提供的 Token
+      with:
+        upload_url: ${{ github.event.release.upload_url }} # 從觸發事件中獲取上傳 URL
+        asset_path: ./media_processor.sh.sha256 # 要上傳的校驗和檔案路徑
+        asset_name: media_processor.sh.sha256 # 在 Release 中顯示的檔案名稱
+        asset_content_type: text/plain # 檔案類型
+
+    # 第四步 (如果希望校驗和檔案也提交回儲存庫 - 適用於 push 事件):
+    # 注意：這會修改你的儲存庫，需要謹慎使用
+    - name: Commit checksum file # 將生成的校驗和檔案提交回儲存庫
+      if: github.event_name == 'push' # 只有在 push 事件時執行
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add media_processor.sh.sha256
+        # 檢查是否有檔案需要提交
+        if git diff --staged --quiet; then
+          echo "No changes to commit."
+        else
+          git commit -m "Automated: Add/Update checksum for media_processor.sh" -a
+        fi
+    - name: Push changes # 將提交推送到遠程儲存庫
+      if: github.event_name == 'push' # 只有在 push 事件時執行
+      uses: ad-m/github-push-action@master
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        branch: ${{ github.ref }} # 推送到觸發工作流程的分支
