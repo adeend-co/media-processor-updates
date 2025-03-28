@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v1.6.6(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v1.6.7(Experimental)" # <<< 版本號更新
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
 DEFAULT_URL="https://www.youtube.com/watch?v=siNFnlqtd8M"
 THREADS=4
@@ -190,7 +190,7 @@ auto_update_script() {
 
     # --- 3. 確認更新 ---
     echo -e "${YELLOW}發現新版本：$remote_version (當前版本：$local_version)。${RESET}" # 這裡顯示的 remote_version 也無 BOM
-    read -p "是否要立即下載並更新腳本？ (y/N): " confirm_update
+    read -p "是否要立即下載並更新腳本？ (y/n): " confirm_update
     if [[ ! "$confirm_update" =~ ^[Yy]$ ]]; then
         log_message "INFO" "使用者取消更新。"
         echo -e "${YELLOW}已取消更新。${RESET}"
