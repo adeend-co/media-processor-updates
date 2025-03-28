@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v1.6.3(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v1.6.4(Experimental)" # <<< 版本號更新
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
 DEFAULT_URL="https://www.youtube.com/watch?v=siNFnlqtd8M"
 THREADS=4
@@ -292,16 +292,14 @@ safe_remove() {
     done
 }
 
-
 ############################################
-# 檢查並更新依賴套件 (修改)
+# 檢查並更新依賴套件 (修改 - 處理 Python REPL 問題)
 ############################################
 update_dependencies() {
-    # 使用新的跨平台邏輯
-    local pkg_tools=("ffmpeg" "jq" "curl" "python") # pkg管理的基礎工具名 (python 在不同系統可能不同)
+    local pkg_tools=("ffmpeg" "jq" "curl" "python")
     local pip_tools=("yt-dlp")
-    local all_tools=("ffmpeg" "ffprobe" "jq" "curl" "python" "python3" "pip" "pip3" "yt-dlp") # 擴大驗證範圍
-    local verify_tools=("ffmpeg" "ffprobe" "jq" "curl" "yt-dlp") # 最終必須存在的工具
+    # all_tools, verify_tools 保持不變
+    local verify_tools=("ffmpeg" "ffprobe" "jq" "curl" "yt-dlp")
     local python_available=false
     local pip_available=false
     local update_failed=false
@@ -311,101 +309,80 @@ update_dependencies() {
     echo -e "${CYAN}--- 開始檢查並更新依賴套件 (OS: $OS_TYPE) ---${RESET}"
     log_message "INFO" "使用者觸發依賴套件更新流程 (OS: $OS_TYPE)。"
 
-    # 1. 更新套件列表
+    # --- 1. 更新套件列表 (與上次修改相同) ---
     echo -e "${YELLOW}[1/4] 正在更新套件列表...${RESET}"
     local update_cmd=""
-    local needs_sudo=false # 標記是否需要 sudo
-    if [[ "$PACKAGE_MANAGER" == "pkg" ]]; then
-        update_cmd="pkg update -y"
-    elif [[ "$PACKAGE_MANAGER" == "apt" ]]; then
-        update_cmd="sudo apt update -y"
-        needs_sudo=true
-    elif [[ "$PACKAGE_MANAGER" == "dnf" || "$PACKAGE_MANAGER" == "yum" ]]; then
-         update_cmd="sudo $PACKAGE_MANAGER check-update -y"
-         needs_sudo=true
-    else
-        echo -e "${YELLOW}  > 警告：未知的套件管理器 ($PACKAGE_MANAGER)，跳過列表更新。${RESET}"
-        log_message "WARNING" "未知套件管理器 ($PACKAGE_MANAGER)，跳過列表更新。"
-    fi
-
-    if [ -n "$update_cmd" ]; then
-        echo "執行: $update_cmd"
-        if eval "$update_cmd"; then
-             log_message "INFO" "套件列表更新成功"
-             echo -e "${GREEN}  > 套件列表更新成功。${RESET}"
-        else
-             log_message "WARNING" "套件列表更新失敗。"
-             echo -e "${RED}  > 警告：套件列表更新失敗，將嘗試使用現有列表。${RESET}"
-             update_failed=true
-        fi
-    fi
+    local needs_sudo=false
+    if [[ "$PACKAGE_MANAGER" == "pkg" ]]; then update_cmd="pkg update -y";
+    elif [[ "$PACKAGE_MANAGER" == "apt" ]]; then update_cmd="sudo apt update -y"; needs_sudo=true;
+    elif [[ "$PACKAGE_MANAGER" == "dnf" || "$PACKAGE_MANAGER" == "yum" ]]; then update_cmd="sudo $PACKAGE_MANAGER check-update -y"; needs_sudo=true;
+    else echo -e "${YELLOW}  > 警告：未知套件管理器...${RESET}"; fi
+    if [ -n "$update_cmd" ]; then echo "執行: $update_cmd"; if eval "$update_cmd"; then echo -e "${GREEN}  > 成功${RESET}"; else echo -e "${RED}  > 失敗${RESET}"; update_failed=true; fi; fi
     echo ""
 
-    # 2. 安裝/更新包管理器管理的工具
+    # --- 2. 安裝/更新包管理器管理的工具 (與上次修改相同) ---
     echo -e "${YELLOW}[2/4] 正在安裝/更新套件: ${pkg_tools[*]} (以及 pip)...${RESET}"
-    local install_cmd=""
-    local pkgs_to_install=()
-    if [[ "$PACKAGE_MANAGER" == "pkg" ]]; then
-        pkgs_to_install=("ffmpeg" "jq" "curl" "python" "python-pip")
-        install_cmd="pkg install -y ${pkgs_to_install[*]}"
-    elif [[ "$PACKAGE_MANAGER" == "apt" ]]; then
-        pkgs_to_install=("ffmpeg" "jq" "curl" "python3" "python3-pip")
-        install_cmd="sudo apt install -y ${pkgs_to_install[*]}"
-    elif [[ "$PACKAGE_MANAGER" == "dnf" || "$PACKAGE_MANAGER" == "yum" ]]; then
-        pkgs_to_install=("ffmpeg" "jq" "curl" "python3" "python3-pip")
-        install_cmd="sudo $PACKAGE_MANAGER install -y ${pkgs_to_install[*]}"
-    else
-         echo -e "${YELLOW}  > 警告：未知的套件管理器，無法自動安裝基礎套件。${RESET}"
-         log_message "WARNING" "未知套件管理器，跳過安裝基礎套件"
-         missing_after_update+=("ffmpeg" "jq" "curl" "python/python3" "pip/pip3")
-    fi
-
-    if [ -n "$install_cmd" ]; then
-        echo "執行: $install_cmd"
-        if eval "$install_cmd"; then
-            log_message "INFO" "安裝/更新 ${pkgs_to_install[*]} 成功 (或已是最新)"
-            echo -e "${GREEN}  > 安裝/更新 ${pkgs_to_install[*]} 完成。${RESET}"
-        else
-             log_message "ERROR" "安裝/更新 ${pkgs_to_install[*]} 失敗！"
-             echo -e "${RED}  > 錯誤：安裝/更新 ${pkgs_to_install[*]} 失敗！${RESET}"
-             update_failed=true
-        fi
-    fi
+    local install_cmd=""; local pkgs_to_install=()
+    if [[ "$PACKAGE_MANAGER" == "pkg" ]]; then pkgs_to_install=("ffmpeg" "jq" "curl" "python" "python-pip"); install_cmd="pkg install -y ${pkgs_to_install[*]}";
+    elif [[ "$PACKAGE_MANAGER" == "apt" ]]; then pkgs_to_install=("ffmpeg" "jq" "curl" "python3" "python3-pip"); install_cmd="sudo apt install -y ${pkgs_to_install[*]}";
+    elif [[ "$PACKAGE_MANAGER" == "dnf" || "$PACKAGE_MANAGER" == "yum" ]]; then pkgs_to_install=("ffmpeg" "jq" "curl" "python3" "python3-pip"); install_cmd="sudo $PACKAGE_MANAGER install -y ${pkgs_to_install[*]}";
+    else echo -e "${YELLOW}  > 警告：未知套件管理器...${RESET}"; missing_after_update+=("ffmpeg" "jq" "curl" "python/python3" "pip/pip3"); fi
+    if [ -n "$install_cmd" ]; then echo "執行: $install_cmd"; if eval "$install_cmd"; then echo -e "${GREEN}  > 完成${RESET}"; else echo -e "${RED}  > 失敗${RESET}"; update_failed=true; fi; fi
     echo ""
 
-    # 3. 更新 pip 管理的工具 (yt-dlp)
+    # --- 3. 更新 pip 管理的工具 (修改確定 pip_cmd 的邏輯) ---
     echo -e "${YELLOW}[3/4] 正在更新 pip 套件: ${pip_tools[*]}...${RESET}"
+    # 重新確定 python 和 pip 的命令，更安全
     local python_cmd=""
-    local pip_cmd=""
+    local pip_exec_cmd="" # 用於執行的命令字串 (包含 python -m pip) 或直接的 pip 命令
+
     if command -v python3 &> /dev/null; then
         python_cmd="python3"
-        if command -v pip3 &> /dev/null; then pip_cmd="pip3";
-        elif $python_cmd -m pip --version &> /dev/null; then pip_cmd="$python_cmd -m pip"; fi
-    elif command -v python &> /dev/null; then
-        python_cmd="python"
-        if command -v pip &> /dev/null; then pip_cmd="pip";
-        elif $python_cmd -m pip --version &> /dev/null; then pip_cmd="$python_cmd -m pip"; fi
+        if command -v pip3 &> /dev/null; then
+             pip_exec_cmd="pip3"
+        # 檢查 'python3 -m pip' 是否能執行且 *不是* 進入互動模式
+        # 使用 '--version' 是一個安全的測試方法
+        elif $python_cmd -m pip --version &> /dev/null; then
+             pip_exec_cmd="$python_cmd -m pip"
+        fi
+    fi
+    # 如果 python3 相關的沒找到，再嘗試 python
+    if [ -z "$pip_exec_cmd" ] && command -v python &> /dev/null; then
+         python_cmd="python"
+         if command -v pip &> /dev/null; then
+             pip_exec_cmd="pip"
+         elif $python_cmd -m pip --version &> /dev/null; then
+              pip_exec_cmd="$python_cmd -m pip"
+         fi
     fi
 
-    if [ -z "$pip_cmd" ]; then
+    if [ -z "$pip_exec_cmd" ]; then
         log_message "ERROR" "找不到 pip 或 pip3 命令，無法更新 ${pip_tools[*]}。"
         echo -e "${RED}  > 錯誤：找不到 pip 或 pip3 命令，無法更新 ${pip_tools[*]}。請確保步驟 2 已成功安裝 python 和 pip。${RESET}"
         update_failed=true
     else
-        local pip_update_cmd="$pip_cmd install --upgrade ${pip_tools[*]}"
+        log_message "INFO" "找到 pip 執行命令: $pip_exec_cmd"
+        # 嘗試更新 pip 工具
+        # 不再構建複雜命令字串，而是直接執行，sudo 單獨處理
+        local pip_args=("install" "--upgrade")
         if [[ "$OS_TYPE" != "termux" ]] && [[ $EUID -ne 0 ]]; then
-             pip_update_cmd="$pip_cmd install --upgrade --user ${pip_tools[*]}"
+             pip_args+=("--user") # 優先嘗試 --user
         fi
-        echo "執行: $pip_update_cmd"
-        if eval "$pip_update_cmd"; then
+        pip_args+=("${pip_tools[@]}")
+
+        echo "執行: $pip_exec_cmd ${pip_args[*]}"
+        # 直接執行，避免 eval 的潛在問題
+        if "$pip_exec_cmd" "${pip_args[@]}"; then
              log_message "INFO" "更新 ${pip_tools[*]} 成功"
              echo -e "${GREEN}  > 更新 ${pip_tools[*]} 完成。${RESET}"
         else
-             if [[ "$needs_sudo" = true ]] && [[ "$pip_update_cmd" == *"--user"* ]]; then
+             # 如果 --user 失敗，在需要 sudo 的環境下嘗試 sudo
+             if [[ "$needs_sudo" = true ]] && printf '%s\n' "${pip_args[@]}" | grep -q -- '--user'; then
                   echo -e "${RED}  > 錯誤：使用 '--user' 更新 ${pip_tools[*]} 失敗！${RESET}"
-                  local sudo_pip_update_cmd="sudo $pip_cmd install --upgrade ${pip_tools[*]}"
-                  echo -e "${YELLOW}  > 正在嘗試使用 sudo 執行: $sudo_pip_update_cmd ${RESET}"
-                  if eval "$sudo_pip_update_cmd"; then
+                  # 移除 --user 參數
+                  local sudo_pip_args=("install" "--upgrade" "${pip_tools[@]}")
+                  echo -e "${YELLOW}  > 正在嘗試使用 sudo 執行: sudo $pip_exec_cmd ${sudo_pip_args[*]} ${RESET}"
+                  if sudo "$pip_exec_cmd" "${sudo_pip_args[@]}"; then
                        log_message "INFO" "使用 sudo 更新 ${pip_tools[*]} 成功"
                        echo -e "${GREEN}  > 使用 sudo 更新 ${pip_tools[*]} 完成。${RESET}"
                   else
@@ -414,6 +391,7 @@ update_dependencies() {
                        update_failed=true
                   fi
              else
+                  # 其他失敗情況
                   log_message "ERROR" "更新 ${pip_tools[*]} 失敗！"
                   echo -e "${RED}  > 錯誤：更新 ${pip_tools[*]} 失敗！${RESET}"
                   update_failed=true
@@ -422,46 +400,66 @@ update_dependencies() {
     fi
     echo ""
 
-    # 4. 最終驗證必要工具
+
+    # --- 4. 最終驗證必要工具 (與上次修改相同) ---
     echo -e "${YELLOW}[4/4] 正在驗證必要工具是否已安裝: ${verify_tools[*]}...${RESET}"
     local current_missing=()
     python_available=$(command -v python || command -v python3)
-    # pip_available=$(command -v pip || command -v pip3) # 驗證 pip 非必須
 
     for tool in "${verify_tools[@]}"; do
         if ! command -v "$tool" &> /dev/null; then
-            current_missing+=("$tool")
-            echo -e "${RED}  > 驗證失敗：找不到 $tool ${RESET}"
-        else
-             echo -e "${GREEN}  > 驗證成功：找到 $tool ${RESET}"
-        fi
+            current_missing+=("$tool"); echo -e "${RED}  > 驗證失敗：找不到 $tool ${RESET}"
+        else echo -e "${GREEN}  > 驗證成功：找到 $tool ${RESET}"; fi
     done
-    if ! $python_available; then current_missing+=("python/python3"); fi
+    if ! $python_available; then current_missing+=("python/python3"); echo -e "${RED}  > 驗證失敗：找不到 python/python3 ${RESET}"; else echo -e "${GREEN}  > 驗證成功：找到 python/python3 ${RESET}"; fi
 
     missing_after_update+=("${current_missing[@]}")
     missing_after_update=($(echo "${missing_after_update[@]}" | tr ' ' '\n' | sort -u | tr '\n' ' '))
 
-    # 總結結果
+    # 總結結果 (與上次修改相同)
     if [ ${#missing_after_update[@]} -ne 0 ]; then
-        log_message "ERROR" "更新流程完成後，仍然缺少工具: ${missing_after_update[*]}"
-        echo -e "${RED}--- 更新結果：失敗 ---${RESET}"
-        echo -e "${RED}更新/安裝後，仍然缺少以下必要工具：${RESET}"
-        for tool in "${missing_after_update[@]}"; do echo -e "${YELLOW}  - $tool${RESET}"; done
-        echo -e "${CYAN}請檢查網路連線或嘗試手動安裝。${RESET}"
+        log_message "ERROR" "更新完成後仍缺少: ${missing_after_update[*]}"; echo -e "${RED}--- 更新結果：失敗 ---${RESET}";
+        echo -e "${RED}缺少工具：${RESET}"; for tool in "${missing_after_update[@]}"; do echo -e "${YELLOW}  - $tool${RESET}"; done; echo -e "${CYAN}請嘗試手動安裝。${RESET}";
     elif [ "$update_failed" = true ]; then
-        log_message "WARNING" "更新流程完成，但過程中出現錯誤。工具似乎已存在，可能不是最新版本。"
-        echo -e "${YELLOW}--- 更新結果：部分成功 ---${RESET}"
-        echo -e "${YELLOW}更新過程中出現一些錯誤，但所有必要工具似乎都已安裝。${RESET}"
-        echo -e "${YELLOW}可能部分工具未能更新到最新版本。${RESET}"
+        log_message "WARNING" "更新過程有錯誤，但工具似乎存在。"; echo -e "${YELLOW}--- 更新結果：部分成功 ---${RESET}";
+        echo -e "${YELLOW}有錯誤，但工具似乎存在，可能不是最新版本。${RESET}";
     else
-        log_message "SUCCESS" "所有依賴套件均已成功檢查並更新/安裝。"
-        echo -e "${GREEN}--- 更新結果：成功 ---${RESET}"
-        echo -e "${GREEN}所有依賴套件均已成功檢查並更新/安裝。${RESET}"
+        log_message "SUCCESS" "依賴檢查與更新成功。"; echo -e "${GREEN}--- 更新結果：成功 ---${RESET}";
+        echo -e "${GREEN}所有依賴已成功檢查並更新/安裝。${RESET}";
     fi
 
-    echo ""
-    read -p "按 Enter 返回主選單..."
+    # <<<< 關鍵修改：移除結尾可能導致問題的 read 命令 >>>>
+    # echo ""
+    # read -p "按 Enter 返回主選單..." # <<< 移除或註解掉這一行
+
+    # 直接返回，讓主選單處理 "按 Enter 返回" 的提示
+    return 0 # 或者根據 $update_failed 返回 1？目前設計是總返回0
 }
+
+
+# --- 修改 main_menu 來處理 update_dependencies 後的提示 ---
+main_menu() {
+    while true; do
+        clear
+        # ... (顯示選單內容) ...
+        read -p "輸入選項 (0-8 或 2-1): " choice
+
+        case $choice in
+            # ... (case 1-5) ...
+            6)
+               update_dependencies # 調用依賴更新函數
+               # <<<< 在這裡統一處理 "按 Enter 返回" >>>>
+               read -p "按 Enter 返回主選單..."
+               ;;
+            8)
+               auto_update_script
+               read -p "按 Enter 返回主選單..."
+               ;;
+            # ... (case 0, *) ...
+        esac
+    done
+}
+
 
 
 ############################################
