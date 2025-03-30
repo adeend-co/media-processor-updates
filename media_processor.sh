@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v1.6.23(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v1.6.24(Experimental)" # <<< 版本號更新
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
 DEFAULT_URL="https://www.youtube.com/watch?v=siNFnlqtd8M"
 THREADS=4
@@ -818,24 +818,84 @@ _process_single_other_site() {
 # 處理其他網站媒體 (通用 MP3/MP4) - 支持實驗性批量下載
 ############################################
 process_other_site_media_playlist() {
-    # --- 函數邏輯不變 ---
     local input_url=""; local choice_format=""
-    read -p "請輸入媒體網址 (單個或播放列表): " input_url; if [ -z "$input_url" ]; then echo -e "${RED}錯誤：未輸入！${RESET}"; return 1; fi
+    local cf # Declare cf for case statement scope
+
+    # SC2162: Added -r to read
+    read -r -p "請輸入媒體網址 (單個或播放列表): " input_url; if [ -z "$input_url" ]; then echo -e "${RED}錯誤：未輸入！${RESET}"; return 1; fi
+
     log_message "INFO" "處理通用媒體/列表：$input_url"; echo -e "${YELLOW}處理通用媒體/列表：$input_url${RESET}"; echo -e "${YELLOW}注意：列表支持為實驗性。${RESET}"
-    while true; do read -p "選擇格式 (1: MP3, 2: MP4): " cfn; case $cfn in 1) cf="mp3"; break;; 2) cf="mp4"; break;; *) echo "${RED}無效選項${RESET}";; esac; done; choice_format=$cf; log_message "INFO" "選擇格式: $choice_format"
-    echo -e "${YELLOW}檢測是否為列表...${RESET}"; local item_list_json; local yt_dlp_dump_args=(yt-dlp --flat-playlist --dump-json "$input_url")
+
+    while true; do
+        local cfn # Declare cfn for loop scope
+        # SC2162: Added -r to read
+        read -r -p "選擇格式 (1: MP3, 2: MP4): " cfn;
+        case $cfn in
+             1) cf="mp3"; break;;
+             2) cf="mp4"; break;;
+             *) echo "${RED}無效選項${RESET}";;
+        esac;
+    done;
+    choice_format=$cf; log_message "INFO" "選擇格式: $choice_format"
+
+    echo -e "${YELLOW}檢測是否為列表...${RESET}";
+    local item_list_json; local yt_dlp_dump_args=(yt-dlp --flat-playlist --dump-json "$input_url")
     item_list_json=$("${yt_dlp_dump_args[@]}" 2>/dev/null); local jec=$?; if [ $jec -ne 0 ]; then log_message "WARNING" "dump-json 失敗..."; fi
+
     local item_urls=(); local item_count=0
-    if [ -n "$item_list_json" ] && command -v jq &> /dev/null; then while IFS= read -r line; do local url=$(echo "$line" | jq -r '.url // empty'); if [ -n "$url" ] && [ "$url" != "null" ]; then item_urls+=("$url"); fi; done <<< "$(echo "$item_list_json" | jq -c '. | select(.url != null)')"; item_count=${#item_urls[@]}; if [ "$item_count" -eq 0 ]; then log_message "WARNING" "未找到 URL 項目。"; fi;
-    else if ! command -v jq &> /dev/null; then log_message "WARNING" "未找到 jq..."; fi; fi
+    # Check jq exists before trying to use it in the loop
+    if command -v jq &> /dev/null; then
+        if [ -n "$item_list_json" ]; then
+            local line url # Declare loop variables
+            while IFS= read -r line; do
+                # SC2155: Declare and assign separately (though jq is not command substitution)
+                # Let's keep it simple here, as it's not command substitution.
+                # url=$(echo "$line" | jq -r '.url // empty')
+                # Refined jq parsing to handle potential errors better
+                url=$(echo "$line" | jq -r '.url // empty' 2>/dev/null)
+                if [ $? -eq 0 ] && [ -n "$url" ] && [ "$url" != "null" ]; then
+                    item_urls+=("$url");
+                fi;
+            # Original jq command was fine, but let's ensure it processes line by line if input is multiline JSON
+            done <<< "$(echo "$item_list_json" | jq -c '. // empty | select(type == "object" and (.url != null))')" # Ensure only objects with URL are processed
+
+            item_count=${#item_urls[@]};
+            if [ "$item_count" -eq 0 ]; then
+                log_message "WARNING" "透過 JQ 解析，未找到有效的 URL 項目。"
+            fi
+        else
+             log_message "WARNING" "dump-json 成功，但輸出為空。"
+        fi
+    # SC1075: Replaced 'else if' with 'elif'
+    elif ! command -v jq &> /dev/null; then
+        log_message "WARNING" "未找到 jq，無法自動檢測列表項目 URL。將嘗試處理原始 URL。"
+        item_count=0 # Force single item processing if jq is missing
+    fi
+
     if [ "$item_count" -gt 1 ]; then
-        log_message "INFO" "檢測到列表 ($item_count 項)。"; echo -e "${CYAN}檢測到列表 ($item_count 項)。開始批量處理...${RESET}"; local ci=0; local sc=0
-        for item_url in "${item_urls[@]}"; do ci=$((ci + 1)); _process_single_other_site "$item_url" "$choice_format" "$ci" "$item_count"; if [ $? -eq 0 ]; then sc=$((sc + 1)); fi; echo ""; done
+        log_message "INFO" "檢測到列表 ($item_count 項)。"; echo -e "${CYAN}檢測到列表 ($item_count 項)。開始批量處理...${RESET}";
+        local ci=0; local sc=0; local item_url # Declare loop variable
+        for item_url in "${item_urls[@]}"; do
+            ci=$((ci + 1));
+            # SC2181: Check exit code directly
+            if _process_single_other_site "$item_url" "$choice_format" "$ci" "$item_count"; then
+                sc=$((sc + 1));
+            fi
+            echo ""; # Add newline between items
+        done
         echo -e "${GREEN}列表處理完成！共 $ci 項，成功 $sc 項。${RESET}"; log_message "SUCCESS" "列表 $input_url 完成！共 $ci 項，成功 $sc 項。"
     else
-        if [ "$item_count" -eq 1 ]; then log_message "INFO" "檢測到 1 項，按單個處理。"; echo -e "${YELLOW}檢測到 1 項，按單個處理...${RESET}"; input_url=${item_urls[0]};
-        else log_message "INFO" "未檢測到有效列表，按單個處理原始 URL。"; echo -e "${YELLOW}未檢測到列表，按單個處理...${RESET}"; fi
-        _process_single_other_site "$input_url" "$choice_format"
+        if [ "$item_count" -eq 1 ]; then
+            log_message "INFO" "檢測到 1 項，按單個處理。"
+            echo -e "${YELLOW}檢測到 1 項，按單個處理...${RESET}";
+            input_url=${item_urls[0]}; # Use the single URL found
+        else
+            # This case handles item_count=0 (either jq failed/missing, or no URLs found)
+            log_message "INFO" "未檢測到有效列表或無法解析，按單個處理原始 URL。"
+            echo -e "${YELLOW}未檢測到列表，按單個處理...${RESET}";
+            # input_url remains the original URL passed to the function
+        fi
+        _process_single_other_site "$input_url" "$choice_format" # No index/total needed
     fi
 }
 
