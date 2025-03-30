@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v1.6.14(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v1.6.15(Experimental)" # <<< 版本號更新
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
 DEFAULT_URL="https://www.youtube.com/watch?v=siNFnlqtd8M"
 THREADS=4
@@ -999,12 +999,10 @@ countdown_and_read() {
     # 創建背景進程顯示倒數
     (
         while [ $remaining -gt 0 ]; do
-            echo -ne "\r$prompt [$remaining 秒]"
+            echo -ne "\r$prompt [$remaining 秒]     "
             sleep 1
             ((remaining--))
         done
-        # 時間到，發送換行
-        echo ""
     ) &
     local countdown_pid=$!
     
@@ -1016,20 +1014,17 @@ countdown_and_read() {
     kill $countdown_pid 2>/dev/null
     wait $countdown_pid 2>/dev/null
     
-    # 清理顯示
-    echo -ne "\r$prompt                      \r"
-    
-    # 處理結果
+    # 清理顯示並輸出最終結果
     if [ $read_status -eq 0 ]; then
+        echo -e "\r$prompt                      "
         echo "$choice"
     else
+        echo -e "\r$prompt [時間到，自動選擇：$default]"
         echo "$default"
     fi
 }
-
 # 使用倒數計時器函數
-choice=$(countdown_and_read 60 "請選擇 (0-2) [60秒後自動選 2]:" 2)
-
+choice=$(countdown_and_read 60 "輸入選項 (${prompt_range})" "0")
 
     case $choice in
         1) 
