@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v1.6.22(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v1.6.23(Experimental)" # <<< 版本號更新
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
 DEFAULT_URL="https://www.youtube.com/watch?v=siNFnlqtd8M"
 THREADS=4
@@ -437,7 +437,6 @@ update_dependencies() {
 # 音量標準化共用函數 (無圖形進度條)
 ############################################
 normalize_audio() {
-    # --- 函數邏輯不變 ---
     local input_file="$1"
     local output_file="$2"
     local temp_dir="$3"
@@ -447,34 +446,31 @@ normalize_audio() {
     local loudnorm_log="$temp_dir/loudnorm.log"
     local stats_json="$temp_dir/stats.json"
     local ffmpeg_status=0
+    local measured_I measured_TP measured_LRA measured_thresh offset
 
     echo -e "${YELLOW}正在提取音訊為 WAV 格式...${RESET}"
-    ffmpeg -y -i "$input_file" -vn -acodec pcm_s16le -ar 44100 -ac 2 "$audio_wav" > /dev/null 2>&1
-    local ffmpeg_exit_code=$?
-    if [ $ffmpeg_exit_code -ne 0 ] || [ ! -f "$audio_wav" ]; then
-        log_message "ERROR" "轉換為 WAV 失敗！ (ffmpeg exit code: $ffmpeg_exit_code)"
+    if ! ffmpeg -y -i "$input_file" -vn -acodec pcm_s16le -ar 44100 -ac 2 "$audio_wav" > /dev/null 2>&1; then
+        log_message "ERROR" "轉換為 WAV 失敗！ (ffmpeg exit code: $?)"
         echo -e "${RED}錯誤：無法轉換為 WAV 格式${RESET}"
         return 1
     fi
+
     echo -e "${GREEN}轉換為 WAV 格式完成${RESET}"
 
     echo -e "${YELLOW}正在執行第一遍音量分析...${RESET}"
-    ffmpeg -y -i "$audio_wav" -af loudnorm=I=-12:TP=-1.5:LRA=11:print_format=json -f null - 2> "$loudnorm_log"
-    if [ $? -ne 0 ]; then
+    if ! ffmpeg -y -i "$audio_wav" -af loudnorm=I=-12:TP=-1.5:LRA=11:print_format=json -f null - 2> "$loudnorm_log"; then
         log_message "ERROR" "第一遍音量分析失敗！"
         echo -e "${RED}錯誤：音量分析失敗${RESET}"
         safe_remove "$audio_wav"
         return 1
     fi
-    echo -e "${GREEN}第一遍音量分析完成${RESET}"
 
-    echo -e "${YELLOW}解析音量分析結果...${RESET}"
-    awk '/^\{/{flag=1}/^\}/{print;flag=0}flag' "$loudnorm_log" > "$stats_json"
-    local measured_I=$(jq -r '.input_i' "$stats_json")
-    local measured_TP=$(jq -r '.input_tp' "$stats_json")
-    local measured_LRA=$(jq -r '.input_lra' "$stats_json")
-    local measured_thresh=$(jq -r '.input_thresh' "$stats_json")
-    local offset=$(jq -r '.target_offset' "$stats_json")
+    measured_I=$(jq -r '.input_i' "$stats_json")
+    measured_TP=$(jq -r '.input_tp' "$stats_json")
+    measured_LRA=$(jq -r '.input_lra' "$stats_json")
+    measured_thresh=$(jq -r '.input_thresh' "$stats_json")
+    offset=$(jq -r '.target_offset' "$stats_json")
+    
 
     if [ -z "$measured_I" ] || [ -z "$measured_TP" ] || [ -z "$measured_LRA" ] || [ -z "$measured_thresh" ] || [ -z "$offset" ]; then
         log_message "ERROR" "音量分析參數提取失敗"
@@ -529,24 +525,32 @@ normalize_audio() {
 # 處理本機 MP3 音訊（音量標準化）
 ############################################
 process_local_mp3() {
-    # --- 函數邏輯不變 ---
     local audio_file="$1"
-    if [ ! -f "$audio_file" ]; then echo -e "${RED}錯誤：檔案不存在！${RESET}"; return 1; fi
-    local temp_dir=$(mktemp -d)
-    local base_name=$(basename "$audio_file" | sed 's/\.[^.]*$//')
-    local output_audio="$(dirname "$audio_file")/${base_name}_normalized.mp3"
+    local temp_dir base_name output_audio result
+    
+    if [ ! -f "$audio_file" ]; then
+        echo -e "${RED}錯誤：檔案不存在！${RESET}"
+        return 1
+    fi
+    
+    temp_dir=$(mktemp -d)
+    base_name=$(basename "$audio_file" | sed 's/\.[^.]*$//')
+    output_audio="$(dirname "$audio_file")/${base_name}_normalized.mp3"
+
     echo -e "${YELLOW}處理本機音訊檔案：$audio_file${RESET}"
     log_message "INFO" "處理本機音訊檔案：$audio_file"
-    normalize_audio "$audio_file" "$output_audio" "$temp_dir" false
-    local result=$?
-    [ -d "$temp_dir" ] && rmdir "$temp_dir" 2>/dev/null
-    if [ $result -eq 0 ]; then
+    
+    if normalize_audio "$audio_file" "$output_audio" "$temp_dir" false; then
         echo -e "${GREEN}處理完成！音量標準化後的高品質音訊已儲存至：$output_audio${RESET}"
         log_message "SUCCESS" "處理完成！音量標準化後的高品質音訊已儲存至：$output_audio"
+        result=0
     else
         echo -e "${RED}處理失敗！${RESET}"
         log_message "ERROR" "處理失敗：$audio_file"
+        result=1
     fi
+
+    [ -d "$temp_dir" ] && rmdir "$temp_dir" 2>/dev/null
     return $result
 }
 
@@ -1056,18 +1060,17 @@ configure_threads() {
 }
 
 ############################################
-# 安全路徑設定函數
+# 設定下載路徑 (安全性增強版)
 ############################################
 configure_download_path() {
     local sanitized_path=""
+    local user_path
     
-    read -e -p "設定下載路徑 [當前: $DOWNLOAD_PATH]: " user_path
+    read -er -p "設定下載路徑 [當前: $DOWNLOAD_PATH]: " user_path
     user_path="${user_path:-$DOWNLOAD_PATH}"
     
-    # 解析路徑並消毒處理
     sanitized_path=$(realpath -m "$user_path" | sed 's/[;|&<>()$`{}]//g')
-    
-    # 路徑白名單驗證
+
     if [[ "$sanitized_path" =~ ^(/storage/emulated/0|$HOME|/data/data/com.termux/files/home) ]]; then
         if mkdir -p "$sanitized_path" 2>/dev/null && [ -w "$sanitized_path" ]; then
             DOWNLOAD_PATH="$sanitized_path"
@@ -1085,11 +1088,22 @@ configure_download_path() {
 }
 
 
-# 切換顏色輸出
+############################################
+# 切換顏色輸出 (移除未使用變數)
+############################################
 toggle_color() {
-    # --- 函數邏輯不變 ---
-    if [ "$COLOR_ENABLED" = true ]; then COLOR_ENABLED=false; RED=''; GREEN=''; YELLOW=''; BLUE=''; PURPLE=''; CYAN=''; WHITE=''; BOLD=''; RESET=''; log_message "INFO" "顏色關閉"; echo "顏色關閉";
-    else COLOR_ENABLED=true; RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; BLUE='\033[0;34m'; PURPLE='\033[0;35m'; CYAN='\033[0;36m'; WHITE='\033[0;37m'; BOLD='\033[1m'; RESET='\033[0m'; log_message "INFO" "顏色啟用"; echo -e "${GREEN}顏色啟用${RESET}"; fi
+    if [ "$COLOR_ENABLED" = true ]; then
+        COLOR_ENABLED=false
+        RED=''; GREEN=''; YELLOW=''; BLUE=''; CYAN=''; BOLD=''; RESET=''
+        log_message "INFO" "顏色關閉"
+        echo "顏色關閉"
+    else
+        COLOR_ENABLED=true
+        RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'
+        BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
+        log_message "INFO" "顏色啟用"
+        echo -e "${GREEN}顏色啟用${RESET}"
+    fi
 }
 
 # 檢視日誌
@@ -1258,8 +1272,8 @@ main_menu() {
         else
             prompt_range="0-8 或 2-1"
         fi
-        echo ""
-        read -p "輸入選項 (${prompt_range}): " choice
+        local choice
+        read -rp "輸入選項 (${prompt_range}): " choice
 
         case $choice in
             1)
