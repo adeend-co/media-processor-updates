@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v1.6.15(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v1.6.16(Experimental)" # <<< 版本號更新
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
 DEFAULT_URL="https://www.youtube.com/watch?v=siNFnlqtd8M"
 THREADS=4
@@ -985,46 +985,9 @@ if [[ $- == *i* ]]; then
     echo -e "2) ${CLR_YELLOW}稍後啟動 (輸入 'media' 命令啟動)${CLR_RESET}"
     echo -e "0) ${CLR_RED}不啟動${CLR_RESET}"
     
-# 倒數計時器與輸入同時進行
-countdown_and_read() {
-    local timeout=$1
-    local prompt=$2
-    local default=$3
-    local choice=""
-    local remaining=$timeout
-    
-    # 顯示初始提示
-    echo -ne "$prompt"
-    
-    # 創建背景進程顯示倒數
-    (
-        while [ $remaining -gt 0 ]; do
-            echo -ne "\r$prompt [$remaining 秒]     "
-            sleep 1
-            ((remaining--))
-        done
-    ) &
-    local countdown_pid=$!
-    
-    # 讀取用戶輸入
-    read -t $timeout choice
-    local read_status=$?
-    
-    # 終止倒數進程
-    kill $countdown_pid 2>/dev/null
-    wait $countdown_pid 2>/dev/null
-    
-    # 清理顯示並輸出最終結果
-    if [ $read_status -eq 0 ]; then
-        echo -e "\r$prompt                      "
-        echo "$choice"
-    else
-        echo -e "\r$prompt [時間到，自動選擇：$default]"
-        echo "$default"
-    fi
-}
-# 使用倒數計時器函數
-choice=$(countdown_and_read 60 "輸入選項 (${prompt_range})" "0")
+    # read 命令保持不變
+    read -t 60 -p "請選擇 (0-2) [60秒後自動選 2]: " choice
+    choice=${choice:-2} 
 
     case $choice in
         1) 
