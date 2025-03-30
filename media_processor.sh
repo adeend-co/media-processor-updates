@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v1.6.13(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v1.6.14(Experimental)" # <<< 版本號更新
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
 DEFAULT_URL="https://www.youtube.com/watch?v=siNFnlqtd8M"
 THREADS=4
@@ -985,9 +985,51 @@ if [[ $- == *i* ]]; then
     echo -e "2) ${CLR_YELLOW}稍後啟動 (輸入 'media' 命令啟動)${CLR_RESET}"
     echo -e "0) ${CLR_RED}不啟動${CLR_RESET}"
     
-    # read 命令保持不變
-    read -t 15 -p "請選擇 (0-2) [15秒後自動選 2]: " choice
-    choice=${choice:-2} 
+# 倒數計時器與輸入同時進行
+countdown_and_read() {
+    local timeout=$1
+    local prompt=$2
+    local default=$3
+    local choice=""
+    local remaining=$timeout
+    
+    # 顯示初始提示
+    echo -ne "$prompt"
+    
+    # 創建背景進程顯示倒數
+    (
+        while [ $remaining -gt 0 ]; do
+            echo -ne "\r$prompt [$remaining 秒]"
+            sleep 1
+            ((remaining--))
+        done
+        # 時間到，發送換行
+        echo ""
+    ) &
+    local countdown_pid=$!
+    
+    # 讀取用戶輸入
+    read -t $timeout choice
+    local read_status=$?
+    
+    # 終止倒數進程
+    kill $countdown_pid 2>/dev/null
+    wait $countdown_pid 2>/dev/null
+    
+    # 清理顯示
+    echo -ne "\r$prompt                      \r"
+    
+    # 處理結果
+    if [ $read_status -eq 0 ]; then
+        echo "$choice"
+    else
+        echo "$default"
+    fi
+}
+
+# 使用倒數計時器函數
+choice=$(countdown_and_read 60 "請選擇 (0-2) [60秒後自動選 2]:" 2)
+
 
     case $choice in
         1) 
@@ -1050,15 +1092,35 @@ configure_threads() {
     if [[ "$tt" =~ ^[0-9]+$ ]] && [ "$tt" -ge "$MIN_THREADS" ] && [ "$tt" -le "$MAX_THREADS" ]; then THREADS=$tt; log_message "INFO" "執行緒設為 $THREADS"; echo -e "${GREEN}執行緒設為 $THREADS${RESET}"; else echo -e "${RED}無效數量...${RESET}"; fi
 }
 
-# 設定下載路徑
+############################################
+# 安全路徑設定函數
+############################################
 configure_download_path() {
-    # --- 函數邏輯不變 ---
-    read -e -p "設定下載路徑 [當前: $DOWNLOAD_PATH]: " tp; eval tp="$tp"
-    if [ -n "$tp" ]; then
-        if mkdir -p "$tp" 2>/dev/null && [ -w "$tp" ]; then DOWNLOAD_PATH="$tp"; LOG_FILE="$DOWNLOAD_PATH/script_log.txt"; log_message "INFO" "下載路徑更新為：$DOWNLOAD_PATH"; echo -e "${GREEN}下載路徑更新為：$DOWNLOAD_PATH${RESET}";
-        else echo -e "${RED}無法設定路徑 '$tp'...${RESET}"; log_message "ERROR" "無法設定路徑 '$tp'"; fi
-    else echo -e "${YELLOW}未輸入，保持當前設定。${RESET}"; fi
+    local sanitized_path=""
+    
+    read -e -p "設定下載路徑 [當前: $DOWNLOAD_PATH]: " user_path
+    user_path="${user_path:-$DOWNLOAD_PATH}"
+    
+    # 解析路徑並消毒處理
+    sanitized_path=$(realpath -m "$user_path" | sed 's/[;|&<>()$`{}]//g')
+    
+    # 路徑白名單驗證
+    if [[ "$sanitized_path" =~ ^(/storage/emulated/0|$HOME|/data/data/com.termux/files/home) ]]; then
+        if mkdir -p "$sanitized_path" 2>/dev/null && [ -w "$sanitized_path" ]; then
+            DOWNLOAD_PATH="$sanitized_path"
+            LOG_FILE="$DOWNLOAD_PATH/script_log.txt"
+            log_message "SECURITY" "下載路徑變更為：$sanitized_path"
+            echo -e "${GREEN}路徑更新成功！${RESET}"
+        else
+            log_message "SECURITY" "非法路徑存取嘗試：$user_path"
+            echo -e "${RED}錯誤：路徑不可寫或包含非法字元！${RESET}"
+        fi
+    else
+        log_message "BLOCKED" "越界路徑嘗試：$user_path"
+        echo -e "${RED}安全性拒絕：路徑必須在用戶目錄範圍內！${RESET}"
+    fi
 }
+
 
 # 切換顏色輸出
 toggle_color() {
