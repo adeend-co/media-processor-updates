@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v1.6.20(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v1.6.21(Experimental)" # <<< 版本號更新
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
 DEFAULT_URL="https://www.youtube.com/watch?v=siNFnlqtd8M"
 THREADS=4
@@ -161,16 +161,16 @@ auto_update_script() {
     clear
     echo -e "${CYAN}--- 開始檢查腳本更新 ---${RESET}"
     log_message "INFO" "使用者觸發檢查腳本更新。"
-
+    
     local local_version="$SCRIPT_VERSION"
     local remote_version=""
     local remote_version_raw="" # 用於儲存原始下載內容
     local remote_version_file="$TEMP_DIR/remote_version.txt"
     local temp_script="$TEMP_DIR/media_processor_new.sh"
+    
     # --- 新增：定義校驗和相關變數 ---
     local temp_checksum_file="$TEMP_DIR/media_processor_new.sh.sha256"
     # 假設校驗和檔案與腳本檔案在同一目錄下，名稱為腳本檔名加上 .sha256
-    # 請確保 REMOTE_SCRIPT_URL 指向你的 media_processor.sh 原始檔 URL
     local remote_checksum_url="${REMOTE_SCRIPT_URL}.sha256"
 
     # --- 1. 獲取遠程版本號 ---
@@ -178,7 +178,7 @@ auto_update_script() {
     if curl -Ls "$REMOTE_VERSION_URL" -o "$remote_version_file" --fail --connect-timeout 5; then
         remote_version_raw=$(tr -d '\r\n' < "$remote_version_file")
         # 移除 UTF-8 BOM (如果有的話)
-        remote_version=$(echo "$remote_version_raw" | sed 's/^\xEF\xBB\xBF//')
+        remote_version=${remote_version_raw/#$'\xEF\xBB\xBF'/}
 
         if [ -z "$remote_version" ]; then
              log_message "ERROR" "無法從遠程文件讀取有效的版本號。"
@@ -191,13 +191,15 @@ auto_update_script() {
     else
         log_message "ERROR" "無法下載版本文件：$REMOTE_VERSION_URL (Curl failed with code $?)"
         echo -e "${RED}錯誤：無法下載版本文件，請檢查網路連線或 URL。${RESET}"
-        # rm -f "$remote_version_file" # 文件可能未創建或為空，無需清理
         return 1
     fi
 
     # --- 2. 比較版本號 ---
-    local local_version_clean=$(echo "$local_version" | sed 's/([^)]*)//g')
-    local remote_version_clean=$(echo "$remote_version" | sed 's/([^)]*)//g')
+    local local_version_clean
+    local remote_version_clean
+    local_version_clean=${local_version//\(*\)/}
+    remote_version_clean=${remote_version//\(*\)/}
+    
     latest_version=$(printf '%s\n%s\n' "$remote_version_clean" "$local_version_clean" | sort -V | tail -n 1)
 
     # 使用字串比較和 sort -V 聯合判斷
@@ -209,7 +211,7 @@ auto_update_script() {
 
     # --- 3. 確認更新 ---
     echo -e "${YELLOW}發現新版本：$remote_version (當前版本：$local_version)。${RESET}"
-    read -p "是否要立即下載並更新腳本？ (y/n): " confirm_update
+    read -r -p "是否要立即下載並更新腳本？ (y/n): " confirm_update
     if [[ ! "$confirm_update" =~ ^[Yy]$ ]]; then
         log_message "INFO" "使用者取消更新。"
         echo -e "${YELLOW}已取消更新。${RESET}"
@@ -235,9 +237,11 @@ auto_update_script() {
         # --- 4.2 新增：校驗和驗證 ---
         echo -e "${YELLOW}正在驗證檔案完整性...${RESET}"
         # 計算本地下載腳本的 SHA256 校驗和
-        local calculated_checksum=$(sha256sum "$temp_script" | awk '{print $1}')
-        # 讀取從伺服器下載的預期校驗和 (因為伺服器端已處理，直接 cat 即可)
-        local expected_checksum=$(cat "$temp_checksum_file")
+        local calculated_checksum
+        local expected_checksum
+        calculated_checksum=$(sha256sum "$temp_script" | awk '{print $1}')
+        # 讀取從伺服器下載的預期校驗和
+        expected_checksum=$(cat "$temp_checksum_file")
 
         # 比較校驗和
         if [[ "$calculated_checksum" == "$expected_checksum" ]]; then
@@ -280,9 +284,11 @@ auto_update_script() {
     else # 下載新腳本失敗
         log_message "ERROR" "下載新腳本失敗：$REMOTE_SCRIPT_URL (Curl failed with code $?)"
         echo -e "${RED}錯誤：下載新腳本失敗。${RESET}"
-        # 此處無需清理 $temp_script，因為下載就失敗了
         return 1
     fi
+}
+
+
 }
 
 # 高解析度封面圖片下載函數（僅用於 YouTube 下載）
@@ -321,15 +327,18 @@ download_high_res_thumbnail() {
 
 # 安全刪除函數
 safe_remove() {
-    # --- 函數邏輯不變 ---
     for file in "$@"; do
         if [ -f "$file" ]; then
             echo -e "${YELLOW}清理臨時檔案：$file${RESET}"
-            rm -f "$file"
-            [ $? -eq 0 ] && log_message "INFO" "已安全刪除：$file" || log_message "WARNING" "無法刪除：$file"
+            if rm -f "$file"; then
+                log_message "INFO" "已安全刪除：$file"
+            else
+                log_message "WARNING" "無法刪除：$file"
+            fi
         fi
     done
 }
+
 
 ############################################
 # 檢查並更新依賴套件
