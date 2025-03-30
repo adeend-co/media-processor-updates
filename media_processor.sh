@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v1.6.19(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v1.6.20(Experimental)" # <<< 版本號更新
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
 DEFAULT_URL="https://www.youtube.com/watch?v=siNFnlqtd8M"
 THREADS=4
@@ -1217,7 +1217,7 @@ check_environment() {
 }
 
 ############################################
-# 主選單 (修正 - 處理潛在的輸入緩衝區問題)
+# 主選單 (修改 - 在處理任務後添加延遲)
 ############################################
 main_menu() {
     while true; do
@@ -1242,10 +1242,7 @@ main_menu() {
         echo -e " 0. ${RED}退出腳本${RESET}"
         echo -e "---------------------------------------------"
 
-        # <<< 新增：嘗試讀取並丟棄輸入緩衝區中可能存在的任何剩餘字符 >>>
-        #      設置一個非常短的超時時間（例如 0.1 秒），以避免在沒有剩餘字符時阻塞
-        #      -N 10000 讀取最多 10000 個字符（一個足夠大的數字，確保能讀完緩衝區）
-        #      'discard' 是一個變數名，用於接收讀取的內容（實際上我們不需要這些內容）
+        # 依然保留之前的緩衝區清理嘗試，作為額外保險
         read -t 0.1 -N 10000 discard
 
         local prompt_range="0-8"
@@ -1254,55 +1251,65 @@ main_menu() {
         else
             prompt_range="0-8 或 2-1"
         fi
-        # <<< 可選：在 read 前添加換行符以改善視覺間距 >>>
         echo ""
         read -p "輸入選項 (${prompt_range}): " choice
 
         case $choice in
-            1) process_mp3 ;;
-            2) process_mp4 ;;
-            2-1) process_mp4_no_normalize ;;
-            7) process_other_site_media_playlist ;;
-            3) config_menu ;;
-            4) view_log ;;
-            6) update_dependencies ;;
+            1)
+                process_mp3
+                sleep 1 # <<< 在 MP3 處理後暫停 1 秒
+                ;;
+            2)
+                process_mp4
+                sleep 1 # <<< 在 MP4 處理後暫停 1 秒
+                ;;
+            2-1)
+                process_mp4_no_normalize
+                sleep 1 # <<< 在 MP4 (無標準化) 處理後暫停 1 秒
+                ;;
+            7)
+                process_other_site_media_playlist
+                sleep 1 # <<< 在通用媒體處理後暫停 1 秒
+                ;;
+            3) config_menu ;; # 設定選單本身有循環，返回時不需要額外暫停
+            4) view_log ;;    # 檢視日誌通常很快，不需要強制暫停
+            6)
+                update_dependencies
+                # update_dependencies 內部已有 read prompt，不需要再加 sleep
+                ;;
             8)
                auto_update_script
-               # <<< 修改：在 auto_update_script 後也加上提示返回，保持一致性 >>>
-               echo "" # 添加空行
+               echo ""
                read -p "按 Enter 返回主選單..."
+               # sleep 1 # 可選：如果希望按 Enter 後再停1秒
                ;;
             9)
                if [[ "$OS_TYPE" == "termux" ]]; then
                    setup_termux_autostart
                else
                    echo -e "${RED}錯誤：此選項僅適用於 Termux。${RESET}"
-                   sleep 1
+                   sleep 1 # 顯示錯誤後暫停一下
                fi
-               # <<< 修改：在 setup_termux_autostart 後也加上提示返回，保持一致性 >>>
-               echo "" # 添加空行
+               echo ""
                read -p "按 Enter 返回主選單..."
+               # sleep 1 # 可選：如果希望按 Enter 後再停1秒
                ;;
-            5) show_about ;;
+            5)
+                show_about
+                # show_about 內部已有 read prompt，不需要再加 sleep
+                ;;
             0) echo -e "${GREEN}感謝使用，正在退出...${RESET}"; log_message "INFO" "使用者選擇退出。"; sleep 1; exit 0 ;;
             *)
-               # <<< 修改：檢查 choice 是否真的為空 >>>
                if [[ -z "$choice" ]]; then
-                   # 如果 choice 為空，極有可能是緩衝區的換行符被消耗了
-                   # 在這種情況下，我們不顯示錯誤訊息，也不記錄警告，直接繼續下一次循環
                    continue
                else
-                   # 如果 choice 不是空的，但仍然無效，則顯示錯誤並記錄警告
                    echo -e "${RED}無效選項 '$choice'${RESET}";
                    log_message "WARNING" "主選單輸入無效選項: $choice";
-                   sleep 1;
+                   sleep 1 # 無效選項後原本就有暫停
                fi
                ;;
         esac
-        # <<< 建議：在每個 case 執行完畢後，短暫暫停或提示按 Enter 繼續 >>>
-        #     可以取消註釋下面這行，如果希望每次操作後都停一下
-        # echo "" && read -p "按 Enter 返回主選單..."
-
+        # <<< 注意：這裡不再有全局的 read prompt 或 sleep >>>
     done
 }
 
