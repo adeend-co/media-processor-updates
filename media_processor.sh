@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v1.6.21(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v1.6.22(Experimental)" # <<< 版本號更新
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
 DEFAULT_URL="https://www.youtube.com/watch?v=siNFnlqtd8M"
 THREADS=4
@@ -288,8 +288,6 @@ auto_update_script() {
     fi
 }
 
-
-}
 
 # 高解析度封面圖片下載函數（僅用於 YouTube 下載）
 download_high_res_thumbnail() {
