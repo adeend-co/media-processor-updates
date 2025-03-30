@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v1.6.16(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v1.6.17(Experimental)" # <<< 版本號更新
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
 DEFAULT_URL="https://www.youtube.com/watch?v=siNFnlqtd8M"
 THREADS=4
@@ -57,28 +57,19 @@ else
     RESET=''
 fi
 
-# 日誌函數
 log_message() {
-    # --- 日誌函數邏輯不變 ---
     local level="$1"
     local message="$2"
     local timestamp
     timestamp=$(date "+%Y-%m-%d %H:%M:%S")
     local colored_message=""
 
-    # 確保 LOG_FILE 變數已定義且非空才寫入檔案
+    # 避免顏色代碼問題的簡化版本
     if [ -n "$LOG_FILE" ]; then
-        case "$level" in
-            "INFO") colored_message="${BLUE}[$timestamp] [${BOLD}$level${RESET}${BLUE}] $message${RESET}" ;;
-            "WARNING") colored_message="${YELLOW}[$timestamp] [${BOLD}$level${RESET}${YELLOW}] $message${RESET}" ;;
-            "ERROR") colored_message="${RED}[$timestamp] [${BOLD}$level${RESET}${RED}] $message${RESET}" ;;
-            "SUCCESS") colored_message="${GREEN}[$timestamp] [${BOLD}$level${RESET}${GREEN}] $message${RESET}" ;;
-            *) colored_message="[$timestamp] [$level] $message" ;;
-        esac
-        # 使用 tee 將訊息同時輸出到螢幕和日誌檔
-        echo -e "$colored_message" | tee -a "$LOG_FILE"
-    else
-        # 如果 LOG_FILE 未定義，只輸出到螢幕
+        # 寫入日誌時使用純文本
+        echo "[$timestamp] [$level] $message" >> "$LOG_FILE"
+        
+        # 螢幕顯示時可以使用顏色
         case "$level" in
             "INFO") colored_message="${BLUE}[$timestamp] [${BOLD}$level${RESET}${BLUE}] $message${RESET}" ;;
             "WARNING") colored_message="${YELLOW}[$timestamp] [${BOLD}$level${RESET}${YELLOW}] $message${RESET}" ;;
@@ -87,11 +78,18 @@ log_message() {
             *) colored_message="[$timestamp] [$level] $message" ;;
         esac
         echo -e "$colored_message"
-        # 可以加一個警告，說明日誌功能未啟用
-        # echo -e "${YELLOW}警告：LOG_FILE 未設定，日誌未寫入檔案。${RESET}" >&2
+    else
+        # 與原代碼相同
+        case "$level" in
+            "INFO") colored_message="${BLUE}[$timestamp] [${BOLD}$level${RESET}${BLUE}] $message${RESET}" ;;
+            "WARNING") colored_message="${YELLOW}[$timestamp] [${BOLD}$level${RESET}${YELLOW}] $message${RESET}" ;;
+            "ERROR") colored_message="${RED}[$timestamp] [${BOLD}$level${RESET}${RED}] $message${RESET}" ;;
+            "SUCCESS") colored_message="${GREEN}[$timestamp] [${BOLD}$level${RESET}${GREEN}] $message${RESET}" ;;
+            *) colored_message="[$timestamp] [$level] $message" ;;
+        esac
+        echo -e "$colored_message"
     fi
 }
-
 
 ############################################
 # 偵測平台並設定初始變數函數 (新增)
@@ -1251,9 +1249,16 @@ main_menu() {
         else
             prompt_range="0-8 或 2-1"
         fi
-        read -p "輸入選項 (${prompt_range}): " choice 
+        read -r "輸入選項 (${prompt_range}): " choice </dev/tty
+        
+        # 檢查choice是否為空
+        if [ -z "$choice" ]; then
+            # 如果是空的，跳過本次循環
+            continue
+        fi
 
         case $choice in
+        
             1) process_mp3 ;;
             2) process_mp4 ;;
             2-1) process_mp4_no_normalize ;;
