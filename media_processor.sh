@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v1.6.18(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v1.6.19(Experimental)" # <<< 版本號更新
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
 DEFAULT_URL="https://www.youtube.com/watch?v=siNFnlqtd8M"
 THREADS=4
@@ -1301,7 +1301,7 @@ main_menu() {
         esac
         # <<< 建議：在每個 case 執行完畢後，短暫暫停或提示按 Enter 繼續 >>>
         #     可以取消註釋下面這行，如果希望每次操作後都停一下
-         echo "" && read -p "按 Enter 返回主選單..."
+        # echo "" && read -p "按 Enter 返回主選單..."
 
     done
 }
