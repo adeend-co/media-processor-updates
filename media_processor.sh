@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v1.6.17(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v1.6.18(Experimental)" # <<< 版本號更新
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
 DEFAULT_URL="https://www.youtube.com/watch?v=siNFnlqtd8M"
 THREADS=4
@@ -1217,7 +1217,7 @@ check_environment() {
 }
 
 ############################################
-# 主選單 (修改 - 添加 Termux 啟動設定選項)
+# 主選單 (修正 - 處理潛在的輸入緩衝區問題)
 ############################################
 main_menu() {
     while true; do
@@ -1232,60 +1232,77 @@ main_menu() {
         echo -e " 3. 設定參數"
         echo -e " 4. 檢視操作日誌"
         echo -e " 6. ${BOLD}檢查並更新依賴套件${RESET}"
-        echo -e " ${BOLD}8. 檢查腳本更新${RESET}" 
+        echo -e " ${BOLD}8. 檢查腳本更新${RESET}"
         # <<< 新增：僅在 Termux 環境下顯示選項 9 >>>
         if [[ "$OS_TYPE" == "termux" ]]; then
-            echo -e " ${BOLD}9. 設定 Termux 啟動時詢問${RESET}" 
+            echo -e " ${BOLD}9. 設定 Termux 啟動時詢問${RESET}"
         fi
         echo -e "---------------------------------------------"
         echo -e " 5. 關於此工具"
         echo -e " 0. ${RED}退出腳本${RESET}"
         echo -e "---------------------------------------------"
-        # <<< 修改：更新選項範圍提示 >>>
-        #     根據是否顯示選項 9，動態調整提示
+
+        # <<< 新增：嘗試讀取並丟棄輸入緩衝區中可能存在的任何剩餘字符 >>>
+        #      設置一個非常短的超時時間（例如 0.1 秒），以避免在沒有剩餘字符時阻塞
+        #      -N 10000 讀取最多 10000 個字符（一個足夠大的數字，確保能讀完緩衝區）
+        #      'discard' 是一個變數名，用於接收讀取的內容（實際上我們不需要這些內容）
+        read -t 0.1 -N 10000 discard
+
         local prompt_range="0-8"
         if [[ "$OS_TYPE" == "termux" ]]; then
             prompt_range="0-9 或 2-1"
         else
             prompt_range="0-8 或 2-1"
         fi
-        read -r "輸入選項 (${prompt_range}): " choice </dev/tty
-        
-        # 檢查choice是否為空
-        if [ -z "$choice" ]; then
-            # 如果是空的，跳過本次循環
-            continue
-        fi
+        # <<< 可選：在 read 前添加換行符以改善視覺間距 >>>
+        echo ""
+        read -p "輸入選項 (${prompt_range}): " choice
 
         case $choice in
-        
             1) process_mp3 ;;
             2) process_mp4 ;;
             2-1) process_mp4_no_normalize ;;
             7) process_other_site_media_playlist ;;
             3) config_menu ;;
             4) view_log ;;
-            6) update_dependencies ;; 
-            8) 
+            6) update_dependencies ;;
+            8)
                auto_update_script
-               read -p "按 Enter 返回主選單..." 
+               # <<< 修改：在 auto_update_script 後也加上提示返回，保持一致性 >>>
+               echo "" # 添加空行
+               read -p "按 Enter 返回主選單..."
                ;;
-            # <<< 新增：處理選項 9 >>>
-            9) 
-               # 再次檢查是否為 Termux，以防萬一
+            9)
                if [[ "$OS_TYPE" == "termux" ]]; then
                    setup_termux_autostart
                else
-                   # 如果因為某些原因選了 9 但不是 Termux，顯示錯誤
                    echo -e "${RED}錯誤：此選項僅適用於 Termux。${RESET}"
                    sleep 1
                fi
-               read -p "按 Enter 返回主選單..." # 提示返回
+               # <<< 修改：在 setup_termux_autostart 後也加上提示返回，保持一致性 >>>
+               echo "" # 添加空行
+               read -p "按 Enter 返回主選單..."
                ;;
             5) show_about ;;
             0) echo -e "${GREEN}感謝使用，正在退出...${RESET}"; log_message "INFO" "使用者選擇退出。"; sleep 1; exit 0 ;;
-            *) echo -e "${RED}無效選項 '$choice'${RESET}"; log_message "WARNING" "主選單輸入無效選項: $choice"; sleep 1 ;;
+            *)
+               # <<< 修改：檢查 choice 是否真的為空 >>>
+               if [[ -z "$choice" ]]; then
+                   # 如果 choice 為空，極有可能是緩衝區的換行符被消耗了
+                   # 在這種情況下，我們不顯示錯誤訊息，也不記錄警告，直接繼續下一次循環
+                   continue
+               else
+                   # 如果 choice 不是空的，但仍然無效，則顯示錯誤並記錄警告
+                   echo -e "${RED}無效選項 '$choice'${RESET}";
+                   log_message "WARNING" "主選單輸入無效選項: $choice";
+                   sleep 1;
+               fi
+               ;;
         esac
+        # <<< 建議：在每個 case 執行完畢後，短暫暫停或提示按 Enter 繼續 >>>
+        #     可以取消註釋下面這行，如果希望每次操作後都停一下
+         echo "" && read -p "按 Enter 返回主選單..."
+
     done
 }
 
