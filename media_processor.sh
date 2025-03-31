@@ -1,7 +1,9 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v1.6.26(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v1.6.27(Experimental)" # <<< 版本號更新
+# ... 其他設定 ...
+TARGET_DATE="2025-07-11" # <<< 新增：設定您的目標日期
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
 DEFAULT_URL="https://www.youtube.com/watch?v=siNFnlqtd8M"
 THREADS=4
@@ -89,6 +91,58 @@ log_message() {
         esac
         echo -e "$colored_message"
     fi
+}
+
+############################################
+# 新增：計算並顯示倒數計時
+############################################
+display_countdown() {
+    # 檢查目標日期變數是否存在且不為空
+    if [ -z "$TARGET_DATE" ]; then
+        # log_message "WARNING" "未設定目標日期 (TARGET_DATE)，無法顯示倒數計時。"
+        # echo -e "${YELLOW}警告：未設定目標日期，無法顯示倒數計時。${RESET}" >&2
+        return # 如果未設定，則不顯示任何內容
+    fi
+
+    local target_timestamp
+    local current_timestamp
+    local remaining_seconds
+    local days hours minutes seconds
+    local countdown_message=""
+
+    # 嘗試將目標日期轉換為 Unix 時間戳 (從 Epoch 開始的秒數)
+    # 假設目標是該日期的開始 (00:00:00)
+    target_timestamp=$(date -d "$TARGET_DATE 00:00:00" +%s 2>/dev/null)
+
+    # 檢查日期轉換是否成功
+    if [[ $? -ne 0 || -z "$target_timestamp" ]]; then
+        log_message "ERROR" "無法解析目標日期 '$TARGET_DATE'。請使用 YYYY-MM-DD 格式。"
+        echo -e "${RED}錯誤：無法解析目標日期 '$TARGET_DATE'！請檢查格式。${RESET}" >&2
+        return
+    fi
+
+    # 獲取當前時間的 Unix 時間戳
+    current_timestamp=$(date +%s)
+
+    # 計算剩餘秒數
+    remaining_seconds=$(( target_timestamp - current_timestamp ))
+
+    # 判斷是否已過期
+    if [ "$remaining_seconds" -le 0 ]; then
+        countdown_message="${RED}目標日期 ($TARGET_DATE) 已到期或已過！${RESET}"
+    else
+        # 計算天、時、分、秒
+        days=$(( remaining_seconds / 86400 ))          # 86400 秒 = 1 天
+        hours=$(( (remaining_seconds % 86400) / 3600 )) # 3600 秒 = 1 小時
+        minutes=$(( (remaining_seconds % 3600) / 60 ))  # 60 秒 = 1 分鐘
+        seconds=$(( remaining_seconds % 60 ))
+
+        # 組合顯示訊息 (使用不同顏色區分)
+        countdown_message="${CYAN}距離 ${TARGET_DATE} 尚餘： ${GREEN}${days} ${WHITE}天 ${GREEN}${hours} ${WHITE}時 ${GREEN}${minutes} ${WHITE}分 ${GREEN}${seconds} ${WHITE}秒${RESET}"
+    fi
+
+    # 輸出倒數計時訊息
+    echo -e "$countdown_message"
 }
 
 ############################################
@@ -1334,6 +1388,9 @@ main_menu() {
     while true; do
         clear
         echo -e "${CYAN}=== 高品質媒體處理器 ${SCRIPT_VERSION} ===${RESET}"
+        # <<< 新增：在這裡呼叫顯示倒數計時的函數 >>>
+        display_countdown
+        # <<< 結束新增 >>>
         echo -e "${YELLOW}請選擇操作：${RESET}"
         echo -e " 1. ${BOLD}MP3 處理${RESET} (YouTube/本機)"
         echo -e " 2. ${BOLD}MP4 處理${RESET} (YouTube/本機)"
