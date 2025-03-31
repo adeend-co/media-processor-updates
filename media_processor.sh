@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v1.6.24(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v1.6.25(Experimental)" # <<< 版本號更新
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
 DEFAULT_URL="https://www.youtube.com/watch?v=siNFnlqtd8M"
 THREADS=4
@@ -437,6 +437,7 @@ update_dependencies() {
 # 音量標準化共用函數 (無圖形進度條)
 ############################################
 normalize_audio() {
+    # --- 函數邏輯不變 ---
     local input_file="$1"
     local output_file="$2"
     local temp_dir="$3"
@@ -446,31 +447,34 @@ normalize_audio() {
     local loudnorm_log="$temp_dir/loudnorm.log"
     local stats_json="$temp_dir/stats.json"
     local ffmpeg_status=0
-    local measured_I measured_TP measured_LRA measured_thresh offset
 
     echo -e "${YELLOW}正在提取音訊為 WAV 格式...${RESET}"
-    if ! ffmpeg -y -i "$input_file" -vn -acodec pcm_s16le -ar 44100 -ac 2 "$audio_wav" > /dev/null 2>&1; then
-        log_message "ERROR" "轉換為 WAV 失敗！ (ffmpeg exit code: $?)"
+    ffmpeg -y -i "$input_file" -vn -acodec pcm_s16le -ar 44100 -ac 2 "$audio_wav" > /dev/null 2>&1
+    local ffmpeg_exit_code=$?
+    if [ $ffmpeg_exit_code -ne 0 ] || [ ! -f "$audio_wav" ]; then
+        log_message "ERROR" "轉換為 WAV 失敗！ (ffmpeg exit code: $ffmpeg_exit_code)"
         echo -e "${RED}錯誤：無法轉換為 WAV 格式${RESET}"
         return 1
     fi
-
     echo -e "${GREEN}轉換為 WAV 格式完成${RESET}"
 
     echo -e "${YELLOW}正在執行第一遍音量分析...${RESET}"
-    if ! ffmpeg -y -i "$audio_wav" -af loudnorm=I=-12:TP=-1.5:LRA=11:print_format=json -f null - 2> "$loudnorm_log"; then
+    ffmpeg -y -i "$audio_wav" -af loudnorm=I=-12:TP=-1.5:LRA=11:print_format=json -f null - 2> "$loudnorm_log"
+    if [ $? -ne 0 ]; then
         log_message "ERROR" "第一遍音量分析失敗！"
         echo -e "${RED}錯誤：音量分析失敗${RESET}"
         safe_remove "$audio_wav"
         return 1
     fi
+    echo -e "${GREEN}第一遍音量分析完成${RESET}"
 
-    measured_I=$(jq -r '.input_i' "$stats_json")
-    measured_TP=$(jq -r '.input_tp' "$stats_json")
-    measured_LRA=$(jq -r '.input_lra' "$stats_json")
-    measured_thresh=$(jq -r '.input_thresh' "$stats_json")
-    offset=$(jq -r '.target_offset' "$stats_json")
-    
+    echo -e "${YELLOW}解析音量分析結果...${RESET}"
+    awk '/^\{/{flag=1}/^\}/{print;flag=0}flag' "$loudnorm_log" > "$stats_json"
+    local measured_I=$(jq -r '.input_i' "$stats_json")
+    local measured_TP=$(jq -r '.input_tp' "$stats_json")
+    local measured_LRA=$(jq -r '.input_lra' "$stats_json")
+    local measured_thresh=$(jq -r '.input_thresh' "$stats_json")
+    local offset=$(jq -r '.target_offset' "$stats_json")
 
     if [ -z "$measured_I" ] || [ -z "$measured_TP" ] || [ -z "$measured_LRA" ] || [ -z "$measured_thresh" ] || [ -z "$offset" ]; then
         log_message "ERROR" "音量分析參數提取失敗"
@@ -478,7 +482,6 @@ normalize_audio() {
         safe_remove "$audio_wav" "$loudnorm_log" "$stats_json"
         return 1
     fi
-
     echo -e "${YELLOW}正在執行第二遍音量標準化 (此步驟可能需要一些時間)...${RESET}"
     ffmpeg -y -i "$audio_wav" \
         -af "loudnorm=I=-12:TP=-1.5:LRA=11:measured_I=$measured_I:measured_TP=$measured_TP:measured_LRA=$measured_LRA:measured_thresh=$measured_thresh:offset=$offset:linear=true:print_format=summary" \
