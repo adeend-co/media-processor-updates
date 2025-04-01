@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v1.6.32(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v1.6.33(Experimental)" # <<< 版本號更新
 # ... 其他設定 ...
 TARGET_DATE="2025-07-11" # <<< 新增：設定您的目標日期
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
@@ -1019,9 +1019,6 @@ _process_youtube_playlist() {
     local count=0; local success_count=0
     for id in "${playlist_ids[@]}"; do
         count=$((count + 1)); 
-        # 注意：這裡的 video_url 似乎是固定的？ "https://www.youtube.com/watch?v=$id" 
-        # 你可能需要根據 $id 來構造實際的影片 URL，例如：
-        local video_url="https://www.youtube.com/watch?v=$id" 
         
         # --- 這裡的進度顯示現在也應該正常了 ---
         log_message "INFO" "[$count/$total_videos] 處理影片: $video_url"; echo -e "${CYAN}--- 正在處理第 $count/$total_videos 個影片 ---${RESET}"
@@ -1040,18 +1037,6 @@ _process_youtube_playlist() {
     return 0
 }
 
-# --- 你還需要定義 _get_playlist_video_count 函數 ---
-# 理想情況下，修改 _get_playlist_video_count 使其只輸出數字
-# 例如 (假設它內部用 yt-dlp)：
-_get_playlist_video_count_ideal() {
-    local url="$1"
-    # 只輸出數字，日誌去 stderr
-    log_message "INFO" "內部：正在獲取 '$url' 的數量..." >&2 # 將日誌重定向到 stderr
-    yt-dlp --flat-playlist --print '%(playlist_count)s' --quiet --no-warnings "$url" 2>/dev/null
-    # 注意：上面這行只會輸出數字到 stdout
-}
-
-# 如果你不能修改 _get_playlist_video_count，那麼上面的過濾方法就是可行的。
 # ================================================
 # === END REFACTORED YOUTUBE PLAYLIST HANDLING ===
 # ================================================
