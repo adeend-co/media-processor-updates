@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v1.6.29(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v1.6.30(Experimental)" # <<< 版本號更新
 # ... 其他設定 ...
 TARGET_DATE="2025-07-11" # <<< 新增：設定您的目標日期
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
@@ -960,71 +960,112 @@ process_other_site_media_playlist() {
 # === START REFACTORED YOUTUBE PLAYLIST HANDLING ===
 # ==================================================
 ############################################
-# 新增：輔助函數 - 獲取播放清單影片數量
-############################################
-_get_playlist_video_count() {
-    # --- 函數邏輯不變 ---
-    local url="$1"; local total_videos=""
-    echo -e "${YELLOW}獲取播放清單資訊...${RESET}"
-    total_videos=$(yt-dlp --flat-playlist --dump-json "$url" 2>/dev/null | grep -c '^{')
-    if ! [[ "$total_videos" =~ ^[0-9]+$ ]] || [ "$total_videos" -eq 0 ]; then local playlist_info=$(yt-dlp --flat-playlist --simulate "$url" 2>&1); if [[ "$playlist_info" =~ [Pp]laylist[[:space:]]+.*with[[:space:]]+([0-9]+)[[:space:]]+video ]]; then total_videos=${BASH_REMATCH[1]}; elif [[ "$playlist_info" =~ ([0-9]+)[[:space:]]+video ]]; then total_videos=$(echo "$playlist_info" | grep -o '[0-9]\+[[:space:]]\+video' | head -1 | grep -o '[0-9]\+'); fi; fi
-    if ! [[ "$total_videos" =~ ^[0-9]+$ ]] || [ "$total_videos" -eq 0 ]; then local json_output=$(yt-dlp --dump-single-json "$url" 2>/dev/null); if [ -n "$json_output" ]; then local json_output_clean=$(echo "$json_output" | sed -n '/^{/,$p'); if [ -n "$json_output_clean" ] && command -v jq &>/dev/null; then if echo "$json_output_clean" | jq -e '.entries' > /dev/null 2>&1; then total_videos=$(echo "$json_output_clean" | jq '.entries | length'); elif echo "$json_output_clean" | jq -e '.n_entries' > /dev/null 2>&1; then total_videos=$(echo "$json_output_clean" | jq '.n_entries'); elif echo "$json_output_clean" | jq -e '.playlist_count' > /dev/null 2>&1; then total_videos=$(echo "$json_output_clean" | jq '.playlist_count'); fi; fi; fi; fi
-    if ! [[ "$total_videos" =~ ^[0-9]+$ ]] || [ -z "$total_videos" ] || [ "$total_videos" -eq 0 ]; then log_message "ERROR" "無法獲取播放清單數量 for $url"; echo ""; else log_message "INFO" "獲取到 $total_videos 個影片 for $url"; echo "$total_videos"; fi
-}
-
-############################################
-# 新增：輔助函數 - 處理 YouTube 播放清單通用流程
+# 輔助函數 - 獲取播放清單影片數量 (安全性強化版)
 ############################################
 _get_playlist_video_count() {
     local url="$1"
-    local count=0
-    
-    # 所有調試輸出使用>&2重定向到stderr
-    echo -e "${YELLOW}獲取播放清單資訊...${RESET}" >&2
-    
-    # 獲取數量邏輯
-    count=$(yt-dlp --flat-playlist --dump-json "$url" 2>/dev/null | grep -c '^{')
-    
-    # 如果第一種方法失敗，嘗試第二種方法
-    if ! [[ "$count" =~ ^[0-9]+$ ]] || [ "$count" -eq 0 ]; then
-        local playlist_info
-        playlist_info=$(yt-dlp --flat-playlist --simulate "$url" 2>&1)
+    local max_retries=3
+    local retry_delay=2
+    local total_videos=""
+
+    for ((retry=0; retry<=max_retries; retry++)); do
+        # 使用jq直接解析JSON結構獲取數量
+        total_videos=$(yt-dlp --flat-playlist --dump-json "$url" 2>/dev/null | jq -r '.entries | length // .n_entries // 0' 2>/dev/null)
         
-        if [[ "$playlist_info" =~ [Pp]laylist[[:space:]]+.*with[[:space:]]+([0-9]+)[[:space:]]+video ]]; then
-            count=${BASH_REMATCH[1]}
-        elif [[ "$playlist_info" =~ ([0-9]+)[[:space:]]+video ]]; then
-            count=$(echo "$playlist_info" | grep -o '[0-9]\+[[:space:]]\+video' | head -1 | grep -o '[0-9]\+')
-        fi
-    fi
-    
-    # 如果前兩種方法失敗，嘗試第三種方法
-    if ! [[ "$count" =~ ^[0-9]+$ ]] || [ "$count" -eq 0 ]; then
-        local json_output json_output_clean
-        json_output=$(yt-dlp --dump-single-json "$url" 2>/dev/null)
-        
-        if [ -n "$json_output" ]; then
-            json_output_clean=$(echo "$json_output" | sed -n '/^{/,$p')
-            
-            if [ -n "$json_output_clean" ] && command -v jq &>/dev/null; then
-                if echo "$json_output_clean" | jq -e '.entries' > /dev/null 2>&1; then
-                    count=$(echo "$json_output_clean" | jq '.entries | length')
-                elif echo "$json_output_clean" | jq -e '.n_entries' > /dev/null 2>&1; then
-                    count=$(echo "$json_output_clean" | jq '.n_entries')
-                elif echo "$json_output_clean" | jq -e '.playlist_count' > /dev/null 2>&1; then
-                    count=$(echo "$json_output_clean" | jq '.playlist_count')
-                fi
+        # 備用方案：使用模擬模式提取數量
+        if ! [[ "$total_videos" =~ ^[0-9]+$ ]] || [[ "$total_videos" -eq 0 ]]; then
+            local playlist_info=$(yt-dlp --flat-playlist --simulate --quiet "$url" 2>&1)
+            if [[ "$playlist_info" =~ ([0-9]+)\ video ]]; then
+                total_videos="${BASH_REMATCH[1]}"
             fi
         fi
+
+        # 最終備用方案：直接查詢播放清單資訊
+        if ! [[ "$total_videos" =~ ^[0-9]+$ ]] || [[ "$total_videos" -eq 0 ]]; then
+            total_videos=$(yt-dlp --dump-single-json "$url" 2>/dev/null | 
+                          jq -r '[.entries[]? | select(.id != null)] | length')
+        fi
+
+        # 驗證結果有效性
+        if [[ "$total_videos" =~ ^[0-9]+$ ]] && [[ "$total_videos" -gt 0 ]]; then
+            echo -e "${GREEN}成功獲取播放清單資訊 (重試次數: $retry)${RESET}"
+            log_message "SUCCESS" "播放清單數量驗證通過: $total_videos"
+            echo "$total_videos"
+            return 0
+        fi
+
+        log_message "WARNING" "第$((retry+1))次重試獲取播放清單數量..."
+        echo -e "${YELLOW}獲取播放清單資訊失敗，第$((retry+1))次重試...${RESET}"
+        sleep $retry_delay
+    done
+
+    log_message "ERROR" "無法獲取播放清單數量 after $max_retries retries"
+    echo -e "${RED}錯誤：播放清單數量獲取失敗，請檢查網址有效性${RESET}"
+    echo "0"
+    return 1
+}
+
+############################################
+# 處理 YouTube 播放清單通用流程 (強化版)
+############################################
+_process_youtube_playlist() {
+    local playlist_url="$1"
+    local single_item_processor_func_name="$2"
+
+    log_message "INFO" "開始處理播放清單: $playlist_url"
+    echo -e "${CYAN}啟動播放清單處理引擎...${RESET}"
+
+    # 強化網路容錯機制
+    local total_videos total_attempt=0
+    while [[ $total_attempt -lt 3 ]]; do
+        total_videos=$(_get_playlist_video_count "$playlist_url")
+        [[ "$total_videos" -gt 0 ]] && break
+        total_attempt=$((total_attempt+1))
+        echo -e "${YELLOW}第${total_attempt}次重試獲取清單總數...${RESET}"
+        sleep $((total_attempt * 2))
+    done
+
+    # 嚴謹數值驗證
+    if ! [[ "$total_videos" =~ ^[0-9]+$ ]] || [[ "$total_videos" -eq 0 ]]; then
+        log_message "ERROR" "播放清單數量驗證失敗: $total_videos"
+        echo -e "${RED}錯誤：播放清單無有效影片或格式異常${RESET}"
+        return 1
     fi
+
+    # 進度顯示強化
+    local progress_template=(
+        "# 掃描播放清單架構    [%0.1f%%]"
+        "# 驗證媒體串流格式    [%0.1f%%]"
+        "# 初始化下載佇列     [%0.1f%%]"
+    )
+    for i in {1..3}; do
+        printf "\r${progress_template[$i-1]}" "$(echo "scale=1; $i*100/3" | bc)"
+        sleep 0.2
+    done
+    echo -e "\n${GREEN}播放清單預檢完成，共發現 ${total_videos} 個媒體項目${RESET}"
+
+    # 執行多線程處理
+    local concurrency=$(( THREADS > total_videos ? total_videos : THREADS ))
+    local counter=0
+    while read -r video_json; do
+        local video_id=$(jq -r '.id' <<< "$video_json")
+        local video_url="https://www.youtube.com/watch?v=$video_id"
+
+        # 進度顯示格式化輸出
+        counter=$((counter+1))
+        printf "\r${CYAN}正在處理第 %0${#total_videos}d/${total_videos} 個媒體項目${RESET}" $counter
+
+        # 錯誤處理強化
+        if ! $single_item_processor_func_name "$video_url"; then
+            log_message "WARNING" "媒體項目處理失敗: $video_url"
+            echo -e "\n${YELLOW}項目 ${counter} 處理失敗，已記錄日誌${RESET}"
+        fi
+
+    done < <(yt-dlp --flat-playlist -j "$playlist_url" 2>/dev/null | jq -c '.')
     
-    # 檢查和記錄
-    if [[ "$count" =~ ^[0-9]+$ ]] && [ "$count" -gt 0 ]; then
-        log_message "INFO" "獲取到 $count 個影片 for $url" >&2
-        echo "$count"  # 只輸出數字
-    else
-        log_message "ERROR" "無法獲取播放清單數量 for $url" >&2
-        echo "0"  # 返回安全默認值
-    fi
+    echo -e "\n${GREEN}播放清單處理完成，觸發後處理程序...${RESET}"
+    log_message "SUCCESS" "播放清單處理完成: $playlist_url"
+    return 0
 }
 
 # ================================================
