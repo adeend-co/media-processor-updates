@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v1.6.31(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v1.6.32(Experimental)" # <<< 版本號更新
 # ... 其他設定 ...
 TARGET_DATE="2025-07-11" # <<< 新增：設定您的目標日期
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
@@ -980,22 +980,78 @@ _process_youtube_playlist() {
     local playlist_url="$1"; local single_item_processor_func_name="$2"
     log_message "INFO" "處理 YouTube 播放列表: $playlist_url (處理器: $single_item_processor_func_name)"
     echo -e "${YELLOW}檢測到播放清單，開始批量處理...${RESET}"
-    local total_videos=$(_get_playlist_video_count "$playlist_url"); if [ -z "$total_videos" ]; then echo -e "${RED}錯誤：無法獲取播放清單數量${RESET}"; return 1; fi
-    echo -e "${CYAN}播放清單共有 $total_videos 個影片${RESET}"
+
+    # --- !!! 修改點開始 !!! ---
+    # 先執行 _get_playlist_video_count 並捕獲其完整輸出
+    local raw_count_output
+    raw_count_output=$(_get_playlist_video_count "$playlist_url")
+    
+    # 從捕獲的輸出中，提取最後一行看起來像數字的部分
+    # grep -oE '[0-9]+$' 會嘗試匹配行尾的數字
+    # tail -n 1 確保只取最後一行匹配到的數字 (以防萬一有多行數字)
+    local total_videos_str
+    total_videos_str=$(echo "$raw_count_output" | grep -oE '[0-9]+$' | tail -n 1)
+
+    # 檢查提取結果是否為純數字
+    if ! [[ "$total_videos_str" =~ ^[0-9]+$ ]]; then
+        log_message "ERROR" "無法從 _get_playlist_video_count 的輸出中提取有效的影片數量。原始輸出: $raw_count_output"
+        echo -e "${RED}錯誤：無法解析播放清單數量。原始輸出:\n$raw_count_output${RESET}"
+        return 1
+    fi
+    local total_videos="$total_videos_str" # 將提取到的純數字字串賦值給 total_videos
+    # --- !!! 修改點結束 !!! ---
+
+    # 接下來的邏輯使用已經清理過的 $total_videos 變數
+    echo -e "${CYAN}播放清單共有 $total_videos 個影片${RESET}" 
+
     local playlist_ids_output; local yt_dlp_ids_args=(yt-dlp --flat-playlist -j "$playlist_url")
     playlist_ids_output=$("${yt_dlp_ids_args[@]}" 2>/dev/null); local gec=$?; if [ $gec -ne 0 ] || ! command -v jq &> /dev/null ; then log_message "ERROR" "無法獲取播放清單 IDs..."; echo -e "${RED}錯誤：無法獲取影片 ID 列表${RESET}"; return 1; fi
     local playlist_ids=(); while IFS= read -r id; do if [[ -n "$id" ]]; then playlist_ids+=("$id"); fi; done <<< "$(echo "$playlist_ids_output" | jq -r '.id // empty')"
     if [ ${#playlist_ids[@]} -eq 0 ]; then log_message "ERROR" "未找到影片 ID..."; echo -e "${RED}錯誤：未找到影片 ID${RESET}"; return 1; fi
-    if [ ${#playlist_ids[@]} -ne "$total_videos" ]; then log_message "WARNING" "ID 數量與預計不符..."; echo -e "${YELLOW}警告：實際數量與預計不符...${RESET}"; total_videos=${#playlist_ids[@]}; fi
+
+    # --- 這裡的數字比較現在應該可以正常工作了 ---
+    if [ ${#playlist_ids[@]} -ne "$total_videos" ]; then 
+        log_message "WARNING" "ID 數量 (${#playlist_ids[@]}) 與獲取的總數 ($total_videos) 不符，將以實際 ID 數量為準..."
+        echo -e "${YELLOW}警告：實際數量 (${#playlist_ids[@]}) 與預計 ($total_videos) 不符，將以下載列表為準...${RESET}"
+        total_videos=${#playlist_ids[@]} # 更新 total_videos 為實際 ID 數
+    fi
+
     local count=0; local success_count=0
     for id in "${playlist_ids[@]}"; do
-        count=$((count + 1)); local video_url="https://www.youtube.com/watch?v=$id"
+        count=$((count + 1)); 
+        # 注意：這裡的 video_url 似乎是固定的？ "https://www.youtube.com/watch?v=$id" 
+        # 你可能需要根據 $id 來構造實際的影片 URL，例如：
+        local video_url="https://www.youtube.com/watch?v=$id" 
+        
+        # --- 這裡的進度顯示現在也應該正常了 ---
         log_message "INFO" "[$count/$total_videos] 處理影片: $video_url"; echo -e "${CYAN}--- 正在處理第 $count/$total_videos 個影片 ---${RESET}"
-        if "$single_item_processor_func_name" "$video_url"; then success_count=$((success_count + 1)); else log_message "WARNING" "...處理失敗: $video_url"; fi; echo ""
+        
+        # 調用單個項目處理器
+        if "$single_item_processor_func_name" "$video_url"; then 
+            success_count=$((success_count + 1))
+        else 
+            log_message "WARNING" "...處理失敗: $video_url"
+            echo -e "${RED}處理失敗: $video_url${RESET}" # 也可以加上用戶提示
+        fi
+        echo "" # 保留處理間隔的空行
     done
+
     echo -e "${GREEN}播放清單處理完成！共 $count 個影片，成功 $success_count 個${RESET}"; log_message "SUCCESS" "播放清單 $playlist_url 完成！共 $count 個，成功 $success_count 個"
     return 0
 }
+
+# --- 你還需要定義 _get_playlist_video_count 函數 ---
+# 理想情況下，修改 _get_playlist_video_count 使其只輸出數字
+# 例如 (假設它內部用 yt-dlp)：
+_get_playlist_video_count_ideal() {
+    local url="$1"
+    # 只輸出數字，日誌去 stderr
+    log_message "INFO" "內部：正在獲取 '$url' 的數量..." >&2 # 將日誌重定向到 stderr
+    yt-dlp --flat-playlist --print '%(playlist_count)s' --quiet --no-warnings "$url" 2>/dev/null
+    # 注意：上面這行只會輸出數字到 stdout
+}
+
+# 如果你不能修改 _get_playlist_video_count，那麼上面的過濾方法就是可行的。
 # ================================================
 # === END REFACTORED YOUTUBE PLAYLIST HANDLING ===
 # ================================================
