@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v1.6.36(Stable)" # <<< 版本號更新
+SCRIPT_VERSION="v1.6.37(Stable)" # <<< 版本號更新
 # ... 其他設定 ...
 TARGET_DATE="2025-07-11" # <<< 新增：設定您的目標日期
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
@@ -1418,7 +1418,7 @@ check_environment() {
 
     log_message "INFO" "環境檢查通過。"
     echo -e "${GREEN}環境檢查通過。${RESET}"
-    sleep 1
+    sleep 0
     return 0
 }
 
