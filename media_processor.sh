@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v1.6.35(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v1.6.36(Stable)" # <<< 版本號更新
 # ... 其他設定 ...
 TARGET_DATE="2025-07-11" # <<< 新增：設定您的目標日期
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
@@ -1300,7 +1300,7 @@ view_log() {
 # 關於訊息
 show_about() {
     clear
-    echo -e "${CYAN}高品質媒體處理器 ${SCRIPT_VERSION}${RESET}"
+    echo -e "${CYAN}整合式影音處理平台 ${SCRIPT_VERSION}${RESET}"
     echo -e "${GREEN}特色：${RESET}"
     echo -e "- 支援 YouTube 影片與音訊下載 (MP3/MP4)"
     echo -e "- 支援通用網站媒體下載 (實驗性 MP3/MP4, yt-dlp 支持範圍)"
@@ -1428,7 +1428,7 @@ check_environment() {
 main_menu() {
     while true; do
         clear
-        echo -e "${CYAN}=== 高品質媒體處理器 ${SCRIPT_VERSION} ===${RESET}"
+        echo -e "${CYAN}=== 整合式影音處理平台 ${SCRIPT_VERSION} ===${RESET}"
         # <<< 新增：在這裡呼叫顯示倒數計時的函數 >>>
         display_countdown
         # <<< 結束新增 >>>
@@ -1561,7 +1561,7 @@ main() {
 
     # --- 自動調整執行緒 ---
     adjust_threads
-    # sleep 1 # 可選
+    sleep 2 
 
     # --- 進入主選單 ---
     main_menu
