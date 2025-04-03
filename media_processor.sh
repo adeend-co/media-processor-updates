@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v1.8.0(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v1.8.1(Experimental)" # <<< 版本號更新
 # ... 其他設定 ...
 TARGET_DATE="2025-07-11" # <<< 新增：設定您的目標日期
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
@@ -868,15 +868,13 @@ process_single_mp4_no_normalize() {
 }
 
 ############################################
-# 處理單一 YouTube 影片（MKV）下載與處理
+# 處理單一 YouTube 影片（MKV）下載與處理 (修正版)
 ############################################
 process_single_mkv() {
     local video_url="$1"
-    # 目標字幕語言，保持與 MP4 一致
-    local target_sub_langs="zh-Hant,zh-TW,zh-Hans,zh-CN,zh" 
-    # 字幕格式優先級：ass > vtt > 最好可用格式
-    local subtitle_format_pref="ass/vtt/best" 
-    local subtitle_files=() # 存儲下載的字幕檔路徑
+    local target_sub_langs="zh-Hant,zh-TW,zh-Hans,zh-CN,zh"
+    local subtitle_format_pref="ass/vtt/best"
+    local subtitle_files=()
     local temp_dir=$(mktemp -d)
     local result=0
 
@@ -884,120 +882,109 @@ process_single_mkv() {
     log_message "INFO" "處理 YouTube MKV: $video_url"; log_message "INFO" "將嘗試請求以下字幕 (格式: $subtitle_format_pref): $target_sub_langs"
     echo -e "${YELLOW}將嘗試下載繁/簡/通用中文字幕 (保留樣式)...${RESET}"
 
-    # 檢查下載目錄
     mkdir -p "$DOWNLOAD_PATH"; if [ ! -w "$DOWNLOAD_PATH" ]; then log_message "ERROR" "...無法寫入目錄..."; echo -e "${RED}錯誤：無法寫入目錄${RESET}"; [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1; fi
 
-    # --- 分開下載視訊、音訊、字幕 ---
-    local video_title_id
-    video_title_id=$(yt-dlp --get-title --get-id "$video_url" | paste -sd "_" -) || video_title_id="video_$(date +%s)"
-    local output_base_name="$DOWNLOAD_PATH/$video_title_id" # 基礎檔名，不含副檔名
-    local video_temp_file="${temp_dir}/video_stream.mp4" # 臨時視訊檔
-    local audio_temp_file="${temp_dir}/audio_stream.m4a" # 臨時音訊檔
-    local sub_temp_template="${temp_dir}/sub_stream.%(ext)s" # 臨時字幕檔模板
+    # --- 改進：獲取標題和 ID，並清理標題中的非法字元 ---
+    local video_title video_id sanitized_title_id
+    video_title=$(yt-dlp --get-title "$video_url" 2>/dev/null) || video_title="video"
+    video_id=$(yt-dlp --get-id "$video_url" 2>/dev/null) || video_id=$(date +%s)
+    # 移除標題中常見的非法檔案名字符：/ \ : * ? " < > |
+    sanitized_title_id=$(echo "${video_title}_${video_id}" | sed 's@[/\\:*?"<>|]@_@g')
+    local output_base_name="$DOWNLOAD_PATH/$sanitized_title_id" # <<< 使用清理後的名稱
+    # --- 結束檔名處理改進 ---
+
+    local video_temp_file="${temp_dir}/video_stream.mp4"
+    local audio_temp_file="${temp_dir}/audio_stream.m4a"
+    local sub_temp_template="${temp_dir}/sub_stream.%(ext)s"
 
     echo -e "${YELLOW}開始下載最佳視訊流...${RESET}"
+    # ... (下載視訊流邏輯不變) ...
     if ! yt-dlp -f 'bv[ext=mp4]' --no-warnings -o "$video_temp_file" "$video_url" 2> "$temp_dir/yt-dlp-video.log"; then
         log_message "ERROR" "視訊流下載失敗..."; echo -e "${RED}錯誤：視訊流下載失敗！${RESET}"; cat "$temp_dir/yt-dlp-video.log"; [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1;
     fi
     log_message "INFO" "視訊流下載完成: $video_temp_file"
 
     echo -e "${YELLOW}開始下載最佳音訊流...${RESET}"
-    if ! yt-dlp -f 'ba[ext=m4a]' --no-warnings -o "$audio_temp_file" "$video_url" 2> "$temp_dir/yt-dlp-audio.log"; then
-         log_message "ERROR" "音訊流下載失敗..."; echo -e "${RED}錯誤：音訊流下載失敗！${RESET}"; cat "$temp_dir/yt-dlp-audio.log"; [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1;
-    fi
+    # ... (下載音訊流邏輯不變) ...
+     if ! yt-dlp -f 'ba[ext=m4a]' --no-warnings -o "$audio_temp_file" "$video_url" 2> "$temp_dir/yt-dlp-audio.log"; then
+             log_message "ERROR" "音訊流下載失敗..."; echo -e "${RED}錯誤：音訊流下載失敗！${RESET}"; cat "$temp_dir/yt-dlp-audio.log"; [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1;
+        fi
     log_message "INFO" "音訊流下載完成: $audio_temp_file"
-    
+
     echo -e "${YELLOW}開始下載字幕 (格式: ${subtitle_format_pref})...${RESET}"
-    # 使用 --skip-download 只下載字幕
+    # ... (下載字幕和查找邏輯不變) ...
     yt-dlp --write-subs --sub-format "$subtitle_format_pref" --sub-lang "$target_sub_langs" --skip-download -o "$sub_temp_template" "$video_url" > "$temp_dir/yt-dlp-subs.log" 2>&1
-    
-    # 查找實際下載的字幕檔 (可能有多個語言，優先找繁中)
     local found_sub=false
     for lang_code in "zh-Hant" "zh-TW" "zh-Hans" "zh-CN" "zh"; do
-        # 檢查 ass 或 vtt 格式
         for sub_ext in ass vtt; do
              potential_sub_file="${temp_dir}/sub_stream.${lang_code}.${sub_ext}"
              if [ -f "$potential_sub_file" ]; then
                  subtitle_files+=("$potential_sub_file")
                  log_message "INFO" "找到字幕: $potential_sub_file"; echo -e "${GREEN}找到字幕: $(basename "$potential_sub_file")${RESET}";
-                 found_sub=true
-                 # 找到一個首選語言就跳出內層循環 (可調整：如果想合併多個語言)
-                 break 
-             fi
-        done
-         # 如果在當前語言找到字幕，則跳出外層語言循環
-        if $found_sub; then break; fi 
+                 found_sub=true; break;
+             fi; done
+        if $found_sub; then break; fi
     done
-
     if [ ${#subtitle_files[@]} -eq 0 ]; then log_message "INFO" "未找到符合條件的中文字幕。"; echo -e "${YELLOW}未找到 ASS/VTT 格式的中文字幕。${RESET}"; fi
-    
-    # --- 音量標準化 ---
+
     local normalized_audio_m4a="$temp_dir/audio_normalized.m4a"
     echo -e "${YELLOW}開始音量標準化...${RESET}"
     if normalize_audio "$audio_temp_file" "$normalized_audio_m4a" "$temp_dir" true; then
-        # --- 混流到 MKV ---
         echo -e "${YELLOW}正在混流成 MKV 檔案...${RESET}"
-        local output_mkv="${output_base_name}_normalized.mkv" # 最終輸出檔名
-        
+        local output_mkv="${output_base_name}_normalized.mkv" # <<< 使用清理後的 base name
+
         local ffmpeg_mux_args=(ffmpeg -y -i "$video_temp_file" -i "$normalized_audio_m4a")
-        local sub_input_index=2 # 字幕輸入流的起始索引
-
-        # 添加字幕輸入
-        for sub_file in "${subtitle_files[@]}"; do 
-            # 對於 ASS/VTT，不需要指定 -sub_charenc
-            ffmpeg_mux_args+=("-i" "$sub_file")
-        done
-
-        # 設定編解碼器和流映射
-        # -c:v copy 複製視訊流
-        # -c:a aac 標準化後的音訊是 AAC
-        ffmpeg_mux_args+=("-c:v" "copy" "-c:a" "aac" "-b:a" "256k" "-ar" "44100") # 音訊參數可能在 normalize_audio 已處理，此處可再確認
-        ffmpeg_mux_args+=("-map" "0:v:0" "-map" "1:a:0") # 映射視訊和音訊
-
-        # 如果有字幕，添加字幕編解碼器設置和映射
+        local sub_input_index=2
+        for sub_file in "${subtitle_files[@]}"; do ffmpeg_mux_args+=("-i" "$sub_file"); done
+        
+        # 保持之前的編碼器和映射邏輯
+        ffmpeg_mux_args+=("-c:v" "copy" "-c:a" "aac" "-b:a" "256k" "-ar" "44100") 
+        ffmpeg_mux_args+=("-map" "0:v:0" "-map" "1:a:0") 
         if [ ${#subtitle_files[@]} -gt 0 ]; then 
-            ffmpeg_mux_args+=("-c:s" "copy") # <<< 關鍵：直接複製字幕流
+            ffmpeg_mux_args+=("-c:s" "copy") 
             for ((i=0; i<${#subtitle_files[@]}; i++)); do 
-                ffmpeg_mux_args+=("-map" "$sub_input_index:s:0") # 映射第一個字幕軌 (索引從0開始)
+                ffmpeg_mux_args+=("-map" "$sub_input_index:s:0")
                 ((sub_input_index++)) 
             done
-             # (可選) 設定字幕語言元數據，如果需要更精確控制
-             # ffmpeg_mux_args+=("-metadata:s:s:0" "language=chi") # 假設第一個是中文
         fi
-        
-        # 輸出檔名
-        ffmpeg_mux_args+=("$output_mkv")
+        ffmpeg_mux_args+=("$output_mkv") # <<< 輸出到清理後的檔名
 
         log_message "INFO" "MKV 混流命令: ${ffmpeg_mux_args[*]}"
         local ffmpeg_stderr_log="$temp_dir/ffmpeg_mkv_mux_stderr.log"
-        if ! "${ffmpeg_mux_args[@]}" 2> "$ffmpeg_stderr_log"; then 
-            echo -e "${RED}錯誤：MKV 混流失敗！詳情見日誌。${RESET}"; 
-            cat "$ffmpeg_stderr_log"; 
-            log_message "ERROR" "MKV 混流失敗，詳見 $ffmpeg_stderr_log"; 
+
+        # --- 改進：在失敗時輸出錯誤日誌 ---
+        if ! "${ffmpeg_mux_args[@]}" 2> "$ffmpeg_stderr_log"; then
+            echo -e "${RED}錯誤：MKV 混流失敗！以下是 FFmpeg 錯誤訊息：${RESET}"
+            cat "$ffmpeg_stderr_log" # <<< 輸出錯誤訊息到控制檯
+            log_message "ERROR" "MKV 混流失敗，詳見 $ffmpeg_stderr_log (錯誤內容已輸出)";
             result=1;
-        else 
-            echo -e "${GREEN}MKV 混流完成${RESET}"; 
-            result=0; 
-            rm -f "$ffmpeg_stderr_log"; 
+        else
+        # --- 結束錯誤輸出改進 ---
+            echo -e "${GREEN}MKV 混流完成${RESET}";
+            result=0;
+            # 在成功後才刪除日誌檔
+            rm -f "$ffmpeg_stderr_log";
         fi
-    else 
-        log_message "ERROR" "音量標準化失敗！"; 
-        result=1; 
+    else
+        log_message "ERROR" "音量標準化失敗！";
+        result=1;
     fi
 
-    # --- 清理 ---
     log_message "INFO" "清理臨時檔案..."
+    # ... (清理邏輯基本不變，確保 ffmpeg_stderr_log 如果失敗了不會被這裡誤刪) ...
     safe_remove "$video_temp_file" "$audio_temp_file" "$normalized_audio_m4a"
     for sub_file in "${subtitle_files[@]}"; do safe_remove "$sub_file"; done
-    safe_remove "$temp_dir/yt-dlp-video.log" "$temp_dir/yt-dlp-audio.log" "$temp_dir/yt-dlp-subs.log" "$temp_dir/ffmpeg_mkv_mux_stderr.log"
+    safe_remove "$temp_dir/yt-dlp-video.log" "$temp_dir/yt-dlp-audio.log" "$temp_dir/yt-dlp-subs.log"
+    # 只有在成功時 ffmpeg_stderr_log 才被刪除，失敗時保留它（雖然內容已輸出）
+    [ -f "$ffmpeg_stderr_log" ] && safe_remove "$ffmpeg_stderr_log"
     [ -d "$temp_dir" ] && rm -rf "$temp_dir"
 
-    if [ $result -eq 0 ]; then 
-        echo -e "${GREEN}處理完成！MKV 影片已儲存至：$output_mkv${RESET}"; 
+    if [ $result -eq 0 ]; then
+        echo -e "${GREEN}處理完成！MKV 影片已儲存至：$output_mkv${RESET}";
         log_message "SUCCESS" "MKV 處理完成！影片已儲存至：$output_mkv";
-    else 
-        echo -e "${RED}處理失敗！${RESET}"; 
-        log_message "ERROR" "MKV 處理失敗：$video_url"; 
+    else
+        echo -e "${RED}處理失敗！${RESET}";
+        log_message "ERROR" "MKV 處理失敗：$video_url";
     fi
     return $result
 }
