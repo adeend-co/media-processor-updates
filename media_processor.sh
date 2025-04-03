@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v1.7.1(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v1.8.0(Experimental)" # <<< 版本號更新
 # ... 其他設定 ...
 TARGET_DATE="2025-07-11" # <<< 新增：設定您的目標日期
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
@@ -867,6 +867,140 @@ process_single_mp4_no_normalize() {
     return $result
 }
 
+############################################
+# 處理單一 YouTube 影片（MKV）下載與處理
+############################################
+process_single_mkv() {
+    local video_url="$1"
+    # 目標字幕語言，保持與 MP4 一致
+    local target_sub_langs="zh-Hant,zh-TW,zh-Hans,zh-CN,zh" 
+    # 字幕格式優先級：ass > vtt > 最好可用格式
+    local subtitle_format_pref="ass/vtt/best" 
+    local subtitle_files=() # 存儲下載的字幕檔路徑
+    local temp_dir=$(mktemp -d)
+    local result=0
+
+    echo -e "${YELLOW}處理 YouTube 影片 (輸出 MKV)：$video_url${RESET}"
+    log_message "INFO" "處理 YouTube MKV: $video_url"; log_message "INFO" "將嘗試請求以下字幕 (格式: $subtitle_format_pref): $target_sub_langs"
+    echo -e "${YELLOW}將嘗試下載繁/簡/通用中文字幕 (保留樣式)...${RESET}"
+
+    # 檢查下載目錄
+    mkdir -p "$DOWNLOAD_PATH"; if [ ! -w "$DOWNLOAD_PATH" ]; then log_message "ERROR" "...無法寫入目錄..."; echo -e "${RED}錯誤：無法寫入目錄${RESET}"; [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1; fi
+
+    # --- 分開下載視訊、音訊、字幕 ---
+    local video_title_id
+    video_title_id=$(yt-dlp --get-title --get-id "$video_url" | paste -sd "_" -) || video_title_id="video_$(date +%s)"
+    local output_base_name="$DOWNLOAD_PATH/$video_title_id" # 基礎檔名，不含副檔名
+    local video_temp_file="${temp_dir}/video_stream.mp4" # 臨時視訊檔
+    local audio_temp_file="${temp_dir}/audio_stream.m4a" # 臨時音訊檔
+    local sub_temp_template="${temp_dir}/sub_stream.%(ext)s" # 臨時字幕檔模板
+
+    echo -e "${YELLOW}開始下載最佳視訊流...${RESET}"
+    if ! yt-dlp -f 'bv[ext=mp4]' --no-warnings -o "$video_temp_file" "$video_url" 2> "$temp_dir/yt-dlp-video.log"; then
+        log_message "ERROR" "視訊流下載失敗..."; echo -e "${RED}錯誤：視訊流下載失敗！${RESET}"; cat "$temp_dir/yt-dlp-video.log"; [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1;
+    fi
+    log_message "INFO" "視訊流下載完成: $video_temp_file"
+
+    echo -e "${YELLOW}開始下載最佳音訊流...${RESET}"
+    if ! yt-dlp -f 'ba[ext=m4a]' --no-warnings -o "$audio_temp_file" "$video_url" 2> "$temp_dir/yt-dlp-audio.log"; then
+         log_message "ERROR" "音訊流下載失敗..."; echo -e "${RED}錯誤：音訊流下載失敗！${RESET}"; cat "$temp_dir/yt-dlp-audio.log"; [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1;
+    fi
+    log_message "INFO" "音訊流下載完成: $audio_temp_file"
+    
+    echo -e "${YELLOW}開始下載字幕 (格式: ${subtitle_format_pref})...${RESET}"
+    # 使用 --skip-download 只下載字幕
+    yt-dlp --write-subs --sub-format "$subtitle_format_pref" --sub-lang "$target_sub_langs" --skip-download -o "$sub_temp_template" "$video_url" > "$temp_dir/yt-dlp-subs.log" 2>&1
+    
+    # 查找實際下載的字幕檔 (可能有多個語言，優先找繁中)
+    local found_sub=false
+    for lang_code in "zh-Hant" "zh-TW" "zh-Hans" "zh-CN" "zh"; do
+        # 檢查 ass 或 vtt 格式
+        for sub_ext in ass vtt; do
+             potential_sub_file="${temp_dir}/sub_stream.${lang_code}.${sub_ext}"
+             if [ -f "$potential_sub_file" ]; then
+                 subtitle_files+=("$potential_sub_file")
+                 log_message "INFO" "找到字幕: $potential_sub_file"; echo -e "${GREEN}找到字幕: $(basename "$potential_sub_file")${RESET}";
+                 found_sub=true
+                 # 找到一個首選語言就跳出內層循環 (可調整：如果想合併多個語言)
+                 break 
+             fi
+        done
+         # 如果在當前語言找到字幕，則跳出外層語言循環
+        if $found_sub; then break; fi 
+    done
+
+    if [ ${#subtitle_files[@]} -eq 0 ]; then log_message "INFO" "未找到符合條件的中文字幕。"; echo -e "${YELLOW}未找到 ASS/VTT 格式的中文字幕。${RESET}"; fi
+    
+    # --- 音量標準化 ---
+    local normalized_audio_m4a="$temp_dir/audio_normalized.m4a"
+    echo -e "${YELLOW}開始音量標準化...${RESET}"
+    if normalize_audio "$audio_temp_file" "$normalized_audio_m4a" "$temp_dir" true; then
+        # --- 混流到 MKV ---
+        echo -e "${YELLOW}正在混流成 MKV 檔案...${RESET}"
+        local output_mkv="${output_base_name}_normalized.mkv" # 最終輸出檔名
+        
+        local ffmpeg_mux_args=(ffmpeg -y -i "$video_temp_file" -i "$normalized_audio_m4a")
+        local sub_input_index=2 # 字幕輸入流的起始索引
+
+        # 添加字幕輸入
+        for sub_file in "${subtitle_files[@]}"; do 
+            # 對於 ASS/VTT，不需要指定 -sub_charenc
+            ffmpeg_mux_args+=("-i" "$sub_file")
+        done
+
+        # 設定編解碼器和流映射
+        # -c:v copy 複製視訊流
+        # -c:a aac 標準化後的音訊是 AAC
+        ffmpeg_mux_args+=("-c:v" "copy" "-c:a" "aac" "-b:a" "256k" "-ar" "44100") # 音訊參數可能在 normalize_audio 已處理，此處可再確認
+        ffmpeg_mux_args+=("-map" "0:v:0" "-map" "1:a:0") # 映射視訊和音訊
+
+        # 如果有字幕，添加字幕編解碼器設置和映射
+        if [ ${#subtitle_files[@]} -gt 0 ]; then 
+            ffmpeg_mux_args+=("-c:s" "copy") # <<< 關鍵：直接複製字幕流
+            for ((i=0; i<${#subtitle_files[@]}; i++)); do 
+                ffmpeg_mux_args+=("-map" "$sub_input_index:s:0") # 映射第一個字幕軌 (索引從0開始)
+                ((sub_input_index++)) 
+            done
+             # (可選) 設定字幕語言元數據，如果需要更精確控制
+             # ffmpeg_mux_args+=("-metadata:s:s:0" "language=chi") # 假設第一個是中文
+        fi
+        
+        # 輸出檔名
+        ffmpeg_mux_args+=("$output_mkv")
+
+        log_message "INFO" "MKV 混流命令: ${ffmpeg_mux_args[*]}"
+        local ffmpeg_stderr_log="$temp_dir/ffmpeg_mkv_mux_stderr.log"
+        if ! "${ffmpeg_mux_args[@]}" 2> "$ffmpeg_stderr_log"; then 
+            echo -e "${RED}錯誤：MKV 混流失敗！詳情見日誌。${RESET}"; 
+            cat "$ffmpeg_stderr_log"; 
+            log_message "ERROR" "MKV 混流失敗，詳見 $ffmpeg_stderr_log"; 
+            result=1;
+        else 
+            echo -e "${GREEN}MKV 混流完成${RESET}"; 
+            result=0; 
+            rm -f "$ffmpeg_stderr_log"; 
+        fi
+    else 
+        log_message "ERROR" "音量標準化失敗！"; 
+        result=1; 
+    fi
+
+    # --- 清理 ---
+    log_message "INFO" "清理臨時檔案..."
+    safe_remove "$video_temp_file" "$audio_temp_file" "$normalized_audio_m4a"
+    for sub_file in "${subtitle_files[@]}"; do safe_remove "$sub_file"; done
+    safe_remove "$temp_dir/yt-dlp-video.log" "$temp_dir/yt-dlp-audio.log" "$temp_dir/yt-dlp-subs.log" "$temp_dir/ffmpeg_mkv_mux_stderr.log"
+    [ -d "$temp_dir" ] && rm -rf "$temp_dir"
+
+    if [ $result -eq 0 ]; then 
+        echo -e "${GREEN}處理完成！MKV 影片已儲存至：$output_mkv${RESET}"; 
+        log_message "SUCCESS" "MKV 處理完成！影片已儲存至：$output_mkv";
+    else 
+        echo -e "${RED}處理失敗！${RESET}"; 
+        log_message "ERROR" "MKV 處理失敗：$video_url"; 
+    fi
+    return $result
+}
 
 ############################################
 # 輔助函數：處理單一通用網站媒體項目
@@ -1128,6 +1262,31 @@ process_mp4_no_normalize() {
     if [[ "$input" == *"list="* ]]; then _process_youtube_playlist "$input" "process_single_mp4_no_normalize"; elif [[ "$input" == *"youtu"* ]]; then process_single_mp4_no_normalize "$input"; else echo -e "${RED}錯誤：僅支援 YouTube 網址。${RESET}"; log_message "ERROR" "...非 YouTube URL..."; return 1; fi
 }
 
+############################################
+# 處理 MKV 影片（支援單一或播放清單，網路）
+############################################
+process_mkv() {
+    read -p "輸入 YouTube 網址 [預設: $DEFAULT_URL]: " input; input=${input:-$DEFAULT_URL}
+    
+    # 暫不支援本機 MKV 處理，因為主要目標是處理網路影片的複雜字幕
+    if [ -f "$input" ]; then
+        echo -e "${RED}錯誤：此功能目前僅支援處理 YouTube 網路影片以保留原始字幕。${RESET}"
+        log_message "ERROR" "MKV 處理：使用者嘗試輸入本機檔案 $input"
+        return 1
+    fi
+
+    if [[ "$input" == *"list="* ]]; then 
+        # 播放清單處理
+        _process_youtube_playlist "$input" "process_single_mkv" 
+    elif [[ "$input" == *"youtu"* ]]; then 
+        # 單一影片處理
+        process_single_mkv "$input"
+    else 
+        echo -e "${RED}錯誤：僅支援 YouTube 網址。${RESET}"; 
+        log_message "ERROR" "MKV 處理：輸入非 YouTube URL: $input"; 
+        return 1; 
+    fi
+}
 
 ############################################
 # 動態調整執行緒數量
@@ -1421,6 +1580,7 @@ show_about() {
     echo -e "${GREEN}特色：${RESET}"
     echo -e "- 支援 YouTube 影片與音訊下載 (MP3/MP4)"
     echo -e "- 支援通用網站媒體下載 (實驗性 MP3/MP4, yt-dlp 支持範圍)"
+    echo -e "- 支援 YouTube 影片下載 (實驗性 MKV檔)（v1.8.0+）"
     echo -e "- 專業級音量標準化 (基於 EBU R128)"
     echo -e "- 高品質音訊編碼 (MP3 320k, AAC 256k)"
     echo -e "- 自動嵌入封面圖片與基礎元數據 (MP3)"
@@ -1553,6 +1713,8 @@ main_menu() {
         echo -e " 1. ${BOLD}MP3 處理${RESET} (YouTube/本機)"
         echo -e " 2. ${BOLD}MP4 處理${RESET} (YouTube/本機)"
         echo -e " 2-1. 下載 MP4 (YouTube / ${BOLD}無${RESET}標準化)"
+        # <<< 新增 MKV 選項 >>>
+        echo -e " 2-2. ${BOLD}MKV 處理 (YouTube / 含標準化 / 實驗性字幕保留)${RESET}"
         echo -e " ${BOLD}7. 通用媒體處理 (其他網站 / ${YELLOW}實驗性${RESET})"
         echo -e "---------------------------------------------"
         echo -e " 3. 設定參數"
@@ -1573,9 +1735,9 @@ main_menu() {
 
         local prompt_range="0-8"
         if [[ "$OS_TYPE" == "termux" ]]; then
-            prompt_range="0-9 或 2-1"
+            prompt_range="0-9 或 2-1 ,2-2"
         else
-            prompt_range="0-8 或 2-1"
+            prompt_range="0-8 或 2-1 ,2-2"
         fi
         local choice
         read -rp "輸入選項 (${prompt_range}): " choice
@@ -1592,6 +1754,10 @@ main_menu() {
             2-1)
                 process_mp4_no_normalize
                 sleep 1 # <<< 在 MP4 (無標準化) 處理後暫停 1 秒
+                ;;
+            2-2) 
+                process_mkv;
+                sleep 1 
                 ;;
             7)
                 process_other_site_media_playlist
