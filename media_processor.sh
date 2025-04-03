@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v1.7.0(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v1.7.1(Experimental)" # <<< 版本號更新
 # ... 其他設定 ...
 TARGET_DATE="2025-07-11" # <<< 新增：設定您的目標日期
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
@@ -37,29 +37,6 @@ if [ ! -d "$SCRIPT_DIR" ]; then
         exit 1
     fi
 # 如果目錄一開始就存在，則不執行上面 if 區塊內的任何操作，保持安靜
-fi
-
-# 顏色代碼
-if [ "$COLOR_ENABLED" = true ]; then
-    RED='\033[0;31m'
-    GREEN='\033[0;32m'
-    YELLOW='\033[0;33m'
-    BLUE='\033[0;34m'
-    PURPLE='\033[0;35m'
-    CYAN='\033[0;36m'
-    WHITE='\033[0;37m'
-    BOLD='\033[1m'
-    RESET='\033[0m'
-else
-    RED=''
-    GREEN=''
-    YELLOW=''
-    BLUE=''
-    PURPLE=''
-    CYAN=''
-    WHITE=''
-    BOLD=''
-    RESET=''
 fi
 
 log_message() {
@@ -154,6 +131,25 @@ load_config() {
         exit 1
     fi
     log_message "INFO" "最終下載路徑確認: $DOWNLOAD_PATH, 日誌檔案: $LOG_FILE"
+}
+
+############################################
+# <<< 新增：根據 COLOR_ENABLED 應用顏色設定 >>>
+############################################
+apply_color_settings() {
+    # 根據 COLOR_ENABLED 的當前值來設定實際的顏色變數
+    if [ "$COLOR_ENABLED" = true ]; then
+        # 啟用顏色
+        RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'
+        BLUE='\033[0;34m'; PURPLE='\033[0;35m'; CYAN='\033[0;36m'
+        WHITE='\033[0;37m'; BOLD='\033[1m'; RESET='\033[0m'
+        # 可以選擇性地記錄調試信息
+        # log_message "DEBUG" "顏色變數已設置為啟用狀態。"
+    else
+        # 禁用顏色，將變數設為空字串
+        RED=''; GREEN=''; YELLOW=''; BLUE=''; PURPLE=''; CYAN=''; WHITE=''; BOLD=''; RESET=''
+        # log_message "DEBUG" "顏色變數已設置為禁用狀態（空字串）。"
+    fi
 }
 
 ############################################
@@ -1379,27 +1375,37 @@ configure_download_path() {
 }
 
 ############################################
-# 切換顏色輸出
+# 切換顏色輸出 (修正版)
 ############################################
 toggle_color() {
     if [ "$COLOR_ENABLED" = true ]; then
+        # 如果當前是啟用狀態，則切換為禁用
         COLOR_ENABLED=false
-        # 清空顏色變數
-        RED=''; GREEN=''; YELLOW=''; BLUE=''; PURPLE=''; CYAN=''; WHITE=''; BOLD=''; RESET=''
-        log_message "INFO" "顏色輸出已禁用"
+        log_message "INFO" "使用者禁用顏色輸出"
+
+        # >>> 修改點：呼叫 apply_color_settings 來清空顏色變數 <<<
+        apply_color_settings
+
+        # 現在 echo 時，因為顏色變數已被清空，所以不會有顏色
         echo "顏色輸出已禁用"
+
     else
+        # 如果當前是禁用狀態，則切換為啟用
         COLOR_ENABLED=true
-        # 重新賦值顏色變數
-        RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'
-        BLUE='\033[0;34m'; PURPLE='\033[0;35m'; CYAN='\033[0;36m'
-        WHITE='\033[0;37m'; BOLD='\033[1m'; RESET='\033[0m'
-        log_message "INFO" "顏色輸出已啟用"
-        echo -e "${GREEN}顏色輸出已啟用${RESET}" # 用啟用後的顏色顯示訊息
+        log_message "INFO" "使用者啟用顏色輸出"
+
+        # >>> 修改點：呼叫 apply_color_settings 來設置顏色變數 <<<
+        apply_color_settings
+
+        # 現在 echo 時，因為顏色變數已被設置，可以使用顏色輸出
+        echo -e "${GREEN}顏色輸出已啟用${RESET}"
     fi
-    # <<< 新增：儲存設定 >>>
+
+    # <<< 保留：將更改後的 COLOR_ENABLED 狀態儲存到設定檔 >>>
     save_config
-     # sleep 1 # 在 config_menu 循環中已有 sleep
+
+    # 通常不需要在這裡加 sleep，因為 config_menu 循環會在返回後處理暫停
+    # sleep 1
 }
 
 # 檢視日誌
@@ -1668,6 +1674,11 @@ main() {
     #      這會覆蓋上面設定的預設值（如果設定檔存在且有效）
     #      並且會根據最終的 DOWNLOAD_PATH 更新 LOG_FILE
     load_config
+
+    # --- <<< 新增：應用載入後的顏色設定 >>> ---
+    #      這一步會根據 load_config 後的 COLOR_ENABLED 值，
+    #      正確地定義 RED, GREEN 等變數。
+    apply_color_settings
 
     # --- 在 load_config 之後記錄啟動訊息，因為 LOG_FILE 路徑此時才最終確定 ---
     log_message "INFO" "腳本啟動 (版本: $SCRIPT_VERSION, OS: $OS_TYPE, Config: $CONFIG_FILE)"
