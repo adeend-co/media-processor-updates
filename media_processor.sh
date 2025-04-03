@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v1.8.3(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v1.8.4(Experimental)" # <<< 版本號更新
 # ... 其他設定 ...
 TARGET_DATE="2025-07-11" # <<< 新增：設定您的目標日期
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
@@ -1575,7 +1575,8 @@ show_about() {
     echo -e "- 支援通用網站媒體下載 (實驗性 MP3/MP4, yt-dlp 支持範圍)"
     echo -e "- 支援 YouTube 影片下載 (實驗性 MKV檔)（v1.8.0+）"
     echo -e "- 雙重音量標準化 (基於 EBU R128)"
-    echo -e "- 支援純音訊編碼 (MP3 320k)"
+    echo -e "- 純音訊編碼規格 (MP3 320k)"
+    echo -e "- MP4音訊編碼規格 (AAC 256k)"
     echo -e "- 自動嵌入封面圖片與基礎元數據 (MP3)"
     echo -e "- 支援中文字幕選擇與嵌入 (YouTube MP4)"
     echo -e "- 支援播放清單批量下載 (YouTube 及部分通用網站)"
