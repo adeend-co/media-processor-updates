@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v1.8.1(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v1.8.2(Experimental)" # <<< 版本號更新
 # ... 其他設定 ...
 TARGET_DATE="2025-07-11" # <<< 新增：設定您的目標日期
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
@@ -898,21 +898,27 @@ process_single_mkv() {
     local sub_temp_template="${temp_dir}/sub_stream.%(ext)s"
 
     echo -e "${YELLOW}開始下載最佳視訊流...${RESET}"
-    # ... (下載視訊流邏輯不變) ...
-    if ! yt-dlp -f 'bv[ext=mp4]' --no-warnings -o "$video_temp_file" "$video_url" 2> "$temp_dir/yt-dlp-video.log"; then
-        log_message "ERROR" "視訊流下載失敗..."; echo -e "${RED}錯誤：視訊流下載失敗！${RESET}"; cat "$temp_dir/yt-dlp-video.log"; [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1;
+    # ... (下載視訊流邏輯) ...
+# 修改後的命令 (添加 [height<=1440])：
+if ! yt-dlp -f 'bv[ext=mp4][height<=1440]' --no-warnings -o "$video_temp_file" "$video_url" 2> "$temp_dir/yt-dlp-video.log"; then
+    # 如果找不到 1440p 或以下的 MP4 視訊流，可以添加一個備選方案，例如下載最佳的 MP4 視訊流
+    echo -e "${YELLOW}警告：未找到 <=1440p 的 MP4 視訊流，嘗試下載最佳 MP4 視訊流...${RESET}"
+    log_message "WARNING" "未找到 <=1440p 的 MP4 視訊流，嘗試最佳 MP4 for $video_url"
+    if ! yt-dlp -f 'bv[ext=mp4]/bestvideo[ext=mp4]' --no-warnings -o "$video_temp_file" "$video_url" 2> "$temp_dir/yt-dlp-video.log"; then
+        log_message "ERROR" "視訊流下載失敗（包括備選方案）..."; echo -e "${RED}錯誤：視訊流下載失敗！${RESET}"; cat "$temp_dir/yt-dlp-video.log"; [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1;
     fi
-    log_message "INFO" "視訊流下載完成: $video_temp_file"
+fi
+log_message "INFO" "視訊流下載完成: $video_temp_file"
 
     echo -e "${YELLOW}開始下載最佳音訊流...${RESET}"
-    # ... (下載音訊流邏輯不變) ...
+    # ... (下載音訊流邏輯) ...
      if ! yt-dlp -f 'ba[ext=m4a]' --no-warnings -o "$audio_temp_file" "$video_url" 2> "$temp_dir/yt-dlp-audio.log"; then
              log_message "ERROR" "音訊流下載失敗..."; echo -e "${RED}錯誤：音訊流下載失敗！${RESET}"; cat "$temp_dir/yt-dlp-audio.log"; [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1;
         fi
     log_message "INFO" "音訊流下載完成: $audio_temp_file"
 
     echo -e "${YELLOW}開始下載字幕 (格式: ${subtitle_format_pref})...${RESET}"
-    # ... (下載字幕和查找邏輯不變) ...
+    # ... (下載字幕和查找邏輯) ...
     yt-dlp --write-subs --sub-format "$subtitle_format_pref" --sub-lang "$target_sub_langs" --skip-download -o "$sub_temp_template" "$video_url" > "$temp_dir/yt-dlp-subs.log" 2>&1
     local found_sub=false
     for lang_code in "zh-Hant" "zh-TW" "zh-Hans" "zh-CN" "zh"; do
@@ -937,7 +943,7 @@ process_single_mkv() {
         local sub_input_index=2
         for sub_file in "${subtitle_files[@]}"; do ffmpeg_mux_args+=("-i" "$sub_file"); done
         
-        # 保持之前的編碼器和映射邏輯
+        # 編碼器和映射邏輯
         ffmpeg_mux_args+=("-c:v" "copy" "-c:a" "aac" "-b:a" "256k" "-ar" "44100") 
         ffmpeg_mux_args+=("-map" "0:v:0" "-map" "1:a:0") 
         if [ ${#subtitle_files[@]} -gt 0 ]; then 
@@ -971,7 +977,7 @@ process_single_mkv() {
     fi
 
     log_message "INFO" "清理臨時檔案..."
-    # ... (清理邏輯基本不變，確保 ffmpeg_stderr_log 如果失敗了不會被這裡誤刪) ...
+    # ... (清理邏輯，確保 ffmpeg_stderr_log 如果失敗了不會被這裡誤刪) ...
     safe_remove "$video_temp_file" "$audio_temp_file" "$normalized_audio_m4a"
     for sub_file in "${subtitle_files[@]}"; do safe_remove "$sub_file"; done
     safe_remove "$temp_dir/yt-dlp-video.log" "$temp_dir/yt-dlp-audio.log" "$temp_dir/yt-dlp-subs.log"
