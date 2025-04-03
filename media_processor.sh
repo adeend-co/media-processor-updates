@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v1.6.37(Stable)" # <<< 版本號更新
+SCRIPT_VERSION="v1.7.0(Experimental)" # <<< 版本號更新
 # ... 其他設定 ...
 TARGET_DATE="2025-07-11" # <<< 新增：設定您的目標日期
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
@@ -10,6 +10,9 @@ THREADS=4
 MAX_THREADS=8
 MIN_THREADS=1
 COLOR_ENABLED=true
+# --- Configuration File ---
+# <<< 新增：設定檔路徑 >>>
+CONFIG_FILE="$HOME/.media_processor_rc"
 # 自動更新設定保留
 REMOTE_VERSION_URL="https://raw.githubusercontent.com/adeend-co/media-processor-updates/refs/heads/main/latest_version.txt" # <<< 請務必修改此 URL
 REMOTE_SCRIPT_URL="https://raw.githubusercontent.com/adeend-co/media-processor-updates/refs/heads/main/media_processor.sh"   # <<< 請務必修改此 URL
@@ -91,6 +94,66 @@ log_message() {
         esac
         echo -e "$colored_message"
     fi
+}
+
+############################################
+# <<< 新增：儲存設定檔 >>>
+############################################
+save_config() {
+    log_message "INFO" "正在儲存目前設定到 $CONFIG_FILE ..."
+    # 嘗試寫入設定檔
+    # 使用 > 覆蓋檔案內容
+    # 將變數值用雙引號括起來，以處理路徑中可能存在的空格（雖然腳本中已做清理，但這是好習慣）
+    if echo "THREADS=\"$THREADS\"" > "$CONFIG_FILE" && \
+       echo "DOWNLOAD_PATH=\"$DOWNLOAD_PATH\"" >> "$CONFIG_FILE" && \
+       echo "COLOR_ENABLED=\"$COLOR_ENABLED\"" >> "$CONFIG_FILE"; then
+        log_message "INFO" "設定已成功儲存到 $CONFIG_FILE"
+        # echo -e "${GREEN}設定已儲存。${RESET}" # 可以取消註解以提供即時回饋，但可能會有點吵
+    else
+        log_message "ERROR" "無法寫入設定檔 $CONFIG_FILE！請檢查權限。"
+        echo -e "${RED}錯誤：無法儲存設定到 $CONFIG_FILE！${RESET}"
+        # 不退出腳本，但提示使用者
+        sleep 2
+    fi
+}
+
+############################################
+# <<< 新增：載入設定檔 >>>
+############################################
+load_config() {
+    # 檢查設定檔是否存在且可讀
+    if [ -f "$CONFIG_FILE" ] && [ -r "$CONFIG_FILE" ]; then
+        log_message "INFO" "正在從 $CONFIG_FILE 載入設定..."
+        # 使用 source (或 .) 命令直接執行設定檔中的變數賦值
+        # 注意：這假設設定檔是安全的 key=value 格式
+        # 如果設定檔可能包含惡意程式碼，需要更安全的解析方法
+        source "$CONFIG_FILE"
+        # 檢查載入後的值是否合理（可選，增加健壯性）
+        # 例如：檢查 THREADS 是否在範圍內
+        if [[ -n "$THREADS" && (! "$THREADS" =~ ^[0-9]+$ || "$THREADS" -lt "$MIN_THREADS" || "$THREADS" -gt "$MAX_THREADS") ]]; then
+             log_message "WARNING" "從設定檔載入的 THREADS ($THREADS) 無效，將使用預設值或重新自動調整。"
+             # 可以選擇重置為預設或觸發 adjust_threads
+             THREADS=$MIN_THREADS # 或者保留預設，讓 adjust_threads 覆蓋
+        fi
+         log_message "INFO" "設定檔載入完成。"
+         echo -e "${GREEN}已從 $CONFIG_FILE 載入使用者設定。${RESET}"
+         sleep 1
+    else
+        log_message "INFO" "設定檔 $CONFIG_FILE 未找到或不可讀，將使用預設設定。"
+        # 不需要報錯，腳本會使用預設值
+        # 第一次執行 save_config 時會自動創建檔案
+    fi
+
+    # <<< 重要：在載入 DOWNLOAD_PATH 後，重新設定 LOG_FILE 路徑 >>>
+    # 無論是從設定檔載入還是使用預設值，都要確保 LOG_FILE 路徑正確
+    LOG_FILE="$DOWNLOAD_PATH/script_log.txt"
+    # 同樣，需要重新確保目錄存在
+    if ! mkdir -p "$DOWNLOAD_PATH" 2>/dev/null; then
+        echo -e "${RED}錯誤：無法創建最終確定的下載目錄 '$DOWNLOAD_PATH'！腳本無法啟動。${RESET}" >&2
+        log_message "ERROR" "無法創建最終下載目錄：$DOWNLOAD_PATH"
+        exit 1
+    fi
+    log_message "INFO" "最終下載路徑確認: $DOWNLOAD_PATH, 日誌檔案: $LOG_FILE"
 }
 
 ############################################
@@ -1074,13 +1137,28 @@ process_mp4_no_normalize() {
 # 動態調整執行緒數量
 ############################################
 adjust_threads() {
-    # --- 函數邏輯不變 ---
-    local cpu_cores
-    if command -v nproc &> /dev/null; then cpu_cores=$(nproc --all); elif [ -f /proc/cpuinfo ]; then cpu_cores=$(grep -c ^processor /proc/cpuinfo); elif command -v sysctl &> /dev/null && sysctl -n hw.ncpu > /dev/null 2>&1; then cpu_cores=$(sysctl -n hw.ncpu); else cpu_cores=4; log_message "WARNING" "無法檢測核心數，預設 4。"; fi
-    if ! [[ "$cpu_cores" =~ ^[0-9]+$ ]] || [ "$cpu_cores" -lt 1 ]; then log_message "WARNING" "CPU 核心數 '$cpu_cores' 無效，預設 4。"; cpu_cores=4; fi
+    local cpu_cores current_threads=$THREADS # 保存調整前的值
+    # 獲取 CPU 核心數 (保持不變)
+    if command -v nproc &> /dev/null; then cpu_cores=$(nproc --all); elif [ -f /proc/cpuinfo ]; then cpu_cores=$(grep -c ^processor /proc/cpuinfo); elif command -v sysctl &> /dev/null && sysctl -n hw.ncpu > /dev/null 2>&1; then cpu_cores=$(sysctl -n hw.ncpu); else cpu_cores=4; log_message "WARNING" "無法檢測 CPU 核心數，預設計算基於 4 核心。"; fi
+    if ! [[ "$cpu_cores" =~ ^[0-9]+$ ]] || [ "$cpu_cores" -lt 1 ]; then log_message "WARNING" "檢測到的 CPU 核心數 '$cpu_cores' 無效，預設計算基於 4 核心。"; cpu_cores=4; fi
+
+    # 計算推薦執行緒數 (保持不變)
     local recommended_threads=$((cpu_cores * 3 / 4)); [ "$recommended_threads" -lt 1 ] && recommended_threads=1
     if [ $recommended_threads -gt $MAX_THREADS ]; then recommended_threads=$MAX_THREADS; elif [ $recommended_threads -lt $MIN_THREADS ]; then recommended_threads=$MIN_THREADS; fi
-    THREADS=$recommended_threads; log_message "INFO" "執行緒自動調整為 $THREADS (核心數: $cpu_cores)"; echo -e "${GREEN}執行緒自動調整為 $THREADS${RESET}"
+
+    # 只有在計算出的推薦值與目前值不同時才更新並儲存
+    if [[ "$THREADS" != "$recommended_threads" ]]; then
+        log_message "INFO" "執行緒自動調整：從 $THREADS -> $recommended_threads (基於 $cpu_cores 核心計算)"
+        THREADS=$recommended_threads
+        echo -e "${GREEN}執行緒已自動調整為 $THREADS (基於 CPU 核心數)${RESET}"
+        # <<< 新增：儲存設定 >>>
+        save_config
+    else
+        # 如果值沒有變化，可以選擇性地顯示訊息或保持安靜
+        log_message "INFO" "自動調整執行緒檢查：目前值 ($THREADS) 已是推薦值，無需更改。"
+        # echo -e "${CYAN}執行緒數量 ($THREADS) 已是自動調整的推薦值。${RESET}" # 可以取消註解此行
+    fi
+    # 不需要 sleep，因為它通常在腳本啟動時或從選單觸發後調用
 }
 
 ############################################
@@ -1239,9 +1317,19 @@ config_menu() {
 
 # 設定執行緒數量
 configure_threads() {
-    # --- 函數邏輯不變 ---
-    read -p "設定執行緒 ($MIN_THREADS-$MAX_THREADS) [當前: $THREADS]: " tt
-    if [[ "$tt" =~ ^[0-9]+$ ]] && [ "$tt" -ge "$MIN_THREADS" ] && [ "$tt" -le "$MAX_THREADS" ]; then THREADS=$tt; log_message "INFO" "執行緒設為 $THREADS"; echo -e "${GREEN}執行緒設為 $THREADS${RESET}"; else echo -e "${RED}無效數量...${RESET}"; fi
+    local tt current_threads=$THREADS # 保存當前值用於提示
+    read -p "設定執行緒 ($MIN_THREADS-$MAX_THREADS) [當前: $current_threads]: " tt
+    if [[ "$tt" =~ ^[0-9]+$ ]] && [ "$tt" -ge "$MIN_THREADS" ] && [ "$tt" -le "$MAX_THREADS" ]; then
+        THREADS=$tt
+        log_message "INFO" "使用者手動設定執行緒為 $THREADS"
+        echo -e "${GREEN}執行緒設為 $THREADS${RESET}"
+        # <<< 新增：儲存設定 >>>
+        save_config
+    else
+        echo -e "${RED}輸入無效或超出範圍 ($MIN_THREADS-$MAX_THREADS)。未作更改。${RESET}"
+        log_message "WARNING" "使用者嘗試設定無效執行緒: $tt"
+    fi
+    # sleep 1 # 在 config_menu 循環中已有 sleep
 }
 
 ############################################
@@ -1249,46 +1337,69 @@ configure_threads() {
 ############################################
 configure_download_path() {
     local sanitized_path=""
-    local user_path
-    
-    read -er -p "設定下載路徑 [當前: $DOWNLOAD_PATH]: " user_path
-    user_path="${user_path:-$DOWNLOAD_PATH}"
-    
+    local user_path current_path=$DOWNLOAD_PATH # 保存當前值
+
+    # -e 允許使用 readline 編輯, -i 提供預設值 (雖然 read -p 也能顯示)
+    read -e -p "設定下載路徑 [當前: $current_path]: " user_path
+    # 如果使用者直接按 Enter，保留當前值
+    user_path="${user_path:-$current_path}"
+
+    # 如果使用者輸入的路徑與目前相同，則無需處理
+    if [[ "$user_path" == "$current_path" ]]; then
+        echo -e "${YELLOW}路徑未更改。${RESET}"
+        # sleep 1 # 在 config_menu 循環中已有 sleep
+        return 0
+    fi
+
+    # 使用 realpath 處理相對路徑、多餘斜線等，並移除危險字符
+    # -m, --canonicalize-missing   no error if components are missing
     sanitized_path=$(realpath -m "$user_path" | sed 's/[;|&<>()$`{}]//g')
 
+    # 安全性檢查：確保路徑在允許的範圍內 (Termux/標準 Linux Home)
     if [[ "$sanitized_path" =~ ^(/storage/emulated/0|$HOME|/data/data/com.termux/files/home) ]]; then
+        # 嘗試創建目錄並檢查寫入權限
         if mkdir -p "$sanitized_path" 2>/dev/null && [ -w "$sanitized_path" ]; then
             DOWNLOAD_PATH="$sanitized_path"
-            LOG_FILE="$DOWNLOAD_PATH/script_log.txt"
-            log_message "SECURITY" "下載路徑變更為：$sanitized_path"
-            echo -e "${GREEN}路徑更新成功！${RESET}"
+            LOG_FILE="$DOWNLOAD_PATH/script_log.txt" # 同步更新日誌檔案路徑
+            log_message "INFO" "使用者手動設定下載路徑為：$sanitized_path"
+            echo -e "${GREEN}下載路徑已成功更新為：$sanitized_path${RESET}"
+            # <<< 新增：儲存設定 >>>
+            save_config
         else
-            log_message "SECURITY" "非法路徑存取嘗試：$user_path"
-            echo -e "${RED}錯誤：路徑不可寫或包含非法字元！${RESET}"
+            log_message "ERROR" "嘗試設定的路徑 '$sanitized_path' 無法創建或不可寫。"
+            echo -e "${RED}錯誤：路徑 '$sanitized_path' 無法創建或不可寫！未作更改。${RESET}"
+            # 保持舊路徑不變
         fi
     else
-        log_message "BLOCKED" "越界路徑嘗試：$user_path"
-        echo -e "${RED}安全性拒絕：路徑必須在用戶目錄範圍內！${RESET}"
+        log_message "SECURITY" "使用者嘗試設定越界路徑 (原始: '$user_path', 清理後: '$sanitized_path')。已阻止。"
+        echo -e "${RED}安全性錯誤：路徑必須在 Termux 儲存、用戶家目錄或 Termux 私有目錄範圍內！未作更改。${RESET}"
+        # 保持舊路徑不變
     fi
+     # sleep 1 # 在 config_menu 循環中已有 sleep
 }
 
-
 ############################################
-# 切換顏色輸出 (移除未使用變數)
+# 切換顏色輸出
 ############################################
 toggle_color() {
     if [ "$COLOR_ENABLED" = true ]; then
         COLOR_ENABLED=false
-        RED=''; GREEN=''; YELLOW=''; BLUE=''; CYAN=''; BOLD=''; RESET=''
-        log_message "INFO" "顏色關閉"
-        echo "顏色關閉"
+        # 清空顏色變數
+        RED=''; GREEN=''; YELLOW=''; BLUE=''; PURPLE=''; CYAN=''; WHITE=''; BOLD=''; RESET=''
+        log_message "INFO" "顏色輸出已禁用"
+        echo "顏色輸出已禁用"
     else
         COLOR_ENABLED=true
+        # 重新賦值顏色變數
         RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'
-        BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
-        log_message "INFO" "顏色啟用"
-        echo -e "${GREEN}顏色啟用${RESET}"
+        BLUE='\033[0;34m'; PURPLE='\033[0;35m'; CYAN='\033[0;36m'
+        WHITE='\033[0;37m'; BOLD='\033[1m'; RESET='\033[0m'
+        log_message "INFO" "顏色輸出已啟用"
+        echo -e "${GREEN}顏色輸出已啟用${RESET}" # 用啟用後的顏色顯示訊息
     fi
+    # <<< 新增：儲存設定 >>>
+    save_config
+     # sleep 1 # 在 config_menu 循環中已有 sleep
 }
 
 # 檢視日誌
@@ -1547,21 +1658,30 @@ if ! mkdir -p "$TEMP_DIR" 2>/dev/null; then
      exit 1
 fi
 
-
 # 主程式
 main() {
-    # --- 在 main 函數一開始記錄啟動訊息 ---
-    log_message "INFO" "腳本啟動 (版本: $SCRIPT_VERSION, OS: $OS_TYPE)"
+    # --- 設定預設值 (假設這些已在腳本頂部完成) ---
+    # DEFAULT_URL="..."; THREADS=4; MAX_THREADS=8; MIN_THREADS=1; COLOR_ENABLED=true; etc.
+    # DOWNLOAD_PATH="$DOWNLOAD_PATH_DEFAULT"; TEMP_DIR="$TEMP_DIR_DEFAULT"; etc.
 
-    # --- 環境檢查 ---
+    # --- <<< 新增：載入使用者設定檔 >>> ---
+    #      這會覆蓋上面設定的預設值（如果設定檔存在且有效）
+    #      並且會根據最終的 DOWNLOAD_PATH 更新 LOG_FILE
+    load_config
+
+    # --- 在 load_config 之後記錄啟動訊息，因為 LOG_FILE 路徑此時才最終確定 ---
+    log_message "INFO" "腳本啟動 (版本: $SCRIPT_VERSION, OS: $OS_TYPE, Config: $CONFIG_FILE)"
+
+    # --- 環境檢查 (現在會使用載入後的 DOWNLOAD_PATH 和 TEMP_DIR) ---
     if ! check_environment; then
         # check_environment 內部會在失敗時 exit
-        return 1 # 理論上不會執行到這裡
+        return 1
     fi
 
-    # --- 自動調整執行緒 ---
+    # --- 自動調整執行緒 (可能會根據載入的或預設的 THREADS 再次調整並儲存) ---
     adjust_threads
-    sleep 2 
+    # 給使用者一點時間看到調整結果
+    sleep 2
 
     # --- 進入主選單 ---
     main_menu
