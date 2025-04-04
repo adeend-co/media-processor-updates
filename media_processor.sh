@@ -1127,7 +1127,7 @@ process_single_mkv() {
     # --- 結束下載音訊流 ---
 
     echo -e "${YELLOW}開始下載字幕 (格式: ${subtitle_format_pref})...${RESET}"
-    yt-dlp --write-subs --sub-format "$subtitle_format_pref" --sub-lang "$target_sub_langs" --skip-download -o "$sub_temp_template" "$video_url" > "$temp_dir/yt-dlp-subs.log" 2>
+    yt-dlp --write-subs --sub-format "$subtitle_format_pref" --sub-lang "$target_sub_langs" --skip-download -o "$sub_temp_template" "$video_url" > "$temp_dir/yt-dlp-subs.log" 2>&1
     
     local found_sub=false
     # --- 查找 VTT 邏輯 (不變) ---
