@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.0.8(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v2.0.9(Experimental)" # <<< 版本號更新
 # ... 其他設定 ...
 TARGET_DATE="2025-07-11" # <<< 新增：設定您的目標日期
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
@@ -1127,8 +1127,8 @@ process_single_mkv() {
     # --- 結束下載音訊流 ---
 
     echo -e "${YELLOW}開始下載字幕 (格式: ${subtitle_format_pref})...${RESET}"
-    yt-dlp --write-subs --sub-format "$subtitle_format_pref" --sub-lang "$target_sub_langs" --skip-download -o "$sub_temp_template" "$video_url" > "$temp_dir/yt-dlp-subs.log" 2>&1
-
+    yt-dlp --write-subs --sub-format "$subtitle_format_pref" --sub-lang "$target_sub_langs" --skip-download -o "$sub_temp_template" "$video_url" > "$temp_dir/yt-dlp-subs.log" 2>
+    
     local found_sub=false
     # --- 查找 VTT 邏輯 (不變) ---
     for lang_code in "zh-Hant" "zh-TW" "zh-Hans" "zh-CN" "zh"; do
@@ -1142,7 +1142,26 @@ process_single_mkv() {
     done
     if [ ${#downloaded_vtt_files[@]} -eq 0 ]; then log_message "INFO" "未找到符合條件的中文字幕。"; echo -e "${YELLOW}未找到 VTT 格式的中文字幕。${RESET}"; fi
     # --- 結束 VTT 查找 ---
-
+    
+# --- <<< 新增：在這裡複製找到的原始 VTT 文件 >>> ---
+    log_message "INFO" "Copying original VTT files for comparison..."
+    # 現在 downloaded_vtt_files 陣列裡已經有找到的路徑了
+    for original_vtt in "${downloaded_vtt_files[@]}"; do
+        # 再次檢查文件是否存在（雖然上面剛找到，以防萬一）
+        if [ -f "$original_vtt" ]; then
+            original_vtt_basename=$(basename "$original_vtt")
+            # 組裝目標路徑，包含 _original 後綴
+            target_original_path="$DOWNLOAD_PATH/${original_vtt_basename%.vtt}_original.vtt"
+            # 執行複製
+            if cp "$original_vtt" "$target_original_path"; then
+                 log_message "INFO" "Copied original VTT: $(basename "$target_original_path") to $DOWNLOAD_PATH"
+            else
+                 log_message "ERROR" "Failed to copy original VTT: $original_vtt to $target_original_path"
+            fi
+        fi
+    done
+    # --- <<< 結束複製原始 VTT 文件 >>> ---
+    
     # --- <<< 調用 VTT 增強器 (現在使用正確的路徑變數 $VTT_ENHANCER_PY) >>> ---
     if [ ${#downloaded_vtt_files[@]} -gt 0 ]; then
         if command -v python &> /dev/null || command -v python3 &> /dev/null; then
@@ -1260,7 +1279,37 @@ process_single_mkv() {
         log_message "ERROR" "音量標準化失敗！";
         result=1;
     fi
+# --- <<< 新增：在這裡複製 Python 處理後的文件 (Test A 狀態) >>> ---
+    # 為了比較，我們需要在清理之前複製 Python 腳本的輸出文件。
+    # 注意：在 Test A 狀態下，Python 腳本仍然會被調用，只是內部邏輯被註解了。
+    # 它應該還是會產生一個輸出文件（即使內容可能與原始 VTT 非常接近）。
+    # 我們需要找到這個輸出文件的路徑。假設 Python 輸出的檔名模式是固定的：
+    log_message "INFO" "Attempting to copy processed VTT (Test A state) for comparison..."
+    # 假設 Python 腳本的輸出檔名總是基於輸入檔名加上 .enhanced.vtt
+    # 我們需要知道 Python 調用時的確切輸出檔名變數 enhanced_file
+    # 如果不確定，可以先用 find 命令嘗試查找
+    copied_enhanced=false
+    find "$temp_dir" -name '*.enhanced.vtt' -print -exec cp {} "$DOWNLOAD_PATH/" \; -exec printf "\nCopied enhanced file found by find.\n" \; -exec ls -l {} \; && copied_enhanced=true
 
+    # 可以加入日誌記錄 find 的結果
+    if $copied_enhanced; then
+         log_message "INFO" "Copied *.enhanced.vtt from $temp_dir to $DOWNLOAD_PATH using find."
+    else
+         log_message "WARNING" "Could not find *.enhanced.vtt in $temp_dir using find."
+         # 如果 find 找不到，可能需要檢查 Python 調用時的輸出檔名邏輯
+         # 例如，檢查 Python 調用循環中的 enhanced_file 變數最後的值
+         # if [ -n "$enhanced_file" ] && [ -f "$enhanced_file" ]; then
+         #     if cp "$enhanced_file" "$DOWNLOAD_PATH/"; then
+         #         log_message "INFO" "Copied enhanced VTT (last known): $(basename "$enhanced_file") to $DOWNLOAD_PATH"
+         #     else
+         #          log_message "ERROR" "Failed to copy enhanced VTT (last known): $enhanced_file"
+         #     fi
+         # else
+         #     log_message "WARNING" "Variable enhanced_file was empty or file did not exist."
+         # fi
+    fi
+    # --- <<< 結束複製處理後文件 >>> ---
+    
     log_message "INFO" "清理臨時檔案..."
     # --- 清理邏輯 (不變) ---
     safe_remove "$video_temp_file" "$audio_temp_file" "$normalized_audio_m4a"
