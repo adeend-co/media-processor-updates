@@ -6,68 +6,104 @@ import re
 import os
 
 # --- Script Configuration ---
-__version__ = "1.1.6(Precise Copy & Header Skip)"
+__version__ = "1.1.7(Final - Remove Old Style, Gen New, Convert Color)"
 
 # --- VTT Enhancement Logic ---
 
 def enhance_vtt(input_vtt_path, output_vtt_path):
-    """讀取 VTT 文件，精確跳過 Header/Style/##，原樣複製 Cues（測試點 A 狀態）"""
+    """讀取 VTT，移除舊 Header/Style，生成新 Style，替換 Cue 顏色"""
     try:
         with open(input_vtt_path, 'r', encoding='utf-8') as f_in:
             lines = f_in.readlines()
 
         output_lines = []
-        output_lines.append("WEBVTT\n") # 強制正確開頭
-        output_lines.append("\n")       # 強制空行
+        color_map = {}
+        css_class_counter = 0
+        style_block_needed = False # 是否需要生成新的 STYLE 塊
 
-        in_cue_section = False # 標誌是否已進入 Cue 部分
+        # --- 第一遍：掃描顏色，建立映射 ---
+        temp_in_cue_section = False # 臨時標誌，只在 Cue 部分掃描
+        for line in lines:
+            # --- 僅在 Cue 文本行中掃描顏色 ---
+            if '-->' in line:
+                 temp_in_cue_section = True
+                 continue # 跳過時間碼行
+            elif not temp_in_cue_section:
+                 continue # 跳過 Header/Style/## 等
+
+            # 進入 Cue 區段後處理文本行或空行
+            line_strip = line.strip()
+            if line_strip and not '-->' in line_strip: # 是 Cue 文本行
+                 matches = re.findall(r'<c\.color([0-9A-Fa-f]{6})>', line, re.IGNORECASE)
+                 for hex_color in matches:
+                     hex_color = hex_color.upper()
+                     if hex_color not in color_map:
+                         css_class_name = f"c{css_class_counter}"
+                         color_map[hex_color] = css_class_name
+                         css_class_counter += 1
+                         style_block_needed = True # 標記需要生成
+
+        # --- 開始構建輸出 ---
+        output_lines.append("WEBVTT\n")
+        output_lines.append("\n")
+
+        # --- 生成新的 STYLE 塊 (如果掃描到顏色) ---
+        if style_block_needed:
+            output_lines.append("STYLE\n")
+            for hex_color, class_name in color_map.items():
+                css_color = f"#{hex_color}"
+                output_lines.append(f"::cue(.{class_name}) {{ color: {css_color}; }}\n")
+            output_lines.append("\n") # STYLE 塊後必須有空行
+
+        # --- 第二遍：跳過舊 Header/Style，處理並輸出 Cues ---
+        in_cue_section = False
 
         for line in lines:
-            # --- 移除 BOM 和處理換行符 ---
-            if output_lines[-2] == "WEBVTT\n" and line.startswith('\ufeff'): # 僅檢查文件首行 BOM
+            # --- 處理 BOM 和換行符 ---
+            if output_lines[0] == "WEBVTT\n" and line.startswith('\ufeff'):
                  line = line[1:]
-            original_line_content = line.rstrip() # 獲取去除尾部空白的行內容
-            original_line_ending = line[len(original_line_content):] # 獲取原始換行符 (或空)
-
-            # 確保我們使用的是 LF 換行符
-            if not original_line_ending:
-                 line_with_lf = original_line_content + "\n"
-            elif original_line_ending == "\n":
-                 line_with_lf = line
-            else: # 其他情況（如 \r\n 或只有 \r）強制改為 \n
-                 line_with_lf = original_line_content + "\n"
-
+            original_line_content = line.rstrip()
+            line_with_lf = original_line_content + "\n"
 
             # --- 狀態機：尋找第一個時間碼行 ---
             if not in_cue_section:
-                # 只要包含 '-->' 就認為是第一個時間碼，開始進入 Cue 區段
                 if '-->' in original_line_content:
                     in_cue_section = True
-                    # 將這個第一個時間碼行加入輸出
+                    # 輸出第一個時間碼行
                     output_lines.append(line_with_lf)
                 else:
-                    # 在找到第一個時間碼之前，所有行（包括 WEBVTT, Kind, Lang, Style, ##, NOTE, 空行）都忽略
+                    # 忽略所有 Header/Style/## 等內容
                     continue
             else:
-                # --- 進入 Cue 區段後，原樣複製所有行（包括空行） ---
-                # 我們假設原始 VTT 的 Cue 結構（包括空行）是 FFmpeg 可以接受的
-                # 所以不再嘗試自己判斷和插入空行，直接複製原始文件的行（確保是 LF 結尾）
-                output_lines.append(line_with_lf)
+                # --- 處理 Cue 區段 ---
+                is_timestamp_line = '-->' in original_line_content
+                is_text_line = bool(original_line_content) and not is_timestamp_line
+                is_empty_line = not original_line_content
 
+                if is_timestamp_line:
+                    output_lines.append(line_with_lf) # 原樣輸出時間碼行
+                elif is_text_line:
+                    # <<< 啟用顏色替換 >>>
+                    processed_line = original_line_content
+                    for hex_color, class_name in color_map.items():
+                        pattern = re.compile(f'<c\\.color{hex_color}>', re.IGNORECASE)
+                        processed_line = pattern.sub(f'<c.{class_name}>', processed_line)
+                    processed_line = processed_line.replace('</c>', '')
+                    output_lines.append(processed_line + "\n") # 輸出處理後的文本行
+                elif is_empty_line:
+                    output_lines.append("\n") # 原樣輸出空行
 
-        # --- 確保文件末尾是空行（如果原始文件不是） ---
-        if output_lines and output_lines[-1].strip():
-            output_lines.append("\n")
-        # --- 如果末尾已經是空行或多個空行，只保留一個 ---
+        # --- 確保文件末尾是空行 ---
         while len(output_lines) > 2 and output_lines[-1] == "\n" and output_lines[-2] == "\n":
             output_lines.pop()
-
+        if output_lines and output_lines[-1] != "\n":
+            output_lines.append("\n")
 
         # --- 寫入新的 VTT 文件 ---
         with open(output_vtt_path, 'w', encoding='utf-8', newline='\n') as f_out:
             f_out.write(''.join(output_lines))
 
-        print(f"Info: Generated enhanced VTT (v{__version__}, Test A state - Precise Copy) to {output_vtt_path}", file=sys.stderr)
+        print(f"Info: Generated enhanced VTT (v{__version__}, Final Version) to {output_vtt_path}", file=sys.stderr)
         return 0 # 成功
 
     except FileNotFoundError:
