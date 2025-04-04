@@ -8,7 +8,7 @@ import os
 
 # --- Script Configuration ---
 # <<< 更新版本號以反映修改 >>>
-__version__ = "1.1.2(Fix Structure)"
+__version__ = "1.1.3(Fix Structure)"
 
 # --- VTT Enhancement Logic ---
 
@@ -45,12 +45,12 @@ def enhance_vtt(input_vtt_path, output_vtt_path):
 
         # --- 生成 STYLE 塊 (如果需要) ---
         # (這部分邏輯不變)
-        if style_block_needed:
-            output_lines.append("STYLE")
-            for hex_color, class_name in color_map.items():
-                css_color = f"#{hex_color}"
-                output_lines.append(f"::cue(.{class_name}) {{ color: {css_color}; }}")
-            output_lines.append("") # STYLE 塊後必須有空行
+       # if style_block_needed:
+       #     output_lines.append("STYLE")
+        #    for hex_color, class_name in color_map.items():
+         #       css_color = f"#{hex_color}"
+        #        output_lines.append(f"::cue(.{class_name}) {{ color: {css_color}; }}")
+        #    output_lines.append("") # STYLE 塊後必須有空行
 
         # --- 第二遍：處理 Cues (時間碼和文本)，確保結構正確 ---
         in_header = True
@@ -101,10 +101,10 @@ def enhance_vtt(input_vtt_path, output_vtt_path):
             elif is_text_line:
                 # 處理文本行 (替換顏色標籤，移除 </c>)
                 processed_line = line_strip
-                for hex_color, class_name in color_map.items():
-                    pattern = re.compile(f'<c\\.color{hex_color}>', re.IGNORECASE)
-                    processed_line = pattern.sub(f'<c.{class_name}>', processed_line)
-                processed_line = processed_line.replace('</c>', '')
+           #     for hex_color, class_name in color_map.items():
+           #         pattern = re.compile(f'<c\\.color{hex_color}>', re.IGNORECASE)
+           #         processed_line = pattern.sub(f'<c.{class_name}>', processed_line)
+           #     processed_line = processed_line.replace('</c>', '')
                 output_lines.append(processed_line) # 添加處理後的文本行
                 last_line_was_cue_related = True
             elif is_empty_line:
