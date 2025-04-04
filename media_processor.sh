@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v1.9.3(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v2.0.3(Experimental)" # <<< 版本號更新
 # ... 其他設定 ...
 TARGET_DATE="2025-07-11" # <<< 新增：設定您的目標日期
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
@@ -1066,131 +1066,203 @@ process_single_mp4_no_normalize() {
 }
 
 ############################################
-# 處理單一 YouTube 影片（MKV）下載與處理 (修正版)
+# 處理單一 YouTube 影片（MKV）下載與處理 (調用轉換器版 v1.8.4)
 ############################################
 process_single_mkv() {
     local video_url="$1"
     local target_sub_langs="zh-Hant,zh-TW,zh-Hans,zh-CN,zh"
-    local subtitle_format_pref="ass/vtt/best"
-    local subtitle_files=()
+    # <<< 修改：優先請求 VTT，因為轉換器處理 VTT >>>
+    local subtitle_format_pref="vtt/best" 
+    local downloaded_vtt_files=() # 存儲下載的 VTT 檔路徑
+    local converted_ass_files=()  # 存儲成功轉換的 ASS 檔路徑
+    local fallback_subtitle_files=() # 存儲轉換失敗或無轉換器時使用的原始 VTT 檔路徑
     local temp_dir=$(mktemp -d)
     local result=0
+    
+    # <<< 新增：定義外部轉換器腳本的路徑 >>>
+    # 假設您的 Python 轉換腳本放在與主腳本相同的目錄下
+    local VTT_TO_ASS_CONVERTER_PY="$SCRIPT_DIR/vtt_to_ass_converter.py" 
 
     echo -e "${YELLOW}處理 YouTube 影片 (輸出 MKV)：$video_url${RESET}"
     log_message "INFO" "處理 YouTube MKV: $video_url"; log_message "INFO" "將嘗試請求以下字幕 (格式: $subtitle_format_pref): $target_sub_langs"
-    echo -e "${YELLOW}將嘗試下載繁/簡/通用中文字幕 (保留樣式)...${RESET}"
+    echo -e "${YELLOW}將嘗試下載繁/簡/通用中文字幕 (優先 VTT)...${RESET}"
 
     mkdir -p "$DOWNLOAD_PATH"; if [ ! -w "$DOWNLOAD_PATH" ]; then log_message "ERROR" "...無法寫入目錄..."; echo -e "${RED}錯誤：無法寫入目錄${RESET}"; [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1; fi
 
-    # --- 改進：獲取標題和 ID，並清理標題中的非法字元 ---
+    # --- 檔名清理 (沿用 v1.8.4 的邏輯) ---
     local video_title video_id sanitized_title_id
     video_title=$(yt-dlp --get-title "$video_url" 2>/dev/null) || video_title="video"
     video_id=$(yt-dlp --get-id "$video_url" 2>/dev/null) || video_id=$(date +%s)
-    # 移除標題中常見的非法檔案名字符：/ \ : * ? " < > |
     sanitized_title_id=$(echo "${video_title}_${video_id}" | sed 's@[/\\:*?"<>|]@_@g')
-    local output_base_name="$DOWNLOAD_PATH/$sanitized_title_id" # <<< 使用清理後的名稱
-    # --- 結束檔名處理改進 ---
+    local output_base_name="$DOWNLOAD_PATH/$sanitized_title_id" 
+    # --- 結束檔名處理 ---
 
     local video_temp_file="${temp_dir}/video_stream.mp4"
     local audio_temp_file="${temp_dir}/audio_stream.m4a"
     local sub_temp_template="${temp_dir}/sub_stream.%(ext)s"
 
-    echo -e "${YELLOW}開始下載最佳視訊流...${RESET}"
-    # ... (下載視訊流邏輯) ...
-# 修改後的命令 (添加 [height<=1440])：
-if ! yt-dlp -f 'bv[ext=mp4][height<=1440]' --no-warnings -o "$video_temp_file" "$video_url" 2> "$temp_dir/yt-dlp-video.log"; then
-    # 如果找不到 1440p 或以下的 MP4 視訊流，可以添加一個備選方案，例如下載最佳的 MP4 視訊流
-    echo -e "${YELLOW}警告：未找到 <=1440p 的 MP4 視訊流，嘗試下載最佳 MP4 視訊流...${RESET}"
-    log_message "WARNING" "未找到 <=1440p 的 MP4 視訊流，嘗試最佳 MP4 for $video_url"
-    if ! yt-dlp -f 'bv[ext=mp4]/bestvideo[ext=mp4]' --no-warnings -o "$video_temp_file" "$video_url" 2> "$temp_dir/yt-dlp-video.log"; then
-        log_message "ERROR" "視訊流下載失敗（包括備選方案）..."; echo -e "${RED}錯誤：視訊流下載失敗！${RESET}"; cat "$temp_dir/yt-dlp-video.log"; [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1;
+    echo -e "${YELLOW}開始下載最佳視訊流 (<=1440p)...${RESET}"
+    # --- 下載視訊流 (沿用 v1.8.4 的畫質限制邏輯) ---
+    if ! yt-dlp -f 'bv[ext=mp4][height<=1440]' --no-warnings -o "$video_temp_file" "$video_url" 2> "$temp_dir/yt-dlp-video.log"; then
+        echo -e "${YELLOW}警告：未找到 <=1440p 的 MP4 視訊流，嘗試下載最佳 MP4 視訊流...${RESET}"
+        log_message "WARNING" "未找到 <=1440p 的 MP4 視訊流，嘗試最佳 MP4 for $video_url"
+        if ! yt-dlp -f 'bv[ext=mp4]/bestvideo[ext=mp4]' --no-warnings -o "$video_temp_file" "$video_url" 2> "$temp_dir/yt-dlp-video.log"; then
+            log_message "ERROR" "視訊流下載失敗（包括備選方案）..."; echo -e "${RED}錯誤：視訊流下載失敗！${RESET}"; cat "$temp_dir/yt-dlp-video.log"; [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1;
+        fi
     fi
-fi
-log_message "INFO" "視訊流下載完成: $video_temp_file"
+    log_message "INFO" "視訊流下載完成: $video_temp_file"
+    # --- 結束下載視訊流 ---
 
-    echo -e "${YELLOW}開始下載最佳音訊流...${RESET}"
-    # ... (下載音訊流邏輯) ...
+    echo -e "${YELLOW}開始下載最佳音訊流 (m4a)...${RESET}"
+    # --- 下載音訊流 (沿用 v1.8.4 邏輯) ---
      if ! yt-dlp -f 'ba[ext=m4a]' --no-warnings -o "$audio_temp_file" "$video_url" 2> "$temp_dir/yt-dlp-audio.log"; then
              log_message "ERROR" "音訊流下載失敗..."; echo -e "${RED}錯誤：音訊流下載失敗！${RESET}"; cat "$temp_dir/yt-dlp-audio.log"; [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1;
         fi
     log_message "INFO" "音訊流下載完成: $audio_temp_file"
+    # --- 結束下載音訊流 ---
 
     echo -e "${YELLOW}開始下載字幕 (格式: ${subtitle_format_pref})...${RESET}"
-    # ... (下載字幕和查找邏輯) ...
     yt-dlp --write-subs --sub-format "$subtitle_format_pref" --sub-lang "$target_sub_langs" --skip-download -o "$sub_temp_template" "$video_url" > "$temp_dir/yt-dlp-subs.log" 2>&1
+    
     local found_sub=false
+    # --- 修改查找邏輯，只找 vtt 並存儲 ---
     for lang_code in "zh-Hant" "zh-TW" "zh-Hans" "zh-CN" "zh"; do
-        for sub_ext in ass vtt; do
-             potential_sub_file="${temp_dir}/sub_stream.${lang_code}.${sub_ext}"
-             if [ -f "$potential_sub_file" ]; then
-                 subtitle_files+=("$potential_sub_file")
-                 log_message "INFO" "找到字幕: $potential_sub_file"; echo -e "${GREEN}找到字幕: $(basename "$potential_sub_file")${RESET}";
-                 found_sub=true; break;
-             fi; done
-        if $found_sub; then break; fi
+        potential_sub_file="${temp_dir}/sub_stream.${lang_code}.vtt"
+        if [ -f "$potential_sub_file" ]; then
+            downloaded_vtt_files+=("$potential_sub_file") # <<< 存儲 VTT 路徑
+            log_message "INFO" "找到 VTT 字幕: $potential_sub_file"; echo -e "${GREEN}找到 VTT 字幕: $(basename "$potential_sub_file")${RESET}";
+            found_sub=true; 
+            # 根據需求決定是否找到一個就 break
+            # 如果希望合併多個語言，可以移除 break
+            break; 
+        fi
     done
-    if [ ${#subtitle_files[@]} -eq 0 ]; then log_message "INFO" "未找到符合條件的中文字幕。"; echo -e "${YELLOW}未找到 ASS/VTT 格式的中文字幕。${RESET}"; fi
+    if [ ${#downloaded_vtt_files[@]} -eq 0 ]; then log_message "INFO" "未找到符合條件的中文字幕。"; echo -e "${YELLOW}未找到 VTT 格式的中文字幕。${RESET}"; fi
+    # --- 結束 VTT 查找 ---
 
+    # --- <<< 新增：調用外部 Python 轉換器 >>> ---
+    if [ ${#downloaded_vtt_files[@]} -gt 0 ]; then
+        # 檢查 Python 是否存在
+        if command -v python &> /dev/null || command -v python3 &> /dev/null; then
+             # 優先使用 python3 (如果存在)
+            local python_cmd
+            if command -v python3 &> /dev/null; then python_cmd="python3"; else python_cmd="python"; fi
+
+            # 檢查轉換器腳本是否存在且可讀
+            if [ -f "$VTT_TO_ASS_CONVERTER_PY" ] && [ -r "$VTT_TO_ASS_CONVERTER_PY" ]; then
+                echo -e "${YELLOW}嘗試將 VTT 轉換為 ASS (使用 $VTT_TO_ASS_CONVERTER_PY)...${RESET}"
+                for vtt_file in "${downloaded_vtt_files[@]}"; do
+                    ass_file="${vtt_file%.vtt}.ass" # 構造 ASS 檔名
+                    
+                    log_message "INFO" "調用轉換器: $python_cmd $VTT_TO_ASS_CONVERTER_PY \"$vtt_file\" \"$ass_file\""
+                    # 調用 Python 轉換腳本，並捕獲其輸出和返回碼
+                    converter_output=$($python_cmd "$VTT_TO_ASS_CONVERTER_PY" "$vtt_file" "$ass_file" 2>&1)
+                    converter_exit_code=$?
+
+                    if [ $converter_exit_code -eq 0 ]; then
+                        log_message "INFO" "VTT 轉換 ASS 成功: $vtt_file -> $ass_file"
+                        echo -e "${GREEN}字幕轉換成功: $(basename "$ass_file")${RESET}"
+                        converted_ass_files+=("$ass_file") # <<< 添加成功的 ASS 文件
+                    else
+                        log_message "ERROR" "VTT 轉換 ASS 失敗 (Exit Code: $converter_exit_code): $vtt_file"
+                        log_message "ERROR" "轉換器輸出: $converter_output" # 記錄轉換器的錯誤輸出
+                        echo -e "${RED}錯誤：轉換字幕 $(basename "$vtt_file") 為 ASS 失敗。將嘗試使用原始 VTT。${RESET}"
+                        echo -e "${RED}轉換器錯誤訊息: $converter_output ${RESET}" # 顯示錯誤訊息給使用者
+                        fallback_subtitle_files+=("$vtt_file") # <<< 轉換失敗，記錄原始 VTT
+                    fi
+                done
+            else
+                log_message "WARNING" "未找到或無法讀取字幕轉換器: $VTT_TO_ASS_CONVERTER_PY。將直接使用下載的 VTT。"
+                echo -e "${YELLOW}警告：未找到字幕轉換器 ($VTT_TO_ASS_CONVERTER_PY)。將嘗試使用原始 VTT。${RESET}"
+                fallback_subtitle_files+=("${downloaded_vtt_files[@]}") 
+            fi
+        else
+            log_message "WARNING" "未找到 Python 環境，無法執行字幕轉換。將直接使用下載的 VTT。"
+            echo -e "${YELLOW}警告：未找到 Python。將嘗試使用原始 VTT。${RESET}"
+            fallback_subtitle_files+=("${downloaded_vtt_files[@]}")
+        fi
+    fi
+    # --- 結束調用轉換器 ---
+
+    # --- 音量標準化 (沿用 v1.8.4 邏輯) ---
     local normalized_audio_m4a="$temp_dir/audio_normalized.m4a"
     echo -e "${YELLOW}開始音量標準化...${RESET}"
     if normalize_audio "$audio_temp_file" "$normalized_audio_m4a" "$temp_dir" true; then
         echo -e "${YELLOW}正在混流成 MKV 檔案...${RESET}"
-        local output_mkv="${output_base_name}_normalized.mkv" # <<< 使用清理後的 base name
-
+        local output_mkv="${output_base_name}_normalized.mkv"
+        
         local ffmpeg_mux_args=(ffmpeg -y -i "$video_temp_file" -i "$normalized_audio_m4a")
         local sub_input_index=2
-        for sub_file in "${subtitle_files[@]}"; do ffmpeg_mux_args+=("-i" "$sub_file"); done
         
+        # --- 修改：優先使用轉換後的 ASS，然後使用 fallback 的 VTT ---
+        local subtitles_to_mux=("${converted_ass_files[@]}" "${fallback_subtitle_files[@]}") 
+
+        # 添加字幕輸入
+        for sub_file in "${subtitles_to_mux[@]}"; do 
+            ffmpeg_mux_args+=("-i" "$sub_file")
+        done
+
         # 編碼器和映射邏輯
         ffmpeg_mux_args+=("-c:v" "copy" "-c:a" "aac" "-b:a" "256k" "-ar" "44100") 
         ffmpeg_mux_args+=("-map" "0:v:0" "-map" "1:a:0") 
-        if [ ${#subtitle_files[@]} -gt 0 ]; then 
-            ffmpeg_mux_args+=("-c:s" "copy") 
-            for ((i=0; i<${#subtitle_files[@]}; i++)); do 
+
+        if [ ${#subtitles_to_mux[@]} -gt 0 ]; then 
+            ffmpeg_mux_args+=("-c:s" "copy") # 對於 ASS 或 VTT 都直接複製
+            for ((i=0; i<${#subtitles_to_mux[@]}; i++)); do 
                 ffmpeg_mux_args+=("-map" "$sub_input_index:s:0")
+                 # <<< 可選：為字幕軌道添加元數據 (語言) >>>
+                 # 嘗試從檔名推斷語言代碼 (例如 sub_stream.zh-Hant.ass -> chi)
+                 local sub_basename=$(basename "${subtitles_to_mux[$i]}")
+                 local lang_tag="und" # 默認為 Undetermined
+                 if [[ "$sub_basename" =~ \.(zh-Hant|zh-TW|zh-Hans|zh-CN|zh)\. ]]; then
+                     lang_tag="chi" # BCP 47 語言代碼映射到 ISO 639-2/B (chi)
+                 fi
+                 # 添加 FFmpeg 元數據標籤
+                 ffmpeg_mux_args+=("-metadata:s:s:$i" "language=$lang_tag")
+                # --- 結束添加語言元數據 ---
                 ((sub_input_index++)) 
             done
         fi
-        ffmpeg_mux_args+=("$output_mkv") # <<< 輸出到清理後的檔名
+        ffmpeg_mux_args+=("$output_mkv")
+        # --- 結束字幕輸入修改 ---
 
         log_message "INFO" "MKV 混流命令: ${ffmpeg_mux_args[*]}"
         local ffmpeg_stderr_log="$temp_dir/ffmpeg_mkv_mux_stderr.log"
-
-        # --- 改進：在失敗時輸出錯誤日誌 ---
-        if ! "${ffmpeg_mux_args[@]}" 2> "$ffmpeg_stderr_log"; then
+        if ! "${ffmpeg_mux_args[@]}" 2> "$ffmpeg_stderr_log"; then 
             echo -e "${RED}錯誤：MKV 混流失敗！以下是 FFmpeg 錯誤訊息：${RESET}"
-            cat "$ffmpeg_stderr_log" # <<< 輸出錯誤訊息到控制檯
-            log_message "ERROR" "MKV 混流失敗，詳見 $ffmpeg_stderr_log (錯誤內容已輸出)";
+            cat "$ffmpeg_stderr_log"
+            log_message "ERROR" "MKV 混流失敗，詳見 $ffmpeg_stderr_log (錯誤內容已輸出)"; 
             result=1;
-        else
-        # --- 結束錯誤輸出改進 ---
-            echo -e "${GREEN}MKV 混流完成${RESET}";
-            result=0;
-            # 在成功後才刪除日誌檔
-            rm -f "$ffmpeg_stderr_log";
+        else 
+            echo -e "${GREEN}MKV 混流完成${RESET}"; 
+            result=0; 
+            rm -f "$ffmpeg_stderr_log"; 
         fi
-    else
-        log_message "ERROR" "音量標準化失敗！";
-        result=1;
+    else 
+        log_message "ERROR" "音量標準化失敗！"; 
+        result=1; 
     fi
 
     log_message "INFO" "清理臨時檔案..."
-    # ... (清理邏輯，確保 ffmpeg_stderr_log 如果失敗了不會被這裡誤刪) ...
+    # --- 修改：確保轉換後的 ASS 和原始 VTT 都被清理 ---
     safe_remove "$video_temp_file" "$audio_temp_file" "$normalized_audio_m4a"
-    for sub_file in "${subtitle_files[@]}"; do safe_remove "$sub_file"; done
+    for sub_file in "${converted_ass_files[@]}"; do safe_remove "$sub_file"; done # 清理 ASS
+    for sub_file in "${downloaded_vtt_files[@]}"; do safe_remove "$sub_file"; done # 清理 VTT
     safe_remove "$temp_dir/yt-dlp-video.log" "$temp_dir/yt-dlp-audio.log" "$temp_dir/yt-dlp-subs.log"
-    # 只有在成功時 ffmpeg_stderr_log 才被刪除，失敗時保留它（雖然內容已輸出）
-    [ -f "$ffmpeg_stderr_log" ] && safe_remove "$ffmpeg_stderr_log"
+    [ -f "$ffmpeg_stderr_log" ] && safe_remove "$ffmpeg_stderr_log" # 清理 ffmpeg 錯誤日誌 (如果存在)
     [ -d "$temp_dir" ] && rm -rf "$temp_dir"
+    # --- 結束清理修改 ---
 
-    if [ $result -eq 0 ]; then
-        echo -e "${GREEN}處理完成！MKV 影片已儲存至：$output_mkv${RESET}";
+    # --- 處理結果輸出 (沿用 v1.8.4 邏輯) ---
+    if [ $result -eq 0 ]; then 
+        echo -e "${GREEN}處理完成！MKV 影片已儲存至：$output_mkv${RESET}"; 
         log_message "SUCCESS" "MKV 處理完成！影片已儲存至：$output_mkv";
-    else
-        echo -e "${RED}處理失敗！${RESET}";
-        log_message "ERROR" "MKV 處理失敗：$video_url";
+    else 
+        echo -e "${RED}處理失敗！${RESET}"; 
+        log_message "ERROR" "MKV 處理失敗：$video_url"; 
     fi
     return $result
+    # --- 結束處理結果輸出 ---
 }
 
 ############################################
