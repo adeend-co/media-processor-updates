@@ -572,9 +572,9 @@ safe_remove() {
 # <<< 修改：檢查並更新依賴套件 (加入 Python 轉換器更新) >>>
 ############################################
 update_dependencies() {
-    local pkg_tools=("ffmpeg" "jq" "curl" "python" "mkvtoolnix") # <<< 新增 mkvtoolnix
-    local pip_tools=("yt-dlp" "webvtt-py")                 # <<< 新增 webvtt-py
-    # <<< 修改：加入 python 和 webvtt-py 到驗證列表 >>>
+    local pkg_tools=("ffmpeg" "jq" "curl" "python")
+    local pip_tools=("yt-dlp")  
+    # <<< 修改：加入 python 到驗證列表 >>>
     local all_tools=("${pkg_tools[@]}" "${pip_tools[@]}" "ffprobe" "mkvextract" "python") 
     local update_failed=false
     local missing_after_update=()
