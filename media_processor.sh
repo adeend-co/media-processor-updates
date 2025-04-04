@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.0.3(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v2.0.4(Experimental)" # <<< 版本號更新
 # ... 其他設定 ...
 TARGET_DATE="2025-07-11" # <<< 新增：設定您的目標日期
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
@@ -1066,29 +1066,30 @@ process_single_mp4_no_normalize() {
 }
 
 ############################################
-# 處理單一 YouTube 影片（MKV）下載與處理 (調用轉換器版 v1.8.4)
+# 處理單一 YouTube 影片（MKV）下載與處理 (調用轉換器版 v2.0.4)
 ############################################
 process_single_mkv() {
     local video_url="$1"
     local target_sub_langs="zh-Hant,zh-TW,zh-Hans,zh-CN,zh"
-    # <<< 修改：優先請求 VTT，因為轉換器處理 VTT >>>
+    # <<< 仍然優先 VTT >>>
     local subtitle_format_pref="vtt/best" 
-    local downloaded_vtt_files=() # 存儲下載的 VTT 檔路徑
-    local converted_ass_files=()  # 存儲成功轉換的 ASS 檔路徑
-    local fallback_subtitle_files=() # 存儲轉換失敗或無轉換器時使用的原始 VTT 檔路徑
+    local downloaded_vtt_files=() 
+    # <<< 新增：存儲增強後的 VTT 文件 >>>
+    local enhanced_vtt_files=()  
+    local fallback_subtitle_files=() # 原始 VTT 作為備選
     local temp_dir=$(mktemp -d)
     local result=0
     
-    # <<< 新增：定義外部轉換器腳本的路徑 >>>
-    # 假設您的 Python 轉換腳本放在與主腳本相同的目錄下
-    local VTT_TO_ASS_CONVERTER_PY="$SCRIPT_DIR/vtt_to_ass_converter.py" 
+    # <<< 修改：指向新的 Python 腳本 >>>
+    local VTT_ENHANCER_PY="$SCRIPT_DIR/vtt_enhancer.py" 
+    # <<< 移除：不再需要 ASS 相關的轉換器版本檢查邏輯 >>>
+    # local PYTHON_CONVERTER_VERSION="..." 
 
     echo -e "${YELLOW}處理 YouTube 影片 (輸出 MKV)：$video_url${RESET}"
     log_message "INFO" "處理 YouTube MKV: $video_url"; log_message "INFO" "將嘗試請求以下字幕 (格式: $subtitle_format_pref): $target_sub_langs"
     echo -e "${YELLOW}將嘗試下載繁/簡/通用中文字幕 (優先 VTT)...${RESET}"
 
     mkdir -p "$DOWNLOAD_PATH"; if [ ! -w "$DOWNLOAD_PATH" ]; then log_message "ERROR" "...無法寫入目錄..."; echo -e "${RED}錯誤：無法寫入目錄${RESET}"; [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1; fi
-
     # --- 檔名清理 (沿用 v1.8.4 的邏輯) ---
     local video_title video_id sanitized_title_id
     video_title=$(yt-dlp --get-title "$video_url" 2>/dev/null) || video_title="video"
@@ -1120,7 +1121,6 @@ process_single_mkv() {
         fi
     log_message "INFO" "音訊流下載完成: $audio_temp_file"
     # --- 結束下載音訊流 ---
-
     echo -e "${YELLOW}開始下載字幕 (格式: ${subtitle_format_pref})...${RESET}"
     yt-dlp --write-subs --sub-format "$subtitle_format_pref" --sub-lang "$target_sub_langs" --skip-download -o "$sub_temp_template" "$video_url" > "$temp_dir/yt-dlp-subs.log" 2>&1
     
@@ -1140,49 +1140,44 @@ process_single_mkv() {
     if [ ${#downloaded_vtt_files[@]} -eq 0 ]; then log_message "INFO" "未找到符合條件的中文字幕。"; echo -e "${YELLOW}未找到 VTT 格式的中文字幕。${RESET}"; fi
     # --- 結束 VTT 查找 ---
 
-    # --- <<< 新增：調用外部 Python 轉換器 >>> ---
+# --- <<< 修改：調用 VTT 增強器 >>> ---
     if [ ${#downloaded_vtt_files[@]} -gt 0 ]; then
-        # 檢查 Python 是否存在
         if command -v python &> /dev/null || command -v python3 &> /dev/null; then
-             # 優先使用 python3 (如果存在)
-            local python_cmd
-            if command -v python3 &> /dev/null; then python_cmd="python3"; else python_cmd="python"; fi
+            local python_cmd; if command -v python3 &> /dev/null; then python_cmd="python3"; else python_cmd="python"; fi
 
-            # 檢查轉換器腳本是否存在且可讀
-            if [ -f "$VTT_TO_ASS_CONVERTER_PY" ] && [ -r "$VTT_TO_ASS_CONVERTER_PY" ]; then
-                echo -e "${YELLOW}嘗試將 VTT 轉換為 ASS (使用 $VTT_TO_ASS_CONVERTER_PY)...${RESET}"
+            if [ -f "$VTT_ENHANCER_PY" ] && [ -r "$VTT_ENHANCER_PY" ]; then
+                echo -e "${YELLOW}嘗試增強 VTT 字幕樣式 (使用 $VTT_ENHANCER_PY)...${RESET}"
                 for vtt_file in "${downloaded_vtt_files[@]}"; do
-                    ass_file="${vtt_file%.vtt}.ass" # 構造 ASS 檔名
-                    
-                    log_message "INFO" "調用轉換器: $python_cmd $VTT_TO_ASS_CONVERTER_PY \"$vtt_file\" \"$ass_file\""
-                    # 調用 Python 轉換腳本，並捕獲其輸出和返回碼
-                    converter_output=$($python_cmd "$VTT_TO_ASS_CONVERTER_PY" "$vtt_file" "$ass_file" 2>&1)
-                    converter_exit_code=$?
+                    enhanced_file="${vtt_file%.vtt}.enhanced.vtt" # 增強後的檔名
 
-                    if [ $converter_exit_code -eq 0 ]; then
-                        log_message "INFO" "VTT 轉換 ASS 成功: $vtt_file -> $ass_file"
-                        echo -e "${GREEN}字幕轉換成功: $(basename "$ass_file")${RESET}"
-                        converted_ass_files+=("$ass_file") # <<< 添加成功的 ASS 文件
+                    log_message "INFO" "調用增強器: $python_cmd $VTT_ENHANCER_PY \"$vtt_file\" \"$enhanced_file\""
+                    enhancer_output=$($python_cmd "$VTT_ENHANCER_PY" "$vtt_file" "$enhanced_file" 2>&1)
+                    enhancer_exit_code=$?
+
+                    if [ $enhancer_exit_code -eq 0 ]; then
+                        log_message "INFO" "VTT 增強成功: $vtt_file -> $enhanced_file"
+                        echo -e "${GREEN}字幕增強成功: $(basename "$enhanced_file")${RESET}"
+                        enhanced_vtt_files+=("$enhanced_file") # <<< 添加增強後的文件
                     else
-                        log_message "ERROR" "VTT 轉換 ASS 失敗 (Exit Code: $converter_exit_code): $vtt_file"
-                        log_message "ERROR" "轉換器輸出: $converter_output" # 記錄轉換器的錯誤輸出
-                        echo -e "${RED}錯誤：轉換字幕 $(basename "$vtt_file") 為 ASS 失敗。將嘗試使用原始 VTT。${RESET}"
-                        echo -e "${RED}轉換器錯誤訊息: $converter_output ${RESET}" # 顯示錯誤訊息給使用者
-                        fallback_subtitle_files+=("$vtt_file") # <<< 轉換失敗，記錄原始 VTT
+                        log_message "ERROR" "VTT 增強失敗 (Exit Code: $enhancer_exit_code): $vtt_file"
+                        log_message "ERROR" "增強器輸出: $enhancer_output" 
+                        echo -e "${RED}錯誤：增強字幕 $(basename "$vtt_file") 失敗。將嘗試使用原始 VTT。${RESET}"
+                        echo -e "${RED}增強器錯誤訊息: $enhancer_output ${RESET}" 
+                        fallback_subtitle_files+=("$vtt_file") # <<< 增強失敗，記錄原始 VTT
                     fi
                 done
             else
-                log_message "WARNING" "未找到或無法讀取字幕轉換器: $VTT_TO_ASS_CONVERTER_PY。將直接使用下載的 VTT。"
-                echo -e "${YELLOW}警告：未找到字幕轉換器 ($VTT_TO_ASS_CONVERTER_PY)。將嘗試使用原始 VTT。${RESET}"
+                log_message "WARNING" "未找到或無法讀取字幕增強器: $VTT_ENHANCER_PY。將直接使用下載的 VTT。"
+                echo -e "${YELLOW}警告：未找到字幕增強器 ($VTT_ENHANCER_PY)。將嘗試使用原始 VTT。${RESET}"
                 fallback_subtitle_files+=("${downloaded_vtt_files[@]}") 
             fi
         else
-            log_message "WARNING" "未找到 Python 環境，無法執行字幕轉換。將直接使用下載的 VTT。"
+            log_message "WARNING" "未找到 Python 環境，無法執行字幕增強。將直接使用下載的 VTT。"
             echo -e "${YELLOW}警告：未找到 Python。將嘗試使用原始 VTT。${RESET}"
             fallback_subtitle_files+=("${downloaded_vtt_files[@]}")
         fi
     fi
-    # --- 結束調用轉換器 ---
+    # --- 結束調用增強器 ---
 
     # --- 音量標準化 (沿用 v1.8.4 邏輯) ---
     local normalized_audio_m4a="$temp_dir/audio_normalized.m4a"
@@ -1194,32 +1189,26 @@ process_single_mkv() {
         local ffmpeg_mux_args=(ffmpeg -y -i "$video_temp_file" -i "$normalized_audio_m4a")
         local sub_input_index=2
         
-        # --- 修改：優先使用轉換後的 ASS，然後使用 fallback 的 VTT ---
-        local subtitles_to_mux=("${converted_ass_files[@]}" "${fallback_subtitle_files[@]}") 
+       # --- 修改：優先使用增強後的 VTT，然後使用 fallback 的原始 VTT ---
+        local subtitles_to_mux=("${enhanced_vtt_files[@]}" "${fallback_subtitle_files[@]}") 
 
         # 添加字幕輸入
         for sub_file in "${subtitles_to_mux[@]}"; do 
             ffmpeg_mux_args+=("-i" "$sub_file")
         done
 
-        # 編碼器和映射邏輯
         ffmpeg_mux_args+=("-c:v" "copy" "-c:a" "aac" "-b:a" "256k" "-ar" "44100") 
         ffmpeg_mux_args+=("-map" "0:v:0" "-map" "1:a:0") 
 
         if [ ${#subtitles_to_mux[@]} -gt 0 ]; then 
-            ffmpeg_mux_args+=("-c:s" "copy") # 對於 ASS 或 VTT 都直接複製
+            # <<< 對於 VTT，標準的編解碼器是 webvtt >>>
+            ffmpeg_mux_args+=("-c:s" "webvtt") # <<< 修改：指定字幕編解碼器為 webvtt
             for ((i=0; i<${#subtitles_to_mux[@]}; i++)); do 
                 ffmpeg_mux_args+=("-map" "$sub_input_index:s:0")
-                 # <<< 可選：為字幕軌道添加元數據 (語言) >>>
-                 # 嘗試從檔名推斷語言代碼 (例如 sub_stream.zh-Hant.ass -> chi)
+                 # 添加語言標籤 (邏輯不變)
                  local sub_basename=$(basename "${subtitles_to_mux[$i]}")
-                 local lang_tag="und" # 默認為 Undetermined
-                 if [[ "$sub_basename" =~ \.(zh-Hant|zh-TW|zh-Hans|zh-CN|zh)\. ]]; then
-                     lang_tag="chi" # BCP 47 語言代碼映射到 ISO 639-2/B (chi)
-                 fi
-                 # 添加 FFmpeg 元數據標籤
+                 local lang_tag="und"; if [[ "$sub_basename" =~ \.(zh-Hant|zh-TW|zh-Hans|zh-CN|zh)\. ]]; then lang_tag="chi"; fi
                  ffmpeg_mux_args+=("-metadata:s:s:$i" "language=$lang_tag")
-                # --- 結束添加語言元數據 ---
                 ((sub_input_index++)) 
             done
         fi
@@ -1228,7 +1217,8 @@ process_single_mkv() {
 
         log_message "INFO" "MKV 混流命令: ${ffmpeg_mux_args[*]}"
         local ffmpeg_stderr_log="$temp_dir/ffmpeg_mkv_mux_stderr.log"
-        if ! "${ffmpeg_mux_args[@]}" 2> "$ffmpeg_stderr_log"; then 
+        # ... (ffmpeg 執行和錯誤處理邏輯不變) ...
+         if ! "${ffmpeg_mux_args[@]}" 2> "$ffmpeg_stderr_log"; then 
             echo -e "${RED}錯誤：MKV 混流失敗！以下是 FFmpeg 錯誤訊息：${RESET}"
             cat "$ffmpeg_stderr_log"
             log_message "ERROR" "MKV 混流失敗，詳見 $ffmpeg_stderr_log (錯誤內容已輸出)"; 
@@ -1244,12 +1234,12 @@ process_single_mkv() {
     fi
 
     log_message "INFO" "清理臨時檔案..."
-    # --- 修改：確保轉換後的 ASS 和原始 VTT 都被清理 ---
+    # --- 修改：確保增強後的 VTT 和原始 VTT 都被清理 ---
     safe_remove "$video_temp_file" "$audio_temp_file" "$normalized_audio_m4a"
-    for sub_file in "${converted_ass_files[@]}"; do safe_remove "$sub_file"; done # 清理 ASS
-    for sub_file in "${downloaded_vtt_files[@]}"; do safe_remove "$sub_file"; done # 清理 VTT
+    for sub_file in "${enhanced_vtt_files[@]}"; do safe_remove "$sub_file"; done # 清理增強後的 VTT
+    for sub_file in "${downloaded_vtt_files[@]}"; do safe_remove "$sub_file"; done # 清理原始 VTT
     safe_remove "$temp_dir/yt-dlp-video.log" "$temp_dir/yt-dlp-audio.log" "$temp_dir/yt-dlp-subs.log"
-    [ -f "$ffmpeg_stderr_log" ] && safe_remove "$ffmpeg_stderr_log" # 清理 ffmpeg 錯誤日誌 (如果存在)
+    [ -f "$ffmpeg_stderr_log" ] && safe_remove "$ffmpeg_stderr_log" 
     [ -d "$temp_dir" ] && rm -rf "$temp_dir"
     # --- 結束清理修改 ---
 
