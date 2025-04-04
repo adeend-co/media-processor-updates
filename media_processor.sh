@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v1.9.1(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v1.9.2(Experimental)" # <<< 版本號更新
 # ... 其他設定 ...
 TARGET_DATE="2025-07-11" # <<< 新增：設定您的目標日期
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
@@ -572,7 +572,7 @@ safe_remove() {
 # <<< 修改：檢查並更新依賴套件 (加入 Python 轉換器更新) >>>
 ############################################
 update_dependencies() {
-    local pkg_tools=("ffmpeg" "jq" "curl" "python" "mkvtoolnix") # <<< 新增 mkvtoolnix
+    local pkg_tools=("ffmpeg" "jq" "curl" "python" "x11-repo" "termux-x11-nightly" "mkvtoolnix") # <<< 新增 mkvtoolnix
     local pip_tools=("yt-dlp" "webvtt-py")                 # <<< 新增 webvtt-py
     # <<< 修改：加入 python 和 webvtt-py 到驗證列表 >>>
     local all_tools=("${pkg_tools[@]}" "${pip_tools[@]}" "ffprobe" "mkvextract" "python") 
@@ -1799,7 +1799,7 @@ show_about() {
 # <<< 修改：環境檢查 (加入 Python 庫檢查提示) >>>
 ############################################
 check_environment() {
-    local core_tools=("yt-dlp" "ffmpeg" "ffprobe" "jq" "curl" "mkvtoolnix") # <<< 新增 mkvtoolnix
+    local core_tools=("yt-dlp" "ffmpeg" "ffprobe" "jq" "curl" "mkvmerge") # <<< 新增 mkvmerge
     local missing_tools=()
     local python_found=false
     local python_cmd=""
@@ -1846,14 +1846,14 @@ check_environment() {
         # 提供安裝提示
         if [[ "$OS_TYPE" == "termux" ]]; then
              echo -e "${GREEN}Termux:"
-             echo -e "  pkg install ffmpeg jq curl python mkvtoolnix python-pip" 
+             echo -e "  pkg install ffmpeg jq curl python mkvmerge python-pip" 
              echo -e "  pip install -U yt-dlp webvtt-py"
              echo -e "${RESET}"
         elif [[ "$OS_TYPE" == "wsl" || "$OS_TYPE" == "linux" ]]; then
              local install_cmd=""
-             if [[ "$PACKAGE_MANAGER" == "apt" ]]; then install_cmd="sudo apt install -y ffmpeg jq curl python3 python3-pip mkvtoolnix"; 
-             elif [[ "$PACKAGE_MANAGER" == "dnf" ]]; then install_cmd="sudo dnf install -y ffmpeg jq curl python3 python3-pip mkvtoolnix"; 
-             elif [[ "$PACKAGE_MANAGER" == "yum" ]]; then install_cmd="sudo yum install -y ffmpeg jq curl python3 python3-pip mkvtoolnix"; fi
+             if [[ "$PACKAGE_MANAGER" == "apt" ]]; then install_cmd="sudo apt install -y ffmpeg jq curl python3 python3-pip mkvmerge"; 
+             elif [[ "$PACKAGE_MANAGER" == "dnf" ]]; then install_cmd="sudo dnf install -y ffmpeg jq curl python3 python3-pip mkvmerge"; 
+             elif [[ "$PACKAGE_MANAGER" == "yum" ]]; then install_cmd="sudo yum install -y ffmpeg jq curl python3 python3-pip mkvmerge"; fi
              
              if [ -n "$install_cmd" ]; then
                  echo -e "${GREEN}WSL/Linux ($PACKAGE_MANAGER):"
@@ -1861,7 +1861,7 @@ check_environment() {
                  echo -e "  $python_cmd -m pip install --upgrade --user yt-dlp webvtt-py" # 使用 --user 可能更安全
                  echo -e "${RESET}"
              else
-                 echo -e "${YELLOW}請參考你的 Linux 發行版文檔安裝: ffmpeg, jq, curl, python3, pip, mkvtoolnix${RESET}"
+                 echo -e "${YELLOW}請參考你的 Linux 發行版文檔安裝: ffmpeg, jq, curl, python3, pip, mkvmerge${RESET}"
                  echo -e "${YELLOW}然後執行: pip install --upgrade yt-dlp webvtt-py${RESET}"
              fi
         fi
