@@ -8,7 +8,7 @@ from datetime import timedelta
 
 # --- Script Configuration ---
 # <<< 新增：Python 腳本自身的版本號 >>>
-__version__ = "1.1.0" 
+__version__ = "1.0.0" 
 
 # --- Helper Functions ---
 
