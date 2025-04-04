@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.0.11(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v2.0.12(Experimental)" # <<< 版本號更新
 # ... 其他設定 ...
 TARGET_DATE="2025-07-11" # <<< 新增：設定您的目標日期
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
@@ -574,8 +574,7 @@ safe_remove() {
 update_dependencies() {
     local pkg_tools=("ffmpeg" "jq" "curl" "python")
     local pip_tools=("yt-dlp")  
-    # <<< 修改：加入 python 到驗證列表 >>>
-    local all_tools=("${pkg_tools[@]}" "${pip_tools[@]}" "ffprobe" "mkvextract" "python") 
+    local all_tools=("${pkg_tools[@]}" "${pip_tools[@]}" "ffprobe") 
     local update_failed=false
     local missing_after_update=()
 
@@ -583,75 +582,46 @@ update_dependencies() {
     echo -e "${CYAN}--- 開始檢查並更新依賴套件 ---${RESET}"
     log_message "INFO" "使用者觸發依賴套件更新流程。"
 
-    # 1. 更新系統套件列表 (根據檢測到的管理器)
-    echo -e "${YELLOW}[1/5] 正在更新系統套件列表 ($PACKAGE_MANAGER update)...${RESET}"
-    if sudo "$PACKAGE_MANAGER" update -y; then # 假設需要 sudo (WSL/Linux)
-        log_message "INFO" "$PACKAGE_MANAGER update 成功"
-        echo -e "${GREEN}  > 系統套件列表更新成功。${RESET}"
+    # 1. 更新 Termux 套件列表 (pkg update)
+    echo -e "${YELLOW}[1/5] 正在更新 Termux 套件列表 (pkg update)...${RESET}"
+    if pkg update -y; then
+        log_message "INFO" "pkg update 成功"
+        echo -e "${GREEN}  > Termux 套件列表更新成功。${RESET}"
     else
-        # Termux 通常不需要 sudo，嘗試不用 sudo
-         if "$PACKAGE_MANAGER" update -y; then
-             log_message "INFO" "$PACKAGE_MANAGER update 成功 (無需 sudo)"
-             echo -e "${GREEN}  > 系統套件列表更新成功。${RESET}"
-         else
-            log_message "WARNING" "$PACKAGE_MANAGER update 失敗，可能無法獲取最新套件版本。"
-            echo -e "${RED}  > 警告：系統套件列表更新失敗，將嘗試使用現有列表。${RESET}"
-            update_failed=true 
-         fi
+        log_message "WARNING" "pkg update 失敗，可能無法獲取最新套件版本。"
+        echo -e "${RED}  > 警告：Termux 套件列表更新失敗，將嘗試使用現有列表。${RESET}"
+        update_failed=true # 標記更新過程中有問題
     fi
-    echo "" 
+    echo "" # 空行分隔
 
-    # 2. 安裝/更新系統套件
-    echo -e "${YELLOW}[2/5] 正在安裝/更新系統套件: ${pkg_tools[*]}...${RESET}"
-    if sudo "$PACKAGE_MANAGER" install -y "${pkg_tools[@]}"; then
+    # 2. 安裝/更新 pkg 管理的工具 (ffmpeg, jq, curl, python)
+    #    FFmpeg 套件通常會包含 ffprobe，所以不用單獨安裝 ffprobe
+    echo -e "${YELLOW}[2/5] 正在安裝/更新 pkg 套件: ${pkg_tools[*]}...${RESET}"
+    if pkg install -y "${pkg_tools[@]}"; then
         log_message "INFO" "安裝/更新 ${pkg_tools[*]} 成功"
         echo -e "${GREEN}  > 安裝/更新 ${pkg_tools[*]} 完成。${RESET}"
     else
-         if "$PACKAGE_MANAGER" install -y "${pkg_tools[@]}"; then
-              log_message "INFO" "安裝/更新 ${pkg_tools[*]} 成功 (無需 sudo)"
-              echo -e "${GREEN}  > 安裝/更新 ${pkg_tools[*]} 完成。${RESET}"
-         else
-            log_message "ERROR" "安裝/更新 ${pkg_tools[*]} 失敗！"
-            echo -e "${RED}  > 錯誤：安裝/更新 ${pkg_tools[*]} 失敗！${RESET}"
-            update_failed=true
-         fi
+        log_message "ERROR" "安裝/更新 ${pkg_tools[*]} 失敗！"
+        echo -e "${RED}  > 錯誤：安裝/更新 ${pkg_tools[*]} 失敗！${RESET}"
+        update_failed=true
     fi
     echo ""
 
-    # 3. 更新 pip 和 Python 套件
-    echo -e "${YELLOW}[3/5] 正在更新 pip 及 Python 套件: ${pip_tools[*]}...${RESET}"
-    local python_cmd pip_cmd
-    if command -v python3 &> /dev/null; then python_cmd="python3"; else python_cmd="python"; fi
-    
-    if command -v $python_cmd &> /dev/null; then
-         pip_cmd="$python_cmd -m pip"
-         # 嘗試升級 pip 本身
-         echo -e "${YELLOW}  > 正在嘗試更新 pip...${RESET}"
-         if $pip_cmd install --upgrade pip &> /dev/null; then
-             log_message "INFO" "pip 更新成功"
-             echo -e "${GREEN}    > pip 更新成功。${RESET}"
-         else
-             log_message "WARNING" "pip 更新可能失敗，繼續嘗試安裝套件。"
-             echo -e "${YELLOW}    > pip 更新可能失敗，繼續...${RESET}"
-         fi
-
-         # 安裝/更新指定的 pip 套件
-         echo -e "${YELLOW}  > 正在安裝/更新 ${pip_tools[*]}...${RESET}"
-         # 可能需要 --user (WSL/Linux) 或不需要 (Termux)
-         if $pip_cmd install --upgrade --user "${pip_tools[@]}"; then 
-             log_message "INFO" "更新 ${pip_tools[*]} 成功 (--user)"
-             echo -e "${GREEN}    > 更新 ${pip_tools[*]} 完成。${RESET}"
-         elif $pip_cmd install --upgrade "${pip_tools[@]}"; then
-             log_message "INFO" "更新 ${pip_tools[*]} 成功 (無需 --user)"
-             echo -e "${GREEN}    > 更新 ${pip_tools[*]} 完成。${RESET}"
+    # 3. 更新 pip 管理的工具 (yt-dlp)
+    echo -e "${YELLOW}[3/4] 正在更新 pip 套件: ${pip_tools[*]}...${RESET}"
+    # 檢查 Python 是否真的安裝成功
+    if command -v python &> /dev/null; then
+         if python -m pip install --upgrade "${pip_tools[@]}"; then
+             log_message "INFO" "更新 ${pip_tools[*]} 成功"
+             echo -e "${GREEN}  > 更新 ${pip_tools[*]} 完成。${RESET}"
          else
              log_message "ERROR" "更新 ${pip_tools[*]} 失敗！"
-             echo -e "${RED}    > 錯誤：更新 ${pip_tools[*]} 失敗！${RESET}"
+             echo -e "${RED}  > 錯誤：更新 ${pip_tools[*]} 失敗！${RESET}"
              update_failed=true
          fi
     else
-        log_message "ERROR" "找不到 $python_cmd 命令，無法更新 ${pip_tools[*]}。"
-        echo -e "${RED}  > 錯誤：找不到 Python 命令，無法更新 ${pip_tools[*]}。請確保步驟 2 已成功安裝 python。${RESET}"
+        log_message "ERROR" "找不到 python 命令，無法更新 ${pip_tools[*]}。"
+        echo -e "${RED}  > 錯誤：找不到 python 命令，無法更新 ${pip_tools[*]}。請確保步驟 2 已成功安裝 python。${RESET}"
         update_failed=true
     fi
     echo ""
@@ -664,60 +634,17 @@ update_dependencies() {
     fi
     echo ""
 
-# 5. 最終驗證所有工具
+    # 5. 最終驗證所有工具是否都已成功安裝
     echo -e "${YELLOW}[5/5] 正在驗證所有必要工具是否已安裝...${RESET}"
-    local python_cmd # 確保 python_cmd 在循環外定義
-    if command -v python3 &> /dev/null; then python_cmd="python3"; elif command -v python &> /dev/null; then python_cmd="python"; else python_cmd=""; fi
-
     for tool in "${all_tools[@]}"; do
-        # --- 修正後的條件判斷 ---
         if ! command -v "$tool" &> /dev/null; then
-            # 如果工具命令找不到
-            if [[ "$tool" == "python" ]]; then
-                 # 特殊處理 python: 如果 'python' 命令本身找不到，
-                 # 並且之前檢測到的 python_cmd (python3 或 python) 也為空，
-                 # 才報告缺少 python/python3
-                 if [ -z "$python_cmd" ]; then 
-                      missing_after_update+=("python/python3")
-                      echo -e "${RED}  > 驗證失敗：找不到 python 或 python3 ${RESET}"
-                 else
-                     # 雖然 'python' 命令找不到，但找到了 python3，所以 Python 環境是 OK 的
-                     # 避免重複報告找到 python3，這裡可以不輸出或輸出找到 python_cmd
-                      : # Do nothing, or echo "${GREEN} > 驗證成功：找到 $python_cmd ${RESET}" (可能會重複)
-                 fi
-            else
-                 # 其他工具找不到，直接報告缺少
-                 missing_after_update+=("$tool")
-                 echo -e "${RED}  > 驗證失敗：找不到 $tool ${RESET}"
-            fi
+            missing_after_update+=("$tool")
+            echo -e "${RED}  > 驗證失敗：找不到 $tool ${RESET}"
         else
-             # 如果工具命令找到了
-             if [[ "$tool" == "python" && -n "$python_cmd" && "$tool" != "$python_cmd" ]]; then
-                  # 如果當前檢查的是 'python' 但我們實際用的是 'python3'，
-                  # 可以選擇性跳過 'python' 的成功輸出，避免混淆
-                  : # Do nothing
-             else
-                  # 正常輸出找到工具 (包括找到 python3 或 python)
-                  echo -e "${GREEN}  > 驗證成功：找到 $tool ${RESET}"
-             fi
+            echo -e "${GREEN}  > 驗證成功：找到 $tool ${RESET}"
         fi
-        # --- 結束修正 ---
     done
-    
-    # 檢查 webvtt-py 庫 (這部分邏輯不變)
-    if [ -n "$python_cmd" ]; then # 確保 python_cmd 不是空的
-        if $python_cmd -c "import webvtt" &> /dev/null; then
-             echo -e "${GREEN}  > 驗證成功：找到 Python 庫 webvtt-py ${RESET}"
-        else
-             missing_after_update+=("Python 庫: webvtt-py")
-             echo -e "${RED}  > 驗證失敗：找不到 Python 庫 webvtt-py (請執行: pip install webvtt-py) ${RESET}"
-        fi
-    # else # 如果 python_cmd 為空（即 python/python3 都沒找到），上面已經報錯了，這裡不用再處理庫
-    #    missing_after_update+=("Python 庫: webvtt-py (因缺少Python)")
-    #    echo -e "${RED}  > 驗證失敗：因缺少 Python，無法檢查 webvtt-py 庫 ${RESET}"
-    fi
     echo ""
-
 
     # 總結結果
     if [ ${#missing_after_update[@]} -ne 0 ]; then
