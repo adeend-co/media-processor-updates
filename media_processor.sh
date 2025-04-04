@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.0.12(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v2.0.13(Experimental)" # <<< 版本號更新
 # ... 其他設定 ...
 TARGET_DATE="2025-07-11" # <<< 新增：設定您的目標日期
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
@@ -608,7 +608,7 @@ update_dependencies() {
     echo ""
 
     # 3. 更新 pip 管理的工具 (yt-dlp)
-    echo -e "${YELLOW}[3/4] 正在更新 pip 套件: ${pip_tools[*]}...${RESET}"
+    echo -e "${YELLOW}[3/5] 正在更新 pip 套件: ${pip_tools[*]}...${RESET}"
     # 檢查 Python 是否真的安裝成功
     if command -v python &> /dev/null; then
          if python -m pip install --upgrade "${pip_tools[@]}"; then
@@ -2091,7 +2091,7 @@ main() {
     # --- 自動調整執行緒 (可能會根據載入的或預設的 THREADS 再次調整並儲存) ---
     adjust_threads
     # 給使用者一點時間看到調整結果
-    sleep 2
+    sleep 0
 
     # --- 進入主選單 ---
     main_menu
