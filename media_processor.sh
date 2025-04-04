@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v1.8.4(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v1.9.0(Experimental)" # <<< 版本號更新
 # ... 其他設定 ...
 TARGET_DATE="2025-07-11" # <<< 新增：設定您的目標日期
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
@@ -17,7 +17,13 @@ CONFIG_FILE="$HOME/.media_processor_rc"
 REMOTE_VERSION_URL="https://raw.githubusercontent.com/adeend-co/media-processor-updates/refs/heads/main/latest_version.txt" # <<< 請務必修改此 URL
 REMOTE_SCRIPT_URL="https://raw.githubusercontent.com/adeend-co/media-processor-updates/refs/heads/main/media_processor.sh"   # <<< 請務必修改此 URL
 SCRIPT_INSTALL_PATH="$HOME/scripts/media_processor.sh"
-
+# --- 新增：Python 轉換器相關設定 ---
+PYTHON_CONVERTER_SCRIPT_NAME="vtt_to_ass_converter.py"
+PYTHON_CONVERTER_INSTALL_PATH="$HOME/scripts/$PYTHON_CONVERTER_SCRIPT_NAME"
+PYTHON_CONVERTER_VERSION="0.0.0" # <<< 本地版本，會從設定檔載入
+PYTHON_CONVERTER_VERSION_URL="https://raw.githubusercontent.com/adeend-co/media-processor-updates/refs/heads/main/latest_version(Vtt_to_Ass)" # <<<【重要】需要您提供實際的 URL
+PYTHON_CONVERTER_REMOTE_URL="https://raw.githubusercontent.com/adeend-co/media-processor-updates/refs/heads/main/vtt_to_ass_converter.py"   # <<<【重要】需要您提供實際的 URL
+# --- 結束 Python 轉換器設定 ---
 # <<< 修改：確保腳本安裝目錄存在，僅在創建時顯示訊息 >>>
 SCRIPT_DIR=$(dirname "$SCRIPT_INSTALL_PATH") # 從完整路徑獲取目錄名稱 (~/scripts)
 
@@ -74,51 +80,49 @@ log_message() {
 }
 
 ############################################
-# <<< 新增：儲存設定檔 >>>
+# <<< 修改：儲存設定檔 (加入 Python 版本) >>>
 ############################################
 save_config() {
     log_message "INFO" "正在儲存目前設定到 $CONFIG_FILE ..."
-    # 嘗試寫入設定檔
-    # 使用 > 覆蓋檔案內容
-    # 將變數值用雙引號括起來，以處理路徑中可能存在的空格（雖然腳本中已做清理，但這是好習慣）
     if echo "THREADS=\"$THREADS\"" > "$CONFIG_FILE" && \
        echo "DOWNLOAD_PATH=\"$DOWNLOAD_PATH\"" >> "$CONFIG_FILE" && \
-       echo "COLOR_ENABLED=\"$COLOR_ENABLED\"" >> "$CONFIG_FILE"; then
+       echo "COLOR_ENABLED=\"$COLOR_ENABLED\"" >> "$CONFIG_FILE" && \
+       echo "PYTHON_CONVERTER_VERSION=\"$PYTHON_CONVERTER_VERSION\"" >> "$CONFIG_FILE"; then # <<< 新增
         log_message "INFO" "設定已成功儲存到 $CONFIG_FILE"
-        # echo -e "${GREEN}設定已儲存。${RESET}" # 可以取消註解以提供即時回饋，但可能會有點吵
     else
         log_message "ERROR" "無法寫入設定檔 $CONFIG_FILE！請檢查權限。"
         echo -e "${RED}錯誤：無法儲存設定到 $CONFIG_FILE！${RESET}"
-        # 不退出腳本，但提示使用者
         sleep 2
     fi
 }
 
 ############################################
-# <<< 新增：載入設定檔 >>>
+# <<< 修改：載入設定檔 (加入 Python 版本) >>>
 ############################################
 load_config() {
-    # 檢查設定檔是否存在且可讀
+    # <<< 新增：先設定 Python 腳本的預設版本 >>>
+    PYTHON_CONVERTER_VERSION="0.0.0" # 確保即使設定檔不存在也有預設值
+
     if [ -f "$CONFIG_FILE" ] && [ -r "$CONFIG_FILE" ]; then
         log_message "INFO" "正在從 $CONFIG_FILE 載入設定..."
-        # 使用 source (或 .) 命令直接執行設定檔中的變數賦值
-        # 注意：這假設設定檔是安全的 key=value 格式
-        # 如果設定檔可能包含惡意程式碼，需要更安全的解析方法
         source "$CONFIG_FILE"
-        # 檢查載入後的值是否合理（可選，增加健壯性）
-        # 例如：檢查 THREADS 是否在範圍內
+        # 檢查 THREADS (不變)
         if [[ -n "$THREADS" && (! "$THREADS" =~ ^[0-9]+$ || "$THREADS" -lt "$MIN_THREADS" || "$THREADS" -gt "$MAX_THREADS") ]]; then
              log_message "WARNING" "從設定檔載入的 THREADS ($THREADS) 無效，將使用預設值或重新自動調整。"
-             # 可以選擇重置為預設或觸發 adjust_threads
-             THREADS=$MIN_THREADS # 或者保留預設，讓 adjust_threads 覆蓋
+             THREADS=$MIN_THREADS 
         fi
-         log_message "INFO" "設定檔載入完成。"
-         echo -e "${GREEN}已從 $CONFIG_FILE 載入使用者設定。${RESET}"
-         sleep 1
+        # <<< 新增：檢查載入的 Python 版本 (基礎檢查) >>>
+        if [ -z "$PYTHON_CONVERTER_VERSION" ]; then
+            log_message "WARNING" "設定檔中未找到 Python 轉換器版本，將使用預設值 0.0.0"
+            PYTHON_CONVERTER_VERSION="0.0.0"
+        fi
+        log_message "INFO" "設定檔載入完成。 Python Converter Version: $PYTHON_CONVERTER_VERSION"
+        echo -e "${GREEN}已從 $CONFIG_FILE 載入使用者設定。${RESET}"
+        sleep 1
     else
         log_message "INFO" "設定檔 $CONFIG_FILE 未找到或不可讀，將使用預設設定。"
-        # 不需要報錯，腳本會使用預設值
-        # 第一次執行 save_config 時會自動創建檔案
+        # 即使設定檔不存在，也要確保 Python 版本有初始值
+        PYTHON_CONVERTER_VERSION="0.0.0"
     fi
 
     # <<< 重要：在載入 DOWNLOAD_PATH 後，重新設定 LOG_FILE 路徑 >>>
@@ -401,6 +405,120 @@ auto_update_script() {
     fi
 }
 
+############################################
+# <<< 新增：Python 轉換器更新函數 >>>
+############################################
+update_python_converter() {
+    echo -e "${CYAN}--- 開始檢查 Python 字幕轉換器更新 ---${RESET}"
+    log_message "INFO" "開始檢查 Python 轉換器更新。"
+    
+    local local_py_version="$PYTHON_CONVERTER_VERSION" # 使用從設定檔載入或預設的本地版本
+    local remote_py_version=""
+    local remote_py_version_raw="" 
+    local remote_py_version_file="$TEMP_DIR/remote_py_version.txt"
+    local temp_py_script="$TEMP_DIR/vtt_to_ass_converter_new.py"
+    local temp_py_checksum_file="$TEMP_DIR/vtt_to_ass_converter_new.py.sha256"
+    local remote_py_checksum_url="${PYTHON_CONVERTER_REMOTE_URL}.sha256" # 假設校驗和檔名規則
+
+    # --- 1. 獲取遠程版本號 ---
+    echo -e "${YELLOW}正在從 $PYTHON_CONVERTER_VERSION_URL 獲取最新版本號...${RESET}"
+    if curl -Ls "$PYTHON_CONVERTER_VERSION_URL" -o "$remote_py_version_file" --fail --connect-timeout 5; then
+        remote_py_version_raw=$(tr -d '\r\n' < "$remote_py_version_file")
+        remote_py_version=${remote_py_version_raw/#$'\xEF\xBB\xBF'/} # 移除 BOM
+
+        if [ -z "$remote_py_version" ]; then
+             log_message "ERROR" "無法讀取 Python 轉換器遠程版本號。"
+             echo -e "${RED}錯誤：無法讀取 Python 轉換器遠程版本號。${RESET}"
+             rm -f "$remote_py_version_file"
+             return 1 # 返回失敗，但不退出主腳本
+        fi
+        log_message "INFO" "獲取的 Python 轉換器遠程版本號：$remote_py_version"
+        rm -f "$remote_py_version_file"
+    else
+        log_message "ERROR" "無法下載 Python 轉換器版本文件：$PYTHON_CONVERTER_VERSION_URL (Curl failed with code $?)"
+        echo -e "${RED}錯誤：無法下載 Python 轉換器版本文件。${RESET}"
+        return 1 # 返回失敗
+    fi
+
+    # --- 2. 比較版本號 ---
+    # 使用 sort -V 進行版本比較
+    latest_py_version=$(printf '%s\n%s\n' "$remote_py_version" "$local_py_version" | sort -V | tail -n 1)
+
+    if [[ "$local_py_version" == "$remote_py_version" ]] || [[ "$local_py_version" == "$latest_py_version" && "$local_py_version" != "$remote_py_version" ]]; then
+        log_message "INFO" "Python 轉換器已是最新版本 ($local_py_version)。"
+        echo -e "${GREEN}Python 字幕轉換器已是最新版本 ($local_py_version)。${RESET}"
+        return 0 # 返回成功，無需更新
+    fi
+
+    # --- 3. 確認更新 (可選，或直接更新) ---
+    echo -e "${YELLOW}發現 Python 轉換器新版本：$remote_py_version (當前版本：$local_py_version)。${RESET}"
+    # 由於是在依賴更新流程中，可以考慮直接更新，或添加確認
+    # read -r -p "是否要立即下載並更新 Python 轉換器？ (y/n): " confirm_py_update
+    # if [[ ! "$confirm_py_update" =~ ^[Yy]$ ]]; then
+    #     log_message "INFO" "使用者取消 Python 轉換器更新。"
+    #     echo -e "${YELLOW}已取消 Python 轉換器更新。${RESET}"
+    #     return 0
+    # fi
+
+    # --- 4. 下載新腳本 ---
+    echo -e "${YELLOW}正在從 $PYTHON_CONVERTER_REMOTE_URL 下載新版本 Python 轉換器...${RESET}"
+    if curl -Ls "$PYTHON_CONVERTER_REMOTE_URL" -o "$temp_py_script" --fail --connect-timeout 30; then
+        log_message "INFO" "新版本 Python 轉換器下載成功：$temp_py_script"
+
+        # --- 4.1 下載校驗和檔案 ---
+        echo -e "${YELLOW}正在從 $remote_py_checksum_url 下載校驗和檔案...${RESET}"
+        if ! curl -Ls "$remote_py_checksum_url" -o "$temp_py_checksum_file" --fail --connect-timeout 5; then
+            log_message "ERROR" "下載 Python 轉換器校驗和檔案失敗：$remote_py_checksum_url (Curl failed with code $?)"
+            echo -e "${RED}錯誤：下載 Python 轉換器校驗和檔案失敗。取消更新。${RESET}"
+            rm -f "$temp_py_script"
+            return 1
+        fi
+        log_message "INFO" "Python 轉換器校驗和檔案下載成功：$temp_py_checksum_file"
+
+        # --- 4.2 校驗和驗證 ---
+        echo -e "${YELLOW}正在驗證 Python 轉換器檔案完整性...${RESET}"
+        local calculated_py_checksum expected_py_checksum
+        calculated_py_checksum=$(sha256sum "$temp_py_script" | awk '{print $1}')
+        expected_py_checksum=$(cat "$temp_py_checksum_file")
+
+        if [[ "$calculated_py_checksum" == "$expected_py_checksum" ]]; then
+            echo -e "${GREEN}Python 轉換器校驗和驗證通過。${RESET}"
+            log_message "SUCCESS" "Python 轉換器校驗和驗證通過 (SHA256: $calculated_py_checksum)"
+            rm -f "$temp_py_checksum_file"
+
+            # --- 5. 替換舊腳本 ---
+            echo -e "${YELLOW}正在替換舊的 Python 轉換器：$PYTHON_CONVERTER_INSTALL_PATH ${RESET}"
+            chmod +x "$temp_py_script" # 賦予執行權限 (雖然通常用 python 執行)
+            mkdir -p "$(dirname "$PYTHON_CONVERTER_INSTALL_PATH")" # 確保目錄存在
+
+            if mv "$temp_py_script" "$PYTHON_CONVERTER_INSTALL_PATH"; then
+                log_message "SUCCESS" "Python 轉換器已成功更新至版本 $remote_py_version。"
+                echo -e "${GREEN}Python 轉換器更新成功！版本：$remote_py_version ${RESET}"
+                # <<< 更新 Bash 中的版本變數並儲存設定檔 >>>
+                PYTHON_CONVERTER_VERSION="$remote_py_version" 
+                save_config 
+                return 0 # 更新成功
+            else
+                log_message "ERROR" "無法替換舊的 Python 轉換器 '$PYTHON_CONVERTER_INSTALL_PATH'。請檢查權限。"
+                echo -e "${RED}錯誤：無法替換舊的 Python 轉換器。請檢查權限。${RESET}"
+                echo -e "${YELLOW}下載的新轉換器保留在：$temp_py_script ${RESET}" 
+                return 1 # 更新失敗
+            fi
+
+        else # 校驗和驗證失敗
+            log_message "ERROR" "Python 轉換器校驗和驗證失敗！"
+            log_message "ERROR" "預期校驗和: $expected_py_checksum"
+            log_message "ERROR" "計算出的校驗和: $calculated_py_checksum"
+            echo -e "${RED}錯誤：Python 轉換器校驗和驗證失敗！取消更新。${RESET}"
+            rm -f "$temp_py_script" "$temp_py_checksum_file"
+            return 1 # 更新失敗
+        fi
+    else # 下載新腳本失敗
+        log_message "ERROR" "下載新 Python 轉換器失敗：$PYTHON_CONVERTER_REMOTE_URL (Curl failed with code $?)"
+        echo -e "${RED}錯誤：下載新 Python 轉換器失敗。${RESET}"
+        return 1
+    fi
+}
 
 # 高解析度封面圖片下載函數（僅用於 YouTube 下載）
 download_high_res_thumbnail() {
@@ -450,14 +568,14 @@ safe_remove() {
     done
 }
 
-
 ############################################
-# 檢查並更新依賴套件
+# <<< 修改：檢查並更新依賴套件 (加入 Python 轉換器更新) >>>
 ############################################
 update_dependencies() {
-    local pkg_tools=("ffmpeg" "jq" "curl" "python") # Tools managed by pkg
-    local pip_tools=("yt-dlp")                     # Tools managed by pip
-    local all_tools=("${pkg_tools[@]}" "${pip_tools[@]}" "ffprobe") # 添加 ffprobe 到驗證列表
+    local pkg_tools=("ffmpeg" "jq" "curl" "python" "mkvtoolnix") # <<< 新增 mkvtoolnix
+    local pip_tools=("yt-dlp" "webvtt-py")                 # <<< 新增 webvtt-py
+    # <<< 修改：加入 python 和 webvtt-py 到驗證列表 >>>
+    local all_tools=("${pkg_tools[@]}" "${pip_tools[@]}" "ffprobe" "mkvextract" "python") 
     local update_failed=false
     local missing_after_update=()
 
@@ -465,61 +583,121 @@ update_dependencies() {
     echo -e "${CYAN}--- 開始檢查並更新依賴套件 ---${RESET}"
     log_message "INFO" "使用者觸發依賴套件更新流程。"
 
-    # 1. 更新 Termux 套件列表 (pkg update)
-    echo -e "${YELLOW}[1/4] 正在更新 Termux 套件列表 (pkg update)...${RESET}"
-    if pkg update -y; then
-        log_message "INFO" "pkg update 成功"
-        echo -e "${GREEN}  > Termux 套件列表更新成功。${RESET}"
+    # 1. 更新系統套件列表 (根據檢測到的管理器)
+    echo -e "${YELLOW}[1/5] 正在更新系統套件列表 ($PACKAGE_MANAGER update)...${RESET}"
+    if sudo "$PACKAGE_MANAGER" update -y; then # 假設需要 sudo (WSL/Linux)
+        log_message "INFO" "$PACKAGE_MANAGER update 成功"
+        echo -e "${GREEN}  > 系統套件列表更新成功。${RESET}"
     else
-        log_message "WARNING" "pkg update 失敗，可能無法獲取最新套件版本。"
-        echo -e "${RED}  > 警告：Termux 套件列表更新失敗，將嘗試使用現有列表。${RESET}"
-        update_failed=true # 標記更新過程中有問題
+        # Termux 通常不需要 sudo，嘗試不用 sudo
+         if "$PACKAGE_MANAGER" update -y; then
+             log_message "INFO" "$PACKAGE_MANAGER update 成功 (無需 sudo)"
+             echo -e "${GREEN}  > 系統套件列表更新成功。${RESET}"
+         else
+            log_message "WARNING" "$PACKAGE_MANAGER update 失敗，可能無法獲取最新套件版本。"
+            echo -e "${RED}  > 警告：系統套件列表更新失敗，將嘗試使用現有列表。${RESET}"
+            update_failed=true 
+         fi
     fi
-    echo "" # 空行分隔
+    echo "" 
 
-    # 2. 安裝/更新 pkg 管理的工具 (ffmpeg, jq, curl, python)
-    #    FFmpeg 套件通常會包含 ffprobe，所以不用單獨安裝 ffprobe
-    echo -e "${YELLOW}[2/4] 正在安裝/更新 pkg 套件: ${pkg_tools[*]}...${RESET}"
-    if pkg install -y "${pkg_tools[@]}"; then
+    # 2. 安裝/更新系統套件
+    echo -e "${YELLOW}[2/5] 正在安裝/更新系統套件: ${pkg_tools[*]}...${RESET}"
+    if sudo "$PACKAGE_MANAGER" install -y "${pkg_tools[@]}"; then
         log_message "INFO" "安裝/更新 ${pkg_tools[*]} 成功"
         echo -e "${GREEN}  > 安裝/更新 ${pkg_tools[*]} 完成。${RESET}"
     else
-        log_message "ERROR" "安裝/更新 ${pkg_tools[*]} 失敗！"
-        echo -e "${RED}  > 錯誤：安裝/更新 ${pkg_tools[*]} 失敗！${RESET}"
-        update_failed=true
+         if "$PACKAGE_MANAGER" install -y "${pkg_tools[@]}"; then
+              log_message "INFO" "安裝/更新 ${pkg_tools[*]} 成功 (無需 sudo)"
+              echo -e "${GREEN}  > 安裝/更新 ${pkg_tools[*]} 完成。${RESET}"
+         else
+            log_message "ERROR" "安裝/更新 ${pkg_tools[*]} 失敗！"
+            echo -e "${RED}  > 錯誤：安裝/更新 ${pkg_tools[*]} 失敗！${RESET}"
+            update_failed=true
+         fi
     fi
     echo ""
 
-    # 3. 更新 pip 管理的工具 (yt-dlp)
-    echo -e "${YELLOW}[3/4] 正在更新 pip 套件: ${pip_tools[*]}...${RESET}"
-    # 檢查 Python 是否真的安裝成功
-    if command -v python &> /dev/null; then
-         if python -m pip install --upgrade "${pip_tools[@]}"; then
-             log_message "INFO" "更新 ${pip_tools[*]} 成功"
-             echo -e "${GREEN}  > 更新 ${pip_tools[*]} 完成。${RESET}"
+    # 3. 更新 pip 和 Python 套件
+    echo -e "${YELLOW}[3/5] 正在更新 pip 及 Python 套件: ${pip_tools[*]}...${RESET}"
+    local python_cmd pip_cmd
+    if command -v python3 &> /dev/null; then python_cmd="python3"; else python_cmd="python"; fi
+    
+    if command -v $python_cmd &> /dev/null; then
+         pip_cmd="$python_cmd -m pip"
+         # 嘗試升級 pip 本身
+         echo -e "${YELLOW}  > 正在嘗試更新 pip...${RESET}"
+         if $pip_cmd install --upgrade pip &> /dev/null; then
+             log_message "INFO" "pip 更新成功"
+             echo -e "${GREEN}    > pip 更新成功。${RESET}"
+         else
+             log_message "WARNING" "pip 更新可能失敗，繼續嘗試安裝套件。"
+             echo -e "${YELLOW}    > pip 更新可能失敗，繼續...${RESET}"
+         fi
+
+         # 安裝/更新指定的 pip 套件
+         echo -e "${YELLOW}  > 正在安裝/更新 ${pip_tools[*]}...${RESET}"
+         # 可能需要 --user (WSL/Linux) 或不需要 (Termux)
+         if $pip_cmd install --upgrade --user "${pip_tools[@]}"; then 
+             log_message "INFO" "更新 ${pip_tools[*]} 成功 (--user)"
+             echo -e "${GREEN}    > 更新 ${pip_tools[*]} 完成。${RESET}"
+         elif $pip_cmd install --upgrade "${pip_tools[@]}"; then
+             log_message "INFO" "更新 ${pip_tools[*]} 成功 (無需 --user)"
+             echo -e "${GREEN}    > 更新 ${pip_tools[*]} 完成。${RESET}"
          else
              log_message "ERROR" "更新 ${pip_tools[*]} 失敗！"
-             echo -e "${RED}  > 錯誤：更新 ${pip_tools[*]} 失敗！${RESET}"
+             echo -e "${RED}    > 錯誤：更新 ${pip_tools[*]} 失敗！${RESET}"
              update_failed=true
          fi
     else
-        log_message "ERROR" "找不到 python 命令，無法更新 ${pip_tools[*]}。"
-        echo -e "${RED}  > 錯誤：找不到 python 命令，無法更新 ${pip_tools[*]}。請確保步驟 2 已成功安裝 python。${RESET}"
+        log_message "ERROR" "找不到 $python_cmd 命令，無法更新 ${pip_tools[*]}。"
+        echo -e "${RED}  > 錯誤：找不到 Python 命令，無法更新 ${pip_tools[*]}。請確保步驟 2 已成功安裝 python。${RESET}"
         update_failed=true
     fi
     echo ""
 
-    # 4. 最終驗證所有工具是否都已成功安裝
-    echo -e "${YELLOW}[4/4] 正在驗證所有必要工具是否已安裝...${RESET}"
+    # <<< 新增：4. 更新 Python 字幕轉換器 >>>
+    echo -e "${YELLOW}[4/5] 正在檢查並更新 Python 字幕轉換器...${RESET}"
+    if ! update_python_converter; then
+        log_message "WARNING" "Python 字幕轉換器更新失敗或未完成。"
+        # 不將此標記為致命錯誤 (update_failed=true)，因為主腳本仍可運行
+    fi
+    echo ""
+
+    # 5. 最終驗證所有工具
+    echo -e "${YELLOW}[5/5] 正在驗證所有必要工具是否已安裝...${RESET}"
+    # <<< 修改：加入 webvtt-py 的檢查 >>>
+    local python_cmd
+    if command -v python3 &> /dev/null; then python_cmd="python3"; else python_cmd="python"; fi
+    
     for tool in "${all_tools[@]}"; do
         if ! command -v "$tool" &> /dev/null; then
-            missing_after_update+=("$tool")
-            echo -e "${RED}  > 驗證失敗：找不到 $tool ${RESET}"
+            # 特殊處理 python，因為可能有多個命令
+            if [[ "$tool" == "python" && ( -z "$python_cmd" || ! command -v "$python_cmd" &> /dev/null ) ]]; then
+                missing_after_update+=("python/python3")
+                echo -e "${RED}  > 驗證失敗：找不到 python 或 python3 ${RESET}"
+            elif [[ "$tool" != "python" ]]; then
+                 missing_after_update+=("$tool")
+                 echo -e "${RED}  > 驗證失敗：找不到 $tool ${RESET}"
+            else
+                 # 如果 python 命令存在，則通過檢查
+                 echo -e "${GREEN}  > 驗證成功：找到 $python_cmd ${RESET}"
+            fi
         else
-            echo -e "${GREEN}  > 驗證成功：找到 $tool ${RESET}"
+             echo -e "${GREEN}  > 驗證成功：找到 $tool ${RESET}"
         fi
     done
+    # 檢查 webvtt-py 庫
+    if command -v "$python_cmd" &> /dev/null; then
+        if $python_cmd -c "import webvtt" &> /dev/null; then
+             echo -e "${GREEN}  > 驗證成功：找到 Python 庫 webvtt-py ${RESET}"
+        else
+             missing_after_update+=("Python 庫: webvtt-py")
+             echo -e "${RED}  > 驗證失敗：找不到 Python 庫 webvtt-py (請執行: pip install webvtt-py) ${RESET}"
+        fi
+    fi
     echo ""
+
 
     # 總結結果
     if [ ${#missing_after_update[@]} -ne 0 ]; then
@@ -1597,15 +1775,15 @@ show_about() {
     read -p "按 Enter 返回主選單..."
 }
 
-
 ############################################
-# 環境檢查 (修改)
+# <<< 修改：環境檢查 (加入 Python 庫檢查提示) >>>
 ############################################
 check_environment() {
-    # 使用新的跨平台邏輯
-    local core_tools=("yt-dlp" "ffmpeg" "ffprobe" "jq" "curl")
+    local core_tools=("yt-dlp" "ffmpeg" "ffprobe" "jq" "curl" "mkvtoolnix") # <<< 新增 mkvtoolnix
     local missing_tools=()
     local python_found=false
+    local python_cmd=""
+    local webvtt_lib_found=false
 
     echo -e "${CYAN}正在進行環境檢查...${RESET}"
     log_message "INFO" "開始環境檢查 (OS: $OS_TYPE)..."
@@ -1619,11 +1797,23 @@ check_environment() {
     done
 
     # 檢查 Python
-    if command -v python &> /dev/null || command -v python3 &> /dev/null; then
-        python_found=true
+    if command -v python3 &> /dev/null; then 
+        python_found=true; python_cmd="python3"; 
+    elif command -v python &> /dev/null; then 
+        python_found=true; python_cmd="python"; 
     else
         missing_tools+=("python/python3")
         echo -e "${YELLOW}  - 缺少: python 或 python3 ${RESET}"
+    fi
+    
+    # 如果找到 Python，檢查 webvtt-py 庫
+    if $python_found; then
+        if $python_cmd -c "import webvtt" &> /dev/null; then
+            webvtt_lib_found=true
+        else
+             missing_tools+=("Python 庫: webvtt-py")
+             echo -e "${YELLOW}  - 缺少 Python 庫: webvtt-py ${RESET}"
+        fi
     fi
 
     if [ ${#missing_tools[@]} -ne 0 ]; then
@@ -1633,18 +1823,39 @@ check_environment() {
         for tool in "${missing_tools[@]}"; do echo -e "${RED}  - $tool${RESET}"; done
         echo -e "\n${CYAN}請嘗試運行選項 '6' (檢查並更新依賴套件) 來自動安裝，"
         echo -e "或者根據你的系統手動安裝它們。${RESET}"
+        # 提供安裝提示
         if [[ "$OS_TYPE" == "termux" ]]; then
-             echo -e "${GREEN}Termux: pkg install ffmpeg jq curl python python-pip && pip install -U yt-dlp${RESET}"
-        elif [[ "$OS_TYPE" == "wsl" && "$PACKAGE_MANAGER" == "apt" ]]; then
-             echo -e "${GREEN}WSL (apt): sudo apt install ffmpeg jq curl python3 python3-pip && python3 -m pip install --upgrade --user yt-dlp${RESET}"
-        else
-             echo -e "${YELLOW}請參考你的 Linux 發行版或系統的文檔來安裝所需套件。${RESET}"
+             echo -e "${GREEN}Termux:"
+             echo -e "  pkg install ffmpeg jq curl python mkvtoolnix python-pip" 
+             echo -e "  pip install -U yt-dlp webvtt-py"
+             echo -e "${RESET}"
+        elif [[ "$OS_TYPE" == "wsl" || "$OS_TYPE" == "linux" ]]; then
+             local install_cmd=""
+             if [[ "$PACKAGE_MANAGER" == "apt" ]]; then install_cmd="sudo apt install -y ffmpeg jq curl python3 python3-pip mkvtoolnix"; 
+             elif [[ "$PACKAGE_MANAGER" == "dnf" ]]; then install_cmd="sudo dnf install -y ffmpeg jq curl python3 python3-pip mkvtoolnix"; 
+             elif [[ "$PACKAGE_MANAGER" == "yum" ]]; then install_cmd="sudo yum install -y ffmpeg jq curl python3 python3-pip mkvtoolnix"; fi
+             
+             if [ -n "$install_cmd" ]; then
+                 echo -e "${GREEN}WSL/Linux ($PACKAGE_MANAGER):"
+                 echo -e "  $install_cmd"
+                 echo -e "  $python_cmd -m pip install --upgrade --user yt-dlp webvtt-py" # 使用 --user 可能更安全
+                 echo -e "${RESET}"
+             else
+                 echo -e "${YELLOW}請參考你的 Linux 發行版文檔安裝: ffmpeg, jq, curl, python3, pip, mkvtoolnix${RESET}"
+                 echo -e "${YELLOW}然後執行: pip install --upgrade yt-dlp webvtt-py${RESET}"
+             fi
         fi
+        # 提示 webvtt-py 的單獨安裝方法
+        if ! $webvtt_lib_found && $python_found; then
+             echo -e "\n${YELLOW}如果僅缺少 webvtt-py 庫，請執行:${RESET}"
+             echo -e "${GREEN}  pip install webvtt-py${RESET}"
+        fi
+        
         echo -e "\n${RED}腳本無法繼續執行，請安裝所需工具後重試。${RESET}"
-        log_message "ERROR" "環境檢查失敗，缺少工具: ${missing_tools[*]}"
+        log_message "ERROR" "環境檢查失敗，缺少: ${missing_tools[*]}"
         exit 1
     fi
-    echo -e "${GREEN}  > 必要工具檢查通過。${RESET}"
+    echo -e "${GREEN}  > 必要工具和庫檢查通過。${RESET}"
 
     # --- Termux 特定儲存權限檢查 ---
     if [[ "$OS_TYPE" == "termux" ]]; then
@@ -1689,7 +1900,7 @@ check_environment() {
 
     log_message "INFO" "環境檢查通過。"
     echo -e "${GREEN}環境檢查通過。${RESET}"
-    sleep 0
+    sleep 2
     return 0
 }
 
