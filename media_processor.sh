@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.0.5(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v2.0.6(Experimental)" # <<< 版本號更新
 # ... 其他設定 ...
 TARGET_DATE="2025-07-11" # <<< 新增：設定您的目標日期
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
@@ -1211,17 +1211,28 @@ process_single_mkv() {
         if [ ${#subtitles_to_mux[@]} -gt 0 ]; then
             ffmpeg_mux_args+=("-c:s" "webvtt") # 指定字幕編解碼器為 webvtt
             for ((i=0; i<${#subtitles_to_mux[@]}; i++)); do
-                ffmpeg_mux_args+=("-map" "$sub_input_index:s:0")
-                 # 添加語言標籤 (邏輯不變)
-                 local sub_basename=$(basename "${subtitles_to_mux[$i]}")
-                 local lang_tag="und";
-                 # 改進的語言標籤提取，更健壯
-                 if [[ "$sub_basename" =~ \.(zh-Hant|zh-TW)\. ]]; then lang_tag="zht";
-                 elif [[ "$sub_basename" =~ \.(zh-Hans|zh-CN)\. ]]; then lang_tag="zhs";
-                 elif [[ "$sub_basename" =~ \.zh\. ]]; then lang_tag="chi"; # 通用中文
-                 fi
-                 ffmpeg_mux_args+=("-metadata:s:s:$i" "language=$lang_tag")
-                ((sub_input_index++))
+                local current_sub_map_index="$sub_input_index" # 記錄當前字幕輸入流的索引
+                ffmpeg_mux_args+=("-map" "${current_sub_map_index}:s:0") # 使用記錄的索引進行映射
+
+                # --- <<< 新增：為第一個字幕軌道設定 Default 標誌 >>> ---
+                if [ "$i" -eq 0 ]; then
+                    # :s:$i 指的是輸出文件中的第 i 個字幕流 (從 0 開始)
+                    ffmpeg_mux_args+=("-disposition:s:$i" "default")
+                    log_message "INFO" "Setting subtitle stream $i as default."
+                fi
+                # --- <<< 結束新增 >>> ---
+
+                # 添加語言標籤 (使用輸出的字幕流索引 $i)
+                local sub_basename=$(basename "${subtitles_to_mux[$i]}")
+                local lang_tag="und";
+                if [[ "$sub_basename" =~ \.(zh-Hant|zh-TW)\. ]]; then lang_tag="zht";
+                elif [[ "$sub_basename" =~ \.(zh-Hans|zh-CN)\. ]]; then lang_tag="zhs";
+                elif [[ "$sub_basename" =~ \.zh\. ]]; then lang_tag="chi";
+                fi
+                # 使用 :s:$i 定位輸出的字幕流
+                ffmpeg_mux_args+=("-metadata:s:s:$i" "language=$lang_tag")
+
+                ((sub_input_index++)) # 更新下一個輸入文件的索引
             done
         fi
         ffmpeg_mux_args+=("$output_mkv")
