@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v1.9.2(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v1.9.3(Experimental)" # <<< 版本號更新
 # ... 其他設定 ...
 TARGET_DATE="2025-07-11" # <<< 新增：設定您的目標日期
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
@@ -572,7 +572,7 @@ safe_remove() {
 # <<< 修改：檢查並更新依賴套件 (加入 Python 轉換器更新) >>>
 ############################################
 update_dependencies() {
-    local pkg_tools=("ffmpeg" "jq" "curl" "python" "x11-repo" "termux-x11-nightly" "mkvtoolnix") # <<< 新增 mkvtoolnix
+    local pkg_tools=("ffmpeg" "jq" "curl" "python" "mkvtoolnix") # <<< 新增 mkvtoolnix
     local pip_tools=("yt-dlp" "webvtt-py")                 # <<< 新增 webvtt-py
     # <<< 修改：加入 python 和 webvtt-py 到驗證列表 >>>
     local all_tools=("${pkg_tools[@]}" "${pip_tools[@]}" "ffprobe" "mkvextract" "python") 
