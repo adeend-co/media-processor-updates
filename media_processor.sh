@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.0.6(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v2.0.7(Experimental)" # <<< 版本號更新
 # ... 其他設定 ...
 TARGET_DATE="2025-07-11" # <<< 新增：設定您的目標日期
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
@@ -18,8 +18,8 @@ REMOTE_VERSION_URL="https://raw.githubusercontent.com/adeend-co/media-processor-
 REMOTE_SCRIPT_URL="https://raw.githubusercontent.com/adeend-co/media-processor-updates/refs/heads/main/media_processor.sh"   # <<< 請務必修改此 URL
 SCRIPT_INSTALL_PATH="$HOME/scripts/media_processor.sh"
 # --- 新增：Python 轉換器相關設定 ---
-PYTHON_CONVERTER_SCRIPT_NAME="vtt_to_ass_converter.py"
-PYTHON_CONVERTER_INSTALL_PATH="$HOME/scripts/$PYTHON_CONVERTER_SCRIPT_NAME"
+#PYTHON_CONVERTER_SCRIPT_NAME="vtt_to_ass_converter.py"
+#PYTHON_CONVERTER_INSTALL_PATH="$HOME/scripts/$PYTHON_CONVERTER_SCRIPT_NAME"
 PYTHON_CONVERTER_VERSION="0.0.0" # <<< 本地版本，會從設定檔載入
 PYTHON_CONVERTER_VERSION_URL="https://raw.githubusercontent.com/adeend-co/media-processor-updates/refs/heads/main/latest_version(Vtt_to_Ass)" # <<<【重要】需要您提供實際的 URL
 PYTHON_CONVERTER_REMOTE_URL="https://raw.githubusercontent.com/adeend-co/media-processor-updates/refs/heads/main/vtt_to_ass_converter.py"   # <<<【重要】需要您提供實際的 URL
