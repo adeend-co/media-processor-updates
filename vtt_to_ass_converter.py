@@ -8,7 +8,7 @@ import os
 
 # --- Script Configuration ---
 # <<< 更新版本號以反映修改 >>>
-__version__ = "1.1.3(Fix Structure)"
+__version__ = "1.1.4(Fix Structure)"
 
 # --- VTT Enhancement Logic ---
 
@@ -52,83 +52,74 @@ def enhance_vtt(input_vtt_path, output_vtt_path):
         #        output_lines.append(f"::cue(.{class_name}) {{ color: {css_color}; }}")
         #    output_lines.append("") # STYLE 塊後必須有空行
 
-        # --- 第二遍：處理 Cues (時間碼和文本)，確保結構正確 ---
+                # --- 第二遍：處理 Cues (時間碼和文本)，確保結構正確 ---
         in_header = True
-        in_style_block = False # 新增標誌，用於跳過原始 STYLE 塊
-        last_line_was_cue_related = False # 新增標誌，用於確保 Cue 之間有空行
+        # <<< 移除 in_style_block 標誌，我們直接判斷 >>>
+        last_line_was_cue_related = False
 
         for line in lines:
             line_strip = line.strip()
+            original_line = line # <<< 保留原始行，包含換行符
 
-            # --- 簡化頭部和原始 STYLE 塊的跳過邏輯 ---
+            # --- 嚴格跳過 Header 和 STYLE ---
             if in_header:
                 if line_strip == "WEBVTT":
-                    continue # 跳過原始 WEBVTT
-                # 遇到第一個非空、非 NOTE、非 STYLE 的行，或時間碼，視為 Header 結束
-                # 注意：我們自己生成 STYLE，所以要跳過原始的
-                elif line_strip.startswith("STYLE"):
-                    in_style_block = True
                     continue
-                elif in_style_block:
-                    if not line_strip: # STYLE 塊以空行結束
-                        in_style_block = False
-                    continue # 跳過 STYLE 塊內容
+                # <<< 如果遇到 STYLE 或其內容（直到 ##），直接跳過 >>>
+                elif line_strip.startswith("STYLE") or line_strip.startswith("::cue") or line_strip == "}" or line_strip == "##":
+                     # 簡單粗暴地跳過所有看起來像 STYLE 塊內容的行和 ##
+                     # 這裡假設 STYLE 塊內容不會跨越多行且不包含空行，這對於原始文件是成立的
+                    continue
                 elif line_strip.startswith("NOTE"):
-                    # 保留 NOTE (可選，如果原始文件有 NOTE 且想保留)
-                    # output_lines.append(line_strip)
-                    # output_lines.append("") # NOTE 後面也建議空行
-                    last_line_was_cue_related = False # NOTE 不算 Cue
+                    continue # 也跳過 NOTE
+                elif not line_strip: # 跳過 Header 或 STYLE 塊結束後的空行
+                    # 僅當檢測到第一個時間碼或文本後，才認為 Header 結束
+                    # 所以在 Header 階段的空行都跳過
                     continue
-                elif '-->' in line_strip or line_strip: # 遇到時間碼或非空文本行
-                    in_header = False # Header 結束
+                elif '-->' in line_strip or line_strip: # 遇到第一個有效 Cue 或 Kind/Language
+                    # 如果是 Kind 或 Language，也保留（雖然我們可能不需要它們）
+                    if line_strip.startswith("Kind:") or line_strip.startswith("Language:"):
+                         output_lines.append(original_line.rstrip() + '\n') # 保留 Kind/Language，確保LF換行
+                         continue
+                    else: # 否則認為 Header 結束
+                         in_header = False
                 else:
-                    # 處理 Header 中的空行（通常應該忽略）
-                    continue
+                     continue # 其他情況跳過
 
-            # --- 處理 Cue 部分 ---
-            is_timestamp_line = '-->' in line_strip
-            is_text_line = bool(line_strip) and not is_timestamp_line
-            is_empty_line = not line_strip
+            # --- Header 結束後，處理 Cue 部分 ---
+            # <<< 確保這裡是在 in_header 為 False 時才執行 >>>
+            if not in_header:
+                is_timestamp_line = '-->' in line_strip
+                is_text_line = bool(line_strip) and not is_timestamp_line
+                is_empty_line = not line_strip
 
-            if is_timestamp_line:
-                # 在每個 Cue 開始前（即時間碼前），確保與上一個 Cue 有空行
-                if last_line_was_cue_related:
-                    # 檢查 output_lines 最後一行是否為空，如果不是則添加
-                    if output_lines and output_lines[-1].strip():
-                         output_lines.append("")
-                output_lines.append(line_strip) # 添加時間碼行
-                last_line_was_cue_related = True
-            elif is_text_line:
-                # 處理文本行 (替換顏色標籤，移除 </c>)
-                processed_line = line_strip
-           #     for hex_color, class_name in color_map.items():
-           #         pattern = re.compile(f'<c\\.color{hex_color}>', re.IGNORECASE)
-           #         processed_line = pattern.sub(f'<c.{class_name}>', processed_line)
-           #     processed_line = processed_line.replace('</c>', '')
-                output_lines.append(processed_line) # 添加處理後的文本行
-                last_line_was_cue_related = True
-            elif is_empty_line:
-                # 處理原始文件中的空行
-                # 如果上一個相關行也是 Cue 的一部分，則保留這個空行（作為 Cue 的分隔）
-                # 否則，忽略多餘的空行
-                if last_line_was_cue_related:
-                    # 只有當 output_lines 最後一行不是空行時才添加這個空行，避免連續多個空行
-                    if output_lines and output_lines[-1].strip():
-                         output_lines.append("")
-                last_line_was_cue_related = False # 遇到空行，重置標誌
+                if is_timestamp_line:
+                    if last_line_was_cue_related:
+                        if output_lines and output_lines[-1].strip():
+                            output_lines.append("\n") # 使用 LF 空行
+                    # <<< 寫入時間碼行，確保是 LF 結尾 >>>
+                    output_lines.append(original_line.rstrip() + '\n')
+                    last_line_was_cue_related = True
+                elif is_text_line:
+                    # <<< 寫入原始文本行（Test A），確保是 LF 結尾 >>>
+                    output_lines.append(original_line.rstrip() + '\n')
+                    last_line_was_cue_related = True
+                elif is_empty_line:
+                    if last_line_was_cue_related:
+                        if output_lines and output_lines[-1].strip():
+                            output_lines.append("\n") # 使用 LF 空行
+                    last_line_was_cue_related = False # 遇到空行重置
 
-        # --- 確保文件末尾有空行 ---
-        # 移除末尾可能的多餘空行，然後確保只有一個
+        # --- 確保文件末尾有空行 (LF) ---
         while output_lines and not output_lines[-1].strip():
-             output_lines.pop()
-        output_lines.append("") # 添加一個確定的空行在結尾
+            output_lines.pop()
+        output_lines.append("\n")
 
         # --- 寫入新的 VTT 文件 ---
-        with open(output_vtt_path, 'w', encoding='utf-8') as f_out:
-            f_out.write('\n'.join(output_lines))
-            # f_out.write('\n') # 不再需要額外加換行，因為 join 後面已經確保結尾是空行了
+        with open(output_vtt_path, 'w', encoding='utf-8', newline='\n') as f_out: # <<< 強制 LF 換行 >>>
+            f_out.write(''.join(output_lines)) # <<< 使用 ''.join 因為每行已有換行符 >>>
 
-        return 0 # 成功
+        return 0
 
     except FileNotFoundError:
         print(f"Error: Input VTT file not found: {input_vtt_path}", file=sys.stderr)
