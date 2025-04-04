@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v1.9.0(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v1.9.1(Experimental)" # <<< 版本號更新
 # ... 其他設定 ...
 TARGET_DATE="2025-07-11" # <<< 新增：設定您的目標日期
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
@@ -664,37 +664,57 @@ update_dependencies() {
     fi
     echo ""
 
-    # 5. 最終驗證所有工具
+# 5. 最終驗證所有工具
     echo -e "${YELLOW}[5/5] 正在驗證所有必要工具是否已安裝...${RESET}"
-    # <<< 修改：加入 webvtt-py 的檢查 >>>
-    local python_cmd
-    if command -v python3 &> /dev/null; then python_cmd="python3"; else python_cmd="python"; fi
-    
+    local python_cmd # 確保 python_cmd 在循環外定義
+    if command -v python3 &> /dev/null; then python_cmd="python3"; elif command -v python &> /dev/null; then python_cmd="python"; else python_cmd=""; fi
+
     for tool in "${all_tools[@]}"; do
+        # --- 修正後的條件判斷 ---
         if ! command -v "$tool" &> /dev/null; then
-            # 特殊處理 python，因為可能有多個命令
-            if [[ "$tool" == "python" && ( -z "$python_cmd" || ! command -v "$python_cmd" &> /dev/null ) ]]; then
-                missing_after_update+=("python/python3")
-                echo -e "${RED}  > 驗證失敗：找不到 python 或 python3 ${RESET}"
-            elif [[ "$tool" != "python" ]]; then
+            # 如果工具命令找不到
+            if [[ "$tool" == "python" ]]; then
+                 # 特殊處理 python: 如果 'python' 命令本身找不到，
+                 # 並且之前檢測到的 python_cmd (python3 或 python) 也為空，
+                 # 才報告缺少 python/python3
+                 if [ -z "$python_cmd" ]; then 
+                      missing_after_update+=("python/python3")
+                      echo -e "${RED}  > 驗證失敗：找不到 python 或 python3 ${RESET}"
+                 else
+                     # 雖然 'python' 命令找不到，但找到了 python3，所以 Python 環境是 OK 的
+                     # 避免重複報告找到 python3，這裡可以不輸出或輸出找到 python_cmd
+                      : # Do nothing, or echo "${GREEN} > 驗證成功：找到 $python_cmd ${RESET}" (可能會重複)
+                 fi
+            else
+                 # 其他工具找不到，直接報告缺少
                  missing_after_update+=("$tool")
                  echo -e "${RED}  > 驗證失敗：找不到 $tool ${RESET}"
-            else
-                 # 如果 python 命令存在，則通過檢查
-                 echo -e "${GREEN}  > 驗證成功：找到 $python_cmd ${RESET}"
             fi
         else
-             echo -e "${GREEN}  > 驗證成功：找到 $tool ${RESET}"
+             # 如果工具命令找到了
+             if [[ "$tool" == "python" && -n "$python_cmd" && "$tool" != "$python_cmd" ]]; then
+                  # 如果當前檢查的是 'python' 但我們實際用的是 'python3'，
+                  # 可以選擇性跳過 'python' 的成功輸出，避免混淆
+                  : # Do nothing
+             else
+                  # 正常輸出找到工具 (包括找到 python3 或 python)
+                  echo -e "${GREEN}  > 驗證成功：找到 $tool ${RESET}"
+             fi
         fi
+        # --- 結束修正 ---
     done
-    # 檢查 webvtt-py 庫
-    if command -v "$python_cmd" &> /dev/null; then
+    
+    # 檢查 webvtt-py 庫 (這部分邏輯不變)
+    if [ -n "$python_cmd" ]; then # 確保 python_cmd 不是空的
         if $python_cmd -c "import webvtt" &> /dev/null; then
              echo -e "${GREEN}  > 驗證成功：找到 Python 庫 webvtt-py ${RESET}"
         else
              missing_after_update+=("Python 庫: webvtt-py")
              echo -e "${RED}  > 驗證失敗：找不到 Python 庫 webvtt-py (請執行: pip install webvtt-py) ${RESET}"
         fi
+    # else # 如果 python_cmd 為空（即 python/python3 都沒找到），上面已經報錯了，這裡不用再處理庫
+    #    missing_after_update+=("Python 庫: webvtt-py (因缺少Python)")
+    #    echo -e "${RED}  > 驗證失敗：因缺少 Python，無法檢查 webvtt-py 庫 ${RESET}"
     fi
     echo ""
 
