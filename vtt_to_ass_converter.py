@@ -89,7 +89,7 @@ def process_vtt_line(line):
             processed_line += processed_part
             
     # 清理可能殘留的原始 VTT 標籤 (以防萬一正則沒匹配到) - 可選強化
-    # processed_line = re.sub(r'<[^>]+>', '', processed_line) 
+     processed_line = re.sub(r'<[^>]+>', '', processed_line) 
 
     return processed_line.strip()
 
