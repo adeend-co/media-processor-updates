@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.0.14(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v2.0.15(Experimental)" # <<< 版本號更新
 # ... 其他設定 ...
 TARGET_DATE="2025-07-11" # <<< 新增：設定您的目標日期
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
@@ -572,7 +572,7 @@ safe_remove() {
 # <<< 修改：檢查並更新依賴套件 (加入 Python 轉換器更新) >>>
 ############################################
 update_dependencies() {
-    local pkg_tools=("ffmpeg" "jq" "curl" "python")
+    local pkg_tools=("ffmpeg" "jq" "curl" "python" "mkvtoolnix")
     local pip_tools=("yt-dlp")  
     local all_tools=("${pkg_tools[@]}" "${pip_tools[@]}" "ffprobe") 
     local update_failed=false
@@ -594,7 +594,7 @@ update_dependencies() {
     fi
     echo "" # 空行分隔
 
-    # 2. 安裝/更新 pkg 管理的工具 (ffmpeg, jq, curl, python)
+    # 2. 安裝/更新 pkg 管理的工具 (ffmpeg, jq, curl, python, mkvtoolnix)
     #    FFmpeg 套件通常會包含 ffprobe，所以不用單獨安裝 ffprobe
     echo -e "${YELLOW}[2/5] 正在安裝/更新 pkg 套件: ${pkg_tools[*]}...${RESET}"
     if pkg install -y "${pkg_tools[@]}"; then
