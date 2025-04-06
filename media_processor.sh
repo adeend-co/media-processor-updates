@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.0.16(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v2.1.0(Experimental)" # <<< 版本號更新
 # ... 其他設定 ...
 TARGET_DATE="2025-07-11" # <<< 新增：設定您的目標日期
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
@@ -1256,6 +1256,111 @@ _process_single_other_site() {
     return $result
 }
 
+###########################################################
+# 新增：輔助函數 - 處理單一通用網站媒體項目 (無音量標準化)
+###########################################################
+_process_single_other_site_no_normalize() {
+    local item_url="$1"; local choice_format="$2"; local item_index="$3"; local total_items="$4"
+    local temp_dir=$(mktemp -d); local thumbnail_file=""; local main_media_file=""; local base_name=""
+    local result=0;
+    local progress_prefix=""; if [ -n "$item_index" ] && [ -n "$total_items" ]; then progress_prefix="[$item_index/$total_items] "; fi
+
+    echo -e "${CYAN}${progress_prefix}處理項目 (無標準化): $item_url (${choice_format})${RESET}";
+    log_message "INFO" "${progress_prefix}處理項目 (無標準化): $item_url (格式: $choice_format)"
+
+    mkdir -p "$DOWNLOAD_PATH"; if [ ! -w "$DOWNLOAD_PATH" ]; then log_message "ERROR" "...無法寫入目錄..."; echo -e "${RED}錯誤：無法寫入目錄${RESET}"; [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1; fi
+
+    # --- 下載設定 (與原函數相同，但後續不處理) ---
+    local yt_dlp_format_string=""; local yt_dlp_extra_args=()
+    # 選擇下載格式偏好
+    if [ "$choice_format" = "mp4" ]; then
+        # 嘗試下載 MP4 視訊 + M4A 音訊，備選為最佳視訊+最佳音訊，再備選為單一最佳 MP4，最後是最佳
+        yt_dlp_format_string="bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best"
+    else # mp3 意圖 -> 只下載音訊
+        yt_dlp_format_string="bestaudio/best"
+    fi
+    # 其他下載參數：寫入縮圖、換行、進度條、執行緒數
+    yt_dlp_extra_args+=(--write-thumbnail --newline --progress --concurrent-fragments "$THREADS")
+
+    # --- 輸出檔名模板 (與原函數相同) ---
+    # 播放清單模板 (含索引)
+    local output_template="$DOWNLOAD_PATH/%(playlist_index)s-%(title)s [%(id)s].%(ext)s"
+    # 單一檔案模板 (無索引)
+    local output_template_single="$DOWNLOAD_PATH/%(title)s [%(id)s].%(ext)s"
+
+    # --- 開始下載 (與原函數相同邏輯，包含備用模板) ---
+    echo -e "${YELLOW}${progress_prefix}開始下載 (無標準化)...${RESET}"
+    local yt_dlp_cmd_args=(yt-dlp -f "$yt_dlp_format_string" "${yt_dlp_extra_args[@]}" -o "$output_template" "$item_url")
+    log_message "INFO" "${progress_prefix}執行下載 (無標準化，模板1): ${yt_dlp_cmd_args[*]}"
+    if ! "${yt_dlp_cmd_args[@]}" 2> "$temp_dir/yt-dlp-other-nonorm1.log"; then
+        echo -e "${YELLOW}${progress_prefix}模板1下載失敗，嘗試模板2...${RESET}"
+        local yt_dlp_cmd_args_single=(yt-dlp -f "$yt_dlp_format_string" "${yt_dlp_extra_args[@]}" -o "$output_template_single" "$item_url")
+        log_message "INFO" "${progress_prefix}執行下載 (無標準化，模板2): ${yt_dlp_cmd_args_single[*]}"
+        if ! "${yt_dlp_cmd_args_single[@]}" 2> "$temp_dir/yt-dlp-other-nonorm2.log"; then
+            log_message "ERROR" "...下載失敗 (無標準化)...";
+            echo -e "${RED}錯誤：下載失敗！${RESET}";
+            # 顯示最後一次失敗的日誌
+            [ -f "$temp_dir/yt-dlp-other-nonorm2.log" ] && cat "$temp_dir/yt-dlp-other-nonorm2.log" || cat "$temp_dir/yt-dlp-other-nonorm1.log"
+            [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1;
+        fi
+    fi
+
+    # --- 定位下載的檔案 (與原函數相同邏輯) ---
+    echo -e "${YELLOW}${progress_prefix}定位下載的檔案...${RESET}"
+    local get_filename_args1=(yt-dlp --get-filename -f "$yt_dlp_format_string" -o "$output_template" "$item_url")
+    main_media_file=$("${get_filename_args1[@]}" 2>/dev/null)
+    if [ ! -f "$main_media_file" ]; then
+        local get_filename_args2=(yt-dlp --get-filename -f "$yt_dlp_format_string" -o "$output_template_single" "$item_url")
+        main_media_file=$("${get_filename_args2[@]}" 2>/dev/null)
+    fi
+
+    # 檢查主檔案是否真的下載成功
+    if [ ! -f "$main_media_file" ]; then
+        log_message "ERROR" "...找不到主要下載檔案 (無標準化)...";
+        echo -e "${RED}錯誤：找不到主要下載檔案！可能是下載過程中斷或檔名解析問題。${RESET}";
+        [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1;
+    fi
+    log_message "INFO" "${progress_prefix}找到主要下載檔案: $main_media_file";
+    base_name="${main_media_file%.*}" # 取得不含副檔名的基本檔名
+
+    # --- 嘗試尋找縮圖檔案 (與原函數相同) ---
+    for ext in jpg png webp jpeg; do
+        local potential_thumb="${base_name}.${ext}"
+        if [ -f "$potential_thumb" ]; then
+            thumbnail_file="$potential_thumb"
+            log_message "INFO" "...找到縮圖: $thumbnail_file";
+            break;
+        fi
+    done
+    if [ -z "$thumbnail_file" ]; then
+        log_message "WARNING" "...未找到下載的縮圖檔案 (可能未提供或下載失敗)";
+    fi
+
+    # --- 【核心差異】跳過音量標準化和 FFmpeg 處理 ---
+    # 在此版本中，我們不進行 normalize_audio 和後續的 ffmpeg 混流/嵌入操作
+    # 下載的 main_media_file 就是最終檔案
+    log_message "INFO" "${progress_prefix}跳過音量標準化與後處理。"
+    echo -e "${GREEN}${progress_prefix}下載完成 (無標準化)。${RESET}"
+    result=0 # 設定結果為成功
+
+    # --- 清理 ---
+    log_message "INFO" "${progress_prefix}清理臨時檔案..."
+    # 只需刪除臨時目錄和下載日誌，保留主檔案和縮圖（如果存在）
+    safe_remove "$temp_dir/yt-dlp-other-nonorm1.log" "$temp_dir/yt-dlp-other-nonorm2.log"
+    [ -d "$temp_dir" ] && rm -rf "$temp_dir"
+
+    # --- 報告結果 ---
+    if [ $result -eq 0 ]; then
+        echo -e "${GREEN}${progress_prefix}處理完成！檔案已儲存至：$main_media_file${RESET}";
+        log_message "SUCCESS" "${progress_prefix}處理完成 (無標準化)！檔案：$main_media_file";
+    else
+        # 理論上如果下載成功，這裡不會是失敗，但保留以防萬一
+        echo -e "${RED}${progress_prefix}處理失敗 (無標準化)！${RESET}";
+        log_message "ERROR" "${progress_prefix}處理失敗 (無標準化)：$item_url";
+    fi
+    return $result
+}
+
 ############################################
 # 處理其他網站媒體 (通用 MP3/MP4) - 支持實驗性批量下載
 ############################################
@@ -1338,6 +1443,86 @@ process_other_site_media_playlist() {
             # input_url remains the original URL passed to the function
         fi
         _process_single_other_site "$input_url" "$choice_format" # No index/total needed
+    fi
+}
+
+#######################################################
+# 新增：處理其他網站媒體 (無音量標準化) - 支持實驗性批量下載
+#######################################################
+process_other_site_media_playlist_no_normalize() {
+    local input_url=""; local choice_format=""
+    local cf # 為了 case 語句的作用域
+
+    # 獲取使用者輸入 (與原函數相同)
+    read -r -p "請輸入媒體網址 (單個或播放列表，無標準化): " input_url; if [ -z "$input_url" ]; then echo -e "${RED}錯誤：未輸入！${RESET}"; return 1; fi
+
+    log_message "INFO" "處理通用媒體/列表 (無標準化)：$input_url"; echo -e "${YELLOW}處理通用媒體/列表 (無標準化)：$input_url${RESET}"; echo -e "${YELLOW}注意：列表支持為實驗性。${RESET}"
+
+    # 選擇格式 (與原函數相同)
+    while true; do
+        local cfn # 為了迴圈作用域
+        read -r -p "選擇下載偏好 (1: 音訊優先MP3, 2: 影片優先MP4): " cfn;
+        case $cfn in
+             1) cf="mp3"; break;; # 意圖是音訊
+             2) cf="mp4"; break;; # 意圖是影片
+             *) echo "${RED}無效選項${RESET}";;
+        esac;
+    done;
+    choice_format=$cf; log_message "INFO" "選擇格式 (無標準化): $choice_format"
+
+    # --- 檢測播放清單邏輯 (與原函數完全相同) ---
+    echo -e "${YELLOW}檢測是否為列表...${RESET}";
+    local item_list_json; local yt_dlp_dump_args=(yt-dlp --flat-playlist --dump-json "$input_url")
+    item_list_json=$("${yt_dlp_dump_args[@]}" 2>/dev/null); local jec=$?; if [ $jec -ne 0 ]; then log_message "WARNING" "dump-json 失敗..."; fi
+
+    local item_urls=(); local item_count=0
+    if command -v jq &> /dev/null; then
+        if [ -n "$item_list_json" ]; then
+            local line url
+            while IFS= read -r line; do
+                url=$(echo "$line" | jq -r '.url // empty' 2>/dev/null)
+                if [ $? -eq 0 ] && [ -n "$url" ] && [ "$url" != "null" ]; then
+                    item_urls+=("$url");
+                fi;
+            done <<< "$(echo "$item_list_json" | jq -c '. // empty | select(type == "object" and (.url != null))')"
+
+            item_count=${#item_urls[@]};
+            if [ "$item_count" -eq 0 ]; then
+                log_message "WARNING" "透過 JQ 解析，未找到有效的 URL 項目。"
+            fi
+        else
+             log_message "WARNING" "dump-json 成功，但輸出為空。"
+        fi
+    elif ! command -v jq &> /dev/null; then
+        log_message "WARNING" "未找到 jq，無法自動檢測列表項目 URL。將嘗試處理原始 URL。"
+        item_count=0
+    fi
+    # --- 結束播放清單檢測邏輯 ---
+
+    # --- 處理邏輯 (批量或單個) ---
+    if [ "$item_count" -gt 1 ]; then
+        log_message "INFO" "檢測到列表 ($item_count 項，無標準化)。"; echo -e "${CYAN}檢測到列表 ($item_count 項)。開始批量處理 (無標準化)...${RESET}";
+        local ci=0; local sc=0; local item_url
+        for item_url in "${item_urls[@]}"; do
+            ci=$((ci + 1));
+            # --- 【核心差異】呼叫 _no_normalize 版本的輔助函數 ---
+            if _process_single_other_site_no_normalize "$item_url" "$choice_format" "$ci" "$item_count"; then
+                sc=$((sc + 1));
+            fi
+            echo ""; # 項目間換行
+        done
+        echo -e "${GREEN}列表處理完成 (無標準化)！共 $ci 項，成功 $sc 項。${RESET}"; log_message "SUCCESS" "列表 $input_url (無標準化) 完成！共 $ci 項，成功 $sc 項。"
+    else
+        if [ "$item_count" -eq 1 ]; then
+            log_message "INFO" "檢測到 1 項，按單個處理 (無標準化)。"
+            echo -e "${YELLOW}檢測到 1 項，按單個處理 (無標準化)...${RESET}";
+            input_url=${item_urls[0]};
+        else
+            log_message "INFO" "未檢測到有效列表或無法解析，按單個處理原始 URL (無標準化)。"
+            echo -e "${YELLOW}未檢測到列表，按單個處理 (無標準化)...${RESET}";
+        fi
+        # --- 【核心差異】呼叫 _no_normalize 版本的輔助函數 ---
+        _process_single_other_site_no_normalize "$input_url" "$choice_format"
     fi
 }
 
@@ -1926,28 +2111,27 @@ check_environment() {
 }
 
 ############################################
-# 主選單 (修改 - 在處理任務後添加延遲)
+# 主選單 (修改 - 加入 7-1 選項)(v2.1.0+)
 ############################################
 main_menu() {
     while true; do
         clear
         echo -e "${CYAN}=== 整合式影音處理平台 ${SCRIPT_VERSION} ===${RESET}"
-        # <<< 新增：在這裡呼叫顯示倒數計時的函數 >>>
+        # <<< 顯示倒數計時 (保留) >>>
         display_countdown
-        # <<< 結束新增 >>>
         echo -e "${YELLOW}請選擇操作：${RESET}"
         echo -e " 1. ${BOLD}MP3 處理${RESET} (YouTube/本機)"
         echo -e " 2. ${BOLD}MP4 處理${RESET} (YouTube/本機)"
         echo -e " 2-1. 下載 MP4 (YouTube / ${BOLD}無${RESET}標準化)"
-        # <<< 新增 MKV 選項 >>>
         echo -e " 2-2. ${BOLD}MKV 處理 (YouTube / 含標準化 / 實驗性字幕保留)${RESET}"
         echo -e " ${BOLD}7. 通用媒體處理 (其他網站 / ${YELLOW}實驗性${RESET})"
+        # <<< 新增 7-1 選項 >>>
+        echo -e " ${BOLD}7-1. 通用媒體下載 (${YELLOW}實驗性${RESET} / ${BOLD}無${RESET}標準化)"
         echo -e "---------------------------------------------"
         echo -e " 3. 設定參數"
         echo -e " 4. 檢視操作日誌"
         echo -e " 6. ${BOLD}檢查並更新依賴套件${RESET}"
         echo -e " ${BOLD}8. 檢查腳本更新${RESET}"
-        # <<< 新增：僅在 Termux 環境下顯示選項 9 >>>
         if [[ "$OS_TYPE" == "termux" ]]; then
             echo -e " ${BOLD}9. 設定 Termux 啟動時詢問${RESET}"
         fi
@@ -1956,78 +2140,53 @@ main_menu() {
         echo -e " 0. ${RED}退出腳本${RESET}"
         echo -e "---------------------------------------------"
 
-        # 依然保留之前的緩衝區清理嘗試，作為額外保險
+        # 清理緩衝區 (保留)
         read -t 0.1 -N 10000 discard
 
-        local prompt_range="0-8"
-        if [[ "$OS_TYPE" == "termux" ]]; then
-            prompt_range="0-9 或 2-1 ,2-2"
-        else
-            prompt_range="0-8 或 2-1 ,2-2"
-        fi
+        # <<< 修改提示範圍 >>>
+        local prompt_range="0-9 或 2-1, 2-2, 7-1"
+        # if [[ "$OS_TYPE" == "termux" ]]; then
+        #     prompt_range="0-9 或 2-1, 2-2, 7-1" # Termux 範圍已包含 9
+        # else
+        #     prompt_range="0-8 或 2-1, 2-2, 7-1" # 非 Termux 沒有 9
+        # fi
+        # 簡化：直接包含所有可能的選項
         local choice
         read -rp "輸入選項 (${prompt_range}): " choice
 
         case $choice in
-            1)
-                process_mp3
-                sleep 1 # <<< 在 MP3 處理後暫停 1 秒
+            1) process_mp3; sleep 1 ;;
+            2) process_mp4; sleep 1 ;;
+            2-1) process_mp4_no_normalize; sleep 1 ;;
+            2-2) process_mkv; sleep 1 ;;
+            7) process_other_site_media_playlist; sleep 1 ;;
+            # <<< 新增 7-1 的處理 >>>
+            7-1)
+                process_other_site_media_playlist_no_normalize # 呼叫新的處理函數
+                sleep 1 # 處理後暫停
                 ;;
-            2)
-                process_mp4
-                sleep 1 # <<< 在 MP4 處理後暫停 1 秒
-                ;;
-            2-1)
-                process_mp4_no_normalize
-                sleep 1 # <<< 在 MP4 (無標準化) 處理後暫停 1 秒
-                ;;
-            2-2) 
-                process_mkv;
-                sleep 1 
-                ;;
-            7)
-                process_other_site_media_playlist
-                sleep 1 # <<< 在通用媒體處理後暫停 1 秒
-                ;;
-            3) config_menu ;; # 設定選單本身有循環，返回時不需要額外暫停
-            4) view_log ;;    # 檢視日誌通常很快，不需要強制暫停
-            6)
-                update_dependencies
-                # update_dependencies 內部已有 read prompt，不需要再加 sleep
-                ;;
+            3) config_menu ;;
+            4) view_log ;;
+            6) update_dependencies ;; # 內部有 read prompt
             8)
                auto_update_script
-               echo ""
-               read -p "按 Enter 返回主選單..."
-               # sleep 1 # 可選：如果希望按 Enter 後再停1秒
+               echo ""; read -p "按 Enter 返回主選單..."
                ;;
             9)
                if [[ "$OS_TYPE" == "termux" ]]; then
                    setup_termux_autostart
                else
-                   echo -e "${RED}錯誤：此選項僅適用於 Termux。${RESET}"
-                   sleep 1 # 顯示錯誤後暫停一下
+                   echo -e "${RED}錯誤：此選項僅適用於 Termux。${RESET}"; sleep 1
                fi
-               echo ""
-               read -p "按 Enter 返回主選單..."
-               # sleep 1 # 可選：如果希望按 Enter 後再停1秒
+               echo ""; read -p "按 Enter 返回主選單..."
                ;;
-            5)
-                show_about
-                # show_about 內部已有 read prompt，不需要再加 sleep
-                ;;
+            5) show_about ;; # 內部有 read prompt
             0) echo -e "${GREEN}感謝使用，正在退出...${RESET}"; log_message "INFO" "使用者選擇退出。"; sleep 1; exit 0 ;;
             *)
-               if [[ -z "$choice" ]]; then
-                   continue
-               else
-                   echo -e "${RED}無效選項 '$choice'${RESET}";
-                   log_message "WARNING" "主選單輸入無效選項: $choice";
-                   sleep 1 # 無效選項後原本就有暫停
-               fi
+               if [[ -z "$choice" ]]; then continue; else echo -e "${RED}無效選項 '$choice'${RESET}"; log_message "WARNING" "主選單輸入無效選項: $choice"; sleep 1; fi
                ;;
         esac
-        # <<< 注意：這裡不再有全局的 read prompt 或 sleep >>>
+        # <<< 主迴圈結尾不加全局暫停 >>>
     done
 }
 
