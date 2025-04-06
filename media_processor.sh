@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.1.1(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v2.1.2(Experimental)" # <<< 版本號更新
 # ... 其他設定 ...
 TARGET_DATE="2025-07-11" # <<< 新增：設定您的目標日期
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
@@ -1022,7 +1022,7 @@ process_single_mp4() {
 process_single_mp4_no_normalize() {
     # --- 函數邏輯不變 ---
     local video_url="$1"
-    local target_sub_langs="zh-Hant,zh-TW,zh-Hans,zh-CN,zh"
+    local target_sub_langs="zh-Hant,zh-TW,zh-Hans,zh-CN,zh,zh-Hant-AAj-uoGhMZA" #(zh-Hant-AAj-uoGhMZA)為了「ヨルシカ」而特別新增。
     local subtitle_options="--write-subs --sub-lang $target_sub_langs --convert-subs srt"
     local subtitle_files=()
     local temp_dir=$(mktemp -d)
