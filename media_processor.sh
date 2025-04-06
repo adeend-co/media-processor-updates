@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.1.2(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v2.1.3(Experimental)" # <<< 版本號更新
 # ... 其他設定 ...
 TARGET_DATE="2025-07-11" # <<< 新增：設定您的目標日期
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
@@ -959,6 +959,148 @@ process_single_mp3() {
     return $result
 }
 
+#########################################################
+# 新增：處理單一 YouTube 音訊（MP3）下載（無音量標準化）
+#########################################################
+process_single_mp3_no_normalize() {
+    local media_url="$1"
+    local temp_dir=$(mktemp -d)
+    local audio_file_raw="" # yt-dlp 下載的原始 MP3 (可能在 temp)
+    local artist_name="[不明]"
+    local album_artist_name="[不明]"
+    local base_name=""
+    local result=0
+    local video_title=""
+    local video_id=""
+
+    mkdir -p "$DOWNLOAD_PATH"
+    if [ ! -w "$DOWNLOAD_PATH" ]; then
+        log_message "ERROR" "無法寫入下載目錄：$DOWNLOAD_PATH"
+        echo -e "${RED}錯誤：無法寫入下載目錄${RESET}"
+        [ -d "$temp_dir" ] && rm -rf "$temp_dir"
+        return 1
+    fi
+
+    echo -e "${YELLOW}處理 YouTube 媒體 (MP3 無標準化)：$media_url${RESET}"
+    log_message "INFO" "處理 YouTube 媒體 (MP3 無標準化)：$media_url"
+
+    # --- 先獲取標題和 ID，用於構建最終檔名 ---
+    echo -e "${YELLOW}正在分析媒體資訊...${RESET}"
+    video_title=$(yt-dlp --get-title "$media_url" 2>/dev/null)
+    video_id=$(yt-dlp --get-id "$media_url" 2>/dev/null)
+    if [ -z "$video_title" ] || [ -z "$video_id" ]; then
+        log_message "ERROR" "無法獲取媒體標題或 ID (無標準化)"
+        echo -e "${RED}錯誤：無法獲取媒體標題或 ID，請檢查網址是否正確${RESET}"
+        [ -d "$temp_dir" ] && rm -rf "$temp_dir"
+        return 1
+    fi
+    # 構建基礎檔名 (不含副檔名)，移除非法字元
+    base_name=$(echo "${video_title} [${video_id}]" | sed 's@[/\\:*?"<>|]@_@g')
+    # --- 資訊獲取結束 ---
+
+    echo -e "${YELLOW}開始下載並轉換為 MP3：$video_title${RESET}"
+    # --- 修改 yt-dlp 命令：直接提取並轉換為 MP3 ---
+    # 使用 --extract-audio, --audio-format mp3, --audio-quality 0 (最佳 VBR, ~320k)
+    # 將輸出直接指定到臨時目錄中的一個檔案，方便後續處理
+    local temp_audio_file="$temp_dir/temp_audio.mp3"
+    local yt_dlp_dl_args=(
+        yt-dlp
+        -f bestaudio # 依然選擇最佳音訊來源
+        --extract-audio
+        --audio-format mp3
+        --audio-quality 0 # 相當於 MP3 的最高品質 (VBR)
+        -o "$temp_audio_file" # 直接輸出到臨時 MP3 檔案
+        "$media_url"
+        --newline
+        --progress
+        --concurrent-fragments "$THREADS"
+    )
+
+    log_message "INFO" "執行 yt-dlp (MP3 無標準化): ${yt_dlp_dl_args[*]}"
+    if ! "${yt_dlp_dl_args[@]}" 2> "$temp_dir/yt-dlp-mp3-nonorm.log"; then
+        log_message "ERROR" "音訊下載或轉換失敗 (無標準化)，詳見 $temp_dir/yt-dlp-mp3-nonorm.log"
+        echo -e "${RED}錯誤：音訊下載或轉換失敗 (無標準化)${RESET}"
+        cat "$temp_dir/yt-dlp-mp3-nonorm.log"
+        [ -d "$temp_dir" ] && rm -rf "$temp_dir"
+        return 1
+    fi
+
+    # 檢查臨時 MP3 是否生成
+    if [ ! -f "$temp_audio_file" ]; then
+        log_message "ERROR" "音訊下載或轉換失敗！找不到臨時 MP3 檔案 '$temp_audio_file'"
+        echo -e "${RED}錯誤：找不到下載或轉換後的音訊檔案${RESET}"
+        [ -d "$temp_dir" ] && rm -rf "$temp_dir"
+        return 1
+    fi
+    log_message "INFO" "音訊下載並轉換為 MP3 成功: $temp_audio_file"
+    audio_file_raw="$temp_audio_file" # 記錄下這個檔案路徑
+
+    # --- 獲取元數據 (與原函數相同) ---
+    local metadata_json=$(yt-dlp --dump-json "$media_url" 2>/dev/null)
+    if [ -n "$metadata_json" ]; then
+        artist_name=$(echo "$metadata_json" | jq -r '.artist // .uploader // "[不明]"')
+        album_artist_name=$(echo "$metadata_json" | jq -r '.uploader // "[不明]"')
+    fi
+    [[ "$artist_name" == "null" ]] && artist_name="[不明]"
+    [[ "$album_artist_name" == "null" ]] && album_artist_name="[不明]"
+
+    # --- 下載封面圖片 (與原函數相同) ---
+    local cover_image="$temp_dir/cover.jpg" # 使用固定名稱方便引用
+    echo -e "${YELLOW}下載封面圖片...${RESET}"
+    if ! download_high_res_thumbnail "$media_url" "$cover_image"; then
+        cover_image="" # 下載失敗則清空變數
+    fi
+
+    # --- 【核心差異】跳過音量標準化，直接進行封面和元數據嵌入 ---
+    local output_audio="$DOWNLOAD_PATH/${base_name}.mp3" # 最終輸出路徑
+
+    echo -e "${YELLOW}正在加入封面和元數據 (無標準化)...${RESET}"
+    # 使用 ffmpeg 將封面和元數據嵌入到 yt-dlp 生成的 MP3 中
+    local ffmpeg_embed_args=(ffmpeg -y -i "$audio_file_raw") # 輸入是 yt-dlp 的 MP3
+    if [ -n "$cover_image" ] && [ -f "$cover_image" ]; then
+        ffmpeg_embed_args+=(-i "$cover_image" -map 0:a -map 1:v -c copy -id3v2_version 3 -metadata "artist=$artist_name" -metadata "album_artist=$album_artist_name" -metadata:s:v title="Album cover" -metadata:s:v comment="Cover (front)" -disposition:v attached_pic)
+    else
+        # 沒有封面，只複製音訊流並寫入元數據
+        ffmpeg_embed_args+=(-c copy -id3v2_version 3 -metadata "artist=$artist_name" -metadata "album_artist=$album_artist_name")
+    fi
+    ffmpeg_embed_args+=("$output_audio") # 輸出到最終檔案
+
+    log_message "INFO" "執行 FFmpeg 嵌入 (MP3 無標準化): ${ffmpeg_embed_args[*]}"
+    if ! "${ffmpeg_embed_args[@]}" > "$temp_dir/ffmpeg_embed.log" 2>&1; then
+        log_message "ERROR" "加入封面和元數據失敗 (無標準化)！詳見 $temp_dir/ffmpeg_embed.log"
+        echo -e "${RED}錯誤：加入封面和元數據失敗 (無標準化)${RESET}"
+        cat "$temp_dir/ffmpeg_embed.log"
+        result=1
+        # 保留臨時檔案以便調試
+    else
+        echo -e "${GREEN}封面和元數據加入完成 (無標準化)${RESET}"
+        result=0
+        # 成功後刪除 ffmpeg 日誌
+        rm -f "$temp_dir/ffmpeg_embed.log"
+    fi
+
+    # --- 清理 ---
+    log_message "INFO" "清理臨時檔案 (無標準化)..."
+    # 刪除 yt-dlp 生成的原始 MP3 和封面圖
+    safe_remove "$audio_file_raw"
+    [ -n "$cover_image" ] && [ -f "$cover_image" ] && safe_remove "$cover_image"
+    # 刪除 yt-dlp 日誌
+    safe_remove "$temp_dir/yt-dlp-mp3-nonorm.log"
+    # 刪除臨時目錄
+    [ -d "$temp_dir" ] && rm -rf "$temp_dir"
+
+
+    # --- 最終結果報告 ---
+    if [ $result -eq 0 ]; then
+        echo -e "${GREEN}處理完成！高品質 MP3 音訊已儲存至：$output_audio${RESET}"
+        log_message "SUCCESS" "處理完成 (MP3 無標準化)！音訊已儲存至：$output_audio"
+    else
+        echo -e "${RED}處理失敗 (MP3 無標準化)！${RESET}"
+        log_message "ERROR" "處理失敗 (MP3 無標準化)：$media_url"
+    fi
+    return $result
+}
+
 ############################################
 # 處理單一 YouTube 影片（MP4）下載與處理
 ############################################
@@ -1627,6 +1769,29 @@ process_mp3() {
 }
 
 ############################################
+# 新增：處理 MP3 音訊（無音量標準化，僅網路下載）
+############################################
+process_mp3_no_normalize() {
+    local input
+    read -p "輸入 YouTube 網址 [預設: $DEFAULT_URL]: " input; input=${input:-$DEFAULT_URL}
+
+    # 檢查是否為播放清單
+    if [[ "$input" == *"list="* ]]; then
+        # 播放清單處理，傳遞新的單項處理函數名
+        _process_youtube_playlist "$input" "process_single_mp3_no_normalize"
+    # 檢查是否為 YouTube 網址 (包含 youtu.be 短網址)
+    elif [[ "$input" == *"youtube.com"* || "$input" == *"youtu.be"* ]]; then
+        # 單一 YouTube 影片處理
+        process_single_mp3_no_normalize "$input"
+    else
+        # 提示錯誤，此選項不支援本機檔案或非 YouTube 網址
+        echo -e "${RED}錯誤：此選項僅支援 YouTube 網址。${RESET}"
+        log_message "ERROR" "MP3 無標準化：輸入非 YouTube URL 或本機路徑: $input"
+        return 1
+    fi
+}
+
+############################################
 # 處理 MP4 影片（支援單一或播放清單、本機檔案）
 ############################################
 process_mp4() {
@@ -2116,21 +2281,21 @@ check_environment() {
 }
 
 ############################################
-# 主選單 (修改 - 加入 7-1 選項)(v2.1.0+)
+# 主選單 (修改 - 加入 1-1 和 7-1 選項)(v2.1.3+)
 ############################################
 main_menu() {
     while true; do
         clear
         echo -e "${CYAN}=== 整合式影音處理平台 ${SCRIPT_VERSION} ===${RESET}"
-        # <<< 顯示倒數計時 (保留) >>>
         display_countdown
         echo -e "${YELLOW}請選擇操作：${RESET}"
         echo -e " 1. ${BOLD}MP3 處理${RESET} (YouTube/本機)"
+        # <<< 新增 1-1 選項 >>>
+        echo -e " 1-1. 下載 MP3 (YouTube / ${BOLD}無${RESET}標準化)"
         echo -e " 2. ${BOLD}MP4 處理${RESET} (YouTube/本機)"
         echo -e " 2-1. 下載 MP4 (YouTube / ${BOLD}無${RESET}標準化)"
         echo -e " 2-2. ${BOLD}MKV 處理 (YouTube / 含標準化 / 實驗性字幕保留)${RESET}"
         echo -e " ${BOLD}7. 通用媒體處理 (其他網站 / ${YELLOW}實驗性${RESET})"
-        # <<< 新增 7-1 選項 >>>
         echo -e " ${BOLD}7-1. 通用媒體下載 (${YELLOW}實驗性${RESET} / ${BOLD}無${RESET}標準化)"
         echo -e "---------------------------------------------"
         echo -e " 3. 設定參數"
@@ -2145,34 +2310,31 @@ main_menu() {
         echo -e " 0. ${RED}退出腳本${RESET}"
         echo -e "---------------------------------------------"
 
-        # 清理緩衝區 (保留)
         read -t 0.1 -N 10000 discard
 
         # <<< 修改提示範圍 >>>
-        local prompt_range="0-9 或 2-1, 2-2, 7-1"
-        # if [[ "$OS_TYPE" == "termux" ]]; then
-        #     prompt_range="0-9 或 2-1, 2-2, 7-1" # Termux 範圍已包含 9
-        # else
-        #     prompt_range="0-8 或 2-1, 2-2, 7-1" # 非 Termux 沒有 9
-        # fi
-        # 簡化：直接包含所有可能的選項
+        local prompt_range="0-9 或 1-1, 2-1, 2-2, 7-1"
         local choice
         read -rp "輸入選項 (${prompt_range}): " choice
 
         case $choice in
             1) process_mp3; sleep 1 ;;
+            # <<< 新增 1-1 的處理 >>>
+            1-1)
+                process_mp3_no_normalize # 呼叫新的處理函數
+                sleep 1 # 處理後暫停
+                ;;
             2) process_mp4; sleep 1 ;;
             2-1) process_mp4_no_normalize; sleep 1 ;;
             2-2) process_mkv; sleep 1 ;;
             7) process_other_site_media_playlist; sleep 1 ;;
-            # <<< 新增 7-1 的處理 >>>
             7-1)
-                process_other_site_media_playlist_no_normalize # 呼叫新的處理函數
-                sleep 1 # 處理後暫停
+                process_other_site_media_playlist_no_normalize
+                sleep 1
                 ;;
             3) config_menu ;;
             4) view_log ;;
-            6) update_dependencies ;; # 內部有 read prompt
+            6) update_dependencies ;;
             8)
                auto_update_script
                echo ""; read -p "按 Enter 返回主選單..."
@@ -2185,13 +2347,12 @@ main_menu() {
                fi
                echo ""; read -p "按 Enter 返回主選單..."
                ;;
-            5) show_about ;; # 內部有 read prompt
+            5) show_about ;;
             0) echo -e "${GREEN}感謝使用，正在退出...${RESET}"; log_message "INFO" "使用者選擇退出。"; sleep 1; exit 0 ;;
             *)
                if [[ -z "$choice" ]]; then continue; else echo -e "${RED}無效選項 '$choice'${RESET}"; log_message "WARNING" "主選單輸入無效選項: $choice"; sleep 1; fi
                ;;
         esac
-        # <<< 主迴圈結尾不加全局暫停 >>>
     done
 }
 
