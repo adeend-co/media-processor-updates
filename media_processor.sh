@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.1.0(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v2.1.1(Experimental)" # <<< 版本號更新
 # ... 其他設定 ...
 TARGET_DATE="2025-07-11" # <<< 新增：設定您的目標日期
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
@@ -1345,8 +1345,13 @@ _process_single_other_site_no_normalize() {
 
     # --- 清理 ---
     log_message "INFO" "${progress_prefix}清理臨時檔案..."
-    # 只需刪除臨時目錄和下載日誌，保留主檔案和縮圖（如果存在）
+    # 刪除臨時目錄、下載日誌以及下載的縮圖檔案
     safe_remove "$temp_dir/yt-dlp-other-nonorm1.log" "$temp_dir/yt-dlp-other-nonorm2.log"
+    # <<< 新增：檢查並刪除縮圖檔案 >>>
+    if [ -n "$thumbnail_file" ] && [ -f "$thumbnail_file" ]; then
+        safe_remove "$thumbnail_file"
+    fi
+    # <<< 結束新增 >>>
     [ -d "$temp_dir" ] && rm -rf "$temp_dir"
 
     # --- 報告結果 ---
