@@ -2344,7 +2344,7 @@ show_about_enhanced() {
     echo -e "- 依賴管理與腳本自我更新 (含校驗和)"
     echo -e "- 跨平台適應 (Termux/WSL/Linux)"
     echo -e "- 設定持久化與互動式選單"
-    echo -e "- 主選單重構（2.3.0+)"
+    echo -e "- 主選單重構（2.2.0+)"
 
     echo -e "\n${YELLOW}使用須知：${RESET}"
     echo -e "本工具僅供個人學習與合法使用，請尊重版權並遵守當地法律法規。"
