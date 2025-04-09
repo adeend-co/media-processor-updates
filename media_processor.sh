@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.3.2(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v2.3.3(Experimental)" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -1215,8 +1215,8 @@ process_single_mp4_no_normalize() {
 }
 
 ##############################################################
-# <<< 修正：調整 format_option 以確保下載視訊流 >>>
-# 處理單一 YouTube 影片（MP4）下載（無標準化，可選時段）(2.3.2+)
+# <<< 修正：微調 format_option 以優先獲取最佳音訊流 (ba*) >>>
+# 處理單一 YouTube 影片（MP4）下載（無標準化，可選時段）(2.3.3+)
 ##############################################################
 process_single_mp4_no_normalize_sections() {
     local video_url="$1"
@@ -1234,13 +1234,14 @@ process_single_mp4_no_normalize_sections() {
     log_message "INFO" "嘗試字幕: $target_sub_langs"
     echo -e "${YELLOW}嘗試下載繁/簡/通用中文字幕...${RESET}"
 
-    # --- <<< 修正點：調整 format_option >>> ---
-    # 優先選擇 MP4 容器中 H.264 編碼的視訊流 (avc) 和 M4A (通常是 AAC) 的音訊流。
-    # 加入更多明確的 fallback 選項，確保視訊流被包含。
-    local format_option="bestvideo[height<=1440][ext=mp4][vcodec^=avc]+bestaudio[ext=m4a]/bestvideo[height<=1440][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1440]+bestaudio/best[height<=1440][ext=mp4]/best[height<=1440]/best"
+    # --- <<< 修正點：調整 format_option，優先請求 ba* (best audio overall) >>> ---
+    # 嘗試獲取最佳視訊 (<=1440p, MP4, AVC優先) + 絕對最佳音訊 (ba*)
+    # 如果不行，回退到之前的選項
+    local format_option="bestvideo[height<=1440][ext=mp4][vcodec^=avc]+ba*/bestvideo[height<=1440][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1440]+bestaudio/best[height<=1440][ext=mp4]/best[height<=1440]/best"
     # --- 修正點結束 ---
-    log_message "INFO" "使用格式 (無標準化，時段，修正版): $format_option"
+    log_message "INFO" "使用格式 (無標準化，時段，優先最佳音訊 ba*): $format_option"
 
+    # --- 後續代碼與您上一版本相同，保持不變 ---
     mkdir -p "$DOWNLOAD_PATH";
     if [ ! -w "$DOWNLOAD_PATH" ]; then
         log_message "ERROR" "無法寫入下載目錄 (無標準化，時段)：$DOWNLOAD_PATH"
@@ -1257,7 +1258,7 @@ process_single_mp4_no_normalize_sections() {
     local safe_end_time=${end_time//:/-}
     base_name="$DOWNLOAD_PATH/${sanitized_title} [${video_id}]_${safe_start_time}-${safe_end_time}"
 
-    echo -e "${YELLOW}開始下載影片指定時段 ($start_time-$end_time) 及字幕（高品質音質）...${RESET}"
+    echo -e "${YELLOW}開始下載影片指定時段 ($start_time-$end_time) 及字幕（嘗試最佳音質）...${RESET}"
 
     local output_video_file="${base_name}.mp4"
     local yt_dlp_dl_args=(
@@ -1267,18 +1268,16 @@ process_single_mp4_no_normalize_sections() {
         -o "$output_video_file"
         "$video_url"
         --newline
-        --progress
+        # --progress # 根據您的觀察，這個選項在此模式下可能不顯示，可以註解掉或保留
         --concurrent-fragments "$THREADS"
         --merge-output-format mp4
-        # 可以考慮添加 --verbose 選項來獲取更詳細的 yt-dlp 執行日誌以供調試
-        # --verbose
+        # --verbose # 可選，用於詳細調試
     )
 
-    log_message "INFO" "執行 yt-dlp (無標準化，時段，影音，修正格式): ${yt_dlp_dl_args[*]}"
+    log_message "INFO" "執行 yt-dlp (無標準化，時段，影音，優先 ba*): ${yt_dlp_dl_args[*]}"
     if ! "${yt_dlp_dl_args[@]}" 2> "$temp_dir/yt-dlp-sections-video.log"; then
         log_message "ERROR" "影片指定時段下載失敗 (無標準化)..."
         echo -e "${RED}錯誤：影片指定時段下載失敗！${RESET}"
-        # 在終端顯示 yt-dlp 的詳細錯誤日誌
         echo -e "${YELLOW}--- yt-dlp 錯誤日誌開始 ---${RESET}"
         cat "$temp_dir/yt-dlp-sections-video.log"
         echo -e "${YELLOW}--- yt-dlp 錯誤日誌結束 ---${RESET}"
@@ -1293,21 +1292,22 @@ process_single_mp4_no_normalize_sections() {
     echo -e "${GREEN}影片時段下載完成：$output_video_file${RESET}"
     log_message "INFO" "影片時段下載完成 (無標準化)：$output_video_file"
 
-    # --- 檢查下載下來的檔案是否真的有視訊軌 ---
+    # 驗證視訊流
     if ! ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$output_video_file" > /dev/null 2>&1; then
         log_message "ERROR" "驗證失敗：下載的檔案 '$output_video_file' 中似乎沒有視訊流！"
         echo -e "${RED}錯誤：下載完成的檔案似乎缺少視訊流！請檢查 yt-dlp 格式選擇或合併過程。${RESET}"
-        # 顯示檔案的 ffprobe 信息以供調試
         echo -e "${YELLOW}--- ffprobe 檔案資訊 ---${RESET}"
         ffprobe -hide_banner "$output_video_file"
         echo -e "${YELLOW}--- ffprobe 資訊結束 ---${RESET}"
-        # 可以選擇在這裡刪除錯誤的檔案，或者保留它
-        # safe_remove "$output_video_file"
         [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1;
     else
         log_message "INFO" "驗證成功：下載的檔案 '$output_video_file' 包含視訊流。"
+        # 可以選擇在這裡驗證音訊流的品質
+        local audio_bitrate; audio_bitrate=$(ffprobe -v error -select_streams a:0 -show_entries stream=bit_rate -of default=noprint_wrappers=1:nokey=1 "$output_video_file" 2>/dev/null || echo "N/A")
+        local audio_codec; audio_codec=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$output_video_file" 2>/dev/null || echo "N/A")
+        log_message "INFO" "驗證：音訊流 Codec: $audio_codec, Bitrate: $audio_bitrate bps"
+        echo -e "${CYAN}下載檔案音訊資訊: Codec=$audio_codec, Bitrate=$audio_bitrate bps${RESET}"
     fi
-    # --- 驗證結束 ---
 
     # --- 字幕下載與混流邏輯保持不變 ---
     echo -e "${YELLOW}正在嘗試下載字幕檔案...${RESET}"
@@ -1339,10 +1339,7 @@ process_single_mp4_no_normalize_sections() {
             fi
         fi
     done
-    if [ ${#subtitle_files[@]} -eq 0 ]; then
-        log_message "INFO" "未找到中文字幕。"
-        echo -e "${YELLOW}未找到中文字幕。${RESET}"
-    fi
+    if [ ${#subtitle_files[@]} -eq 0 ]; then log_message "INFO" "未找到中文字幕。"; echo -e "${YELLOW}未找到中文字幕。${RESET}"; fi
 
     if [ ${#subtitle_files[@]} -gt 0 ]; then
         echo -e "${YELLOW}開始將字幕嵌入影片...${RESET}"
@@ -1350,19 +1347,14 @@ process_single_mp4_no_normalize_sections() {
         local ffmpeg_mux_args=(ffmpeg -y -i "$output_video_file")
 
         for sub_file in "${subtitle_files[@]}"; do ffmpeg_mux_args+=("-i" "$sub_file"); done
-        ffmpeg_mux_args+=("-map" "0:v" "-map" "0:a" "-c:v" "copy" "-c:a" "copy")
+        ffmpeg_mux_args+=("-map" "0:v" "-map" "0:a" "-c:v" "copy" "-c:a" "copy") # 複製視訊和 yt-dlp 已選擇好的音訊
 
         local sub_input_index=1
         for ((i=0; i<${#subtitle_files[@]}; i++)); do
             ffmpeg_mux_args+=("-map" "$sub_input_index")
             local sub_lang_code=$(basename "${subtitle_files[$i]}" | rev | cut -d'.' -f2 | rev)
             local ffmpeg_lang=""
-            case "$sub_lang_code" in
-                zh-Hant|zh-TW) ffmpeg_lang="zht" ;;
-                zh-Hans|zh-CN) ffmpeg_lang="zhs" ;;
-                zh) ffmpeg_lang="chi" ;;
-                *) ffmpeg_lang=$(echo "$sub_lang_code" | cut -c1-3) ;;
-            esac
+            case "$sub_lang_code" in zh-Hant|zh-TW) ffmpeg_lang="zht" ;; zh-Hans|zh-CN) ffmpeg_lang="zhs" ;; zh) ffmpeg_lang="chi" ;; *) ffmpeg_lang=$(echo "$sub_lang_code" | cut -c1-3) ;; esac
             ffmpeg_mux_args+=("-metadata:s:s:$i" "language=$ffmpeg_lang")
             ((sub_input_index++))
         done
@@ -1379,33 +1371,20 @@ process_single_mp4_no_normalize_sections() {
             log_message "SUCCESS" "字幕混流成功：$final_video_with_subs"
             safe_remove "$output_video_file"
             for sub_file in "${subtitle_files[@]}"; do safe_remove "$sub_file"; done
-            if mv "$final_video_with_subs" "$output_video_file"; then
-                 log_message "INFO" "重命名 $final_video_with_subs 為 $output_video_file"
-            else
-                 log_message "ERROR" "重命名 $final_video_with_subs 失敗，最終檔案可能為 $final_video_with_subs"
-                 echo -e "${RED}錯誤：重命名最終檔案失敗，請檢查 $final_video_with_subs ${RESET}"
-            fi
+            if mv "$final_video_with_subs" "$output_video_file"; then log_message "INFO" "重命名 $final_video_with_subs 為 $output_video_file";
+            else log_message "ERROR" "重命名 $final_video_with_subs 失敗..."; echo -e "${RED}錯誤：重命名最終檔案失敗...${RESET}"; fi
             result=0
         fi
-    else
-        log_message "INFO" "未找到字幕或未成功下載，無需混流。"
-        result=0
-    fi
+    else log_message "INFO" "未找到字幕，無需混流。"; result=0; fi
 
-    # --- 清理 ---
-    log_message "INFO" "清理臨時檔案 (無標準化，時段)..."
-    safe_remove "$temp_dir/yt-dlp-sections-video.log" "$temp_dir/yt-dlp-sections-subs.log" "$temp_dir/ffmpeg_mux_subs.log"
+    # 清理
+    log_message "INFO" "清理臨時檔案..."; safe_remove "$temp_dir/yt-dlp-sections-video.log" "$temp_dir/yt-dlp-sections-subs.log" "$temp_dir/ffmpeg_mux_subs.log"
     for lang in "${langs_to_check[@]}"; do safe_remove "${base_name_for_subs_dl}.${lang}.srt"; done
     [ -d "$temp_dir" ] && rm -rf "$temp_dir"
 
-    # --- 最終結果報告 ---
-    if [ $result -eq 0 ]; then
-        echo -e "${GREEN}處理完成！影片 (無標準化，時段 $start_time-$end_time) 已儲存至：$output_video_file${RESET}"
-        log_message "SUCCESS" "處理完成 (無標準化，時段)！影片已儲存至：$output_video_file"
-    else
-        echo -e "${RED}處理失敗 (無標準化，時段)！${RESET}"
-        log_message "ERROR" "處理失敗 (無標準化，時段)：$video_url"
-    fi
+    # 最終結果
+    if [ $result -eq 0 ]; then echo -e "${GREEN}處理完成！影片已儲存至：$output_video_file${RESET}"; log_message "SUCCESS" "處理完成！影片：$output_video_file";
+    else echo -e "${RED}處理失敗！${RESET}"; log_message "ERROR" "處理失敗：$video_url"; fi
     return $result
 }
 
