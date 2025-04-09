@@ -1,13 +1,15 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.2.0(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v2.2.1(Experimental)" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
-SCRIPT_UPDATE_DATE="2025-07-11" # 請根據實際情況修改此日期
+SCRIPT_UPDATE_DATE="2025-04-09" # 請根據實際情況修改此日期
 ############################################
 
+# ... 其他設定 ...
+TARGET_DATE="2025-07-11" # <<< 新增：設定您的目標日期
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
 DEFAULT_URL="https://www.youtube.com/watch?v=siNFnlqtd8M"
 THREADS=4
