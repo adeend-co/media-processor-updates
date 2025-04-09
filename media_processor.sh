@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.3.4(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v2.3.5(Experimental)" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -1163,6 +1163,226 @@ process_single_mp4() {
     return $result
 }
 
+##############################################################
+# <<< 修正：合併下載時段，後處理音訊轉換為 AAC >>>
+# 處理單一 YouTube 影片（MP4）下載（無標準化，可選時段）(2.3.5+)
+##############################################################
+process_single_mp4_no_normalize_sections() {
+    local video_url="$1"
+    local start_time="$2"
+    local end_time="$3"
+
+    local target_sub_langs="zh-Hant,zh-TW,zh-Hans,zh-CN,zh,zh-Hant-AAj-uoGhMZA"
+    local subtitle_options="--write-subs --sub-lang $target_sub_langs --convert-subs srt"
+    local subtitle_files=()
+    local temp_dir=$(mktemp -d)
+    local result=0
+
+    echo -e "${YELLOW}處理 YouTube 影片 (無標準化，時段 $start_time-$end_time)：$video_url${RESET}"
+    log_message "INFO" "處理 YouTube 影片 (無標準化，時段 $start_time-$end_time): $video_url"
+    log_message "INFO" "嘗試字幕: $target_sub_langs"
+
+    # --- 格式選擇：優先選擇 MP4 視訊 + M4A 音訊，或最佳 MP4，依賴 yt-dlp 合併 ---
+    # 這個格式在之前的版本中似乎能成功合併影音，我們再次嘗試
+    local format_option="bestvideo[height<=1440][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4][height<=1440]/best[height<=1440]/best"
+    log_message "INFO" "使用格式 (合併下載時段): $format_option"
+
+    mkdir -p "$DOWNLOAD_PATH";
+    if [ ! -w "$DOWNLOAD_PATH" ]; then
+        log_message "ERROR" "無法寫入下載目錄 (無標準化，時段)：$DOWNLOAD_PATH"
+        echo -e "${RED}錯誤：無法寫入下載目錄${RESET}"
+        [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1;
+    fi
+
+    local video_title video_id sanitized_title base_name
+    video_title=$(yt-dlp --get-title "$video_url" 2>/dev/null) || video_title="video"
+    video_id=$(yt-dlp --get-id "$video_url" 2>/dev/null) || video_id=$(date +%s)
+    sanitized_title=$(echo "${video_title}" | sed 's@[/\\:*?"<>|]@_@g')
+
+    local safe_start_time=${start_time//:/-}
+    local safe_end_time=${end_time//:/-}
+    base_name="$DOWNLOAD_PATH/${sanitized_title} [${video_id}]_${safe_start_time}-${safe_end_time}"
+    local output_video_file="${base_name}.mp4" # 最終輸出檔案
+
+    # --- 定義臨時檔案路徑 ---
+    local temp_combined_section_file="${temp_dir}/combined_section.mp4" # yt-dlp 下載的包含影音的臨時檔
+    local temp_final_audio_aac_file="${temp_dir}/audio_final.aac" # 從上面提取並轉換後的 AAC 音訊檔
+
+    echo -e "${YELLOW}開始下載並合併影片和音訊指定時段 ($start_time-$end_time)...${RESET}"
+
+    # --- 1. 使用 yt-dlp 下載並合併時段到臨時 MP4 ---
+    local yt_dlp_dl_args=(
+        yt-dlp
+        -f "$format_option"
+        --download-sections "*${start_time}-${end_time}"
+        --merge-output-format mp4 # 確保 yt-dlp 內部嘗試合併成 MP4
+        -o "$temp_combined_section_file" # 輸出到臨時的合併檔案
+        "$video_url"
+        --newline
+        # --progress # 可能不顯示
+        --concurrent-fragments "$THREADS"
+        # --force-keyframes-at-cuts # 可選，可能增加處理時間但提高精度
+        --quiet # 減少輸出，因為我們主要關心結果
+        --no-warnings
+    )
+    log_message "INFO" "執行 yt-dlp (合併下載時段): ${yt_dlp_dl_args[*]}"
+    if ! "${yt_dlp_dl_args[@]}" 2> "$temp_dir/yt-dlp-combined-section.log"; then
+        log_message "ERROR" "合併下載時段失敗..."
+        echo -e "${RED}錯誤：合併下載時段失敗！${RESET}"
+        cat "$temp_dir/yt-dlp-combined-section.log"
+        [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1;
+    fi
+
+    # 檢查臨時合併檔案是否存在且非空
+    if [ ! -s "$temp_combined_section_file" ]; then
+        log_message "ERROR" "合併下載時段後檔案不存在或為空: $temp_combined_section_file"
+        echo -e "${RED}錯誤：下載的合併檔案不存在或為空！${RESET}"
+        [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1;
+    fi
+    # 快速驗證一下這個臨時檔是否同時包含視訊和音訊軌
+    if ! ffprobe -v error -select_streams v:0 -show_entries stream=codec_name "$temp_combined_section_file" > /dev/null 2>&1 || \
+       ! ffprobe -v error -select_streams a:0 -show_entries stream=codec_name "$temp_combined_section_file" > /dev/null 2>&1; then
+        log_message "ERROR" "yt-dlp 合併的臨時檔案 '$temp_combined_section_file' 缺少視訊或音訊流！"
+        echo -e "${RED}錯誤：下載的合併檔案似乎缺少視訊或音訊流！檢查 yt-dlp 日誌。${RESET}"
+        echo -e "${YELLOW}--- ffprobe 檔案資訊 ---${RESET}"
+        ffprobe -hide_banner "$temp_combined_section_file"
+        echo -e "${YELLOW}--- ffprobe 資訊結束 ---${RESET}"
+        safe_remove "$temp_combined_section_file"
+        [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1;
+    fi
+    log_message "INFO" "合併下載時段完成，臨時檔案: $temp_combined_section_file"
+
+    # --- 2. 提取音訊並轉換為 AAC ---
+    echo -e "${YELLOW}正在提取音訊並轉換為 AAC 格式...${RESET}"
+    local ffmpeg_audio_extract_convert_args=(
+        ffmpeg -y -i "$temp_combined_section_file" # 輸入是剛下載的臨時檔
+        -vn # 忽略視訊
+        -c:a aac -b:a 256k -ar 44100 # 指定輸出為 AAC 256k
+        "$temp_final_audio_aac_file" # 輸出到最終的 AAC 臨時檔
+    )
+    log_message "INFO" "執行 FFmpeg 音訊提取與轉換: ${ffmpeg_audio_extract_convert_args[*]}"
+    if ! "${ffmpeg_audio_extract_convert_args[@]}" 2> "$temp_dir/ffmpeg-audio-extract-convert.log"; then
+        log_message "ERROR" "從合併檔提取並轉換音訊為 AAC 失敗!"
+        echo -e "${RED}錯誤：音訊提取與轉換失敗！${RESET}"
+        cat "$temp_dir/ffmpeg-audio-extract-convert.log"
+        safe_remove "$temp_combined_section_file" # 清理已下載的合併檔
+        [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1;
+    fi
+    if [ ! -s "$temp_final_audio_aac_file" ]; then
+        log_message "ERROR" "轉換後的 AAC 音訊檔案不存在或為空: $temp_final_audio_aac_file"
+        echo -e "${RED}錯誤：轉換後的 AAC 音訊檔案不存在或為空！${RESET}"
+        safe_remove "$temp_combined_section_file" # 清理已下載的合併檔
+        [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1;
+    fi
+    log_message "SUCCESS" "音訊成功提取並轉換為 AAC: $temp_final_audio_aac_file"
+
+    # --- 3. 下載字幕 (邏輯不變) ---
+    echo -e "${YELLOW}正在嘗試下載字幕檔案...${RESET}"
+    local base_name_for_subs_dl="$DOWNLOAD_PATH/${sanitized_title} [${video_id}]"
+    local yt_dlp_sub_args=(
+        yt-dlp --skip-download --write-subs --sub-lang "$target_sub_langs" --convert-subs srt
+        -o "$base_name_for_subs_dl.%(ext)s" "$video_url"
+    )
+    log_message "INFO" "執行 yt-dlp (僅字幕): ${yt_dlp_sub_args[*]}"
+    if ! "${yt_dlp_sub_args[@]}" 2> "$temp_dir/yt-dlp-sections-subs.log"; then
+        log_message "WARNING" "下載字幕失敗或無字幕。詳見 $temp_dir/yt-dlp-sections-subs.log"
+        echo -e "${YELLOW}警告：下載字幕失敗或影片無字幕。${RESET}"
+    fi
+
+    log_message "INFO" "檢查字幕 (基於: ${base_name_for_subs_dl}.*.srt)"
+    subtitle_files=()
+    IFS=',' read -r -a langs_to_check <<< "$target_sub_langs"
+    for lang in "${langs_to_check[@]}"; do
+        local potential_srt_file="${base_name_for_subs_dl}.${lang}.srt"
+        if [ -f "$potential_srt_file" ]; then
+            local already_added=false
+            for existing_file in "${subtitle_files[@]}"; do [[ "$existing_file" == "$potential_srt_file" ]] && { already_added=true; break; }; done
+            if ! $already_added; then subtitle_files+=("$potential_srt_file"); log_message "INFO" "找到字幕: $potential_srt_file"; echo -e "${GREEN}找到字幕: $(basename "$potential_srt_file")${RESET}"; fi
+        fi
+    done
+    if [ ${#subtitle_files[@]} -eq 0 ]; then log_message "INFO" "未找到中文字幕。"; echo -e "${YELLOW}未找到中文字幕。${RESET}"; fi
+
+    # --- 4. 最終合併視訊(來自原始合併檔)、轉換後的音訊和字幕 ---
+    echo -e "${YELLOW}開始最終合併視訊、處理後音訊及字幕...${RESET}"
+    local ffmpeg_mux_args=(
+        ffmpeg -y
+        -i "$temp_combined_section_file" # 輸入 1: 包含原始視訊和原始音訊的臨時檔
+        -i "$temp_final_audio_aac_file" # 輸入 2: 處理好的 AAC 音訊檔
+    )
+    local sub_input_start_index=2 # 字幕從輸入 2 開始
+
+    # 加入字幕輸入
+    for sub_file in "${subtitle_files[@]}"; do
+        ffmpeg_mux_args+=("-i" "$sub_file")
+    done
+
+    # 映射流和編碼器
+    ffmpeg_mux_args+=(
+        "-map" "0:v:0" # 映射輸入 1 的視訊流
+        "-map" "1:a:0" # 映射輸入 2 的處理好的音訊流
+        "-c:v" "copy" # 複製視訊流 (不重新編碼)
+        "-c:a" "copy" # 複製音訊流 (因為它已經是 AAC)
+    )
+
+    # 映射和設定字幕
+    local sub_stream_index=0
+    for ((i=0; i<${#subtitle_files[@]}; i++)); do
+        local current_input_index=$((sub_input_start_index + i))
+        ffmpeg_mux_args+=("-map" "$current_input_index") # 映射字幕流
+        local sub_lang_code=$(basename "${subtitle_files[$i]}" | rev | cut -d'.' -f2 | rev)
+        local ffmpeg_lang=""
+        case "$sub_lang_code" in zh-Hant|zh-TW) ffmpeg_lang="zht" ;; zh-Hans|zh-CN) ffmpeg_lang="zhs" ;; zh) ffmpeg_lang="chi" ;; *) ffmpeg_lang=$(echo "$sub_lang_code" | cut -c1-3) ;; esac
+        ffmpeg_mux_args+=("-metadata:s:s:$sub_stream_index" "language=$ffmpeg_lang") # 設定元數據，注意字幕流索引從 0 開始
+        ((sub_stream_index++))
+    done
+    if [ ${#subtitle_files[@]} -gt 0 ]; then
+        ffmpeg_mux_args+=("-c:s" "mov_text") # 設定 MP4 相容的字幕編碼
+    fi
+
+    # 輸出設定
+    ffmpeg_mux_args+=("-movflags" "+faststart" "$output_video_file") # 輸出最終檔案
+
+    log_message "INFO" "執行 FFmpeg 最終合併: ${ffmpeg_mux_args[*]}"
+    if ! "${ffmpeg_mux_args[@]}" 2> "$temp_dir/ffmpeg_final_mux.log"; then
+        log_message "ERROR" "最終合併失敗！詳見 $temp_dir/ffmpeg_final_mux.log"
+        echo -e "${RED}錯誤：最終合併失敗！${RESET}"
+        cat "$temp_dir/ffmpeg_final_mux.log"
+        result=1
+    else
+        echo -e "${GREEN}最終合併完成：$output_video_file${RESET}"
+        log_message "SUCCESS" "最終合併成功：$output_video_file"
+        result=0
+    fi
+
+    # --- 清理 ---
+    log_message "INFO" "清理臨時檔案 (無標準化，時段)..."
+    safe_remove "$temp_combined_section_file" # 刪除 yt-dlp 下載的合併檔
+    safe_remove "$temp_final_audio_aac_file" # 刪除轉換後的 AAC 音訊檔
+    safe_remove "$temp_dir/yt-dlp-combined-section.log"
+    safe_remove "$temp_dir/ffmpeg-audio-extract-convert.log"
+    safe_remove "$temp_dir/ffmpeg_final_mux.log"
+    safe_remove "$temp_dir/yt-dlp-sections-subs.log"
+    # 清理下載的 srt 字幕檔案
+    for sub_file in "${subtitle_files[@]}"; do safe_remove "$sub_file"; done
+    # 確保臨時目錄被刪除
+    [ -d "$temp_dir" ] && rm -rf "$temp_dir"
+
+    # --- 最終結果報告 ---
+    if [ $result -eq 0 ]; then
+        # 可以在這裡再次驗證最終檔案的音訊碼率
+        local final_audio_bitrate; final_audio_bitrate=$(ffprobe -v error -select_streams a:0 -show_entries stream=bit_rate -of default=noprint_wrappers=1:nokey=1 "$output_video_file" 2>/dev/null || echo "N/A")
+        local final_audio_codec; final_audio_codec=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$output_video_file" 2>/dev/null || echo "N/A")
+        log_message "INFO" "最終檔案音訊驗證: Codec=$final_audio_codec, Bitrate=$final_audio_bitrate bps"
+        echo -e "${CYAN}最終檔案音訊資訊: Codec=$final_audio_codec, Bitrate=$final_audio_bitrate bps${RESET}"
+
+        echo -e "${GREEN}處理完成！影片 (無標準化，時段 $start_time-$end_time) 已儲存至：$output_video_file${RESET}"
+        log_message "SUCCESS" "處理完成 (無標準化，時段)！影片已儲存至：$output_video_file"
+    else
+        echo -e "${RED}處理失敗 (無標準化，時段)！${RESET}"
+        log_message "ERROR" "處理失敗 (無標準化，時段)：$video_url"
+    fi
+    return $result
+}
 
 #######################################################
 # 處理單一 YouTube 影片（MP4）下載與處理（無音量標準化）
@@ -1214,253 +1434,7 @@ process_single_mp4_no_normalize() {
     return $result
 }
 
-##############################################################
-# <<< 修正：分開下載影音，顯式轉換音訊為 AAC 再合併 >>>
-# 處理單一 YouTube 影片（MP4）下載（無標準化，可選時段）(2.3.4+)
-##############################################################
-process_single_mp4_no_normalize_sections() {
-    local video_url="$1"
-    local start_time="$2"
-    local end_time="$3"
 
-    local target_sub_langs="zh-Hant,zh-TW,zh-Hans,zh-CN,zh,zh-Hant-AAj-uoGhMZA"
-    local subtitle_options="--write-subs --sub-lang $target_sub_langs --convert-subs srt"
-    local subtitle_files=()
-    local temp_dir=$(mktemp -d)
-    local result=0
-
-    echo -e "${YELLOW}處理 YouTube 影片 (無標準化，時段 $start_time-$end_time)：$video_url${RESET}"
-    log_message "INFO" "處理 YouTube 影片 (無標準化，時段 $start_time-$end_time): $video_url"
-    log_message "INFO" "嘗試字幕: $target_sub_langs"
-    # echo -e "${YELLOW}嘗試下載繁/簡/通用中文字幕...${RESET}" # 合併到下載提示中
-
-    # --- 視訊和音訊格式選擇 ---
-    # 選擇最佳 MP4 視訊 (<=1440p, AVC 優先)
-    local video_format_option="bestvideo[height<=1440][ext=mp4][vcodec^=avc]/bestvideo[height<=1440][ext=mp4]/bestvideo[height<=1440]"
-    # 選擇最佳音訊流 (無論格式)
-    local audio_format_option="ba*"
-    log_message "INFO" "使用格式 (分開下載): Video='$video_format_option', Audio='$audio_format_option'"
-
-    mkdir -p "$DOWNLOAD_PATH";
-    if [ ! -w "$DOWNLOAD_PATH" ]; then
-        log_message "ERROR" "無法寫入下載目錄 (無標準化，時段)：$DOWNLOAD_PATH"
-        echo -e "${RED}錯誤：無法寫入下載目錄${RESET}"
-        [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1;
-    fi
-
-    local video_title video_id sanitized_title base_name
-    video_title=$(yt-dlp --get-title "$video_url" 2>/dev/null) || video_title="video"
-    video_id=$(yt-dlp --get-id "$video_url" 2>/dev/null) || video_id=$(date +%s)
-    sanitized_title=$(echo "${video_title}" | sed 's@[/\\:*?"<>|]@_@g')
-
-    local safe_start_time=${start_time//:/-}
-    local safe_end_time=${end_time//:/-}
-    base_name="$DOWNLOAD_PATH/${sanitized_title} [${video_id}]_${safe_start_time}-${safe_end_time}"
-    local output_video_file="${base_name}.mp4" # 最終輸出檔案
-
-    # --- 定義臨時檔案路徑 ---
-    local temp_video_file="${temp_dir}/video_section.mp4"
-    local temp_audio_raw_file="${temp_dir}/audio_section_raw" # 副檔名待定
-    local temp_audio_aac_file="${temp_dir}/audio_section_final.aac" # 統一轉換為 AAC
-
-    echo -e "${YELLOW}開始分開下載影片和音訊指定時段 ($start_time-$end_time)...${RESET}"
-
-    # --- 1. 下載視訊時段 ---
-    echo -e "${YELLOW}下載視訊流時段...${RESET}"
-    local yt_dlp_video_args=(
-        yt-dlp
-        -f "$video_format_option"
-        --download-sections "*${start_time}-${end_time}"
-        -o "$temp_video_file"
-        "$video_url"
-        --newline
-        # --progress # 可能不顯示
-        --concurrent-fragments "$THREADS"
-        --force-keyframes-at-cuts # 增加切割精度
-        --quiet # 減少不必要的輸出
-        --no-warnings
-    )
-    log_message "INFO" "執行 yt-dlp (僅視訊時段): ${yt_dlp_video_args[*]}"
-    if ! "${yt_dlp_video_args[@]}" 2> "$temp_dir/yt-dlp-video-section.log"; then
-        log_message "ERROR" "視訊時段下載失敗..."
-        echo -e "${RED}錯誤：視訊時段下載失敗！${RESET}"
-        cat "$temp_dir/yt-dlp-video-section.log"
-        [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1;
-    fi
-    if [ ! -s "$temp_video_file" ]; then # 檢查檔案是否存在且非空
-        log_message "ERROR" "視訊時段下載後檔案不存在或為空: $temp_video_file"
-        echo -e "${RED}錯誤：下載的視訊檔案不存在或為空！${RESET}"
-        [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1;
-    fi
-    log_message "INFO" "視訊時段下載完成: $temp_video_file"
-
-    # --- 2. 下載音訊時段 ---
-    echo -e "${YELLOW}下載音訊流時段...${RESET}"
-    local yt_dlp_audio_args=(
-        yt-dlp
-        -f "$audio_format_option"
-        --download-sections "*${start_time}-${end_time}"
-        # 先下載到一個基礎名，yt-dlp 會根據格式自動添加副檔名
-        -o "${temp_audio_raw_file}.%(ext)s"
-        "$video_url"
-        --newline
-        # --progress
-        --concurrent-fragments "$THREADS"
-        --force-keyframes-at-cuts
-        --quiet
-        --no-warnings
-    )
-    log_message "INFO" "執行 yt-dlp (僅音訊時段): ${yt_dlp_audio_args[*]}"
-    if ! "${yt_dlp_audio_args[@]}" 2> "$temp_dir/yt-dlp-audio-section.log"; then
-        log_message "ERROR" "音訊時段下載失敗..."
-        echo -e "${RED}錯誤：音訊時段下載失敗！${RESET}"
-        cat "$temp_dir/yt-dlp-audio-section.log"
-        safe_remove "$temp_video_file" # 清理已下載的視訊
-        [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1;
-    fi
-
-    # --- 找出實際下載的音訊檔案 (yt-dlp 可能加了 .opus, .m4a 等) ---
-    local actual_audio_raw_file
-    # 使用 find 查找以 temp_audio_raw_file 開頭的檔案，並取第一個找到的
-    actual_audio_raw_file=$(find "$temp_dir" -maxdepth 1 -name "$(basename "$temp_audio_raw_file").*" -print -quit)
-
-    if [ -z "$actual_audio_raw_file" ] || [ ! -s "$actual_audio_raw_file" ]; then
-        log_message "ERROR" "音訊時段下載後檔案不存在或為空 (搜尋基礎名: $temp_audio_raw_file.*)"
-        echo -e "${RED}錯誤：下載的音訊檔案不存在或為空！${RESET}"
-        safe_remove "$temp_video_file" # 清理已下載的視訊
-        [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1;
-    fi
-    log_message "INFO" "音訊時段下載完成: $actual_audio_raw_file"
-
-    # --- 3. 檢測並轉換音訊為 AAC ---
-    echo -e "${YELLOW}檢查並轉換音訊格式為 AAC...${RESET}"
-    local audio_codec
-    audio_codec=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$actual_audio_raw_file" 2>/dev/null)
-    log_message "INFO" "檢測到下載的音訊編碼: ${audio_codec:-未知}"
-
-    # 無論原始格式為何，統一重新編碼為 AAC 256k
-    local ffmpeg_audio_convert_args=(
-        ffmpeg -y -i "$actual_audio_raw_file"
-        -vn # 忽略任何可能的視訊流
-        -c:a aac -b:a 256k -ar 44100 # 指定 AAC 編碼和參數
-        "$temp_audio_aac_file" # 輸出到最終的 AAC 臨時檔
-    )
-    log_message "INFO" "執行 FFmpeg 音訊轉換/重編碼: ${ffmpeg_audio_convert_args[*]}"
-    if ! "${ffmpeg_audio_convert_args[@]}" 2> "$temp_dir/ffmpeg-audio-convert.log"; then
-        log_message "ERROR" "音訊轉換為 AAC 失敗!"
-        echo -e "${RED}錯誤：音訊轉換為 AAC 失敗！${RESET}"
-        cat "$temp_dir/ffmpeg-audio-convert.log"
-        safe_remove "$temp_video_file" "$actual_audio_raw_file" # 清理
-        [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1;
-    fi
-    if [ ! -s "$temp_audio_aac_file" ]; then
-        log_message "ERROR" "轉換後的 AAC 音訊檔案不存在或為空: $temp_audio_aac_file"
-        echo -e "${RED}錯誤：轉換後的 AAC 音訊檔案不存在或為空！${RESET}"
-        safe_remove "$temp_video_file" "$actual_audio_raw_file" # 清理
-        [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1;
-    fi
-    log_message "SUCCESS" "音訊成功轉換/重編碼為 AAC: $temp_audio_aac_file"
-
-    # --- 4. 下載字幕 (獨立執行，與之前邏輯類似) ---
-    echo -e "${YELLOW}正在嘗試下載字幕檔案...${RESET}"
-    local base_name_for_subs_dl="$DOWNLOAD_PATH/${sanitized_title} [${video_id}]" # 不含時段的基礎名
-    local yt_dlp_sub_args=(
-        yt-dlp
-        --skip-download --write-subs --sub-lang "$target_sub_langs" --convert-subs srt
-        -o "$base_name_for_subs_dl.%(ext)s"
-        "$video_url"
-    )
-    log_message "INFO" "執行 yt-dlp (僅字幕): ${yt_dlp_sub_args[*]}"
-    if ! "${yt_dlp_sub_args[@]}" 2> "$temp_dir/yt-dlp-sections-subs.log"; then
-        log_message "WARNING" "下載字幕失敗或無字幕。詳見 $temp_dir/yt-dlp-sections-subs.log"
-        echo -e "${YELLOW}警告：下載字幕失敗或影片無字幕。${RESET}"
-    fi
-
-    log_message "INFO" "檢查字幕 (基於: ${base_name_for_subs_dl}.*.srt)"
-    subtitle_files=() # 清空
-    IFS=',' read -r -a langs_to_check <<< "$target_sub_langs"
-    for lang in "${langs_to_check[@]}"; do
-        local potential_srt_file="${base_name_for_subs_dl}.${lang}.srt"
-        if [ -f "$potential_srt_file" ]; then
-            local already_added=false
-            for existing_file in "${subtitle_files[@]}"; do [[ "$existing_file" == "$potential_srt_file" ]] && { already_added=true; break; }; done
-            if ! $already_added; then
-                subtitle_files+=("$potential_srt_file")
-                log_message "INFO" "找到字幕: $potential_srt_file"
-                echo -e "${GREEN}找到字幕: $(basename "$potential_srt_file")${RESET}"
-            fi
-        fi
-    done
-    if [ ${#subtitle_files[@]} -eq 0 ]; then log_message "INFO" "未找到中文字幕。"; echo -e "${YELLOW}未找到中文字幕。${RESET}"; fi
-
-    # --- 5. 最終合併視訊、轉換後的音訊和字幕 ---
-    echo -e "${YELLOW}開始最終合併視訊、音訊及字幕...${RESET}"
-    local ffmpeg_mux_args=(ffmpeg -y -i "$temp_video_file" -i "$temp_audio_aac_file") # 輸入視訊和處理好的 AAC 音訊
-
-    for sub_file in "${subtitle_files[@]}"; do ffmpeg_mux_args+=("-i" "$sub_file"); done
-
-    ffmpeg_mux_args+=(
-        "-map" "0:v:0" # 映射視訊流
-        "-map" "1:a:0" # 映射處理好的音訊流
-        "-c:v" "copy" # 複製視訊流
-        "-c:a" "copy" # 複製已是 AAC 的音訊流
-    )
-
-    local sub_input_index=2 # 字幕輸入從 2 開始 (0 是視訊, 1 是音訊)
-    for ((i=0; i<${#subtitle_files[@]}; i++)); do
-        ffmpeg_mux_args+=("-map" "$sub_input_index") # 映射字幕流
-        local sub_lang_code=$(basename "${subtitle_files[$i]}" | rev | cut -d'.' -f2 | rev)
-        local ffmpeg_lang=""
-        case "$sub_lang_code" in
-            zh-Hant|zh-TW) ffmpeg_lang="zht" ;;
-            zh-Hans|zh-CN) ffmpeg_lang="zhs" ;;
-            zh) ffmpeg_lang="chi" ;;
-            *) ffmpeg_lang=$(echo "$sub_lang_code" | cut -c1-3) ;;
-        esac
-        ffmpeg_mux_args+=("-metadata:s:s:$i" "language=$ffmpeg_lang") # 設定字幕語言元數據
-        ((sub_input_index++))
-    done
-    # 如果有字幕，指定字幕編碼
-    if [ ${#subtitle_files[@]} -gt 0 ]; then
-        ffmpeg_mux_args+=("-c:s" "mov_text") # 設定字幕編碼為 MP4 相容格式
-    fi
-    ffmpeg_mux_args+=("-movflags" "+faststart" "$output_video_file") # 輸出最終檔案
-
-    log_message "INFO" "執行 FFmpeg 最終合併: ${ffmpeg_mux_args[*]}"
-    if ! "${ffmpeg_mux_args[@]}" 2> "$temp_dir/ffmpeg_final_mux.log"; then
-        log_message "ERROR" "最終合併失敗！詳見 $temp_dir/ffmpeg_final_mux.log"
-        echo -e "${RED}錯誤：最終合併失敗！${RESET}"
-        cat "$temp_dir/ffmpeg_final_mux.log"
-        result=1
-    else
-        echo -e "${GREEN}最終合併完成：$output_video_file${RESET}"
-        log_message "SUCCESS" "最終合併成功：$output_video_file"
-        result=0
-    fi
-
-    # --- 清理 ---
-    log_message "INFO" "清理臨時檔案 (無標準化，時段)..."
-    safe_remove "$temp_video_file" "$actual_audio_raw_file" "$temp_audio_aac_file"
-    safe_remove "$temp_dir/yt-dlp-video-section.log" "$temp_dir/yt-dlp-audio-section.log"
-    safe_remove "$temp_dir/ffmpeg-audio-convert.log" "$temp_dir/ffmpeg_final_mux.log"
-    safe_remove "$temp_dir/yt-dlp-sections-subs.log"
-    # 清理下載的 srt 字幕檔案
-    for sub_file in "${subtitle_files[@]}"; do safe_remove "$sub_file"; done
-    # 確保臨時目錄被刪除
-    [ -d "$temp_dir" ] && rm -rf "$temp_dir"
-
-    # --- 最終結果報告 ---
-    if [ $result -eq 0 ]; then
-        echo -e "${GREEN}處理完成！影片 (無標準化，時段 $start_time-$end_time) 已儲存至：$output_video_file${RESET}"
-        log_message "SUCCESS" "處理完成 (無標準化，時段)！影片已儲存至：$output_video_file"
-    else
-        echo -e "${RED}處理失敗 (無標準化，時段)！${RESET}"
-        log_message "ERROR" "處理失敗 (無標準化，時段)：$video_url"
-        # 即使失敗，最終檔案可能部分存在，由使用者決定是否刪除
-        # safe_remove "$output_video_file" # 可選：失敗時刪除可能不完整的輸出
-    fi
-    return $result
-}
 
 ############################################
 # 處理單一 YouTube 影片（MKV）下載與處理 (修正版)(1.8.4+)
