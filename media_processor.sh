@@ -1,9 +1,13 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.1.3(Experimental)" # <<< 版本號更新
-# ... 其他設定 ...
-TARGET_DATE="2025-07-11" # <<< 新增：設定您的目標日期
+SCRIPT_VERSION="v2.2.0(Experimental)" # <<< 版本號更新
+############################################
+# <<< 新增：腳本更新日期 >>>
+############################################
+SCRIPT_UPDATE_DATE="2025-07-11" # 請根據實際情況修改此日期
+############################################
+
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
 DEFAULT_URL="https://www.youtube.com/watch?v=siNFnlqtd8M"
 THREADS=4
@@ -2003,6 +2007,188 @@ EOF
 }
 
 ############################################
+# <<< 新增：MP3 處理選單 >>>
+############################################
+mp3_menu() {
+    while true; do
+        clear
+        echo -e "${CYAN}--- MP3 相關處理 ---${RESET}"
+        echo -e "${YELLOW}請選擇操作：${RESET}"
+        echo -e " 1. 下載/處理 MP3 (${BOLD}含${RESET}音量標準化 / YouTube 或 本機檔案)"
+        echo -e " 2. 下載 MP3 (${BOLD}無${RESET}音量標準化 / 僅限 YouTube)"
+        echo -e "---------------------------------------------"
+        echo -e " 0. ${YELLOW}返回主選單${RESET}"
+        echo -e "---------------------------------------------"
+
+        read -t 0.1 -N 10000 discard
+        local choice
+        read -rp "輸入選項 (0-2): " choice
+
+        case $choice in
+            1)
+                process_mp3 # 調用原有的標準化處理函數
+                echo ""; read -p "按 Enter 返回 MP3 選單..."
+                ;;
+            2)
+                process_mp3_no_normalize # 調用原有的無標準化處理函數
+                echo ""; read -p "按 Enter 返回 MP3 選單..."
+                ;;
+            0)
+                return # 返回到調用它的 main_menu
+                ;;
+            *)
+                if [[ -z "$choice" ]]; then continue; else echo -e "${RED}無效選項 '$choice'${RESET}"; log_message "WARNING" "MP3 選單輸入無效選項: $choice"; sleep 1; fi
+                ;;
+        esac
+    done
+}
+############################################
+
+############################################
+# <<< 新增：MP4 / MKV 處理選單 >>>
+############################################
+mp4_mkv_menu() {
+    while true; do
+        clear
+        echo -e "${CYAN}--- MP4 / MKV 相關處理 ---${RESET}"
+        echo -e "${YELLOW}請選擇操作：${RESET}"
+        echo -e " 1. 下載/處理 MP4 (${BOLD}含${RESET}音量標準化 / YouTube 或 本機檔案)"
+        echo -e " 2. 下載 MP4 (${BOLD}無${RESET}音量標準化 / 僅限 YouTube)"
+        echo -e " 3. 下載/處理 MKV (${BOLD}含${RESET}音量標準化 / 僅限 YouTube / 實驗性字幕保留)"
+        echo -e "---------------------------------------------"
+        echo -e " 0. ${YELLOW}返回主選單${RESET}"
+        echo -e "---------------------------------------------"
+
+        read -t 0.1 -N 10000 discard
+        local choice
+        read -rp "輸入選項 (0-3): " choice
+
+        case $choice in
+            1)
+                process_mp4 # 調用原有的 MP4 標準化處理函數
+                echo ""; read -p "按 Enter 返回 MP4/MKV 選單..."
+                ;;
+            2)
+                process_mp4_no_normalize # 調用原有的 MP4 無標準化處理函數
+                echo ""; read -p "按 Enter 返回 MP4/MKV 選單..."
+                ;;
+            3)
+                process_mkv # 調用原有的 MKV 處理函數
+                echo ""; read -p "按 Enter 返回 MP4/MKV 選單..."
+                ;;
+            0)
+                return # 返回到調用它的 main_menu
+                ;;
+            *)
+                if [[ -z "$choice" ]]; then continue; else echo -e "${RED}無效選項 '$choice'${RESET}"; log_message "WARNING" "MP4/MKV 選單輸入無效選項: $choice"; sleep 1; fi
+                ;;
+        esac
+    done
+}
+############################################
+
+############################################
+# <<< 新增：通用媒體下載選單 >>>
+############################################
+general_download_menu() {
+    while true; do
+        clear
+        echo -e "${CYAN}--- 通用媒體下載 (實驗性) ---${RESET}"
+        echo -e "${YELLOW}請選擇操作：${RESET}"
+        echo -e " 1. 下載並處理 (${BOLD}含${RESET}音量標準化 / 內部選擇 MP3/MP4)"
+        echo -e " 2. 下載 (${BOLD}無${RESET}音量標準化 / 內部選擇 MP3/MP4)"
+        echo -e "---------------------------------------------"
+        echo -e " 0. ${YELLOW}返回主選單${RESET}"
+        echo -e "---------------------------------------------"
+
+        read -t 0.1 -N 10000 discard
+        local choice
+        read -rp "輸入選項 (0-2): " choice
+
+        case $choice in
+            1)
+                process_other_site_media_playlist # 調用原有的通用標準化處理函數
+                echo ""; read -p "按 Enter 返回通用下載選單..."
+                ;;
+            2)
+                process_other_site_media_playlist_no_normalize # 調用原有的通用無標準化處理函數
+                echo ""; read -p "按 Enter 返回通用下載選單..."
+                ;;
+            0)
+                return # 返回到調用它的 main_menu
+                ;;
+            *)
+                if [[ -z "$choice" ]]; then continue; else echo -e "${RED}無效選項 '$choice'${RESET}"; log_message "WARNING" "通用下載選單輸入無效選項: $choice"; sleep 1; fi
+                ;;
+        esac
+    done
+}
+############################################
+
+############################################
+# <<< 新增：腳本設定與工具選單 >>>
+############################################
+utilities_menu() {
+    while true; do
+        clear
+        echo -e "${CYAN}--- 腳本設定與工具 ---${RESET}"
+        echo -e "${YELLOW}請選擇操作：${RESET}"
+        echo -e " 1. 參數設定 (執行緒, 下載路徑, 顏色)"
+        echo -e " 2. 檢視操作日誌"
+        echo -e " 3. ${BOLD}檢查並更新依賴套件${RESET}"
+        echo -e " 4. ${BOLD}檢查腳本更新${RESET}"
+        # 根據 OS_TYPE 動態顯示 Termux 選項
+        if [[ "$OS_TYPE" == "termux" ]]; then
+            echo -e " 5. ${BOLD}設定 Termux 啟動時詢問${RESET}"
+        fi
+        echo -e "---------------------------------------------"
+        echo -e " 0. ${YELLOW}返回主選單${RESET}"
+        echo -e "---------------------------------------------"
+
+        read -t 0.1 -N 10000 discard
+        local choice_range="0-4"
+        [[ "$OS_TYPE" == "termux" ]] && choice_range="0-5" # 如果是 Termux，範圍是 0-5
+        local choice
+        read -rp "輸入選項 (${choice_range}): " choice
+
+        case $choice in
+            1)
+                config_menu # 調用原有的設定選單函數
+                # config_menu 內部處理返回，這裡不需要額外操作
+                ;;
+            2)
+                view_log # 調用原有的檢視日誌函數
+                # view_log 使用 less，退出後自動返回
+                ;;
+            3)
+                update_dependencies # 調用原有的依賴更新函數
+                # update_dependencies 內部有 "按 Enter 返回"
+                ;;
+            4)
+                auto_update_script # 調用原有的腳本更新函數
+                echo ""; read -p "按 Enter 返回工具選單..." # 確保更新後能返回
+                ;;
+            5)
+                if [[ "$OS_TYPE" == "termux" ]]; then
+                    setup_termux_autostart # 調用原有的 Termux 設定函數
+                    echo ""; read -p "按 Enter 返回工具選單..." # 確保設定後能返回
+                else
+                    echo -e "${RED}無效選項 '$choice'${RESET}"; sleep 1
+                fi
+                ;;
+            0)
+                return # 返回到調用它的 main_menu
+                ;;
+            *)
+                if [[ -z "$choice" ]]; then continue; else echo -e "${RED}無效選項 '$choice'${RESET}"; log_message "WARNING" "工具選單輸入無效選項: $choice"; sleep 1; fi
+                ;;
+        esac
+    done
+}
+############################################
+
+
+############################################
 # 設定選單
 ############################################
 config_menu() {
@@ -2120,36 +2306,57 @@ view_log() {
     if [ -f "$LOG_FILE" ]; then less -R "$LOG_FILE"; else echo -e "${RED}日誌不存在: $LOG_FILE ${RESET}"; log_message "WARNING" "日誌不存在: $LOG_FILE"; sleep 2; fi
 }
 
-# 關於訊息
-show_about() {
+############################################
+# <<< 新增/替換：關於訊息 (增強版) >>>
+############################################
+show_about_enhanced() {
     clear
-    echo -e "${CYAN}整合式影音處理平台 ${SCRIPT_VERSION}${RESET}"
-    echo -e "${GREEN}特色：${RESET}"
-    echo -e "- 支援 YouTube 影片與音訊下載 (MP3/MP4)"
-    echo -e "- 支援通用網站媒體下載 (實驗性 MP3/MP4, yt-dlp 支持範圍)"
-    echo -e "- 支援 YouTube 影片下載 (實驗性 MKV檔)（v1.8.0+）"
-    echo -e "- 雙重音量標準化 (基於 EBU R128)"
-    echo -e "- 純音訊編碼規格 (MP3 320k)"
-    echo -e "- MP4音訊編碼規格 (AAC 256k)"
-    echo -e "- 自動嵌入封面圖片與基礎元數據 (MP3)"
-    echo -e "- 支援中文字幕選擇與嵌入 (YouTube MP4)"
-    echo -e "- 支援播放清單批量下載 (YouTube 及部分通用網站)"
-    echo -e "- 支援本機 MP3/MP4 檔案音量標準化"
-    echo -e "- 提供無音量標準化下載選項 (MP4)"
-    echo -e "- 自動調整下載執行緒數量 (基於 CPU 核心)"
-    echo -e "- 提供依賴檢查與更新功能 (跨平台支援 Termux/WSL/Linux)" # <<< 可更新描述
-    echo -e "- 提供手動觸發的腳本自我更新功能" # <<< 新增描述
-    echo -e "- 文字選單介面，彩色輸出"
-    echo -e "- Termux 啟動整合與別名設置"
-    echo -e "- ${BOLD}移除 eval，提高安全性 (v1.4.4+)${RESET}"
-    echo -e "- ${BOLD}重構播放清單處理邏輯 (v1.5.0+)${RESET}"
+    echo -e "${CYAN}=== 關於 整合式影音處理平台 ===${RESET}"
+    echo -e "---------------------------------------------"
+    # --- 顯示版本和日期 ---
+    echo -e "${BOLD}版本:${RESET}        ${GREEN}${SCRIPT_VERSION}${RESET}"
+    # 檢查日期變數是否存在
+    if [ -n "$SCRIPT_UPDATE_DATE" ]; then
+        echo -e "${BOLD}更新日期:${RESET}    ${GREEN}${SCRIPT_UPDATE_DATE}${RESET}"
+    fi
+
+    # --- 顯示腳本校驗和 ---
+    local current_script_checksum="無法計算"
+    # 檢查 sha256sum 命令是否存在，以及 SCRIPT_INSTALL_PATH 是否已定義且檔案存在
+    if command -v sha256sum &> /dev/null && [ -n "$SCRIPT_INSTALL_PATH" ] && [ -f "$SCRIPT_INSTALL_PATH" ]; then
+        # 計算校驗和，只取校驗和部分
+        current_script_checksum=$(sha256sum "$SCRIPT_INSTALL_PATH" | awk '{print $1}')
+    elif command -v sha256sum &> /dev/null && [ -f "$0" ]; then
+        # 如果 SCRIPT_INSTALL_PATH 無法使用，嘗試計算當前執行檔案的校驗和 ($0)
+        current_script_checksum=$(sha256sum "$0" | awk '{print $1}')
+        current_script_checksum="${current_script_checksum} (當前執行檔)" # 加上標註
+    fi
+    echo -e "${BOLD}腳本 SHA256:${RESET} ${YELLOW}${current_script_checksum}${RESET}"
+    echo -e "---------------------------------------------"
+
+    echo -e "${GREEN}主要功能特色：${RESET}"
+    echo -e "- YouTube 影音下載 (MP3/MP4/MKV)"
+    echo -e "- 通用網站媒體下載 (MP3/MP4, 實驗性)"
+    echo -e "- 音量標準化 (EBU R128) / 無標準化選項"
+    echo -e "- YouTube 字幕處理 (下載/轉換/嵌入)"
+    echo -e "- 播放清單批次處理 (YouTube/通用實驗性)"
+    echo -e "- 本機 MP3/MP4 音量標準化"
+    echo -e "- 依賴管理與腳本自我更新 (含校驗和)"
+    echo -e "- 跨平台適應 (Termux/WSL/Linux)"
+    echo -e "- 設定持久化與互動式選單"
+    echo -e "- 主選單重構（2.3.0+)"
+
     echo -e "\n${YELLOW}使用須知：${RESET}"
     echo -e "本工具僅供個人學習與合法使用，請尊重版權並遵守當地法律法規。"
     echo -e "下載受版權保護的內容可能違法，請自行承擔風險。"
+
     echo -e "\n${CYAN}日誌檔案位於: ${LOG_FILE}${RESET}"
-    echo -e "\n"
+    echo -e "---------------------------------------------"
+    echo ""
     read -p "按 Enter 返回主選單..."
 }
+############################################
+
 
 ############################################
 # <<< 修改：環境檢查 (加入 Python 庫檢查提示) >>>
@@ -2281,80 +2488,56 @@ check_environment() {
 }
 
 ############################################
-# 主選單 (修改 - 加入 1-1 和 7-1 選項)(v2.1.3+)
+# <<< 替換：新的主選單 (多層級) >>>
 ############################################
 main_menu() {
     while true; do
         clear
         echo -e "${CYAN}=== 整合式影音處理平台 ${SCRIPT_VERSION} ===${RESET}"
-        display_countdown
-        echo -e "${YELLOW}請選擇操作：${RESET}"
-        echo -e " 1. ${BOLD}MP3 處理${RESET} (YouTube/本機)"
-        # <<< 新增 1-1 選項 >>>
-        echo -e " 1-1. 下載 MP3 (YouTube / ${BOLD}無${RESET}標準化)"
-        echo -e " 2. ${BOLD}MP4 處理${RESET} (YouTube/本機)"
-        echo -e " 2-1. 下載 MP4 (YouTube / ${BOLD}無${RESET}標準化)"
-        echo -e " 2-2. ${BOLD}MKV 處理 (YouTube / 含標準化 / 實驗性字幕保留)${RESET}"
-        echo -e " ${BOLD}7. 通用媒體處理 (其他網站 / ${YELLOW}實驗性${RESET})"
-        echo -e " ${BOLD}7-1. 通用媒體下載 (${YELLOW}實驗性${RESET} / ${BOLD}無${RESET}標準化)"
+        display_countdown # 保留倒數計時顯示
+        echo -e "${YELLOW}請選擇主要功能分類：${RESET}"
+        echo -e " 1. ${BOLD}MP3 相關處理${RESET} (YouTube/本機)"
+        echo -e " 2. ${BOLD}MP4 / MKV 相關處理${RESET} (YouTube/本機)"
+        echo -e " 3. ${BOLD}通用媒體下載${RESET} (其他網站 / ${YELLOW}實驗性${RESET})"
         echo -e "---------------------------------------------"
-        echo -e " 3. 設定參數"
-        echo -e " 4. 檢視操作日誌"
-        echo -e " 6. ${BOLD}檢查並更新依賴套件${RESET}"
-        echo -e " ${BOLD}8. 檢查腳本更新${RESET}"
-        if [[ "$OS_TYPE" == "termux" ]]; then
-            echo -e " ${BOLD}9. 設定 Termux 啟動時詢問${RESET}"
-        fi
-        echo -e "---------------------------------------------"
-        echo -e " 5. 關於此工具"
+        echo -e " 4. ${BOLD}腳本設定與工具${RESET}"
+        echo -e " 5. ${BOLD}關於此工具${RESET}"
         echo -e " 0. ${RED}退出腳本${RESET}"
         echo -e "---------------------------------------------"
 
+        # 清除可能的緩衝輸入
         read -t 0.1 -N 10000 discard
 
-        # <<< 修改提示範圍 >>>
-        local prompt_range="0-9 或 1-1, 2-1, 2-2, 7-1"
         local choice
-        read -rp "輸入選項 (${prompt_range}): " choice
+        read -rp "輸入選項 (0-5): " choice
 
         case $choice in
-            1) process_mp3; sleep 1 ;;
-            # <<< 新增 1-1 的處理 >>>
-            1-1)
-                process_mp3_no_normalize # 呼叫新的處理函數
-                sleep 1 # 處理後暫停
-                ;;
-            2) process_mp4; sleep 1 ;;
-            2-1) process_mp4_no_normalize; sleep 1 ;;
-            2-2) process_mkv; sleep 1 ;;
-            7) process_other_site_media_playlist; sleep 1 ;;
-            7-1)
-                process_other_site_media_playlist_no_normalize
+            1) mp3_menu ;;           # 跳轉到 MP3 子選單
+            2) mp4_mkv_menu ;;       # 跳轉到 MP4/MKV 子選單
+            3) general_download_menu ;; # 跳轉到通用下載子選單
+            4) utilities_menu ;;     # 跳轉到設定與工具子選單
+            5) show_about_enhanced ;; # 顯示增強的關於訊息
+            0)
+                echo -e "${GREEN}感謝使用，正在退出...${RESET}"
+                log_message "INFO" "使用者選擇退出。"
                 sleep 1
+                exit 0
                 ;;
-            3) config_menu ;;
-            4) view_log ;;
-            6) update_dependencies ;;
-            8)
-               auto_update_script
-               echo ""; read -p "按 Enter 返回主選單..."
-               ;;
-            9)
-               if [[ "$OS_TYPE" == "termux" ]]; then
-                   setup_termux_autostart
-               else
-                   echo -e "${RED}錯誤：此選項僅適用於 Termux。${RESET}"; sleep 1
-               fi
-               echo ""; read -p "按 Enter 返回主選單..."
-               ;;
-            5) show_about ;;
-            0) echo -e "${GREEN}感謝使用，正在退出...${RESET}"; log_message "INFO" "使用者選擇退出。"; sleep 1; exit 0 ;;
             *)
-               if [[ -z "$choice" ]]; then continue; else echo -e "${RED}無效選項 '$choice'${RESET}"; log_message "WARNING" "主選單輸入無效選項: $choice"; sleep 1; fi
-               ;;
+                # 處理無效輸入或空輸入
+                if [[ -z "$choice" ]]; then
+                    continue # 如果是空輸入，重新顯示選單
+                else
+                    echo -e "${RED}無效選項 '$choice'${RESET}"
+                    log_message "WARNING" "主選單輸入無效選項: $choice"
+                    sleep 1
+                fi
+                ;;
         esac
     done
 }
+############################################
+
 
 # --- 在主要函數執行前，調用檢測函數並初始化路徑 ---
 # <<< 新增：調用平台檢測函數 >>>
