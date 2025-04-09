@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.2.1(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v2.3.0(Experimental)" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -1214,6 +1214,211 @@ process_single_mp4_no_normalize() {
     return $result
 }
 
+##############################################################
+# 新增：處理單一 YouTube 影片（MP4）下載（無標準化，可選時段）(2.3.0+)
+##############################################################
+process_single_mp4_no_normalize_sections() {
+    local video_url="$1"
+    # 從參數獲取開始和結束時間
+    local start_time="$2"
+    local end_time="$3"
+
+    # 字幕設定 (與 process_single_mp4_no_normalize 相同)
+    local target_sub_langs="zh-Hant,zh-TW,zh-Hans,zh-CN,zh,zh-Hant-AAj-uoGhMZA"
+    local subtitle_options="--write-subs --sub-lang $target_sub_langs --convert-subs srt"
+    local subtitle_files=()
+    local temp_dir=$(mktemp -d)
+    local result=0
+
+    echo -e "${YELLOW}處理 YouTube 影片 (無標準化，指定時段 $start_time-$end_time)：$video_url${RESET}"
+    log_message "INFO" "處理 YouTube 影片 (無標準化，時段 $start_time-$end_time): $video_url"
+    log_message "INFO" "嘗試字幕: $target_sub_langs"
+    echo -e "${YELLOW}嘗試下載繁/簡/通用中文字幕...${RESET}"
+
+    # 下載格式設定 (與 process_single_mp4_no_normalize 相同)
+    # 選擇高畫質視訊(限制1440p)和無損或高品質音訊，讓 yt-dlp 內部處理合併或下載分離流
+    local format_option="bestvideo[ext=mp4][height<=1440]+bestaudio[ext=flac]/bestvideo[ext=mp4][height<=1440]+bestaudio[ext=wav]/bestvideo[ext=mp4][height<=1440]+bestaudio[ext=m4a]/best[ext=mp4][height<=1440]/best[height<=1440]/best"
+    log_message "INFO" "使用格式 (無標準化，時段): $format_option"
+
+    # 檢查下載目錄 (與 process_single_mp4_no_normalize 相同)
+    mkdir -p "$DOWNLOAD_PATH";
+    if [ ! -w "$DOWNLOAD_PATH" ]; then
+        log_message "ERROR" "無法寫入下載目錄 (無標準化，時段)：$DOWNLOAD_PATH"
+        echo -e "${RED}錯誤：無法寫入下載目錄${RESET}"
+        [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1;
+    fi
+
+    # --- 獲取影片標題和 ID，用於檔名 ---
+    local video_title video_id sanitized_title base_name
+    video_title=$(yt-dlp --get-title "$video_url" 2>/dev/null) || video_title="video"
+    video_id=$(yt-dlp --get-id "$video_url" 2>/dev/null) || video_id=$(date +%s)
+    # 清理標題中的非法字元
+    sanitized_title=$(echo "${video_title}" | sed 's@[/\\:*?"<>|]@_@g')
+    # 組合基礎檔名，加入時段信息
+    base_name="$DOWNLOAD_PATH/${sanitized_title} [${video_id}]_${start_time}-${end_time}"
+    # --- 檔名處理結束 ---
+
+    echo -e "${YELLOW}開始下載影片指定時段 ($start_time-$end_time) 及字幕（高品質音質）...${RESET}"
+
+    # 構建 yt-dlp 下載命令
+    local yt_dlp_dl_args=(
+        yt-dlp
+        -f "$format_option" # 指定格式
+        # --- 加入下載時段參數 ---
+        --download-sections "*${start_time}-${end_time}"
+        # --- 字幕參數 ---
+        # 先只下載影音
+    )
+    #IFS=' ' read -r -a sub_opts_array <<< "$subtitle_options"; # 分割字幕選項字串 # <<< 暫時不加入字幕下載參數到主下載命令
+
+    # 輸出檔名模板 - 直接指定最終檔名，讓 yt-dlp 處理合併
+    local output_video_file="${base_name}.mp4" # 預期輸出檔名
+    yt_dlp_dl_args+=(
+        -o "$output_video_file" # 指定輸出檔名
+        "$video_url" # 影片 URL
+        --newline
+        --progress
+        --concurrent-fragments "$THREADS"
+        # --force-keyframes-at-cuts # 可選：提高切割精度，但可能增加處理時間
+        --merge-output-format mp4 # 確保合併為 MP4
+    )
+
+    log_message "INFO" "執行 yt-dlp (無標準化，時段，影音): ${yt_dlp_dl_args[*]}"
+    if ! "${yt_dlp_dl_args[@]}" 2> "$temp_dir/yt-dlp-sections-video.log"; then
+        log_message "ERROR" "影片指定時段下載失敗 (無標準化)..."
+        echo -e "${RED}錯誤：影片指定時段下載失敗！${RESET}"
+        cat "$temp_dir/yt-dlp-sections-video.log"
+        [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1;
+    fi
+
+    # 檢查下載的影片檔案是否存在
+    if [ ! -f "$output_video_file" ]; then
+        log_message "ERROR" "找不到下載的影片檔案 (無標準化，時段): $output_video_file"
+        echo -e "${RED}錯誤：找不到下載的影片檔案！${RESET}"
+        [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1;
+    fi
+    echo -e "${GREEN}影片時段下載完成：$output_video_file${RESET}"
+    log_message "INFO" "影片時段下載完成 (無標準化)：$output_video_file"
+
+    # --- 獨立下載字幕 ---
+    echo -e "${YELLOW}正在嘗試下載字幕檔案...${RESET}"
+    local yt_dlp_sub_args=(
+        yt-dlp
+        --skip-download # 只下載字幕
+        --write-subs
+        --sub-lang "$target_sub_langs"
+        --convert-subs srt
+        # 字幕檔名模板，與影片基礎名一致
+        -o "$DOWNLOAD_PATH/${sanitized_title} [%(id)s].%(ext)s" # 使用不含時段的基礎名
+        "$video_url"
+    )
+    log_message "INFO" "執行 yt-dlp (僅字幕): ${yt_dlp_sub_args[*]}"
+    if ! "${yt_dlp_sub_args[@]}" 2> "$temp_dir/yt-dlp-sections-subs.log"; then
+        log_message "WARNING" "下載字幕失敗或無字幕。詳見 $temp_dir/yt-dlp-sections-subs.log"
+        echo -e "${YELLOW}警告：下載字幕失敗或影片無字幕。${RESET}"
+        # 不視為致命錯誤，繼續執行
+    fi
+
+    # --- 查找下載的字幕檔案 ---
+    local base_name_for_subs="$DOWNLOAD_PATH/${sanitized_title} [${video_id}]"
+    log_message "INFO" "檢查字幕 (基於: ${base_name_for_subs}.*.srt)"
+    subtitle_files=() # 清空以防萬一
+    IFS=',' read -r -a langs_to_check <<< "$target_sub_langs"
+    for lang in "${langs_to_check[@]}"; do
+        local potential_srt_file="${base_name_for_subs}.${lang}.srt"
+        if [ -f "$potential_srt_file" ]; then
+            local already_added=false
+            for existing_file in "${subtitle_files[@]}"; do [[ "$existing_file" == "$potential_srt_file" ]] && { already_added=true; break; }; done
+            if ! $already_added; then
+                subtitle_files+=("$potential_srt_file")
+                log_message "INFO" "找到字幕: $potential_srt_file"
+                echo -e "${GREEN}找到字幕: $(basename "$potential_srt_file")${RESET}"
+            fi
+        fi
+    done
+    if [ ${#subtitle_files[@]} -eq 0 ]; then
+        log_message "INFO" "未找到中文字幕。"
+        echo -e "${YELLOW}未找到中文字幕。${RESET}"
+    fi
+
+    # --- 如果找到字幕，進行混流嵌入 ---
+    if [ ${#subtitle_files[@]} -gt 0 ]; then
+        echo -e "${YELLOW}開始將字幕嵌入影片...${RESET}"
+        local final_video_with_subs="${base_name}_with_subs.mp4" # 帶字幕的最終檔名
+        local ffmpeg_mux_args=(ffmpeg -y -i "$output_video_file") # 輸入已下載的影片
+
+        for sub_file in "${subtitle_files[@]}"; do
+            ffmpeg_mux_args+=("-i" "$sub_file")
+        done
+
+        ffmpeg_mux_args+=(
+            "-map" "0:v" # 映射影片流
+            "-map" "0:a" # 映射音訊流
+            "-c:v" "copy" # 複製影片流
+            "-c:a" "copy" # 複製音訊流
+        )
+
+        local sub_input_index=1 # 字幕輸入從 1 開始 (0 是影片)
+        for ((i=0; i<${#subtitle_files[@]}; i++)); do
+            ffmpeg_mux_args+=("-map" "$sub_input_index") # 映射字幕流
+            local sub_lang_code=$(basename "${subtitle_files[$i]}" | rev | cut -d'.' -f2 | rev) # 從檔名提取語言代碼
+            # 嘗試標準化語言代碼 (例如 zh-TW -> zht)
+            local ffmpeg_lang=""
+            case "$sub_lang_code" in
+                zh-Hant|zh-TW) ffmpeg_lang="zht" ;;
+                zh-Hans|zh-CN) ffmpeg_lang="zhs" ;;
+                zh) ffmpeg_lang="chi" ;; # 通用中文
+                *) ffmpeg_lang=$(echo "$sub_lang_code" | cut -c1-3) ;; # 取前三字母
+            esac
+            ffmpeg_mux_args+=("-metadata:s:s:$i" "language=$ffmpeg_lang") # 設定字幕語言元數據
+            ((sub_input_index++))
+        done
+        ffmpeg_mux_args+=("-c:s" "mov_text") # 設定字幕編碼為 MP4 相容格式
+        ffmpeg_mux_args+=("-movflags" "+faststart" "$final_video_with_subs") # 輸出檔名
+
+        log_message "INFO" "執行 FFmpeg 字幕混流: ${ffmpeg_mux_args[*]}"
+        if ! "${ffmpeg_mux_args[@]}" 2> "$temp_dir/ffmpeg_mux_subs.log"; then
+            log_message "ERROR" "字幕混流失敗！詳見 $temp_dir/ffmpeg_mux_subs.log"
+            echo -e "${RED}錯誤：字幕混流失敗！${RESET}"
+            cat "$temp_dir/ffmpeg_mux_subs.log"
+            result=1
+        else
+            echo -e "${GREEN}字幕混流完成：$final_video_with_subs${RESET}"
+            log_message "SUCCESS" "字幕混流成功：$final_video_with_subs"
+            # 混流成功，刪除原始影片和字幕檔，重命名最終檔案
+            safe_remove "$output_video_file" # 刪除不含字幕的原影片
+            for sub_file in "${subtitle_files[@]}"; do safe_remove "$sub_file"; done # 刪除 srt 字幕檔
+            # 將帶字幕的檔案重命名為最終的、不帶 "_with_subs" 的檔案名
+            if mv "$final_video_with_subs" "$output_video_file"; then
+                 log_message "INFO" "重命名 $final_video_with_subs 為 $output_video_file"
+            else
+                 log_message "ERROR" "重命名 $final_video_with_subs 失敗，最終檔案可能為 $final_video_with_subs"
+                 echo -e "${RED}錯誤：重命名最終檔案失敗，請檢查 $final_video_with_subs ${RESET}"
+            fi
+            result=0
+        fi
+    else
+        # 沒有找到字幕，下載的影片就是最終檔案
+        log_message "INFO" "未找到字幕或未成功下載，無需混流。"
+        result=0
+    fi
+
+    # --- 清理 ---
+    log_message "INFO" "清理臨時檔案 (無標準化，時段)..."
+    safe_remove "$temp_dir/yt-dlp-sections-video.log" "$temp_dir/yt-dlp-sections-subs.log" "$temp_dir/ffmpeg_mux_subs.log"
+    [ -d "$temp_dir" ] && rm -rf "$temp_dir"
+
+    # --- 最終結果報告 ---
+    if [ $result -eq 0 ]; then
+        echo -e "${GREEN}處理完成！影片 (無標準化，時段 $start_time-$end_time) 已儲存至：$output_video_file${RESET}"
+        log_message "SUCCESS" "處理完成 (無標準化，時段)！影片已儲存至：$output_video_file"
+    else
+        echo -e "${RED}處理失敗 (無標準化，時段)！${RESET}"
+        log_message "ERROR" "處理失敗 (無標準化，時段)：$video_url"
+    fi
+    return $result
+}
+
 ############################################
 # 處理單一 YouTube 影片（MKV）下載與處理 (修正版)(1.8.4+)
 ############################################
@@ -1815,6 +2020,74 @@ process_mp4_no_normalize() {
     if [[ "$input" == *"list="* ]]; then _process_youtube_playlist "$input" "process_single_mp4_no_normalize"; elif [[ "$input" == *"youtu"* ]]; then process_single_mp4_no_normalize "$input"; else echo -e "${RED}錯誤：僅支援 YouTube 網址。${RESET}"; log_message "ERROR" "...非 YouTube URL..."; return 1; fi
 }
 
+#######################################################
+# 新增：MP4 無標準化指定時段下載的入口函數(2.3.0+)
+#######################################################
+process_mp4_sections_entry() {
+    local input
+    read -p "輸入 YouTube 影片網址 [預設: $DEFAULT_URL]: " input; input=${input:-$DEFAULT_URL}
+
+    # 檢查是否為播放清單
+    if [[ "$input" == *"list="* ]]; then
+        echo -e "${RED}錯誤：此功能（指定下載時段）目前僅支援單一 YouTube 影片，不支援播放列表。${RESET}"
+        log_message "ERROR" "MP4 指定時段：使用者嘗試輸入播放列表 $input"
+        return 1
+    # 檢查是否為 YouTube 網址
+    elif [[ "$input" == *"youtube.com"* || "$input" == *"youtu.be"* ]]; then
+        # 是單一 YouTube 影片，獲取時段
+        local start_time end_time
+        local is_valid_time=false
+        while ! $is_valid_time; do
+            read -p "輸入開始時間 (HH:MM:SS 或 秒數): " start_time
+            # 基礎驗證：非空
+            if [ -z "$start_time" ]; then
+                 echo -e "${RED}錯誤：開始時間不能為空。${RESET}"
+                 continue
+            fi
+            # 簡單驗證格式 (HH:MM:SS 或 數字)
+            if [[ "$start_time" =~ ^[0-9]+(:[0-5][0-9]){1,2}$ ]] || [[ "$start_time" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+                 # 如果是 MM:SS 格式，補全為 00:MM:SS
+                 if [[ "$start_time" =~ ^[0-9]+:[0-5][0-9]$ ]]; then
+                     start_time="00:$start_time"
+                 fi
+                 is_valid_time=true
+            else
+                 echo -e "${RED}錯誤：開始時間格式無效，請使用 HH:MM:SS、MM:SS 或純數字秒數。${RESET}"
+            fi
+        done
+
+        is_valid_time=false
+        while ! $is_valid_time; do
+            read -p "輸入結束時間 (HH:MM:SS 或 秒數，可選): " end_time
+            # 結束時間可以為空 (下載到結尾)
+            if [ -z "$end_time" ]; then
+                 is_valid_time=true
+                 break # 允許空值
+            fi
+            # 簡單驗證格式 (HH:MM:SS 或 數字)
+            if [[ "$end_time" =~ ^[0-9]+(:[0-5][0-9]){1,2}$ ]] || [[ "$end_time" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+                 # 如果是 MM:SS 格式，補全為 00:MM:SS
+                 if [[ "$end_time" =~ ^[0-9]+:[0-5][0-9]$ ]]; then
+                     end_time="00:$end_time"
+                 fi
+                 is_valid_time=true
+            else
+                 echo -e "${RED}錯誤：結束時間格式無效，請使用 HH:MM:SS、MM:SS 或純數字秒數，或留空。${RESET}"
+            fi
+        done
+
+        log_message "INFO" "MP4 指定時段：URL='$input', Start='$start_time', End='$end_time'"
+        # 調用實際的處理函數
+        process_single_mp4_no_normalize_sections "$input" "$start_time" "$end_time"
+        return $? # 返回處理函數的退出狀態
+
+    else
+        echo -e "${RED}錯誤：此選項僅支援 YouTube 網址。${RESET}"
+        log_message "ERROR" "MP4 指定時段：輸入非 YouTube URL: $input"
+        return 1
+    fi
+}
+
 ############################################
 # 處理 MKV 影片（支援單一或播放清單，網路）
 ############################################
@@ -2047,7 +2320,7 @@ mp3_menu() {
 ############################################
 
 ############################################
-# <<< 新增：MP4 / MKV 處理選單 >>>
+# <<< 修改：MP4 / MKV 處理選單 (加入時段選項) >>>
 ############################################
 mp4_mkv_menu() {
     while true; do
@@ -2057,13 +2330,16 @@ mp4_mkv_menu() {
         echo -e " 1. 下載/處理 MP4 (${BOLD}含${RESET}音量標準化 / YouTube 或 本機檔案)"
         echo -e " 2. 下載 MP4 (${BOLD}無${RESET}音量標準化 / 僅限 YouTube)"
         echo -e " 3. 下載/處理 MKV (${BOLD}含${RESET}音量標準化 / 僅限 YouTube / 實驗性字幕保留)"
+        # <<< 新增選項 >>>
+        echo -e " 4. 下載 MP4 (${BOLD}無${RESET}音量標準化 + ${YELLOW}指定時段${RESET} / 僅限單一 YouTube 影片)"
         echo -e "---------------------------------------------"
         echo -e " 0. ${YELLOW}返回主選單${RESET}"
         echo -e "---------------------------------------------"
 
         read -t 0.1 -N 10000 discard
         local choice
-        read -rp "輸入選項 (0-3): " choice
+        # <<< 修改範圍 >>>
+        read -rp "輸入選項 (0-4): " choice
 
         case $choice in
             1)
@@ -2076,6 +2352,11 @@ mp4_mkv_menu() {
                 ;;
             3)
                 process_mkv # 調用原有的 MKV 處理函數
+                echo ""; read -p "按 Enter 返回 MP4/MKV 選單..."
+                ;;
+            # <<< 新增 Case >>>
+            4)
+                process_mp4_sections_entry # 調用新的指定時段入口函數
                 echo ""; read -p "按 Enter 返回 MP4/MKV 選單..."
                 ;;
             0)
