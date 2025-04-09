@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.3.1(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v2.3.2(Experimental)" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -1215,8 +1215,8 @@ process_single_mp4_no_normalize() {
 }
 
 ##############################################################
-# <<< 修正：處理檔名中的冒號 >>>
-# 處理單一 YouTube 影片（MP4）下載（無標準化，可選時段）(2.3.1+)
+# <<< 修正：調整 format_option 以確保下載視訊流 >>>
+# 處理單一 YouTube 影片（MP4）下載（無標準化，可選時段）(2.3.2+)
 ##############################################################
 process_single_mp4_no_normalize_sections() {
     local video_url="$1"
@@ -1234,8 +1234,12 @@ process_single_mp4_no_normalize_sections() {
     log_message "INFO" "嘗試字幕: $target_sub_langs"
     echo -e "${YELLOW}嘗試下載繁/簡/通用中文字幕...${RESET}"
 
-    local format_option="bestvideo[ext=mp4][height<=1440]+bestaudio[ext=flac]/bestvideo[ext=mp4][height<=1440]+bestaudio[ext=wav]/bestvideo[ext=mp4][height<=1440]+bestaudio[ext=m4a]/best[ext=mp4][height<=1440]/best[height<=1440]/best"
-    log_message "INFO" "使用格式 (無標準化，時段): $format_option"
+    # --- <<< 修正點：調整 format_option >>> ---
+    # 優先選擇 MP4 容器中 H.264 編碼的視訊流 (avc) 和 M4A (通常是 AAC) 的音訊流。
+    # 加入更多明確的 fallback 選項，確保視訊流被包含。
+    local format_option="bestvideo[height<=1440][ext=mp4][vcodec^=avc]+bestaudio[ext=m4a]/bestvideo[height<=1440][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1440]+bestaudio/best[height<=1440][ext=mp4]/best[height<=1440]/best"
+    # --- 修正點結束 ---
+    log_message "INFO" "使用格式 (無標準化，時段，修正版): $format_option"
 
     mkdir -p "$DOWNLOAD_PATH";
     if [ ! -w "$DOWNLOAD_PATH" ]; then
@@ -1249,61 +1253,69 @@ process_single_mp4_no_normalize_sections() {
     video_id=$(yt-dlp --get-id "$video_url" 2>/dev/null) || video_id=$(date +%s)
     sanitized_title=$(echo "${video_title}" | sed 's@[/\\:*?"<>|]@_@g')
 
-    # --- <<< 修正點：替換時間字串中的冒號 >>> ---
-    # 將 start_time 和 end_time 中的 ':' 替換為 '-'，用於檔名
     local safe_start_time=${start_time//:/-}
     local safe_end_time=${end_time//:/-}
-    # --- 修正點結束 ---
-
-    # --- 使用替換後的 safe_start_time 和 safe_end_time 組合基礎檔名 ---
     base_name="$DOWNLOAD_PATH/${sanitized_title} [${video_id}]_${safe_start_time}-${safe_end_time}"
-    # --- 檔名處理結束 ---
 
     echo -e "${YELLOW}開始下載影片指定時段 ($start_time-$end_time) 及字幕（高品質音質）...${RESET}"
 
-    # <<< 使用修正後的 base_name 來定義 output_video_file >>>
-    local output_video_file="${base_name}.mp4" # 預期輸出檔名
+    local output_video_file="${base_name}.mp4"
     local yt_dlp_dl_args=(
         yt-dlp
-        -f "$format_option"
-        --download-sections "*${start_time}-${end_time}" # 下載時段參數仍使用原始的 HH:MM:SS 格式
-        # --write-subs etc. (字幕下載移到後面獨立執行)
-        -o "$output_video_file" # 指定輸出檔名 (已包含安全的時間戳)
+        -f "$format_option" # 使用修正後的格式選項
+        --download-sections "*${start_time}-${end_time}"
+        -o "$output_video_file"
         "$video_url"
         --newline
         --progress
         --concurrent-fragments "$THREADS"
-        # --force-keyframes-at-cuts # 可選
         --merge-output-format mp4
+        # 可以考慮添加 --verbose 選項來獲取更詳細的 yt-dlp 執行日誌以供調試
+        # --verbose
     )
 
-    log_message "INFO" "執行 yt-dlp (無標準化，時段，影音): ${yt_dlp_dl_args[*]}"
+    log_message "INFO" "執行 yt-dlp (無標準化，時段，影音，修正格式): ${yt_dlp_dl_args[*]}"
     if ! "${yt_dlp_dl_args[@]}" 2> "$temp_dir/yt-dlp-sections-video.log"; then
         log_message "ERROR" "影片指定時段下載失敗 (無標準化)..."
         echo -e "${RED}錯誤：影片指定時段下載失敗！${RESET}"
+        # 在終端顯示 yt-dlp 的詳細錯誤日誌
+        echo -e "${YELLOW}--- yt-dlp 錯誤日誌開始 ---${RESET}"
         cat "$temp_dir/yt-dlp-sections-video.log"
+        echo -e "${YELLOW}--- yt-dlp 錯誤日誌結束 ---${RESET}"
         [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1;
     fi
 
     if [ ! -f "$output_video_file" ]; then
         log_message "ERROR" "找不到下載的影片檔案 (無標準化，時段): $output_video_file"
-        echo -e "${RED}錯誤：找不到下載的影片檔案！${RESET}"
+        echo -e "${RED}錯誤：找不到下載的影片檔案！檢查上述 yt-dlp 日誌。${RESET}"
         [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1;
     fi
     echo -e "${GREEN}影片時段下載完成：$output_video_file${RESET}"
     log_message "INFO" "影片時段下載完成 (無標準化)：$output_video_file"
 
-    # --- 獨立下載字幕 ---
+    # --- 檢查下載下來的檔案是否真的有視訊軌 ---
+    if ! ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$output_video_file" > /dev/null 2>&1; then
+        log_message "ERROR" "驗證失敗：下載的檔案 '$output_video_file' 中似乎沒有視訊流！"
+        echo -e "${RED}錯誤：下載完成的檔案似乎缺少視訊流！請檢查 yt-dlp 格式選擇或合併過程。${RESET}"
+        # 顯示檔案的 ffprobe 信息以供調試
+        echo -e "${YELLOW}--- ffprobe 檔案資訊 ---${RESET}"
+        ffprobe -hide_banner "$output_video_file"
+        echo -e "${YELLOW}--- ffprobe 資訊結束 ---${RESET}"
+        # 可以選擇在這裡刪除錯誤的檔案，或者保留它
+        # safe_remove "$output_video_file"
+        [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1;
+    else
+        log_message "INFO" "驗證成功：下載的檔案 '$output_video_file' 包含視訊流。"
+    fi
+    # --- 驗證結束 ---
+
+    # --- 字幕下載與混流邏輯保持不變 ---
     echo -e "${YELLOW}正在嘗試下載字幕檔案...${RESET}"
-    # 字幕檔名模板，與影片基礎名一致 (但不含時間戳，避免重複下載)
     local base_name_for_subs_dl="$DOWNLOAD_PATH/${sanitized_title} [${video_id}]"
     local yt_dlp_sub_args=(
         yt-dlp
-        --skip-download
-        --write-subs
-        --sub-lang "$target_sub_langs"
-        --convert-subs srt
-        -o "$base_name_for_subs_dl.%(ext)s" # 使用不含時段的基礎名
+        --skip-download --write-subs --sub-lang "$target_sub_langs" --convert-subs srt
+        -o "$base_name_for_subs_dl.%(ext)s"
         "$video_url"
     )
     log_message "INFO" "執行 yt-dlp (僅字幕): ${yt_dlp_sub_args[*]}"
@@ -1312,7 +1324,6 @@ process_single_mp4_no_normalize_sections() {
         echo -e "${YELLOW}警告：下載字幕失敗或影片無字幕。${RESET}"
     fi
 
-    # --- 查找下載的字幕檔案 (使用與下載時相同的 base_name) ---
     log_message "INFO" "檢查字幕 (基於: ${base_name_for_subs_dl}.*.srt)"
     subtitle_files=()
     IFS=',' read -r -a langs_to_check <<< "$target_sub_langs"
@@ -1333,20 +1344,13 @@ process_single_mp4_no_normalize_sections() {
         echo -e "${YELLOW}未找到中文字幕。${RESET}"
     fi
 
-    # --- 如果找到字幕，進行混流嵌入 ---
     if [ ${#subtitle_files[@]} -gt 0 ]; then
         echo -e "${YELLOW}開始將字幕嵌入影片...${RESET}"
-        # <<< 使用修正後的 base_name 來定義 final_video_with_subs >>>
-        local final_video_with_subs="${base_name}_with_subs.mp4" # 帶字幕的最終檔名
-        local ffmpeg_mux_args=(ffmpeg -y -i "$output_video_file") # 輸入已下載的影片 (檔名已修正)
+        local final_video_with_subs="${base_name}_with_subs.mp4"
+        local ffmpeg_mux_args=(ffmpeg -y -i "$output_video_file")
 
-        for sub_file in "${subtitle_files[@]}"; do
-            ffmpeg_mux_args+=("-i" "$sub_file")
-        done
-
-        ffmpeg_mux_args+=(
-            "-map" "0:v" "-map" "0:a" "-c:v" "copy" "-c:a" "copy"
-        )
+        for sub_file in "${subtitle_files[@]}"; do ffmpeg_mux_args+=("-i" "$sub_file"); done
+        ffmpeg_mux_args+=("-map" "0:v" "-map" "0:a" "-c:v" "copy" "-c:a" "copy")
 
         local sub_input_index=1
         for ((i=0; i<${#subtitle_files[@]}; i++)); do
@@ -1362,7 +1366,7 @@ process_single_mp4_no_normalize_sections() {
             ffmpeg_mux_args+=("-metadata:s:s:$i" "language=$ffmpeg_lang")
             ((sub_input_index++))
         done
-        ffmpeg_mux_args+=("-c:s" "mov_text" "-movflags" "+faststart" "$final_video_with_subs") # 輸出檔名 (已修正)
+        ffmpeg_mux_args+=("-c:s" "mov_text" "-movflags" "+faststart" "$final_video_with_subs")
 
         log_message "INFO" "執行 FFmpeg 字幕混流: ${ffmpeg_mux_args[*]}"
         if ! "${ffmpeg_mux_args[@]}" 2> "$temp_dir/ffmpeg_mux_subs.log"; then
@@ -1373,9 +1377,8 @@ process_single_mp4_no_normalize_sections() {
         else
             echo -e "${GREEN}字幕混流完成：$final_video_with_subs${RESET}"
             log_message "SUCCESS" "字幕混流成功：$final_video_with_subs"
-            safe_remove "$output_video_file" # 刪除不含字幕的原影片
+            safe_remove "$output_video_file"
             for sub_file in "${subtitle_files[@]}"; do safe_remove "$sub_file"; done
-            # 將帶字幕的檔案重命名為最終的、不帶 "_with_subs" 的檔案名 (檔名已修正)
             if mv "$final_video_with_subs" "$output_video_file"; then
                  log_message "INFO" "重命名 $final_video_with_subs 為 $output_video_file"
             else
@@ -1392,13 +1395,11 @@ process_single_mp4_no_normalize_sections() {
     # --- 清理 ---
     log_message "INFO" "清理臨時檔案 (無標準化，時段)..."
     safe_remove "$temp_dir/yt-dlp-sections-video.log" "$temp_dir/yt-dlp-sections-subs.log" "$temp_dir/ffmpeg_mux_subs.log"
-    # 也清理可能殘留的字幕檔案 (以防萬一)
     for lang in "${langs_to_check[@]}"; do safe_remove "${base_name_for_subs_dl}.${lang}.srt"; done
     [ -d "$temp_dir" ] && rm -rf "$temp_dir"
 
     # --- 最終結果報告 ---
     if [ $result -eq 0 ]; then
-        # <<< 使用修正後的 output_video_file >>>
         echo -e "${GREEN}處理完成！影片 (無標準化，時段 $start_time-$end_time) 已儲存至：$output_video_file${RESET}"
         log_message "SUCCESS" "處理完成 (無標準化，時段)！影片已儲存至：$output_video_file"
     else
