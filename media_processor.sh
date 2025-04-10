@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.3.8(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v2.3.9(Experimental)" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -103,43 +103,145 @@ save_config() {
 }
 
 ############################################
-# <<< 修改：載入設定檔 (加入 Python 版本) >>>
+# <<< 修改：載入設定檔 (安全解析版，取代 source) >>>(2.3.9+)
 ############################################
 load_config() {
-    # <<< 新增：先設定 Python 腳本的預設版本 >>>
-    PYTHON_CONVERTER_VERSION="0.0.0" # 確保即使設定檔不存在也有預設值
+    # 設定預設值 (這些值在設定檔未找到或無效時使用)
+    # 注意：THREADS, DOWNLOAD_PATH 等的初始預設值應在腳本頂部設定好
+    #       這裡主要是確保 Python 版本有預設值
+    PYTHON_CONVERTER_VERSION="0.0.0"
+    # 記錄一下初始預設值 (如果設定檔不存在，這些值會被使用)
+    local initial_threads="$THREADS"
+    local initial_dl_path="$DOWNLOAD_PATH"
+    local initial_color="$COLOR_ENABLED"
+    local initial_py_ver="$PYTHON_CONVERTER_VERSION"
 
     if [ -f "$CONFIG_FILE" ] && [ -r "$CONFIG_FILE" ]; then
-        log_message "INFO" "正在從 $CONFIG_FILE 載入設定..."
-        source "$CONFIG_FILE"
-        # 檢查 THREADS (不變)
-        if [[ -n "$THREADS" && (! "$THREADS" =~ ^[0-9]+$ || "$THREADS" -lt "$MIN_THREADS" || "$THREADS" -gt "$MAX_THREADS") ]]; then
-             log_message "WARNING" "從設定檔載入的 THREADS ($THREADS) 無效，將使用預設值或重新自動調整。"
-             THREADS=$MIN_THREADS 
-        fi
-        # <<< 新增：檢查載入的 Python 版本 (基礎檢查) >>>
-        if [ -z "$PYTHON_CONVERTER_VERSION" ]; then
-            log_message "WARNING" "設定檔中未找到 Python 轉換器版本，將使用預設值 0.0.0"
-            PYTHON_CONVERTER_VERSION="0.0.0"
-        fi
-        log_message "INFO" "設定檔載入完成。 Python Converter Version: $PYTHON_CONVERTER_VERSION"
+        log_message "INFO" "正在從 $CONFIG_FILE 安全地載入設定..."
+        echo -e "${BLUE}正在從 $CONFIG_FILE 載入設定...${RESET}" # 給使用者提示
+
+        local line_num=0
+        # 使用 IFS= 和 -r read 來正確處理行
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            ((line_num++))
+            # 移除行首行尾的空白字符 (可選，但更健壯)
+            line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+            # 跳過空行和註解行 (以 # 開頭，前面可能有空白)
+            if [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]]; then
+                continue
+            fi
+
+            # 使用正則表達式匹配 VAR="VALUE" 格式
+            # ^[[:space:]]* : 行首可能有空白
+            # ([A-Za-z_][A-Za-z0-9_]+) : 捕獲合法的變數名 (字母/數字/底線，不能以數字開頭)
+            # [[:space:]]*=[[:space:]]* : 等號，前後可能有空白
+            # \"(.*)\" : 捕獲雙引號內的內容 (值)
+            # [[:space:]]*$ : 行尾可能有空白
+            if [[ "$line" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]+)[[:space:]]*=[[:space:]]*\"(.*)\"[[:space:]]*$ ]]; then
+                local var_name="${BASH_REMATCH[1]}"
+                local var_value="${BASH_REMATCH[2]}"
+
+                # --- 安全核心：只處理已知的變數 ---
+                case "$var_name" in
+                    "THREADS")
+                        # 驗證 THREADS
+                        if [[ "$var_value" =~ ^[0-9]+$ ]] && [ "$var_value" -ge "$MIN_THREADS" ] && [ "$var_value" -le "$MAX_THREADS" ]; then
+                            THREADS="$var_value"
+                            log_message "INFO" "從設定檔載入: THREADS=$THREADS"
+                        else
+                            log_message "WARNING" "設定檔中的 THREADS ('$var_value') 無效或超出範圍 ($MIN_THREADS-$MAX_THREADS)，將使用預設值或自動調整。"
+                            # 保留之前的預設值或讓後續 adjust_threads 處理
+                            THREADS="$initial_threads" # 或設置為 MIN_THREADS
+                        fi
+                        ;;
+                    "DOWNLOAD_PATH")
+                        # 這裡只賦值，路徑的有效性檢查在函數末尾統一進行
+                        DOWNLOAD_PATH="$var_value"
+                        log_message "INFO" "從設定檔載入: DOWNLOAD_PATH=$DOWNLOAD_PATH"
+                        ;;
+                    "COLOR_ENABLED")
+                        if [[ "$var_value" == "true" || "$var_value" == "false" ]]; then
+                            COLOR_ENABLED="$var_value"
+                            log_message "INFO" "從設定檔載入: COLOR_ENABLED=$COLOR_ENABLED"
+                        else
+                            log_message "WARNING" "設定檔中的 COLOR_ENABLED ('$var_value') 無效，將使用預設值 '$initial_color'。"
+                            COLOR_ENABLED="$initial_color"
+                        fi
+                        ;;
+                    "PYTHON_CONVERTER_VERSION")
+                        # 基礎檢查 (非空)
+                        if [ -n "$var_value" ]; then
+                             PYTHON_CONVERTER_VERSION="$var_value"
+                             log_message "INFO" "從設定檔載入: PYTHON_CONVERTER_VERSION=$PYTHON_CONVERTER_VERSION"
+                        else
+                             log_message "WARNING" "設定檔中的 PYTHON_CONVERTER_VERSION 為空，將使用預設值 '$initial_py_ver'。"
+                             PYTHON_CONVERTER_VERSION="$initial_py_ver"
+                        fi
+                        ;;
+                    *)
+                        # 忽略未知的變數
+                        log_message "WARNING" "在設定檔第 $line_num 行發現未知或不處理的變數 '$var_name'，已忽略。"
+                        ;;
+                esac
+            else
+                # 記錄格式不符的行
+                log_message "WARNING" "設定檔第 $line_num 行格式不符 '$line'，已忽略。"
+            fi
+        done < "$CONFIG_FILE"
+
+        log_message "INFO" "設定檔載入完成。最終值: THREADS=$THREADS, DOWNLOAD_PATH=$DOWNLOAD_PATH, COLOR_ENABLED=$COLOR_ENABLED, PYTHON_CONVERTER_VERSION=$PYTHON_CONVERTER_VERSION"
         echo -e "${GREEN}已從 $CONFIG_FILE 載入使用者設定。${RESET}"
         sleep 1
+
     else
         log_message "INFO" "設定檔 $CONFIG_FILE 未找到或不可讀，將使用預設設定。"
-        # 即使設定檔不存在，也要確保 Python 版本有初始值
-        PYTHON_CONVERTER_VERSION="0.0.0"
+        # 如果設定檔不存在，確保所有變數保持其初始預設值
+        THREADS="$initial_threads"
+        DOWNLOAD_PATH="$initial_dl_path"
+        COLOR_ENABLED="$initial_color"
+        PYTHON_CONVERTER_VERSION="$initial_py_ver"
+         echo -e "${YELLOW}設定檔 $CONFIG_FILE 未找到，使用預設值。${RESET}"
+         sleep 1
     fi
 
-    # <<< 重要：在載入 DOWNLOAD_PATH 後，重新設定 LOG_FILE 路徑 >>>
-    # 無論是從設定檔載入還是使用預設值，都要確保 LOG_FILE 路徑正確
-    LOG_FILE="$DOWNLOAD_PATH/script_log.txt"
-    # 同樣，需要重新確保目錄存在
-    if ! mkdir -p "$DOWNLOAD_PATH" 2>/dev/null; then
-        echo -e "${RED}錯誤：無法創建最終確定的下載目錄 '$DOWNLOAD_PATH'！腳本無法啟動。${RESET}" >&2
-        log_message "ERROR" "無法創建最終下載目錄：$DOWNLOAD_PATH"
-        exit 1
+    # <<< 重要：在處理完設定檔後，執行路徑和日誌的最終設定與檢查 >>>
+    # 無論是從設定檔載入還是使用預設值，都要確保 LOG_FILE 路徑基於最終的 DOWNLOAD_PATH
+    # 同時進行下載路徑的有效性檢查和目錄創建
+
+    # 1. 清理並驗證下載路徑 (來自設定檔或預設值)
+    local sanitized_path=""
+    # 使用 realpath 處理相對路徑、多餘斜線等，並移除危險字符
+    sanitized_path=$(realpath -m "$DOWNLOAD_PATH" 2>/dev/null | sed 's/[;|&<>()$`{}]//g')
+
+    if [ -z "$sanitized_path" ]; then
+         log_message "ERROR" "最終下載路徑 '$DOWNLOAD_PATH' 無效或解析失敗！腳本無法啟動。"
+         echo -e "${RED}錯誤：最終下載路徑 '$DOWNLOAD_PATH' 無效！腳本無法啟動。${RESET}" >&2
+         exit 1
     fi
+    DOWNLOAD_PATH="$sanitized_path" # 使用清理後的路徑
+
+    # 2. 檢查路徑是否在允許範圍內 (保持原有的安全檢查)
+    if ! [[ "$DOWNLOAD_PATH" =~ ^(/storage/emulated/0|$HOME|/data/data/com.termux/files/home) ]]; then
+         log_message "SECURITY" "最終下載路徑 '$DOWNLOAD_PATH' 不在允許的安全範圍內！腳本無法啟動。"
+         echo -e "${RED}安全性錯誤：最終下載路徑 '$DOWNLOAD_PATH' 不在允許範圍內！腳本無法啟動。${RESET}" >&2
+         exit 1
+    fi
+
+    # 3. 嘗試創建最終確定的下載目錄並檢查寫入權限
+    if ! mkdir -p "$DOWNLOAD_PATH" 2>/dev/null; then
+        log_message "ERROR" "無法創建最終確定的下載目錄 '$DOWNLOAD_PATH'！腳本無法啟動。"
+        echo -e "${RED}錯誤：無法創建最終下載目錄 '$DOWNLOAD_PATH'！腳本無法啟動。${RESET}" >&2
+        exit 1
+    elif [ ! -w "$DOWNLOAD_PATH" ]; then
+         log_message "ERROR" "最終下載目錄 '$DOWNLOAD_PATH' 不可寫！腳本無法啟動。"
+         echo -e "${RED}錯誤：最終下載目錄 '$DOWNLOAD_PATH' 不可寫！腳本無法啟動。${RESET}" >&2
+         exit 1
+    fi
+
+    # 4. 設定最終的 LOG_FILE 路徑
+    LOG_FILE="$DOWNLOAD_PATH/script_log.txt"
+
     log_message "INFO" "最終下載路徑確認: $DOWNLOAD_PATH, 日誌檔案: $LOG_FILE"
 }
 
