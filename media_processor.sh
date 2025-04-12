@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.4.9(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v2.4.10(Experimental)" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -2197,7 +2197,7 @@ _process_single_other_site() {
     if ! $is_playlist; then
         # ... (預估大小邏輯保持不變，使用之前的最終版本) ...
         echo -e "${YELLOW}正在預估檔案大小以決定是否通知...${RESET}"
-        local estimated_size_bytes=0.1
+        local estimated_size_bytes=0
         local size_list estimate_exit_code
         size_list=$(yt-dlp --no-warnings --print '%(filesize,filesize_approx)s' -f "$yt_dlp_format_string" "$item_url" 2>"$temp_dir/yt-dlp-estimate.log")
         estimate_exit_code=$?
@@ -2212,7 +2212,7 @@ _process_single_other_site() {
                 else estimated_size_bytes=0; fi
             else estimated_size_bytes=0; log_message "WARNING" "bc missing"; fi
         else log_message "WARNING" "Failed to get size info (通用 std)"; fi
-        local size_threshold_gb=0.5
+        local size_threshold_gb=0.12
         local size_threshold_bytes=$(awk "BEGIN {printf \"%d\", $size_threshold_gb * 1024 * 1024 * 1024}")
         log_message "INFO" "通用下載 標準化：預估大小 = $estimated_size_bytes bytes, 閾值 = $size_threshold_bytes bytes."
         if [[ "$estimated_size_bytes" -gt "$size_threshold_bytes" ]]; then
