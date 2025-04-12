@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.3.12(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v2.4.0(Experimental)" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -99,6 +99,50 @@ save_config() {
         log_message "ERROR" "無法寫入設定檔 $CONFIG_FILE！請檢查權限。"
         echo -e "${RED}錯誤：無法儲存設定到 $CONFIG_FILE！${RESET}"
         sleep 2
+    fi
+}
+
+############################################
+# <<< 新增：Termux 通知輔助函數 >>>
+############################################
+_send_termux_notification() {
+    # $1: Result code (0 for success, non-zero for failure)
+    # $2: Notification Title (e.g., "媒體處理器：MP4")
+    # $3: Base message (e.g., "處理影片 'Title' [ID]")
+    # $4: Final file path (used to get basename on success)
+
+    local result_code="$1"
+    local notification_title="$2"
+    local base_message="$3"
+    local final_filepath="$4"
+
+    # 檢查是否為 Termux 環境以及命令是否存在
+    if [[ "$OS_TYPE" != "termux" ]] || ! command -v termux-notification &> /dev/null; then
+        if [[ "$OS_TYPE" == "termux" ]] && ! command -v termux-notification &> /dev/null; then
+             log_message "INFO" "未找到 termux-notification 命令，跳過通知。"
+        fi
+        return # 非 Termux 或無命令，直接返回
+    fi
+
+    local notification_content=""
+    # 安全地獲取檔名，如果路徑為空或無效則返回空字串
+    local final_basename=$(basename "$final_filepath" 2>/dev/null)
+
+    if [ "$result_code" -eq 0 ] && [ -n "$final_basename" ] && [ -f "$final_filepath" ]; then
+        # 成功訊息
+        notification_content="✅ 成功：$base_message 已儲存為 '$final_basename'。"
+        log_message "INFO" "準備發送 Termux 成功通知 for $final_basename"
+    else
+        # 失敗訊息 (處理失敗或最終檔案不存在)
+        notification_content="❌ 失敗：$base_message 處理失敗。請查看輸出或日誌。"
+        log_message "INFO" "準備發送 Termux 失敗通知 for $base_message"
+    fi
+
+    # 發送通知
+    if ! termux-notification --title "$notification_title" --content "$notification_content"; then
+        log_message "WARNING" "執行 termux-notification 命令失敗。"
+    else
+        log_message "INFO" "Termux 通知已成功發送。"
     fi
 }
 
@@ -1267,36 +1311,99 @@ process_single_mp4() {
 
 #######################################################
 # 處理單一 YouTube 影片（MP4）下載與處理（無音量標準化）
+# <<< 修改：加入條件式通知 >>>
 #######################################################
 process_single_mp4_no_normalize() {
-    # --- 函數邏輯不變 ---
     local video_url="$1"
-    local target_sub_langs="zh-Hant,zh-TW,zh-Hans,zh-CN,zh,zh-Hant-AAj-uoGhMZA" #(zh-Hant-AAj-uoGhMZA)為了「ヨルシカ」而特別新增。
+    # <<< 新增：接收模式參數 >>>
+    local mode="$2" # 可能為 "playlist_mode" 或空
+    local target_sub_langs="zh-Hant,zh-TW,zh-Hans,zh-CN,zh,zh-Hant-AAj-uoGhMZA"
     local subtitle_options="--write-subs --sub-lang $target_sub_langs --convert-subs srt"
     local subtitle_files=()
     local temp_dir=$(mktemp -d)
     local result=0
+    # <<< 新增：通知標記 >>>
+    local should_notify=false
+    local is_playlist=false
+
+    # <<< 新增：判斷是否為播放清單模式 >>>
+    if [[ "$mode" == "playlist_mode" ]]; then
+        is_playlist=true
+        should_notify=true # 播放清單模式下總是通知
+        log_message "INFO" "MP4 無標準化：播放清單模式，啟用通知。"
+    fi
+
     echo -e "${YELLOW}處理 YouTube 影片 (無標準化)：$video_url${RESET}"; log_message "INFO" "處理 YouTube 影片 (無標準化): $video_url"; log_message "INFO" "嘗試字幕: $target_sub_langs"
     echo -e "${YELLOW}嘗試下載繁/簡/通用中文字幕...${RESET}"
     local format_option="bestvideo[ext=mp4][height<=1440]+bestaudio[ext=flac]/bestvideo[ext=mp4][height<=1440]+bestaudio[ext=wav]/bestvideo[ext=mp4][height<=1440]+bestaudio[ext=m4a]/best[ext=mp4][height<=1440]/best[height<=1440]/best"
     if [[ "$video_url" != *"youtube.com"* && "$video_url" != *"youtu.be"* ]]; then format_option="best"; log_message "WARNING" "...非 YouTube URL..."; subtitle_options=""; echo -e "${YELLOW}非 YouTube URL...${RESET}"; fi
     log_message "INFO" "使用格式 (無標準化): $format_option"
+
+    # <<< 新增：預估檔案大小 (僅在非播放清單模式下進行) >>>
+    local video_title video_id sanitized_title # 移到前面，方便後續使用
+    video_title=$(yt-dlp --get-title "$video_url" 2>/dev/null) || video_title="video"
+    video_id=$(yt-dlp --get-id "$video_url" 2>/dev/null) || video_id=$(date +%s)
+    sanitized_title=$(echo "${video_title}" | sed 's@[/\\:*?"<>|]@_@g') # 清理標題用於基本訊息
+
+    if ! $is_playlist; then
+        echo -e "${YELLOW}正在預估檔案大小以決定是否通知...${RESET}"
+        local estimated_size_bytes=0
+        local selected_formats_json
+        selected_formats_json=$(yt-dlp --print requested_formats -j --no-warnings -f "$format_option" "$video_url" 2>"$temp_dir/yt-dlp-estimate.log")
+
+        if [ $? -eq 0 ] && [ -n "$selected_formats_json" ]; then
+            # 使用 jq 計算總和，處理 null 值
+            estimated_size_bytes=$(echo "$selected_formats_json" | jq -s 'map(.filesize_approx // .filesize // 0) | add')
+            if ! [[ "$estimated_size_bytes" =~ ^[0-9]+$ ]]; then
+                 estimated_size_bytes=0 # 如果 jq 計算失敗，設為 0
+                 log_message "WARNING" "無法從 yt-dlp 獲取有效的估計大小 (jq 計算失敗)。"
+            fi
+        else
+            log_message "WARNING" "無法從 yt-dlp 獲取格式資訊以預估大小，詳見 $temp_dir/yt-dlp-estimate.log"
+            # 可選：cat "$temp_dir/yt-dlp-estimate.log"
+        fi
+
+        local size_threshold_gb=0.5
+        # 使用 awk 計算閾值 (更精確且避免 bash 整數限制)
+        local size_threshold_bytes=$(awk "BEGIN {printf \"%d\", $size_threshold_gb * 1024 * 1024 * 1024}")
+
+        log_message "INFO" "MP4 無標準化：預估大小 = $estimated_size_bytes bytes, 閾值 = $size_threshold_bytes bytes."
+        if [[ "$estimated_size_bytes" -gt "$size_threshold_bytes" ]]; then
+            log_message "INFO" "MP4 無標準化：預估大小超過閾值，啟用通知。"
+            should_notify=true
+        else
+            log_message "INFO" "MP4 無標準化：預估大小未超過閾值，禁用通知。"
+            should_notify=false # 確保是 false
+        fi
+    fi
+    # <<< 預估大小結束 >>>
+
     mkdir -p "$DOWNLOAD_PATH"; if [ ! -w "$DOWNLOAD_PATH" ]; then log_message "ERROR" "...無法寫入目錄..."; echo -e "${RED}錯誤：無法寫入目錄${RESET}"; [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1; fi
     echo -e "${YELLOW}開始下載影片及字幕（高品質音質）...${RESET}"
     local output_template="$DOWNLOAD_PATH/%(title)s [%(id)s].%(ext)s"
     local yt_dlp_dl_args=(yt-dlp -f "$format_option")
     IFS=' ' read -r -a sub_opts_array <<< "$subtitle_options"; if [ ${#sub_opts_array[@]} -gt 0 ]; then yt_dlp_dl_args+=("${sub_opts_array[@]}"); fi
     yt_dlp_dl_args+=(-o "$output_template" "$video_url" --newline --progress --concurrent-fragments "$THREADS")
-    if ! "${yt_dlp_dl_args[@]}" 2> "$temp_dir/yt-dlp-nonorm.log"; then log_message "ERROR" "影片(無標準化)下載失敗..."; echo -e "${RED}錯誤：影片下載失敗！${RESET}"; cat "$temp_dir/yt-dlp-nonorm.log"; [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1; fi
+    if ! "${yt_dlp_dl_args[@]}" 2> "$temp_dir/yt-dlp-nonorm.log"; then
+        log_message "ERROR" "影片(無標準化)下載失敗..."; echo -e "${RED}錯誤：影片下載失敗！${RESET}"; cat "$temp_dir/yt-dlp-nonorm.log";
+        result=1; goto cleanup_and_notify # 跳轉到清理和通知
+    fi
     local yt_dlp_fn_args=(yt-dlp --get-filename -f "$format_option" -o "$output_template" "$video_url")
     local video_file=$("${yt_dlp_fn_args[@]}" 2>/dev/null)
-    if [ ! -f "$video_file" ]; then log_message "ERROR" "找不到下載的影片檔案..."; echo -e "${RED}錯誤：找不到下載的影片檔案！${RESET}"; [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1; fi
+    if [ ! -f "$video_file" ]; then
+        log_message "ERROR" "找不到下載的影片檔案..."; echo -e "${RED}錯誤：找不到下載的影片檔案！${RESET}";
+        result=1; goto cleanup_and_notify # 跳轉
+    fi
     echo -e "${GREEN}影片下載完成：$video_file${RESET}"; log_message "INFO" "影片(無標準化)下載完成：$video_file"
+
+    # --- 字幕處理 (不變) ---
     local base="${video_file%.*}"; subtitle_files=()
     log_message "INFO" "檢查字幕 (基於: $base.*.srt)"
     IFS=',' read -r -a langs_to_check <<< "$target_sub_langs"
     for lang in "${langs_to_check[@]}"; do local potential_srt_file="${base}.${lang}.srt"; if [ -f "$potential_srt_file" ]; then local already_added=false; for existing_file in "${subtitle_files[@]}"; do [[ "$existing_file" == "$potential_srt_file" ]] && { already_added=true; break; }; done; if ! $already_added; then subtitle_files+=("$potential_srt_file"); log_message "INFO" "找到字幕: $potential_srt_file"; echo -e "${GREEN}找到字幕: $(basename "$potential_srt_file")${RESET}"; fi; fi; done
     if [ ${#subtitle_files[@]} -eq 0 ]; then log_message "INFO" "未找到中文字幕。"; echo -e "${YELLOW}未找到中文字幕。${RESET}"; fi
+
+    # --- 後處理 (不變) ---
     local final_video="${base}_final.mp4"
     echo -e "${YELLOW}開始後處理，重新編碼音訊為 AAC 並混流...${RESET}"
     local ffmpeg_args=(ffmpeg -hide_banner -loglevel error -y -i "$video_file")
@@ -1307,11 +1414,45 @@ process_single_mp4_no_normalize() {
     ffmpeg_args+=("-movflags" "+faststart" "$final_video")
     log_message "INFO" "執行 FFmpeg 後處理: ${ffmpeg_args[*]}"
     local ffmpeg_stderr_log="$temp_dir/ffmpeg_nonorm_stderr.log"
-    if ! "${ffmpeg_args[@]}" 2> "$ffmpeg_stderr_log"; then echo -e "${RED}錯誤：影片後處理失敗！...${RESET}"; cat "$ffmpeg_stderr_log"; log_message "ERROR" "影片後處理失敗..."; result=1;
-    else echo -e "${GREEN}影片後處理完成：$final_video${RESET}"; log_message "SUCCESS" "影片(無標準化)處理完成：$final_video"; result=0; rm -f "$ffmpeg_stderr_log"; fi
-    if [ $result -eq 0 ]; then echo -e "${YELLOW}清理臨時檔案...${RESET}"; rm -f "$video_file"; log_message "INFO" "刪除原始影片：$video_file"; for sub_file in "${subtitle_files[@]}"; do rm -f "$sub_file"; log_message "INFO" "刪除字幕：$sub_file"; done; echo -e "${GREEN}清理完成，最終檔案：$final_video${RESET}";
-    else echo -e "${YELLOW}處理失敗，保留原始檔案以便檢查。${RESET}"; fi
+    if ! "${ffmpeg_args[@]}" 2> "$ffmpeg_stderr_log"; then
+        echo -e "${RED}錯誤：影片後處理失敗！...${RESET}"; cat "$ffmpeg_stderr_log"; log_message "ERROR" "影片後處理失敗...";
+        result=1; # 標記失敗，但保留原始檔
+    else
+        echo -e "${GREEN}影片後處理完成：$final_video${RESET}"; log_message "SUCCESS" "影片(無標準化)處理完成：$final_video";
+        result=0; # 標記成功
+        rm -f "$ffmpeg_stderr_log";
+        # 成功後才清理原始檔
+        echo -e "${YELLOW}清理原始下載檔案...${RESET}";
+        rm -f "$video_file"; log_message "INFO" "刪除原始影片：$video_file";
+        for sub_file in "${subtitle_files[@]}"; do rm -f "$sub_file"; log_message "INFO" "刪除字幕：$sub_file"; done;
+        echo -e "${GREEN}清理完成，最終檔案：$final_video${RESET}";
+    fi
+
+# <<< 新增：清理與通知標籤 >>>
+: cleanup_and_notify
+
+    # 如果處理失敗且 $video_file 仍然存在 (例如後處理失敗)，則保留它
+    if [ $result -ne 0 ]; then
+        echo -e "${YELLOW}處理失敗，可能保留原始檔案以便檢查。${RESET}";
+    fi
+
     [ -d "$temp_dir" ] && rm -rf "$temp_dir"
+
+    # <<< 新增：條件式調用通知 >>>
+    if $should_notify; then
+        local notification_title="媒體處理器：MP4 無標準化"
+        local base_msg="處理影片 '$sanitized_title' [$video_id]"
+        # 判斷最終檔案路徑
+        local final_output_path=""
+        if [ $result -eq 0 ]; then
+            final_output_path="$final_video" # 成功時是 _final.mp4
+        elif [ -f "$video_file" ]; then
+            final_output_path="$video_file" # 失敗但原始檔存在
+        fi
+        _send_termux_notification "$result" "$notification_title" "$base_msg" "$final_output_path"
+    fi
+    # <<< 通知調用結束 >>>
+
     return $result
 }
 
@@ -2105,7 +2246,7 @@ _process_youtube_playlist() {
         log_message "INFO" "[$count/$total_videos] 處理影片: $video_url"; echo -e "${CYAN}--- 正在處理第 $count/$total_videos 個影片 ---${RESET}"
         
         # 調用單個項目處理器
-        if "$single_item_processor_func_name" "$video_url"; then 
+        if "$single_item_processor_func_name" "$video_url" "playlist_mode"; then 
             success_count=$((success_count + 1))
         else 
             log_message "WARNING" "...處理失敗: $video_url"
