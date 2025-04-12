@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.4.11(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v2.4.12(Experimental)" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -1055,7 +1055,7 @@ process_local_mp4() {
 
 ############################################
 # 處理單一 YouTube 音訊（MP3）下載與處理
-# <<< 修改：加入條件式通知 v2.4.3+ >>>
+# <<< 修改：基於時長條件式通知 v2.4.12+ >>>
 ############################################
 process_single_mp3() {
     local media_url="$1"
@@ -1064,10 +1064,11 @@ process_single_mp3() {
     local audio_file=""
     local artist_name="[不明]"
     local album_artist_name="[不明]"
-    local base_name="" # 檔案基本名 (不含路徑和副檔名)
+    local base_name=""
     local result=0
     local should_notify=false
     local is_playlist=false
+    local output_audio="" # 初始化最終輸出路徑
 
     if [[ "$mode" == "playlist_mode" ]]; then
         is_playlist=true
@@ -1075,60 +1076,46 @@ process_single_mp3() {
         log_message "INFO" "MP3 標準化：播放清單模式，啟用通知。"
     fi
 
-    # --- 獲取資訊用於通知和檔名 ---
+    # --- 獲取資訊 ---
     local video_title video_id sanitized_title
-    echo -e "${YELLOW}正在分析媒體資訊...${RESET}" # 移到前面
+    echo -e "${YELLOW}正在分析媒體資訊...${RESET}"
     video_title=$(yt-dlp --get-title "$media_url" 2>/dev/null) || video_title="audio"
-    video_id=$(yt-dlp --get-id "$media_url" 2>/dev/null) # 嘗試獲取ID，即使可能為空
-    # 如果標題獲取失敗，給一個預設值
+    video_id=$(yt-dlp --get-id "$media_url" 2>/dev/null)
     if [ -z "$video_title" ]; then
         log_message "ERROR" "無法獲取媒體標題 (標準化 MP3)"
         echo -e "${RED}錯誤：無法獲取媒體標題，請檢查網址是否正確${RESET}"
         result=1; goto cleanup_and_notify
     fi
-    sanitized_title=$(echo "${video_title}" | sed 's@[/\\:*?"<>|]@_@g') # 清理標題
+    sanitized_title=$(echo "${video_title}" | sed 's@[/\\:*?"<>|]@_@g')
 
-    # --- 預估大小 ---
+    # --- <<< 修改：基於時長判斷是否通知 (僅單獨模式) >>> ---
     if ! $is_playlist; then
-        echo -e "${YELLOW}正在預估檔案大小以決定是否通知...${RESET}"
-        local estimated_size_bytes=0
-        local size_list estimate_exit_code
-        # 對 MP3，我們估計 bestaudio 的大小
-        size_list=$(yt-dlp --no-warnings --print '%(filesize,filesize_approx)s' -f bestaudio "$media_url" 2>"$temp_dir/yt-dlp-estimate.log")
-        estimate_exit_code=$?
-        log_message "DEBUG" "yt-dlp size print exit code (MP3 std): $estimate_exit_code"
-        log_message "DEBUG" "yt-dlp size print raw output (MP3 std):\n$size_list"
+        echo -e "${YELLOW}正在獲取媒體時長以決定是否通知...${RESET}"
+        local duration_secs_str duration_exit_code
+        duration_secs_str=$(yt-dlp --no-warnings --print '%(duration)s' "$media_url" 2>"$temp_dir/yt-dlp-duration.log")
+        duration_exit_code=$?
+        log_message "DEBUG" "yt-dlp duration print exit code (MP3 std): $duration_exit_code"
+        log_message "DEBUG" "yt-dlp duration print raw output (MP3 std): [$duration_secs_str]"
 
-        if [ "$estimate_exit_code" -eq 0 ] && [ -n "$size_list" ]; then
-            if command -v bc &> /dev/null; then
-                local size_sum_expr=$(echo "$size_list" | grep '^[0-9]\+$' | paste -sd+)
-                if [ -n "$size_sum_expr" ]; then
-                    estimated_size_bytes=$(echo "$size_sum_expr" | bc)
-                    log_message "DEBUG" "Calculated size expression (MP3 std): $size_sum_expr"
-                    if ! [[ "$estimated_size_bytes" =~ ^[0-9]+$ ]]; then estimated_size_bytes=0; fi
-                else
-                    estimated_size_bytes=0
-                fi
-            else
-                 log_message "WARNING" "bc 命令未找到，無法計算大小。"
-                 estimated_size_bytes=0
-            fi
+        local duration_secs=0
+        if [ "$duration_exit_code" -eq 0 ] && [[ "$duration_secs_str" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+            duration_secs=$(printf "%.0f" "$duration_secs_str") # 轉換為整數秒
         else
-            log_message "WARNING" "無法從 yt-dlp 獲取格式大小資訊 (MP3 std)。"
+            log_message "WARNING" "無法從 yt-dlp 獲取有效的時長資訊 (MP3 std)。"
         fi
 
-        local size_threshold_gb=0.053
-        local size_threshold_bytes=$(awk "BEGIN {printf \"%d\", $size_threshold_gb * 1024 * 1024 * 1024}")
-        log_message "INFO" "MP3 標準化：預估大小 = $estimated_size_bytes bytes, 閾值 = $size_threshold_bytes bytes."
-        if [[ "$estimated_size_bytes" -gt "$size_threshold_bytes" ]]; then
-            log_message "INFO" "MP3 標準化：預估大小超過閾值，啟用通知。"
+        # 設定閾值：> 1 小時 (3600 秒)
+        local duration_threshold_secs=3600
+        log_message "INFO" "MP3 標準化：媒體時長 = $duration_secs 秒, 通知閾值 = $duration_threshold_secs 秒 (1小時)."
+        if [[ "$duration_secs" -gt "$duration_threshold_secs" ]]; then
+            log_message "INFO" "MP3 標準化：媒體時長超過閾值，啟用通知。"
             should_notify=true
         else
-            log_message "INFO" "MP3 標準化：預估大小未超過閾值，禁用通知。"
+            log_message "INFO" "MP3 標準化：媒體時長未超過閾值，禁用通知。"
             should_notify=false
         fi
     fi
-    # --- 預估結束 ---
+    # --- 時長判斷結束 ---
 
     mkdir -p "$DOWNLOAD_PATH"
     if [ ! -w "$DOWNLOAD_PATH" ]; then log_message "ERROR" "無法寫入下載目錄：$DOWNLOAD_PATH"; echo -e "${RED}錯誤：無法寫入下載目錄${RESET}"; result=1; goto cleanup_and_notify; fi
@@ -1138,7 +1125,6 @@ process_single_mp3() {
 
     # --- 下載 ---
     echo -e "${YELLOW}開始下載：$video_title${RESET}"
-    # 使用包含 ID 的模板，即使 ID 可能為空
     local output_template="$DOWNLOAD_PATH/${sanitized_title} [${video_id:-unknown_id}].%(ext)s"
     local yt_dlp_dl_args=(yt-dlp -f bestaudio -o "$output_template" "$media_url" --newline --progress --concurrent-fragments "$THREADS")
     if ! "${yt_dlp_dl_args[@]}" 2> "$temp_dir/yt-dlp-mp3-std.log"; then
@@ -1153,19 +1139,21 @@ process_single_mp3() {
         echo -e "${RED}錯誤：找不到下載的檔案${RESET}";
         result=1; goto cleanup_and_notify
     fi
-    base_name=$(basename "$audio_file" | sed 's/\.[^.]*$//') # 獲取不含副檔名的實際檔名
+    base_name=$(basename "$audio_file" | sed 's/\.[^.]*$//')
 
     # --- 元數據和封面 ---
+    # ... (獲取元數據和下載封面的邏輯不變) ...
     local metadata_json=$(yt-dlp --dump-json "$media_url" 2>/dev/null)
     if [ -n "$metadata_json" ]; then artist_name=$(echo "$metadata_json" | jq -r '.artist // .uploader // "[不明]"'); album_artist_name=$(echo "$metadata_json" | jq -r '.uploader // "[不明]"'); fi
     [[ "$artist_name" == "null" ]] && artist_name="[不明]"
     [[ "$album_artist_name" == "null" ]] && album_artist_name="[不明]"
-    local cover_image="$temp_dir/cover_${base_name}.png" # 臨時封面檔名
+    local cover_image="$temp_dir/cover_${base_name}.png"
     echo -e "${YELLOW}下載封面圖片...${RESET}"
     if ! download_high_res_thumbnail "$media_url" "$cover_image"; then cover_image=""; fi
 
+
     # --- 音量標準化與最終處理 ---
-    local output_audio="$DOWNLOAD_PATH/${base_name}_normalized.mp3" # 最終輸出檔名
+    output_audio="$DOWNLOAD_PATH/${base_name}_normalized.mp3" # 確保路徑正確
     local normalized_temp="$temp_dir/temp_normalized.mp3"
     echo -e "${YELLOW}開始音量標準化...${RESET}"
     if normalize_audio "$audio_file" "$normalized_temp" "$temp_dir" false; then
@@ -1179,35 +1167,36 @@ process_single_mp3() {
         ffmpeg_embed_args+=("$output_audio")
         if ! "${ffmpeg_embed_args[@]}" > /dev/null 2>&1; then
             log_message "ERROR" "加入封面和元數據失敗！"; echo -e "${RED}錯誤：加入封面和元數據失敗${RESET}";
-            result=1; # 標記失敗，但標準化後的檔案可能還在
-            # 保留 normalized_temp 以便檢查
+            result=1;
         else
             echo -e "${GREEN}封面和元數據加入完成${RESET}";
-            result=0; # 標記成功
-            safe_remove "$normalized_temp" # 成功後才刪除
+            result=0;
+            safe_remove "$normalized_temp"
         fi
     else
         log_message "ERROR" "音量標準化失敗！";
         result=1;
-        # 保留 audio_file 以便檢查
     fi
 
 : cleanup_and_notify
 
     # --- 清理 ---
     log_message "INFO" "清理臨時檔案 (MP3 標準化)..."
-    # 總是嘗試清理原始下載檔和封面
     [ -f "$audio_file" ] && safe_remove "$audio_file"
-    # 如果有多個下載檔案（雖然這裡應該只有一個），也可以用 safe_remove "${audio_file%.*}".*
     [ -n "$cover_image" ] && [ -f "$cover_image" ] && safe_remove "$cover_image"
-    # 清理日誌和臨時目錄
-    safe_remove "$temp_dir/yt-dlp-mp3-std.log" "$temp_dir/yt-dlp-estimate.log"
+    safe_remove "$temp_dir/yt-dlp-mp3-std.log" "$temp_dir/yt-dlp-duration.log"
     [ -d "$temp_dir" ] && rm -rf "$temp_dir"
 
     # --- 控制台最終報告 ---
     if [ $result -eq 0 ]; then
-        echo -e "${GREEN}處理完成！音量標準化後的高品質音訊已儲存至：$output_audio${RESET}"
-        log_message "SUCCESS" "處理完成 (MP3 標準化)！音訊已儲存至：$output_audio"
+        if [ -f "$output_audio" ]; then # 增加檢查最終檔案
+            echo -e "${GREEN}處理完成！音量標準化後的高品質音訊已儲存至：$output_audio${RESET}"
+            log_message "SUCCESS" "處理完成 (MP3 標準化)！音訊已儲存至：$output_audio"
+        else
+            echo -e "${RED}處理似乎已完成，但最終檔案 '$output_audio' 未找到！${RESET}";
+            log_message "ERROR" "處理完成但最終檔案未找到 (MP3 標準化)";
+            result=1 # 標記失敗
+        fi
     else
         echo -e "${RED}處理失敗 (MP3 標準化)！${RESET}"
         log_message "ERROR" "處理失敗 (MP3 標準化)：$media_url"
@@ -1216,14 +1205,9 @@ process_single_mp3() {
     # --- 條件式通知 ---
     if $should_notify; then
         local notification_title="媒體處理器：MP3 標準化"
-        local base_msg_notify="處理音訊 '$sanitized_title'" # 移除ID
+        local base_msg_notify="處理音訊 '$sanitized_title'"
         local final_path_notify=""
-        if [ $result -eq 0 ]; then
-             final_path_notify="$output_audio"
-        # 可選：如果失敗，可以傳遞原始檔路徑（如果還在）或留空
-        # elif [ -f "$audio_file" ]; then
-        #     final_path_notify="$audio_file"
-        fi
+        if [ $result -eq 0 ] && [ -f "$output_audio" ]; then final_path_notify="$output_audio"; fi
         _send_termux_notification "$result" "$notification_title" "$base_msg_notify" "$final_path_notify"
     fi
 
@@ -1232,20 +1216,20 @@ process_single_mp3() {
 
 #########################################################
 # 處理單一 YouTube 音訊（MP3）下載（無音量標準化）
-# <<< 修改：加入條件式通知 v2.4.3+ >>>
+# <<< 修改：基於時長條件式通知 v2.4.12+ >>>
 #########################################################
 process_single_mp3_no_normalize() {
     local media_url="$1"
     local mode="$2" # 接收模式參數
     local temp_dir=$(mktemp -d)
-    local audio_file_raw="" # yt-dlp 下載的原始 MP3 (可能在 temp)
+    local audio_file_raw=""
     local artist_name="[不明]"
     local album_artist_name="[不明]"
-    local base_name="" # 檔名 (不含路徑和副檔名)
+    local base_name=""
     local result=0
     local should_notify=false
     local is_playlist=false
-    local output_audio="" # 初始化最終輸出路徑
+    local output_audio=""
 
     if [[ "$mode" == "playlist_mode" ]]; then
         is_playlist=true
@@ -1257,56 +1241,43 @@ process_single_mp3_no_normalize() {
     local video_title video_id sanitized_title
     echo -e "${YELLOW}正在分析媒體資訊...${RESET}"
     video_title=$(yt-dlp --get-title "$media_url" 2>/dev/null) || video_title="audio"
-    video_id=$(yt-dlp --get-id "$media_url" 2>/dev/null) # 嘗試獲取ID
+    video_id=$(yt-dlp --get-id "$media_url" 2>/dev/null)
     if [ -z "$video_title" ]; then
         log_message "ERROR" "無法獲取媒體標題 (無標準化 MP3)"
         echo -e "${RED}錯誤：無法獲取媒體標題，請檢查網址是否正確${RESET}"
         result=1; goto cleanup_and_notify
     fi
-    # 構建基礎檔名 (不含副檔名)，移除非法字元
     base_name=$(echo "${video_title} [${video_id:-unknown_id}]" | sed 's@[/\\:*?"<>|]@_@g')
-    sanitized_title=$(echo "${video_title}" | sed 's@[/\\:*?"<>|]@_@g') # 清理標題用於通知
+    sanitized_title=$(echo "${video_title}" | sed 's@[/\\:*?"<>|]@_@g')
 
-    # --- 預估大小 ---
+    # --- <<< 修改：基於時長判斷是否通知 (僅單獨模式) >>> ---
     if ! $is_playlist; then
-        echo -e "${YELLOW}正在預估檔案大小以決定是否通知...${RESET}"
-        local estimated_size_bytes=0
-        local size_list estimate_exit_code
-        # 估計 bestaudio 的大小作為代理
-        size_list=$(yt-dlp --no-warnings --print '%(filesize,filesize_approx)s' -f bestaudio "$media_url" 2>"$temp_dir/yt-dlp-estimate.log")
-        estimate_exit_code=$?
-        log_message "DEBUG" "yt-dlp size print exit code (MP3 non-std): $estimate_exit_code"
-        log_message "DEBUG" "yt-dlp size print raw output (MP3 non-std):\n$size_list"
+        echo -e "${YELLOW}正在獲取媒體時長以決定是否通知...${RESET}"
+        local duration_secs_str duration_exit_code
+        duration_secs_str=$(yt-dlp --no-warnings --print '%(duration)s' "$media_url" 2>"$temp_dir/yt-dlp-duration.log")
+        duration_exit_code=$?
+        log_message "DEBUG" "yt-dlp duration print exit code (MP3 non-std): $duration_exit_code"
+        log_message "DEBUG" "yt-dlp duration print raw output (MP3 non-std): [$duration_secs_str]"
 
-        if [ "$estimate_exit_code" -eq 0 ] && [ -n "$size_list" ]; then
-             if command -v bc &> /dev/null; then
-                 local size_sum_expr=$(echo "$size_list" | grep '^[0-9]\+$' | paste -sd+)
-                 if [ -n "$size_sum_expr" ]; then
-                     estimated_size_bytes=$(echo "$size_sum_expr" | bc)
-                     if ! [[ "$estimated_size_bytes" =~ ^[0-9]+$ ]]; then estimated_size_bytes=0; fi
-                 else
-                     estimated_size_bytes=0
-                 fi
-             else
-                  log_message "WARNING" "bc 命令未找到，無法計算大小。"
-                  estimated_size_bytes=0
-             fi
+        local duration_secs=0
+        if [ "$duration_exit_code" -eq 0 ] && [[ "$duration_secs_str" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+            duration_secs=$(printf "%.0f" "$duration_secs_str")
         else
-            log_message "WARNING" "無法從 yt-dlp 獲取格式大小資訊 (MP3 non-std)。"
+            log_message "WARNING" "無法從 yt-dlp 獲取有效的時長資訊 (MP3 non-std)。"
         fi
 
-        local size_threshold_gb=0.2
-        local size_threshold_bytes=$(awk "BEGIN {printf \"%d\", $size_threshold_gb * 1024 * 1024 * 1024}")
-        log_message "INFO" "MP3 無標準化：預估大小 = $estimated_size_bytes bytes, 閾值 = $size_threshold_bytes bytes."
-        if [[ "$estimated_size_bytes" -gt "$size_threshold_bytes" ]]; then
-            log_message "INFO" "MP3 無標準化：預估大小超過閾值，啟用通知。"
+        # 設定閾值：> 2 小時 (7200 秒)
+        local duration_threshold_secs=7200
+        log_message "INFO" "MP3 無標準化：媒體時長 = $duration_secs 秒, 通知閾值 = $duration_threshold_secs 秒 (2小時)."
+        if [[ "$duration_secs" -gt "$duration_threshold_secs" ]]; then
+            log_message "INFO" "MP3 無標準化：媒體時長超過閾值，啟用通知。"
             should_notify=true
         else
-            log_message "INFO" "MP3 無標準化：預估大小未超過閾值，禁用通知。"
+            log_message "INFO" "MP3 無標準化：媒體時長未超過閾值，禁用通知。"
             should_notify=false
         fi
     fi
-    # --- 預估結束 ---
+    # --- 時長判斷結束 ---
 
     mkdir -p "$DOWNLOAD_PATH"
     if [ ! -w "$DOWNLOAD_PATH" ]; then
@@ -1320,27 +1291,14 @@ process_single_mp3_no_normalize() {
 
     # --- 下載並轉換為 MP3 ---
     echo -e "${YELLOW}開始下載並轉換為 MP3：$video_title${RESET}"
-    local temp_audio_file="$temp_dir/temp_audio.mp3" # 臨時 MP3 檔案
-    local yt_dlp_dl_args=(
-        yt-dlp
-        -f bestaudio
-        --extract-audio
-        --audio-format mp3
-        --audio-quality 0
-        -o "$temp_audio_file" # 輸出到臨時檔
-        "$media_url"
-        --newline
-        --progress
-        --concurrent-fragments "$THREADS"
-    )
+    local temp_audio_file="$temp_dir/temp_audio.mp3"
+    local yt_dlp_dl_args=(yt-dlp -f bestaudio --extract-audio --audio-format mp3 --audio-quality 0 -o "$temp_audio_file" "$media_url" --newline --progress --concurrent-fragments "$THREADS")
     log_message "INFO" "執行 yt-dlp (MP3 無標準化): ${yt_dlp_dl_args[*]}"
     if ! "${yt_dlp_dl_args[@]}" 2> "$temp_dir/yt-dlp-mp3-nonorm.log"; then
         log_message "ERROR" "音訊下載或轉換失敗 (無標準化)，詳見 $temp_dir/yt-dlp-mp3-nonorm.log"
-        echo -e "${RED}錯誤：音訊下載或轉換失敗 (無標準化)${RESET}"
-        cat "$temp_dir/yt-dlp-mp3-nonorm.log"
+        echo -e "${RED}錯誤：音訊下載或轉換失敗 (無標準化)${RESET}"; cat "$temp_dir/yt-dlp-mp3-nonorm.log"
         result=1; goto cleanup_and_notify
     fi
-
     if [ ! -f "$temp_audio_file" ]; then
         log_message "ERROR" "音訊下載或轉換失敗！找不到臨時 MP3 檔案 '$temp_audio_file'"
         echo -e "${RED}錯誤：找不到下載或轉換後的音訊檔案${RESET}"
@@ -1350,7 +1308,8 @@ process_single_mp3_no_normalize() {
     audio_file_raw="$temp_audio_file"
 
     # --- 元數據和封面 ---
-    local metadata_json=$(yt-dlp --dump-json "$media_url" 2>/dev/null)
+    # ... (獲取元數據和下載封面的邏輯不變) ...
+     local metadata_json=$(yt-dlp --dump-json "$media_url" 2>/dev/null)
     if [ -n "$metadata_json" ]; then artist_name=$(echo "$metadata_json" | jq -r '.artist // .uploader // "[不明]"'); album_artist_name=$(echo "$metadata_json" | jq -r '.uploader // "[不明]"'); fi
     [[ "$artist_name" == "null" ]] && artist_name="[不明]"
     [[ "$album_artist_name" == "null" ]] && album_artist_name="[不明]"
@@ -1359,26 +1318,26 @@ process_single_mp3_no_normalize() {
     if ! download_high_res_thumbnail "$media_url" "$cover_image"; then cover_image=""; fi
 
     # --- 嵌入封面和元數據 ---
-    output_audio="$DOWNLOAD_PATH/${base_name}.mp3" # 定義最終輸出路徑
+    output_audio="$DOWNLOAD_PATH/${base_name}.mp3" # 最終輸出路徑
     echo -e "${YELLOW}正在加入封面和元數據 (無標準化)...${RESET}"
     local ffmpeg_embed_args=(ffmpeg -y -i "$audio_file_raw")
+    # ... (ffmpeg 嵌入邏輯不變) ...
     if [ -n "$cover_image" ] && [ -f "$cover_image" ]; then
         ffmpeg_embed_args+=(-i "$cover_image" -map 0:a -map 1:v -c copy -id3v2_version 3 -metadata "artist=$artist_name" -metadata "album_artist=$album_artist_name" -metadata:s:v title="Album cover" -metadata:s:v comment="Cover (front)" -disposition:v attached_pic)
     else
         ffmpeg_embed_args+=(-c copy -id3v2_version 3 -metadata "artist=$artist_name" -metadata "album_artist=$album_artist_name")
     fi
     ffmpeg_embed_args+=("$output_audio")
+
     log_message "INFO" "執行 FFmpeg 嵌入 (MP3 無標準化): ${ffmpeg_embed_args[*]}"
     if ! "${ffmpeg_embed_args[@]}" > "$temp_dir/ffmpeg_embed.log" 2>&1; then
         log_message "ERROR" "加入封面和元數據失敗 (無標準化)！詳見 $temp_dir/ffmpeg_embed.log"
-        echo -e "${RED}錯誤：加入封面和元數據失敗 (無標準化)${RESET}"
-        cat "$temp_dir/ffmpeg_embed.log"
-        result=1 # 嵌入失敗
-        # 保留 audio_file_raw
+        echo -e "${RED}錯誤：加入封面和元數據失敗 (無標準化)${RESET}"; cat "$temp_dir/ffmpeg_embed.log"
+        result=1;
     else
         echo -e "${GREEN}封面和元數據加入完成 (無標準化)${RESET}"
-        result=0 # 嵌入成功
-        safe_remove "$audio_file_raw" # 成功後才刪除臨時 MP3
+        result=0;
+        safe_remove "$audio_file_raw" # 成功後清理臨時檔
         rm -f "$temp_dir/ffmpeg_embed.log"
     fi
 
@@ -1386,17 +1345,22 @@ process_single_mp3_no_normalize() {
 
     # --- 清理 ---
     log_message "INFO" "清理臨時檔案 (MP3 無標準化)..."
-    # 總是嘗試清理封面和日誌
+    # ... (清理邏輯基本不變，確保清理 duration 日誌) ...
     [ -n "$cover_image" ] && [ -f "$cover_image" ] && safe_remove "$cover_image"
-    safe_remove "$temp_dir/yt-dlp-mp3-nonorm.log" "$temp_dir/ffmpeg_embed.log" "$temp_dir/yt-dlp-estimate.log"
-    # 如果處理失敗，audio_file_raw 可能還在，嘗試清理
-    [ -f "$audio_file_raw" ] && safe_remove "$audio_file_raw"
+    safe_remove "$temp_dir/yt-dlp-mp3-nonorm.log" "$temp_dir/ffmpeg_embed.log" "$temp_dir/yt-dlp-duration.log"
+    [ -f "$audio_file_raw" ] && safe_remove "$audio_file_raw" # 如果嵌入失敗，清理殘留
     [ -d "$temp_dir" ] && rm -rf "$temp_dir"
 
     # --- 控制台最終報告 ---
     if [ $result -eq 0 ]; then
-        echo -e "${GREEN}處理完成！高品質 MP3 音訊已儲存至：$output_audio${RESET}"
-        log_message "SUCCESS" "處理完成 (MP3 無標準化)！音訊已儲存至：$output_audio"
+        if [ -f "$output_audio" ]; then # 增加檢查
+            echo -e "${GREEN}處理完成！高品質 MP3 音訊已儲存至：$output_audio${RESET}"
+            log_message "SUCCESS" "處理完成 (MP3 無標準化)！音訊已儲存至：$output_audio"
+        else
+             echo -e "${RED}處理似乎已完成，但最終檔案 '$output_audio' 未找到！${RESET}";
+             log_message "ERROR" "處理完成但最終檔案未找到 (MP3 無標準化)";
+             result=1 # 標記失敗
+        fi
     else
         echo -e "${RED}處理失敗 (MP3 無標準化)！${RESET}"
         log_message "ERROR" "處理失敗 (MP3 無標準化)：$media_url"
@@ -1405,11 +1369,9 @@ process_single_mp3_no_normalize() {
     # --- 條件式通知 ---
     if $should_notify; then
         local notification_title="媒體處理器：MP3 無標準化"
-        local base_msg_notify="處理音訊 '$sanitized_title'" # 移除ID
+        local base_msg_notify="處理音訊 '$sanitized_title'"
         local final_path_notify=""
-        if [ $result -eq 0 ]; then
-            final_path_notify="$output_audio"
-        fi
+        if [ $result -eq 0 ] && [ -f "$output_audio" ]; then final_path_notify="$output_audio"; fi
         _send_termux_notification "$result" "$notification_title" "$base_msg_notify" "$final_path_notify"
     fi
 
@@ -1418,7 +1380,7 @@ process_single_mp3_no_normalize() {
 
 ############################################
 # 處理單一 YouTube 影片（MP4）下載與處理
-# <<< 修改：加入條件式通知 v2.4.3+ >>>
+# <<< 修改：基於時長條件式通知 v2.4.12+ >>>
 ############################################
 process_single_mp4() {
     local video_url="$1"
@@ -1430,7 +1392,8 @@ process_single_mp4() {
     local result=0
     local should_notify=false
     local is_playlist=false
-    local video_file="" # 初始化 video_file
+    local video_file=""
+    local output_video="" # 初始化最終輸出路徑
 
     if [[ "$mode" == "playlist_mode" ]]; then
         is_playlist=true
@@ -1442,7 +1405,7 @@ process_single_mp4() {
     local video_title video_id sanitized_title
     echo -e "${YELLOW}正在分析媒體資訊...${RESET}"
     video_title=$(yt-dlp --get-title "$video_url" 2>/dev/null) || video_title="video"
-    video_id=$(yt-dlp --get-id "$video_url" 2>/dev/null) # 嘗試獲取ID
+    video_id=$(yt-dlp --get-id "$video_url" 2>/dev/null)
     if [ -z "$video_title" ]; then
         log_message "ERROR" "無法獲取媒體標題 (標準化 MP4)"
         echo -e "${RED}錯誤：無法獲取媒體標題，請檢查網址是否正確${RESET}"
@@ -1457,45 +1420,34 @@ process_single_mp4() {
     fi
     log_message "INFO" "使用格式 (標準化 MP4): $format_option"
 
-    # --- 預估大小 ---
+    # --- <<< 修改：基於時長判斷是否通知 (僅單獨模式) >>> ---
     if ! $is_playlist; then
-        echo -e "${YELLOW}正在預估檔案大小以決定是否通知...${RESET}"
-        local estimated_size_bytes=0
-        local size_list estimate_exit_code
-        size_list=$(yt-dlp --no-warnings --print '%(filesize,filesize_approx)s' -f "$format_option" "$video_url" 2>"$temp_dir/yt-dlp-estimate.log")
-        estimate_exit_code=$?
-        log_message "DEBUG" "yt-dlp size print exit code (MP4 std): $estimate_exit_code"
-        log_message "DEBUG" "yt-dlp size print raw output (MP4 std):\n$size_list"
+        echo -e "${YELLOW}正在獲取媒體時長以決定是否通知...${RESET}"
+        local duration_secs_str duration_exit_code
+        duration_secs_str=$(yt-dlp --no-warnings --print '%(duration)s' "$video_url" 2>"$temp_dir/yt-dlp-duration.log")
+        duration_exit_code=$?
+        log_message "DEBUG" "yt-dlp duration print exit code (MP4 std): $duration_exit_code"
+        log_message "DEBUG" "yt-dlp duration print raw output (MP4 std): [$duration_secs_str]"
 
-        if [ "$estimate_exit_code" -eq 0 ] && [ -n "$size_list" ]; then
-             if command -v bc &> /dev/null; then
-                 local size_sum_expr=$(echo "$size_list" | grep '^[0-9]\+$' | paste -sd+)
-                 if [ -n "$size_sum_expr" ]; then
-                     estimated_size_bytes=$(echo "$size_sum_expr" | bc)
-                     if ! [[ "$estimated_size_bytes" =~ ^[0-9]+$ ]]; then estimated_size_bytes=0; fi
-                 else
-                     estimated_size_bytes=0
-                 fi
-             else
-                  log_message "WARNING" "bc 命令未找到，無法計算大小。"
-                  estimated_size_bytes=0
-             fi
+        local duration_secs=0
+        if [ "$duration_exit_code" -eq 0 ] && [[ "$duration_secs_str" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+            duration_secs=$(printf "%.0f" "$duration_secs_str")
         else
-            log_message "WARNING" "無法從 yt-dlp 獲取格式大小資訊 (MP4 std)。"
+            log_message "WARNING" "無法從 yt-dlp 獲取有效的時長資訊 (MP4 std)。"
         fi
 
-        local size_threshold_gb=0.6
-        local size_threshold_bytes=$(awk "BEGIN {printf \"%d\", $size_threshold_gb * 1024 * 1024 * 1024}")
-        log_message "INFO" "MP4 標準化：預估大小 = $estimated_size_bytes bytes, 閾值 = $size_threshold_bytes bytes."
-        if [[ "$estimated_size_bytes" -gt "$size_threshold_bytes" ]]; then
-            log_message "INFO" "MP4 標準化：預估大小超過閾值，啟用通知。"
+        # 設定閾值：> 1 小時 (3600 秒) - 與MP3標準化保持一致，也可按需調整
+        local duration_threshold_secs=3600
+        log_message "INFO" "MP4 標準化：媒體時長 = $duration_secs 秒, 通知閾值 = $duration_threshold_secs 秒 (1小時)."
+        if [[ "$duration_secs" -gt "$duration_threshold_secs" ]]; then
+            log_message "INFO" "MP4 標準化：媒體時長超過閾值，啟用通知。"
             should_notify=true
         else
-            log_message "INFO" "MP4 標準化：預估大小未超過閾值，禁用通知。"
+            log_message "INFO" "MP4 標準化：媒體時長未超過閾值，禁用通知。"
             should_notify=false
         fi
     fi
-    # --- 預估結束 ---
+    # --- 時長判斷結束 ---
 
     mkdir -p "$DOWNLOAD_PATH"; if [ ! -w "$DOWNLOAD_PATH" ]; then log_message "ERROR" "...無法寫入目錄..."; echo -e "${RED}錯誤：無法寫入目錄${RESET}"; result=1; goto cleanup_and_notify; fi
 
@@ -1514,7 +1466,7 @@ process_single_mp4() {
         result=1; goto cleanup_and_notify
     fi
     local yt_dlp_fn_args=(yt-dlp --get-filename -f "$format_option" -o "$output_template" "$video_url")
-    video_file=$("${yt_dlp_fn_args[@]}" 2>/dev/null) # 獲取實際下載的檔名
+    video_file=$("${yt_dlp_fn_args[@]}" 2>/dev/null)
     if [ ! -f "$video_file" ]; then
         log_message "ERROR" "找不到下載的影片檔案 (標準化)..."; echo -e "${RED}錯誤：找不到下載的影片檔案！${RESET}";
         result=1; goto cleanup_and_notify
@@ -1523,94 +1475,85 @@ process_single_mp4() {
 
     # --- 字幕檢查 ---
     local base="${video_file%.*}"; subtitle_files=()
+    # ... (字幕檢查邏輯不變) ...
     log_message "INFO" "檢查字幕 (基於: $base.*.srt)"
     IFS=',' read -r -a langs_to_check <<< "$target_sub_langs"
     for lang in "${langs_to_check[@]}"; do local potential_srt_file="${base}.${lang}.srt"; if [ -f "$potential_srt_file" ]; then local already_added=false; for existing_file in "${subtitle_files[@]}"; do [[ "$existing_file" == "$potential_srt_file" ]] && { already_added=true; break; }; done; if ! $already_added; then subtitle_files+=("$potential_srt_file"); log_message "INFO" "找到字幕: $potential_srt_file"; echo -e "${GREEN}找到字幕: $(basename "$potential_srt_file")${RESET}"; fi; fi; done
     if [ ${#subtitle_files[@]} -eq 0 ]; then log_message "INFO" "未找到中文字幕。"; echo -e "${YELLOW}未找到中文字幕。${RESET}"; fi
 
+
     # --- 音量標準化與混流 ---
-    local output_video="${base}_normalized.mp4" # 最終標準化後的檔名
+    output_video="${base}_normalized.mp4" # 最終檔名
     local normalized_audio="$temp_dir/audio_normalized.m4a"
     echo -e "${YELLOW}開始音量標準化...${RESET}"
     if normalize_audio "$video_file" "$normalized_audio" "$temp_dir" true; then
         echo -e "${YELLOW}正在混流標準化音訊、影片與字幕...${RESET}"
         local ffmpeg_mux_args=(ffmpeg -y -i "$video_file" -i "$normalized_audio")
+        # ... (混流參數和字幕處理邏輯不變) ...
         for sub_file in "${subtitle_files[@]}"; do ffmpeg_mux_args+=("-sub_charenc" "UTF-8" -i "$sub_file"); done
         ffmpeg_mux_args+=("-c:v" "copy" "-c:a" "aac" "-b:a" "256k" "-ar" "44100" "-map" "0:v:0" "-map" "1:a:0")
         local sub_stream_index=2
         if [ ${#subtitle_files[@]} -gt 0 ]; then
              for ((i=0; i<${#subtitle_files[@]}; i++)); do ffmpeg_mux_args+=("-map" "$sub_stream_index:0"); ((sub_stream_index++)); done
              ffmpeg_mux_args+=("-c:s" "mov_text")
-             # 添加字幕語言元數據
-             sub_stream_index=2 # Reset index for metadata mapping
+             sub_stream_index=2
              for ((i=0; i<${#subtitle_files[@]}; i++)); do
                  local sub_lang_code=$(basename "${subtitle_files[$i]}" | rev | cut -d'.' -f2 | rev)
-                 local ffmpeg_lang=""
-                 case "$sub_lang_code" in
-                     zh-Hant|zh-TW) ffmpeg_lang="zht" ;;
-                     zh-Hans|zh-CN) ffmpeg_lang="zhs" ;;
-                     zh) ffmpeg_lang="chi" ;;
-                     *) ffmpeg_lang=$(echo "$sub_lang_code" | cut -c1-3) ;;
-                 esac
+                 local ffmpeg_lang=""; case "$sub_lang_code" in zh-Hant|zh-TW) ffmpeg_lang="zht" ;; zh-Hans|zh-CN) ffmpeg_lang="zhs" ;; zh) ffmpeg_lang="chi" ;; *) ffmpeg_lang=$(echo "$sub_lang_code" | cut -c1-3) ;; esac
                  ffmpeg_mux_args+=("-metadata:s:s:$i" "language=$ffmpeg_lang")
                  ((sub_stream_index++))
              done
         fi
         ffmpeg_mux_args+=("-movflags" "+faststart" "$output_video")
+
         log_message "INFO" "混流命令: ${ffmpeg_mux_args[*]}"
         local ffmpeg_stderr_log="$temp_dir/ffmpeg_mux_std_stderr.log"
         if ! "${ffmpeg_mux_args[@]}" 2> "$ffmpeg_stderr_log"; then
             echo -e "${RED}錯誤：混流失敗！...${RESET}"; cat "$ffmpeg_stderr_log"; log_message "ERROR" "混流失敗 (標準化)...";
-            result=1; # 混流失敗
-            # 保留原始 $video_file 和 $normalized_audio
+            result=1;
         else
             echo -e "${GREEN}混流完成${RESET}";
-            result=0; # 混流成功
+            result=0;
             rm -f "$ffmpeg_stderr_log";
-            # 混流成功後清理原始檔和標準化音訊
             safe_remove "$video_file"; safe_remove "$normalized_audio"
             for sub_file in "${subtitle_files[@]}"; do safe_remove "$sub_file"; done;
         fi
     else
         log_message "ERROR" "音量標準化失敗！";
-        result=1; # 標準化失敗
-        # 保留原始 $video_file
-        for sub_file in "${subtitle_files[@]}"; do safe_remove "$sub_file"; done; # 清理字幕
-        safe_remove "$normalized_audio" # 清理可能產生的失敗音檔
+        result=1;
+        for sub_file in "${subtitle_files[@]}"; do safe_remove "$sub_file"; done;
+        safe_remove "$normalized_audio"
     fi
 
 : cleanup_and_notify
 
     # --- 清理 ---
     log_message "INFO" "清理臨時檔案 (MP4 標準化)..."
-    # 清理日誌和臨時目錄 (即使失敗也執行)
-    safe_remove "$temp_dir/yt-dlp-video-std.log" "$temp_dir/yt-dlp-estimate.log" "$temp_dir/ffmpeg_mux_std_stderr.log"
+    safe_remove "$temp_dir/yt-dlp-video-std.log" "$temp_dir/yt-dlp-duration.log" "$temp_dir/ffmpeg_mux_std_stderr.log"
     [ -d "$temp_dir" ] && rm -rf "$temp_dir"
 
     # --- 控制台最終報告 ---
     if [ $result -eq 0 ]; then
-        echo -e "${GREEN}處理完成！影片已儲存至：$output_video${RESET}";
-        log_message "SUCCESS" "處理完成 (MP4 標準化)！影片已儲存至：$output_video"
+         if [ -f "$output_video" ]; then # 增加檢查
+            echo -e "${GREEN}處理完成！影片已儲存至：$output_video${RESET}";
+            log_message "SUCCESS" "處理完成 (MP4 標準化)！影片已儲存至：$output_video"
+         else
+            echo -e "${RED}處理似乎已完成，但最終檔案 '$output_video' 未找到！${RESET}";
+            log_message "ERROR" "處理完成但最終檔案未找到 (MP4 標準化)";
+            result=1 # 標記失敗
+         fi
     else
         echo -e "${RED}處理失敗 (MP4 標準化)！${RESET}";
         log_message "ERROR" "處理失敗 (MP4 標準化)：$video_url"
-        # 如果失敗了，提示一下原始檔可能還在
-        if [ -f "$video_file" ]; then
-             echo -e "${YELLOW}原始下載檔案可能保留在：$video_file${RESET}"
-        fi
+        if [ -f "$video_file" ]; then echo -e "${YELLOW}原始下載檔案可能保留在：$video_file${RESET}"; fi
     fi
 
     # --- 條件式通知 ---
     if $should_notify; then
         local notification_title="媒體處理器：MP4 標準化"
-        local base_msg_notify="處理影片 '$sanitized_title'" # 移除ID
+        local base_msg_notify="處理影片 '$sanitized_title'"
         local final_path_notify=""
-        if [ $result -eq 0 ]; then
-            final_path_notify="$output_video"
-        # 可選：失敗時傳遞原始檔路徑
-        # elif [ -f "$video_file" ]; then
-        #    final_path_notify="$video_file"
-        fi
+        if [ $result -eq 0 ] && [ -f "$output_video" ]; then final_path_notify="$output_video"; fi
         _send_termux_notification "$result" "$notification_title" "$base_msg_notify" "$final_path_notify"
     fi
 
