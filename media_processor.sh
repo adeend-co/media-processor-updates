@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.4.8(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v2.4.9(Experimental)" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -2167,20 +2167,17 @@ log_message "INFO" "視訊流下載完成: $video_temp_file"
 
 ############################################
 # 輔助函數：處理單一通用網站媒體項目
-# <<< 修改：加入條件式通知 v2.4.6+ >>>
+# <<< 修改：改進縮圖查找與清理 v2.4.9+ >>>
 ############################################
 _process_single_other_site() {
     local item_url="$1"; local choice_format="$2"; local item_index="$3"; local total_items="$4"
-    # <<< 新增：接收模式參數 >>>
     local mode="$5"
     local temp_dir=$(mktemp -d); local thumbnail_file=""; local main_media_file=""; local base_name=""
     local result=0; local output_final_file=""; local artist_name="[不明]"; local album_artist_name="[不明]"
     local progress_prefix=""; if [ -n "$item_index" ] && [ -n "$total_items" ]; then progress_prefix="[$item_index/$total_items] "; fi
-    # <<< 新增：通知標記 >>>
     local should_notify=false
     local is_playlist=false
 
-    # <<< 新增：判斷模式 >>>
     if [[ "$mode" == "playlist_mode" ]]; then
         is_playlist=true
         should_notify=true
@@ -2198,14 +2195,14 @@ _process_single_other_site() {
     else yt_dlp_format_string="bestaudio/best"; fi
 
     if ! $is_playlist; then
+        # ... (預估大小邏輯保持不變，使用之前的最終版本) ...
         echo -e "${YELLOW}正在預估檔案大小以決定是否通知...${RESET}"
-        local estimated_size_bytes=0
+        local estimated_size_bytes=0.1
         local size_list estimate_exit_code
         size_list=$(yt-dlp --no-warnings --print '%(filesize,filesize_approx)s' -f "$yt_dlp_format_string" "$item_url" 2>"$temp_dir/yt-dlp-estimate.log")
         estimate_exit_code=$?
         log_message "DEBUG" "yt-dlp size print exit code (通用 std): $estimate_exit_code"
         log_message "DEBUG" "yt-dlp size print raw output (通用 std):\n$size_list"
-
         if [ "$estimate_exit_code" -eq 0 ] && [ -n "$size_list" ]; then
             if command -v bc &> /dev/null; then
                 local size_sum_expr=$(echo "$size_list" | grep '^[0-9]\+$' | paste -sd+)
@@ -2215,8 +2212,7 @@ _process_single_other_site() {
                 else estimated_size_bytes=0; fi
             else estimated_size_bytes=0; log_message "WARNING" "bc missing"; fi
         else log_message "WARNING" "Failed to get size info (通用 std)"; fi
-
-        local size_threshold_gb=0.5 # 對通用下載統一用 0.5GB
+        local size_threshold_gb=0.5
         local size_threshold_bytes=$(awk "BEGIN {printf \"%d\", $size_threshold_gb * 1024 * 1024 * 1024}")
         log_message "INFO" "通用下載 標準化：預估大小 = $estimated_size_bytes bytes, 閾值 = $size_threshold_bytes bytes."
         if [[ "$estimated_size_bytes" -gt "$size_threshold_bytes" ]]; then
@@ -2233,10 +2229,13 @@ _process_single_other_site() {
     mkdir -p "$DOWNLOAD_PATH"; if [ ! -w "$DOWNLOAD_PATH" ]; then log_message "ERROR" "...無法寫入目錄..."; echo -e "${RED}錯誤：無法寫入目錄${RESET}"; result=1; goto cleanup_and_notify; fi
 
     # --- 下載 ---
-    local yt_dlp_extra_args=(--write-thumbnail --newline --progress --concurrent-fragments "$THREADS")
+    # <<< 修改：移除 --write-thumbnail，下載後再單獨獲取 >>>
+    local yt_dlp_extra_args=(--newline --progress --concurrent-fragments "$THREADS")
+    # 保持兩個模板
     local output_template="$DOWNLOAD_PATH/%(playlist_index)s-%(title)s [%(id)s].%(ext)s"
     local output_template_single="$DOWNLOAD_PATH/%(title)s [%(id)s].%(ext)s"
-    echo -e "${YELLOW}${progress_prefix}開始下載...${RESET}"
+
+    echo -e "${YELLOW}${progress_prefix}開始下載主檔案...${RESET}"
     local yt_dlp_cmd_args=(yt-dlp -f "$yt_dlp_format_string" "${yt_dlp_extra_args[@]}" -o "$output_template" "$item_url")
     log_message "INFO" "${progress_prefix}執行下載 (模板1): ${yt_dlp_cmd_args[*]}"
     if ! "${yt_dlp_cmd_args[@]}" 2> "$temp_dir/yt-dlp-other1.log"; then
@@ -2248,104 +2247,153 @@ _process_single_other_site() {
              result=1; goto cleanup_and_notify
         fi
     fi
-    # --- 定位檔案 ---
-    echo -e "${YELLOW}${progress_prefix}定位檔案...${RESET}"
+
+    # --- 定位主檔案 ---
+    echo -e "${YELLOW}${progress_prefix}定位主檔案...${RESET}"
+    # 嘗試用兩個模板獲取檔名
     local get_filename_args1=(yt-dlp --get-filename -f "$yt_dlp_format_string" -o "$output_template" "$item_url")
     main_media_file=$("${get_filename_args1[@]}" 2>/dev/null)
-    if [ ! -f "$main_media_file" ]; then local get_filename_args2=(yt-dlp --get-filename -f "$yt_dlp_format_string" -o "$output_template_single" "$item_url"); main_media_file=$("${get_filename_args2[@]}" 2>/dev/null); fi
+    if [ ! -f "$main_media_file" ]; then
+        local get_filename_args2=(yt-dlp --get-filename -f "$yt_dlp_format_string" -o "$output_template_single" "$item_url")
+        main_media_file=$("${get_filename_args2[@]}" 2>/dev/null)
+    fi
+
     if [ ! -f "$main_media_file" ]; then
          log_message "ERROR" "...找不到主檔案 (通用 std)..."; echo -e "${RED}錯誤：找不到主檔案！${RESET}";
          result=1; goto cleanup_and_notify
     fi
-    log_message "INFO" "${progress_prefix}找到主檔案: $main_media_file"; base_name="${main_media_file%.*}"
-    # 查找縮圖... (略)
+    log_message "INFO" "${progress_prefix}找到主檔案: $main_media_file";
+
+    # --- <<< 修改：更精確地獲取 base_name >>> ---
+    # 獲取檔案所在的目錄
+    local media_dir=$(dirname "$main_media_file")
+    # 獲取不含路徑和副檔名的基本檔名
+    local base_filename=$(basename "$main_media_file")
+    # 移除最後一個點及其後面的所有內容來獲得 base_name
+    base_name="${base_filename%.*}"
+    log_message "DEBUG" "計算出的 Base Name: [$base_name]"
+    # 組合成包含路徑的 base_name_with_path，用於查找縮圖
+    local base_name_with_path="${media_dir}/${base_name}"
+    log_message "DEBUG" "用於查找縮圖的路徑前綴: [$base_name_with_path]"
+
+    # --- <<< 修改：單獨下載縮圖並查找 >>> ---
+    echo -e "${YELLOW}${progress_prefix}嘗試下載縮圖...${RESET}"
+    # 使用與主檔案相同的模板模式，但只下載縮圖
+    local thumb_dl_template="${base_name_with_path}.%(ext)s" # 直接指定基礎檔名
+    if ! yt-dlp --skip-download --write-thumbnail -o "$thumb_dl_template" "$item_url" 2> "$temp_dir/yt-dlp-thumb.log"; then
+        log_message "WARNING" "...下載縮圖指令失敗或無縮圖，詳見 $temp_dir/yt-dlp-thumb.log"
+        # cat "$temp_dir/yt-dlp-thumb.log" # 可選
+    fi
+
+    # --- <<< 修改：改進縮圖查找邏輯 >>> ---
+    thumbnail_file="" # 先清空
+    # 使用 find 命令在下載目錄中查找匹配的圖片檔案
+    # -maxdepth 1 避免遞歸子目錄
+    # -type f 確保是檔案
+    # -name "${base_name}.*" 匹配檔名
+    # \( ... \) -o \( ... \) 匹配多種副檔名 (大小寫不敏感 -iname)
+    # -print -quit 找到第一個匹配就停止並打印路徑
+    thumbnail_file=$(find "$media_dir" -maxdepth 1 -type f -iname "${base_name}.*" \
+                     \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.webp" \) \
+                     -print -quit)
+
+    if [ -n "$thumbnail_file" ]; then
+        log_message "INFO" "...找到縮圖: $thumbnail_file";
+    else
+        log_message "WARNING" "...在下載目錄中未找到縮圖檔案 (jpg/jpeg/png/webp)。";
+    fi
+    # --- 縮圖查找結束 ---
 
     # --- 處理邏輯 (MP3 或 MP4) ---
     if [ "$choice_format" = "mp3" ]; then
-        # --- MP3 處理邏輯 (基本不變，確保調用 normalize_audio 時 $output_final_file 正確) ---
-        output_final_file="${base_name}_normalized.mp3"; # 最終 MP3 檔名
+        output_final_file="${media_dir}/${base_name}_normalized.mp3"; # 確保路徑正確
+        local normalized_temp="$temp_dir/temp_normalized.mp3"
         echo -e "${YELLOW}${progress_prefix}開始標準化 (MP3)...${RESET}"
-        # 這裡直接將最終檔名傳給 normalize_audio 作為輸出目標
-        if normalize_audio "$main_media_file" "$output_final_file" "$temp_dir" false; then
-            # MP3 標準化成功後，可以考慮加入封面和元數據（如果需要且有縮圖）
-            # 這部分可能需要額外處理，暫時省略以保持簡單
-            # 如果需要加封面，可能需要先輸出到臨時 MP3，再用 ffmpeg 加封面到 output_final_file
-            echo -e "${GREEN}${progress_prefix}MP3 標準化完成。${RESET}"
-            result=0
-        else
-            result=1; log_message "ERROR" "標準化失敗 (通用 MP3 std)";
-        fi
-        # MP3 流程的清理在 :cleanup_and_notify 處處理
-    elif [ "$choice_format" = "mp4" ]; then
-        output_final_file="${base_name}_normalized.mp4"; # 最終影片檔名
-        # <<< 關鍵修改：定義一個 normalize_audio 函數專用的臨時輸出路徑 >>>
-        local normalized_audio_output_temp="$temp_dir/normalized_audio_from_func.m4a" # <--- 這是傳給 normalize_audio 的第二個參數
-        echo -e "${YELLOW}${progress_prefix}開始標準化 (提取音訊)...${RESET}"
-        # <<< 關鍵修改：調用 normalize_audio 時，傳遞新的臨時輸出路徑 >>>
-        if normalize_audio "$main_media_file" "$normalized_audio_output_temp" "$temp_dir" true; then
-            # normalize_audio 執行成功後，標準化的 AAC 應該在 $normalized_audio_output_temp
-            # 檢查檔案是否存在，以防萬一 normalize_audio 內部邏輯有問題
-            if [ -f "$normalized_audio_output_temp" ]; then
-                echo -e "${YELLOW}${progress_prefix}混流影片與音訊...${RESET}"
-                # <<< 關鍵修改：混流時，使用 $normalized_audio_output_temp 作為音訊輸入 >>>
-                local ffmpeg_mux_args=(ffmpeg -y -i "$main_media_file" -i "$normalized_audio_output_temp" -c:v copy -c:a copy -map 0:v:0 -map 1:a:0 -movflags +faststart "$output_final_file") # 音訊已是AAC，直接copy
-                if ! "${ffmpeg_mux_args[@]}" > /dev/null 2>&1; then
-                     log_message "ERROR" "...混流 MP4 失敗..."; echo -e "${RED}錯誤：混流 MP4 失敗！${RESET}";
-                     result=1;
-                     # 混流失敗，保留 $main_media_file 和 $normalized_audio_output_temp
-                else
-                     log_message "SUCCESS" "混流成功 -> $output_final_file"
-                     result=0;
-                     # 混流成功，清理 $normalized_audio_output_temp
-                     safe_remove "$normalized_audio_output_temp"
-                fi
+        if normalize_audio "$main_media_file" "$normalized_temp" "$temp_dir" false; then
+            echo -e "${YELLOW}${progress_prefix}處理最終 MP3...${RESET}"
+            local ffmpeg_embed_args=(ffmpeg -y -i "$normalized_temp")
+            if [ -n "$thumbnail_file" ] && [ -f "$thumbnail_file" ]; then
+                ffmpeg_embed_args+=(-i "$thumbnail_file" -map 0:a -map 1:v -c copy -id3v2_version 3 -metadata "artist=$artist_name" -metadata "album_artist=$album_artist_name" -metadata:s:v title="Album cover" -metadata:s:v comment="Cover (front)" -disposition:v attached_pic)
             else
-                 log_message "ERROR" "normalize_audio 成功返回，但輸出檔案 '$normalized_audio_output_temp' 未找到！"
-                 echo -e "${RED}錯誤：標準化音訊檔案遺失！${RESET}"
-                 result=1;
-                 # 保留 $main_media_file
+                ffmpeg_embed_args+=(-c copy -id3v2_version 3 -metadata "artist=$artist_name" -metadata "album_artist=$album_artist_name")
             fi
-        else
-            result=1; # normalize_audio 失敗
-            log_message "ERROR" "標準化失敗 (通用 MP4 std)";
-            # normalize_audio 失敗時，也要嘗試清理可能產生的臨時檔案
-            safe_remove "$normalized_audio_output_temp"
-            # 保留 $main_media_file
-        fi
+            ffmpeg_embed_args+=("$output_final_file")
+            if ! "${ffmpeg_embed_args[@]}" > /dev/null 2>&1; then
+                log_message "ERROR" "...生成 MP3 失敗 (通用 std)..."; echo -e "${RED}錯誤：生成 MP3 失敗！${RESET}";
+                result=1; # 可能保留 $normalized_temp
+            else
+                 result=0; # 成功
+                 safe_remove "$normalized_temp"
+            fi
+        else result=1; log_message "ERROR" "標準化失敗 (通用 MP3 std)"; fi
+    elif [ "$choice_format" = "mp4" ]; then
+        output_final_file="${media_dir}/${base_name}_normalized.mp4"; # 確保路徑正確
+        local normalized_audio_m4a="$temp_dir/audio_normalized.m4a" # 臨時音訊檔
+        echo -e "${YELLOW}${progress_prefix}開始標準化 (提取音訊)...${RESET}"
+        # 這裡 normalize_audio 的第二個參數是輸出檔路徑
+        if normalize_audio "$main_media_file" "$normalized_audio_m4a" "$temp_dir" true; then
+            echo -e "${YELLOW}${progress_prefix}混流影片與音訊...${RESET}"
+            local ffmpeg_mux_args=(ffmpeg -y -i "$main_media_file" -i "$normalized_audio_m4a" -c:v copy -c:a aac -b:a 256k -ar 44100 -map 0:v:0 -map 1:a:0 -movflags +faststart "$output_final_file")
+            log_message "INFO" "執行 FFmpeg 混流 (通用 std): ${ffmpeg_mux_args[*]}"
+            if ! "${ffmpeg_mux_args[@]}" > "$temp_dir/ffmpeg_mux.log" 2>&1; then
+                 log_message "ERROR" "...混流 MP4 失敗 (通用 std)... 詳見 $temp_dir/ffmpeg_mux.log"; echo -e "${RED}錯誤：混流 MP4 失敗！${RESET}";
+                 # cat "$temp_dir/ffmpeg_mux.log" # 可選
+                 result=1; # 保留 $main_media_file 和 $normalized_audio_m4a
+            else
+                 result=0; # 成功
+                 safe_remove "$normalized_audio_m4a" # 成功後清理臨時音訊
+                 rm -f "$temp_dir/ffmpeg_mux.log"
+            fi
+        else result=1; log_message "ERROR" "標準化失敗 (通用 MP4 std)"; fi
     fi
 
-# --- cleanup_and_notify 標籤後的清理邏輯 ---
 : cleanup_and_notify
-    log_message "INFO" "${progress_prefix}清理 (通用 std)...";
-    # 清理原始下載檔（如果混流成功或標準化失敗後應保留）
-    if [ $result -eq 0 ] || { [ "$choice_format" = "mp4" ] && [ $result -ne 0 ]; } || { [ "$choice_format" = "mp3" ] && [ $result -ne 0 ]; }; then
-         # 只有在 MP4 混流成功後才刪除原始 main_media_file
-         # 或者 MP3 流程完全成功後才刪除
-         if [[ "$choice_format" = "mp4" && $result -eq 0 ]] || [[ "$choice_format" = "mp3" && $result -eq 0 ]]; then
-              [ -f "$main_media_file" ] && safe_remove "$main_media_file";
-         fi
-    fi
-    # 清理縮圖、其他相關檔案、日誌
-    [ -n "$thumbnail_file" ] && [ -f "$thumbnail_file" ] && safe_remove "$thumbnail_file";
-    # base_name 可能包含空格或特殊字元，這裡用 find 可能更安全，但複雜
-    # 為了簡單，暫時保留原來的清理方式，但需注意其風險
-    # safe_remove "${base_name}".*; # 這行可能誤刪最終檔案，應避免或更精確
-    # 只清理我們確切知道的臨時檔
-    safe_remove "$temp_dir/yt-dlp-other1.log" "$temp_dir/yt-dlp-other2.log" "$temp_dir/yt-dlp-estimate.log"
-    # 確保清理 normalize_audio 可能產生的臨時 AAC（即使 normalize_audio 失敗）
-    [ -f "$normalized_audio_output_temp" ] && safe_remove "$normalized_audio_output_temp"
-    [ -d "$temp_dir" ] && rm -rf "$temp_dir"
-    # ... (後續的控制台報告和通知邏輯不變) ...
-    # --- 控制台報告 ---
-    if [ $result -eq 0 ]; then echo -e "${GREEN}${progress_prefix}處理完成！檔案：$output_final_file${RESET}"; log_message "SUCCESS" "${progress_prefix}處理完成！檔案：$output_final_file";
-    else echo -e "${RED}${progress_prefix}處理失敗！${RESET}"; log_message "ERROR" "${progress_prefix}處理失敗：$item_url"; fi
 
-    # --- 條件式通知 ---
+    # --- [確認] 清理 (含標準化版本) ---
+    log_message "INFO" "${progress_prefix}清理 (通用 std)...";
+    # 明確刪除原始下載檔案 (因為已被處理或合併到新檔案)
+    safe_remove "$main_media_file";
+    # <<< 修改：使用已賦值的 thumbnail_file 變數 >>>
+    if [ -n "$thumbnail_file" ] && [ -f "$thumbnail_file" ]; then
+        log_message "DEBUG" "準備清理已找到的縮圖: $thumbnail_file"
+        safe_remove "$thumbnail_file";
+    else
+        log_message "DEBUG" "無需清理縮圖 (thumbnail_file 為空或檔案不存在)"
+    fi
+    # 移除之前 overly broad 的清理
+    # safe_remove "${base_name}".*;
+
+    # 清理日誌檔案
+    safe_remove "$temp_dir/yt-dlp-other1.log" "$temp_dir/yt-dlp-other2.log" "$temp_dir/yt-dlp-estimate.log" "$temp_dir/yt-dlp-thumb.log" "$temp_dir/ffmpeg_mux.log"
+    # 清理臨時目錄
+    [ -d "$temp_dir" ] && rm -rf "$temp_dir"
+    # --- 清理結束 ---
+
+    # --- 控制台報告 (保持不變，但增加檢查) ---
+    if [ $result -eq 0 ]; then
+        if [ -f "$output_final_file" ]; then
+            echo -e "${GREEN}${progress_prefix}處理完成！檔案：$output_final_file${RESET}";
+            log_message "SUCCESS" "${progress_prefix}處理完成！檔案：$output_final_file";
+        else
+            echo -e "${RED}${progress_prefix}處理似乎已完成，但最終檔案 '$output_final_file' 未找到！${RESET}";
+            log_message "ERROR" "${progress_prefix}處理完成但最終檔案未找到";
+             result=1
+        fi
+    else
+        echo -e "${RED}${progress_prefix}處理失敗！${RESET}";
+        log_message "ERROR" "${progress_prefix}處理失敗：$item_url";
+        # 如果失敗，提示原始檔可能還在 (雖然此流程會嘗試刪除)
+        # if [ -f "$main_media_file" ]; then echo -e "${YELLOW}原始下載檔案可能保留在：$main_media_file${RESET}"; fi
+    fi
+
+    # --- 條件式通知 (保持不變) ---
     if $should_notify; then
         local notification_title="媒體處理器：通用 標準化"
         local base_msg_notify="${progress_prefix}處理 '$sanitized_title'"
         local final_path_notify=""
-        if [ $result -eq 0 ]; then final_path_notify="$output_final_file"; fi
+        if [ $result -eq 0 ] && [ -f "$output_final_file" ]; then
+            final_path_notify="$output_final_file";
+        fi
         _send_termux_notification "$result" "$notification_title" "$base_msg_notify" "$final_path_notify"
     fi
 
