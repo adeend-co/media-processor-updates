@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.4.6(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v2.4.7(Experimental)" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -2409,34 +2409,50 @@ _process_single_other_site_no_normalize() {
     echo -e "${GREEN}${progress_prefix}下載完成 (無標準化)。${RESET}"
     result=0 # 下載成功即成功
 
-: cleanup_and_notify
+: cleanup_and_notify # 跳轉標籤保持不變
 
-    # --- 清理 ---
+    # --- [修正開始] 清理 (無標準化版本) ---
     log_message "INFO" "${progress_prefix}清理臨時檔案 (無標準化)..."
+    # 刪除臨時目錄、下載日誌以及下載的縮圖檔案
     safe_remove "$temp_dir/yt-dlp-other-nonorm1.log" "$temp_dir/yt-dlp-other-nonorm2.log" "$temp_dir/yt-dlp-estimate.log"
-    if [ -n "$thumbnail_file" ] && [ -f "$thumbnail_file" ]; then safe_remove "$thumbnail_file"; fi
+    # 移除對 main_media_file 的清理！
+    if [ -n "$thumbnail_file" ] && [ -f "$thumbnail_file" ]; then
+        safe_remove "$thumbnail_file"
+    fi
     [ -d "$temp_dir" ] && rm -rf "$temp_dir"
+    # --- [修正結束] 清理 ---
 
-    # --- 控制台報告 ---
+    # --- 控制台報告 (保持不變) ---
     if [ $result -eq 0 ]; then
-        echo -e "${GREEN}${progress_prefix}處理完成！檔案已儲存至：$main_media_file${RESET}";
-        log_message "SUCCESS" "${progress_prefix}處理完成 (無標準化)！檔案：$main_media_file";
+        # 檢查最終檔案是否存在
+        if [ -f "$main_media_file" ]; then
+            echo -e "${GREEN}${progress_prefix}處理完成！檔案已儲存至：$main_media_file${RESET}";
+            log_message "SUCCESS" "${progress_prefix}處理完成 (無標準化)！檔案：$main_media_file";
+        else
+            # 如果檔案意外消失 (理論上不該發生，除非下載本身有問題)
+            echo -e "${RED}${progress_prefix}處理似乎已完成，但最終檔案 '$main_media_file' 未找到！${RESET}";
+            log_message "ERROR" "${progress_prefix}處理完成但最終檔案未找到 (無標準化)";
+            result=1 # 標記為失敗
+        fi
     else
         echo -e "${RED}${progress_prefix}處理失敗 (無標準化)！${RESET}";
         log_message "ERROR" "${progress_prefix}處理失敗 (無標準化)：$item_url";
     fi
 
-    # --- 條件式通知 ---
+    # --- 條件式通知 (邏輯基本不變，確保傳遞正確路徑) ---
     if $should_notify; then
         local notification_title="媒體處理器：通用 無標準化"
         local base_msg_notify="${progress_prefix}處理 '$sanitized_title'"
         local final_path_notify=""
-        if [ $result -eq 0 ]; then final_path_notify="$main_media_file"; fi
+        # 成功時，通知的檔案路徑就是 main_media_file
+        if [ $result -eq 0 ] && [ -f "$main_media_file" ]; then
+             final_path_notify="$main_media_file"
+        fi
         _send_termux_notification "$result" "$notification_title" "$base_msg_notify" "$final_path_notify"
     fi
 
     return $result
-}
+} # 確保這是函數的結尾大括號
 
 ############################################
 # 處理其他網站媒體 (通用 MP3/MP4) - 支持實驗性批量下載
