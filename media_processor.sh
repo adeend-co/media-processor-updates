@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.4.7(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v2.4.8(Experimental)" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -2262,33 +2262,80 @@ _process_single_other_site() {
 
     # --- 處理邏輯 (MP3 或 MP4) ---
     if [ "$choice_format" = "mp3" ]; then
-        output_final_file="${base_name}_normalized.mp3"; local normalized_temp="$temp_dir/temp_normalized.mp3"
+        # --- MP3 處理邏輯 (基本不變，確保調用 normalize_audio 時 $output_final_file 正確) ---
+        output_final_file="${base_name}_normalized.mp3"; # 最終 MP3 檔名
         echo -e "${YELLOW}${progress_prefix}開始標準化 (MP3)...${RESET}"
-        if normalize_audio "$main_media_file" "$normalized_temp" "$temp_dir" false; then
-            # ... (處理最終 MP3，加入封面元數據) ...
-            # (假設這部分邏輯不變，如果失敗則設定 result=1)
-            safe_remove "$normalized_temp"
-        else result=1; log_message "ERROR" "標準化失敗 (通用 MP3 std)"; fi
+        # 這裡直接將最終檔名傳給 normalize_audio 作為輸出目標
+        if normalize_audio "$main_media_file" "$output_final_file" "$temp_dir" false; then
+            # MP3 標準化成功後，可以考慮加入封面和元數據（如果需要且有縮圖）
+            # 這部分可能需要額外處理，暫時省略以保持簡單
+            # 如果需要加封面，可能需要先輸出到臨時 MP3，再用 ffmpeg 加封面到 output_final_file
+            echo -e "${GREEN}${progress_prefix}MP3 標準化完成。${RESET}"
+            result=0
+        else
+            result=1; log_message "ERROR" "標準化失敗 (通用 MP3 std)";
+        fi
+        # MP3 流程的清理在 :cleanup_and_notify 處處理
     elif [ "$choice_format" = "mp4" ]; then
-        output_final_file="${base_name}_normalized.mp4"; local normalized_audio_m4a="$temp_dir/audio_normalized.m4a"
+        output_final_file="${base_name}_normalized.mp4"; # 最終影片檔名
+        # <<< 關鍵修改：定義一個 normalize_audio 函數專用的臨時輸出路徑 >>>
+        local normalized_audio_output_temp="$temp_dir/normalized_audio_from_func.m4a" # <--- 這是傳給 normalize_audio 的第二個參數
         echo -e "${YELLOW}${progress_prefix}開始標準化 (提取音訊)...${RESET}"
-        if normalize_audio "$main_media_file" "$normalized_audio_m4a" "$temp_dir" true; then
-            # ... (混流影片和音訊) ...
-            # (假設這部分邏輯不變，如果失敗則設定 result=1)
-            safe_remove "$normalized_audio_m4a"
-        else result=1; log_message "ERROR" "標準化失敗 (通用 MP4 std)"; fi
+        # <<< 關鍵修改：調用 normalize_audio 時，傳遞新的臨時輸出路徑 >>>
+        if normalize_audio "$main_media_file" "$normalized_audio_output_temp" "$temp_dir" true; then
+            # normalize_audio 執行成功後，標準化的 AAC 應該在 $normalized_audio_output_temp
+            # 檢查檔案是否存在，以防萬一 normalize_audio 內部邏輯有問題
+            if [ -f "$normalized_audio_output_temp" ]; then
+                echo -e "${YELLOW}${progress_prefix}混流影片與音訊...${RESET}"
+                # <<< 關鍵修改：混流時，使用 $normalized_audio_output_temp 作為音訊輸入 >>>
+                local ffmpeg_mux_args=(ffmpeg -y -i "$main_media_file" -i "$normalized_audio_output_temp" -c:v copy -c:a copy -map 0:v:0 -map 1:a:0 -movflags +faststart "$output_final_file") # 音訊已是AAC，直接copy
+                if ! "${ffmpeg_mux_args[@]}" > /dev/null 2>&1; then
+                     log_message "ERROR" "...混流 MP4 失敗..."; echo -e "${RED}錯誤：混流 MP4 失敗！${RESET}";
+                     result=1;
+                     # 混流失敗，保留 $main_media_file 和 $normalized_audio_output_temp
+                else
+                     log_message "SUCCESS" "混流成功 -> $output_final_file"
+                     result=0;
+                     # 混流成功，清理 $normalized_audio_output_temp
+                     safe_remove "$normalized_audio_output_temp"
+                fi
+            else
+                 log_message "ERROR" "normalize_audio 成功返回，但輸出檔案 '$normalized_audio_output_temp' 未找到！"
+                 echo -e "${RED}錯誤：標準化音訊檔案遺失！${RESET}"
+                 result=1;
+                 # 保留 $main_media_file
+            fi
+        else
+            result=1; # normalize_audio 失敗
+            log_message "ERROR" "標準化失敗 (通用 MP4 std)";
+            # normalize_audio 失敗時，也要嘗試清理可能產生的臨時檔案
+            safe_remove "$normalized_audio_output_temp"
+            # 保留 $main_media_file
+        fi
     fi
 
+# --- cleanup_and_notify 標籤後的清理邏輯 ---
 : cleanup_and_notify
-
-    # --- 清理 ---
     log_message "INFO" "${progress_prefix}清理 (通用 std)...";
-    # 清理原始檔、縮圖等
-    safe_remove "$main_media_file"; [ -n "$thumbnail_file" ] && [ -f "$thumbnail_file" ] && safe_remove "$thumbnail_file";
-    safe_remove "${base_name}".*; # 清理可能的其他相關檔案
+    # 清理原始下載檔（如果混流成功或標準化失敗後應保留）
+    if [ $result -eq 0 ] || { [ "$choice_format" = "mp4" ] && [ $result -ne 0 ]; } || { [ "$choice_format" = "mp3" ] && [ $result -ne 0 ]; }; then
+         # 只有在 MP4 混流成功後才刪除原始 main_media_file
+         # 或者 MP3 流程完全成功後才刪除
+         if [[ "$choice_format" = "mp4" && $result -eq 0 ]] || [[ "$choice_format" = "mp3" && $result -eq 0 ]]; then
+              [ -f "$main_media_file" ] && safe_remove "$main_media_file";
+         fi
+    fi
+    # 清理縮圖、其他相關檔案、日誌
+    [ -n "$thumbnail_file" ] && [ -f "$thumbnail_file" ] && safe_remove "$thumbnail_file";
+    # base_name 可能包含空格或特殊字元，這裡用 find 可能更安全，但複雜
+    # 為了簡單，暫時保留原來的清理方式，但需注意其風險
+    # safe_remove "${base_name}".*; # 這行可能誤刪最終檔案，應避免或更精確
+    # 只清理我們確切知道的臨時檔
     safe_remove "$temp_dir/yt-dlp-other1.log" "$temp_dir/yt-dlp-other2.log" "$temp_dir/yt-dlp-estimate.log"
+    # 確保清理 normalize_audio 可能產生的臨時 AAC（即使 normalize_audio 失敗）
+    [ -f "$normalized_audio_output_temp" ] && safe_remove "$normalized_audio_output_temp"
     [ -d "$temp_dir" ] && rm -rf "$temp_dir"
-
+    # ... (後續的控制台報告和通知邏輯不變) ...
     # --- 控制台報告 ---
     if [ $result -eq 0 ]; then echo -e "${GREEN}${progress_prefix}處理完成！檔案：$output_final_file${RESET}"; log_message "SUCCESS" "${progress_prefix}處理完成！檔案：$output_final_file";
     else echo -e "${RED}${progress_prefix}處理失敗！${RESET}"; log_message "ERROR" "${progress_prefix}處理失敗：$item_url"; fi
