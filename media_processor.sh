@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.3.9(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v2.3.10(Experimental)" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -1317,6 +1317,7 @@ process_single_mp4_no_normalize() {
 
 ##############################################################
 # <<< 修正：調整 format_option 以確保下載視訊流 >>>
+# <<< 新增：完成後在 Termux 發送通知 >>>
 # 處理單一 YouTube 影片（MP4）下載（無標準化，可選時段）
 ##############################################################
 process_single_mp4_no_normalize_sections() {
@@ -1328,7 +1329,7 @@ process_single_mp4_no_normalize_sections() {
     local subtitle_options="--write-subs --sub-lang $target_sub_langs --convert-subs srt"
     local subtitle_files=()
     local temp_dir=$(mktemp -d)
-    local result=0
+    local result=0 # 初始化結果為成功
 
     echo -e "${YELLOW}處理 YouTube 影片 (無標準化，指定時段 $start_time-$end_time)：$video_url${RESET}"
     log_message "INFO" "處理 YouTube 影片 (無標準化，時段 $start_time-$end_time): $video_url"
@@ -1336,10 +1337,7 @@ process_single_mp4_no_normalize_sections() {
     echo -e "${YELLOW}嘗試下載繁/簡/通用中文字幕...${RESET}"
 
     # --- <<< 修正點：調整 format_option >>> ---
-    # 優先選擇 MP4 容器中 H.264 編碼的視訊流 (avc) 和 M4A (通常是 AAC) 的音訊流。
-    # 加入更多明確的 fallback 選項，確保視訊流被包含。
     local format_option="bestvideo[height<=1440][ext=mp4][vcodec^=avc]+bestaudio[ext=m4a]/bestvideo[height<=1440][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1440]+bestaudio/best[height<=1440][ext=mp4]/best[height<=1440]/best"
-    # --- 修正點結束 ---
     log_message "INFO" "使用格式 (無標準化，時段，修正版): $format_option"
 
     mkdir -p "$DOWNLOAD_PATH";
@@ -1350,69 +1348,76 @@ process_single_mp4_no_normalize_sections() {
     fi
 
     local video_title video_id sanitized_title base_name
+    # 嘗試獲取標題和 ID，如果失敗則提供預設值
     video_title=$(yt-dlp --get-title "$video_url" 2>/dev/null) || video_title="video"
     video_id=$(yt-dlp --get-id "$video_url" 2>/dev/null) || video_id=$(date +%s)
+    # 清理標題中的非法字元
     sanitized_title=$(echo "${video_title}" | sed 's@[/\\:*?"<>|]@_@g')
 
+    # 建立安全的檔名片段
     local safe_start_time=${start_time//:/-}
     local safe_end_time=${end_time//:/-}
+    # 構建基礎檔名 (包含下載路徑)
     base_name="$DOWNLOAD_PATH/${sanitized_title} [${video_id}]_${safe_start_time}-${safe_end_time}"
+    # 最終的輸出影片檔名
+    local output_video_file="${base_name}.mp4"
 
     echo -e "${YELLOW}開始下載影片指定時段 ($start_time-$end_time) 及字幕（高品質音質）...${RESET}"
 
-    local output_video_file="${base_name}.mp4"
     local yt_dlp_dl_args=(
         yt-dlp
-        -f "$format_option" # 使用修正後的格式選項
+        -f "$format_option"
         --download-sections "*${start_time}-${end_time}"
-        -o "$output_video_file"
+        -o "$output_video_file" # 直接輸出到最終檔名
         "$video_url"
         --newline
-        --progress
+        # --progress # 移除，因為它可能在分段下載時不準確或不顯示
         --concurrent-fragments "$THREADS"
         --merge-output-format mp4
-        # 可以考慮添加 --verbose 選項來獲取更詳細的 yt-dlp 執行日誌以供調試
-        # --verbose
+        # --verbose # 可選，用於詳細日誌調試
     )
 
     log_message "INFO" "執行 yt-dlp (無標準化，時段，影音，修正格式): ${yt_dlp_dl_args[*]}"
+    # 顯示提示訊息，告知使用者進度可能不明顯
+    echo -e "${CYAN}提示：分段下載可能不會顯示即時進度，請耐心等候...${RESET}"
+
     if ! "${yt_dlp_dl_args[@]}" 2> "$temp_dir/yt-dlp-sections-video.log"; then
         log_message "ERROR" "影片指定時段下載失敗 (無標準化)..."
         echo -e "${RED}錯誤：影片指定時段下載失敗！${RESET}"
-        # 在終端顯示 yt-dlp 的詳細錯誤日誌
         echo -e "${YELLOW}--- yt-dlp 錯誤日誌開始 ---${RESET}"
         cat "$temp_dir/yt-dlp-sections-video.log"
         echo -e "${YELLOW}--- yt-dlp 錯誤日誌結束 ---${RESET}"
-        [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1;
+        result=1 # 標記失敗
+        # >>> 在失敗時也跳轉到清理和通知邏輯 <<<
+        goto cleanup_and_notify
     fi
 
+    # 檢查檔案是否真的被下載
     if [ ! -f "$output_video_file" ]; then
         log_message "ERROR" "找不到下載的影片檔案 (無標準化，時段): $output_video_file"
         echo -e "${RED}錯誤：找不到下載的影片檔案！檢查上述 yt-dlp 日誌。${RESET}"
-        [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1;
+        result=1 # 標記失敗
+        goto cleanup_and_notify
     fi
-    echo -e "${GREEN}影片時段下載完成：$output_video_file${RESET}"
+    echo -e "${GREEN}影片時段下載/合併完成：$output_video_file${RESET}"
     log_message "INFO" "影片時段下載完成 (無標準化)：$output_video_file"
 
-    # --- 檢查下載下來的檔案是否真的有視訊軌 ---
+    # 驗證視訊流是否存在
     if ! ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$output_video_file" > /dev/null 2>&1; then
         log_message "ERROR" "驗證失敗：下載的檔案 '$output_video_file' 中似乎沒有視訊流！"
         echo -e "${RED}錯誤：下載完成的檔案似乎缺少視訊流！請檢查 yt-dlp 格式選擇或合併過程。${RESET}"
-        # 顯示檔案的 ffprobe 信息以供調試
         echo -e "${YELLOW}--- ffprobe 檔案資訊 ---${RESET}"
         ffprobe -hide_banner "$output_video_file"
         echo -e "${YELLOW}--- ffprobe 資訊結束 ---${RESET}"
-        # 可以選擇在這裡刪除錯誤的檔案，或者保留它
-        # safe_remove "$output_video_file"
-        [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1;
+        result=1 # 標記失敗
+        goto cleanup_and_notify
     else
         log_message "INFO" "驗證成功：下載的檔案 '$output_video_file' 包含視訊流。"
     fi
-    # --- 驗證結束 ---
 
-    # --- 字幕下載與混流邏輯保持不變 ---
+    # --- 字幕處理 ---
     echo -e "${YELLOW}正在嘗試下載字幕檔案...${RESET}"
-    local base_name_for_subs_dl="$DOWNLOAD_PATH/${sanitized_title} [${video_id}]"
+    local base_name_for_subs_dl="$DOWNLOAD_PATH/${sanitized_title} [${video_id}]" # 字幕檔名不需要時間戳
     local yt_dlp_sub_args=(
         yt-dlp
         --skip-download --write-subs --sub-lang "$target_sub_langs" --convert-subs srt
@@ -1425,6 +1430,7 @@ process_single_mp4_no_normalize_sections() {
         echo -e "${YELLOW}警告：下載字幕失敗或影片無字幕。${RESET}"
     fi
 
+    # 查找下載的字幕檔
     log_message "INFO" "檢查字幕 (基於: ${base_name_for_subs_dl}.*.srt)"
     subtitle_files=()
     IFS=',' read -r -a langs_to_check <<< "$target_sub_langs"
@@ -1445,9 +1451,10 @@ process_single_mp4_no_normalize_sections() {
         echo -e "${YELLOW}未找到中文字幕。${RESET}"
     fi
 
+    # 如果找到字幕，則進行混流
     if [ ${#subtitle_files[@]} -gt 0 ]; then
         echo -e "${YELLOW}開始將字幕嵌入影片...${RESET}"
-        local final_video_with_subs="${base_name}_with_subs.mp4"
+        local final_video_with_subs="${base_name}_with_subs.mp4" # 臨時混流檔名
         local ffmpeg_mux_args=(ffmpeg -y -i "$output_video_file")
 
         for sub_file in "${subtitle_files[@]}"; do ffmpeg_mux_args+=("-i" "$sub_file"); done
@@ -1462,8 +1469,9 @@ process_single_mp4_no_normalize_sections() {
                 zh-Hant|zh-TW) ffmpeg_lang="zht" ;;
                 zh-Hans|zh-CN) ffmpeg_lang="zhs" ;;
                 zh) ffmpeg_lang="chi" ;;
-                *) ffmpeg_lang=$(echo "$sub_lang_code" | cut -c1-3) ;;
+                *) ffmpeg_lang=$(echo "$sub_lang_code" | cut -c1-3) ;; # 取前三字母作為備用
             esac
+            # 設定字幕軌的語言元數據
             ffmpeg_mux_args+=("-metadata:s:s:$i" "language=$ffmpeg_lang")
             ((sub_input_index++))
         done
@@ -1474,10 +1482,12 @@ process_single_mp4_no_normalize_sections() {
             log_message "ERROR" "字幕混流失敗！詳見 $temp_dir/ffmpeg_mux_subs.log"
             echo -e "${RED}錯誤：字幕混流失敗！${RESET}"
             cat "$temp_dir/ffmpeg_mux_subs.log"
-            result=1
+            result=1 # 混流失敗也算失敗
+            # 保留原始影片檔案 (無字幕)
         else
             echo -e "${GREEN}字幕混流完成：$final_video_with_subs${RESET}"
             log_message "SUCCESS" "字幕混流成功：$final_video_with_subs"
+            # 混流成功，刪除原始影片和字幕檔，重命名混流後的檔案
             safe_remove "$output_video_file"
             for sub_file in "${subtitle_files[@]}"; do safe_remove "$sub_file"; done
             if mv "$final_video_with_subs" "$output_video_file"; then
@@ -1485,28 +1495,80 @@ process_single_mp4_no_normalize_sections() {
             else
                  log_message "ERROR" "重命名 $final_video_with_subs 失敗，最終檔案可能為 $final_video_with_subs"
                  echo -e "${RED}錯誤：重命名最終檔案失敗，請檢查 $final_video_with_subs ${RESET}"
+                 # 即使重命名失敗，也認為主要操作成功了，但可能檔名不對
+                 # 將 output_video_file 更新為實際存在的檔名，以便後續通知使用
+                 output_video_file="$final_video_with_subs"
+                 result=0 # 仍然視為成功，但有警告
             fi
-            result=0
+            # result 維持 0 (成功)
         fi
     else
         log_message "INFO" "未找到字幕或未成功下載，無需混流。"
-        result=0
+        # result 維持 0 (成功)
     fi
+
+# 使用 goto 跳轉標籤，集中處理清理和通知
+: cleanup_and_notify
 
     # --- 清理 ---
     log_message "INFO" "清理臨時檔案 (無標準化，時段)..."
     safe_remove "$temp_dir/yt-dlp-sections-video.log" "$temp_dir/yt-dlp-sections-subs.log" "$temp_dir/ffmpeg_mux_subs.log"
+    # 清理可能殘留的字幕檔 (即使混流失敗也清理)
     for lang in "${langs_to_check[@]}"; do safe_remove "${base_name_for_subs_dl}.${lang}.srt"; done
+    # 刪除臨時目錄
     [ -d "$temp_dir" ] && rm -rf "$temp_dir"
 
-    # --- 最終結果報告 ---
+    # --- 最終結果報告 (控制台) ---
     if [ $result -eq 0 ]; then
-        echo -e "${GREEN}處理完成！影片 (無標準化，時段 $start_time-$end_time) 已儲存至：$output_video_file${RESET}"
-        log_message "SUCCESS" "處理完成 (無標準化，時段)！影片已儲存至：$output_video_file"
+        # 如果 output_video_file 仍然存在 (成功下載，可能混流成功或無字幕)
+        if [ -f "$output_video_file" ]; then
+             echo -e "${GREEN}處理完成！影片 (無標準化，時段 $start_time-$end_time) 已儲存至：$(basename "$output_video_file")${RESET}"
+             log_message "SUCCESS" "處理完成 (無標準化，時段)！影片已儲存至：$output_video_file"
+        else
+             # 可能是混流後重命名失敗，或者其他意外情況檔案沒了
+             echo -e "${RED}處理似乎已完成，但最終檔案 '$output_video_file' 未找到！請檢查日誌。${RESET}"
+             log_message "ERROR" "處理完成但最終檔案未找到 (無標準化，時段)：$output_video_file"
+             result=1 # 標記為失敗狀態
+        fi
     else
         echo -e "${RED}處理失敗 (無標準化，時段)！${RESET}"
         log_message "ERROR" "處理失敗 (無標準化，時段)：$video_url"
     fi
+
+
+    # --- >>> 新增：Termux 通知邏輯 <<< ---
+    if [[ "$OS_TYPE" == "termux" ]]; then
+        # 檢查 termux-notification 命令是否存在
+        if command -v termux-notification &> /dev/null; then
+            local notification_title="媒體處理器：MP4 片段"
+            local notification_content=""
+            # 使用 basename 獲取純檔名，避免路徑過長
+            local final_filename=$(basename "$output_video_file")
+
+            if [ $result -eq 0 ] && [ -f "$output_video_file" ]; then
+                # 成功訊息
+                notification_content="✅ 成功：影片 '$sanitized_title' 時段 [$start_time-$end_time] 已儲存為 '$final_filename'。"
+                log_message "INFO" "準備發送 Termux 成功通知。"
+            else
+                # 失敗訊息 (包括檔案最終未找到的情況)
+                notification_content="❌ 失敗：影片 '$sanitized_title' 時段 [$start_time-$end_time] 處理失敗。請查看腳本輸出或日誌。"
+                 log_message "INFO" "準備發送 Termux 失敗通知。"
+            fi
+
+            # 嘗試發送通知
+            if ! termux-notification --title "$notification_title" --content "$notification_content"; then
+                log_message "WARNING" "執行 termux-notification 命令失敗。Termux:API 是否安裝並運作正常？"
+                # 可選擇性地在控制台也顯示警告
+                # echo -e "${YELLOW}警告：無法發送 Termux 通知。${RESET}"
+            else
+                 log_message "INFO" "Termux 通知已成功發送。"
+            fi
+        else
+            log_message "INFO" "未找到 termux-notification 命令 (Termux:API 未安裝？)，跳過通知。"
+        fi
+    fi
+    # --- >>> 通知邏輯結束 <<< ---
+
     return $result
 }
 
