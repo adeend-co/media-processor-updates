@@ -1,11 +1,11 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.4.10(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v2.4.11(Experimental)" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
-SCRIPT_UPDATE_DATE="2025-04-12" # 請根據實際情況修改此日期
+SCRIPT_UPDATE_DATE="2025-04-13" # 請根據實際情況修改此日期
 ############################################
 
 # ... 其他設定 ...
@@ -1117,7 +1117,7 @@ process_single_mp3() {
             log_message "WARNING" "無法從 yt-dlp 獲取格式大小資訊 (MP3 std)。"
         fi
 
-        local size_threshold_gb=0.14
+        local size_threshold_gb=0.053
         local size_threshold_bytes=$(awk "BEGIN {printf \"%d\", $size_threshold_gb * 1024 * 1024 * 1024}")
         log_message "INFO" "MP3 標準化：預估大小 = $estimated_size_bytes bytes, 閾值 = $size_threshold_bytes bytes."
         if [[ "$estimated_size_bytes" -gt "$size_threshold_bytes" ]]; then
