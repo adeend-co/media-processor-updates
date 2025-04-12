@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.4.1(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v2.4.2(Experimental)" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -1339,56 +1339,48 @@ process_single_mp4_no_normalize() {
     if [[ "$video_url" != *"youtube.com"* && "$video_url" != *"youtu.be"* ]]; then format_option="best"; log_message "WARNING" "...非 YouTube URL..."; subtitle_options=""; echo -e "${YELLOW}非 YouTube URL...${RESET}"; fi
     log_message "INFO" "使用格式 (無標準化): $format_option"
 
-    # <<< [替換開始] 預估檔案大小 (僅在非播放清單模式下進行，改進版) >>>
+    # <<< [最終替換開始] 預估檔案大小 (僅在非播放清單模式下進行，精確提取版) >>>
     if ! $is_playlist; then
         echo -e "${YELLOW}正在預估檔案大小以決定是否通知...${RESET}"
         local estimated_size_bytes=0
-        local ytdlp_estimate_output # 儲存 yt-dlp 的原始輸出
+        local size_list # 儲存提取到的所有大小值 (每行一個)
         local estimate_exit_code
 
-        # 執行 yt-dlp 並捕獲輸出和退出碼
-        ytdlp_estimate_output=$(yt-dlp --print requested_formats -j --no-warnings -f "$format_option" "$video_url" 2>"$temp_dir/yt-dlp-estimate.log")
+        # 使用 --print '%(filesize,filesize_approx)s' 直接打印選中格式的大小
+        # 它會為每個選中的格式（視訊和音訊）單獨打印一行大小值
+        # 如果大小未知，可能會打印 'NA' 或空字串
+        size_list=$(yt-dlp --no-warnings --print '%(filesize,filesize_approx)s' -f "$format_option" "$video_url" 2>"$temp_dir/yt-dlp-estimate.log")
         estimate_exit_code=$?
 
-        log_message "DEBUG" "yt-dlp estimate exit code: $estimate_exit_code"
-        # 輸出原始 JSON 到日誌以供調試
-        log_message "DEBUG" "yt-dlp estimate raw output:\n$ytdlp_estimate_output"
+        log_message "DEBUG" "yt-dlp size print exit code: $estimate_exit_code"
+        log_message "DEBUG" "yt-dlp size print raw output:\n$size_list"
 
-        # 只有在 yt-dlp 成功退出且有輸出時才嘗試計算
-        if [ "$estimate_exit_code" -eq 0 ] && [ -n "$ytdlp_estimate_output" ]; then
-            # 檢查 bc 命令是否存在
+        # 只有在 yt-dlp 成功退出時才嘗試計算
+        if [ "$estimate_exit_code" -eq 0 ] && [ -n "$size_list" ]; then
             if ! command -v bc &> /dev/null; then
                  log_message "WARNING" "bc 命令未找到，無法精確計算總大小，跳過大小檢查。"
-                 # 可以選擇在這裡直接啟用通知 (should_notify=true) 或保持禁用
-                 should_notify=false # 暫定為禁用，因為無法可靠檢查
+                 should_notify=false
             else
-                # 逐行處理 JSON，提取大小，加總
-                # 使用 jq 提取每行的 '.filesize_approx // .filesize // 0'
-                # 使用 grep -o '[0-9]\+' 確保只提取數字部分 (處理可能的非數字輸出)
-                # 使用 paste -sd+ 將所有數字用 '+' 連接起來
-                # 使用 bc 計算總和
-                local size_sum_expr=$(echo "$ytdlp_estimate_output" | jq -r '.filesize_approx // .filesize // 0' | grep -o '[0-9]\+' | paste -sd+)
+                # 過濾掉非數字行 (例如 'NA')，然後用 bc 加總
+                local size_sum_expr=$(echo "$size_list" | grep '^[0-9]\+$' | paste -sd+)
 
                 if [ -n "$size_sum_expr" ]; then
-                    # 防止 bc 因空輸入報錯
                     estimated_size_bytes=$(echo "$size_sum_expr" | bc)
                     log_message "DEBUG" "Calculated size expression: $size_sum_expr"
                     if ! [[ "$estimated_size_bytes" =~ ^[0-9]+$ ]]; then
-                        estimated_size_bytes=0 # 如果 bc 計算失敗，設為 0
+                        estimated_size_bytes=0
                         log_message "WARNING" "bc 計算估計大小失敗。"
                     fi
                 else
-                     estimated_size_bytes=0 # 如果沒有提取到任何數字，設為 0
+                     estimated_size_bytes=0
                      log_message "WARNING" "未能從 yt-dlp 輸出中提取任何有效的檔案大小數字。"
                 fi
             fi
         else
-            log_message "WARNING" "無法從 yt-dlp 獲取格式資訊以預估大小 (yt-dlp exit code: $estimate_exit_code)，詳見 $temp_dir/yt-dlp-estimate.log"
-            # 可選：cat "$temp_dir/yt-dlp-estimate.log"
+            log_message "WARNING" "無法從 yt-dlp 獲取格式大小資訊 (yt-dlp exit code: $estimate_exit_code)，詳見 $temp_dir/yt-dlp-estimate.log"
         fi
 
         local size_threshold_gb=0.5
-        # 保持 awk 計算閾值
         local size_threshold_bytes=$(awk "BEGIN {printf \"%d\", $size_threshold_gb * 1024 * 1024 * 1024}")
 
         log_message "INFO" "MP4 無標準化：預估大小 = $estimated_size_bytes bytes, 閾值 = $size_threshold_bytes bytes."
@@ -1397,10 +1389,10 @@ process_single_mp4_no_normalize() {
             should_notify=true
         else
             log_message "INFO" "MP4 無標準化：預估大小未超過閾值，禁用通知。"
-            should_notify=false # 確保是 false
+            should_notify=false
         fi
     fi
-    # <<< [替換結束] 預估大小 >>>
+    # <<< [最終替換結束] 預估大小 >>>
 
     mkdir -p "$DOWNLOAD_PATH"; if [ ! -w "$DOWNLOAD_PATH" ]; then log_message "ERROR" "...無法寫入目錄..."; echo -e "${RED}錯誤：無法寫入目錄${RESET}"; [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1; fi
     echo -e "${YELLOW}開始下載影片及字幕（高品質音質）...${RESET}"
