@@ -3247,7 +3247,7 @@ show_about_enhanced() {
     echo -e "- 設定持久化與互動式選單"
     echo -e "- 主選單重構（v2.2.0+)"
     echo -e "-「MP4片段下載」支援完成通知 (僅限Termux環境，且需加裝額外插件)(v2.3.12+)"
-    echo -e "- ${BOLD}MP3/MP4 下載支援條件式完成通知${RESET} (批量處理或檔案>0.5GB)(v2.3.13+)"
+    echo -e "- ${BOLD}MP3/MP4 下載支援條件式完成通知${RESET} (批量處理或檔案>0.5GB)(v2.4.3+)"
 
     echo -e "\n${YELLOW}使用須知：${RESET}"
     echo -e "本工具僅供個人學習與合法使用，請尊重版權並遵守當地法律。"
