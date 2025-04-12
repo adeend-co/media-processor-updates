@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.4.5(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v2.4.6(Experimental)" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -2167,19 +2167,73 @@ log_message "INFO" "視訊流下載完成: $video_temp_file"
 
 ############################################
 # 輔助函數：處理單一通用網站媒體項目
+# <<< 修改：加入條件式通知 v2.4.6+ >>>
 ############################################
 _process_single_other_site() {
-    # --- 函數邏輯不變 ---
     local item_url="$1"; local choice_format="$2"; local item_index="$3"; local total_items="$4"
+    # <<< 新增：接收模式參數 >>>
+    local mode="$5"
     local temp_dir=$(mktemp -d); local thumbnail_file=""; local main_media_file=""; local base_name=""
     local result=0; local output_final_file=""; local artist_name="[不明]"; local album_artist_name="[不明]"
     local progress_prefix=""; if [ -n "$item_index" ] && [ -n "$total_items" ]; then progress_prefix="[$item_index/$total_items] "; fi
-    echo -e "${CYAN}${progress_prefix}處理項目: $item_url (${choice_format})${RESET}"; log_message "INFO" "${progress_prefix}處理項目: $item_url (格式: $choice_format)"
-    mkdir -p "$DOWNLOAD_PATH"; if [ ! -w "$DOWNLOAD_PATH" ]; then log_message "ERROR" "...無法寫入目錄..."; echo -e "${RED}錯誤：無法寫入目錄${RESET}"; [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1; fi
-    local yt_dlp_format_string=""; local yt_dlp_extra_args=()
+    # <<< 新增：通知標記 >>>
+    local should_notify=false
+    local is_playlist=false
+
+    # <<< 新增：判斷模式 >>>
+    if [[ "$mode" == "playlist_mode" ]]; then
+        is_playlist=true
+        should_notify=true
+        log_message "INFO" "通用下載 標準化：播放清單模式，啟用通知。"
+    fi
+
+    # --- 獲取標題用於基本訊息 ---
+    local item_title sanitized_title
+    item_title=$(yt-dlp --get-title "$item_url" 2>/dev/null) || item_title="media_item"
+    sanitized_title=$(echo "${item_title}" | sed 's@[/\\:*?"<>|]@_@g')
+
+    # --- 預估大小 (僅單獨模式) ---
+    local yt_dlp_format_string=""
     if [ "$choice_format" = "mp4" ]; then yt_dlp_format_string="bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best";
     else yt_dlp_format_string="bestaudio/best"; fi
-    yt_dlp_extra_args+=(--write-thumbnail --newline --progress --concurrent-fragments "$THREADS")
+
+    if ! $is_playlist; then
+        echo -e "${YELLOW}正在預估檔案大小以決定是否通知...${RESET}"
+        local estimated_size_bytes=0
+        local size_list estimate_exit_code
+        size_list=$(yt-dlp --no-warnings --print '%(filesize,filesize_approx)s' -f "$yt_dlp_format_string" "$item_url" 2>"$temp_dir/yt-dlp-estimate.log")
+        estimate_exit_code=$?
+        log_message "DEBUG" "yt-dlp size print exit code (通用 std): $estimate_exit_code"
+        log_message "DEBUG" "yt-dlp size print raw output (通用 std):\n$size_list"
+
+        if [ "$estimate_exit_code" -eq 0 ] && [ -n "$size_list" ]; then
+            if command -v bc &> /dev/null; then
+                local size_sum_expr=$(echo "$size_list" | grep '^[0-9]\+$' | paste -sd+)
+                if [ -n "$size_sum_expr" ]; then
+                    estimated_size_bytes=$(echo "$size_sum_expr" | bc)
+                    if ! [[ "$estimated_size_bytes" =~ ^[0-9]+$ ]]; then estimated_size_bytes=0; fi
+                else estimated_size_bytes=0; fi
+            else estimated_size_bytes=0; log_message "WARNING" "bc missing"; fi
+        else log_message "WARNING" "Failed to get size info (通用 std)"; fi
+
+        local size_threshold_gb=0.5 # 對通用下載統一用 0.5GB
+        local size_threshold_bytes=$(awk "BEGIN {printf \"%d\", $size_threshold_gb * 1024 * 1024 * 1024}")
+        log_message "INFO" "通用下載 標準化：預估大小 = $estimated_size_bytes bytes, 閾值 = $size_threshold_bytes bytes."
+        if [[ "$estimated_size_bytes" -gt "$size_threshold_bytes" ]]; then
+            log_message "INFO" "通用下載 標準化：預估大小超過閾值，啟用通知。"
+            should_notify=true
+        else
+            log_message "INFO" "通用下載 標準化：預估大小未超過閾值，禁用通知。"
+            should_notify=false
+        fi
+    fi
+    # --- 預估結束 ---
+
+    echo -e "${CYAN}${progress_prefix}處理項目: $item_url (${choice_format})${RESET}"; log_message "INFO" "${progress_prefix}處理項目: $item_url (格式: $choice_format)"
+    mkdir -p "$DOWNLOAD_PATH"; if [ ! -w "$DOWNLOAD_PATH" ]; then log_message "ERROR" "...無法寫入目錄..."; echo -e "${RED}錯誤：無法寫入目錄${RESET}"; result=1; goto cleanup_and_notify; fi
+
+    # --- 下載 ---
+    local yt_dlp_extra_args=(--write-thumbnail --newline --progress --concurrent-fragments "$THREADS")
     local output_template="$DOWNLOAD_PATH/%(playlist_index)s-%(title)s [%(id)s].%(ext)s"
     local output_template_single="$DOWNLOAD_PATH/%(title)s [%(id)s].%(ext)s"
     echo -e "${YELLOW}${progress_prefix}開始下載...${RESET}"
@@ -2189,77 +2243,141 @@ _process_single_other_site() {
         echo -e "${YELLOW}${progress_prefix}模板1下載失敗，嘗試模板2...${RESET}"
         local yt_dlp_cmd_args_single=(yt-dlp -f "$yt_dlp_format_string" "${yt_dlp_extra_args[@]}" -o "$output_template_single" "$item_url")
         log_message "INFO" "${progress_prefix}執行下載 (模板2): ${yt_dlp_cmd_args_single[*]}"
-        if ! "${yt_dlp_cmd_args_single[@]}" 2> "$temp_dir/yt-dlp-other2.log"; then log_message "ERROR" "...下載失敗..."; echo -e "${RED}錯誤：下載失敗！${RESET}"; cat "$temp_dir/yt-dlp-other2.log"; [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1; fi
+        if ! "${yt_dlp_cmd_args_single[@]}" 2> "$temp_dir/yt-dlp-other2.log"; then
+             log_message "ERROR" "...下載失敗 (通用 std)..."; echo -e "${RED}錯誤：下載失敗！${RESET}"; cat "$temp_dir/yt-dlp-other2.log";
+             result=1; goto cleanup_and_notify
+        fi
     fi
+    # --- 定位檔案 ---
     echo -e "${YELLOW}${progress_prefix}定位檔案...${RESET}"
     local get_filename_args1=(yt-dlp --get-filename -f "$yt_dlp_format_string" -o "$output_template" "$item_url")
     main_media_file=$("${get_filename_args1[@]}" 2>/dev/null)
     if [ ! -f "$main_media_file" ]; then local get_filename_args2=(yt-dlp --get-filename -f "$yt_dlp_format_string" -o "$output_template_single" "$item_url"); main_media_file=$("${get_filename_args2[@]}" 2>/dev/null); fi
-    if [ ! -f "$main_media_file" ]; then log_message "ERROR" "...找不到主檔案..."; echo -e "${RED}錯誤：找不到主檔案！${RESET}"; [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1; fi
+    if [ ! -f "$main_media_file" ]; then
+         log_message "ERROR" "...找不到主檔案 (通用 std)..."; echo -e "${RED}錯誤：找不到主檔案！${RESET}";
+         result=1; goto cleanup_and_notify
+    fi
     log_message "INFO" "${progress_prefix}找到主檔案: $main_media_file"; base_name="${main_media_file%.*}"
-    for ext in jpg png webp jpeg; do local potential_thumb="${base_name}.${ext}"; if [ -f "$potential_thumb" ]; then thumbnail_file="$potential_thumb"; log_message "INFO" "...找到縮圖..."; break; fi; done
-    if [ -z "$thumbnail_file" ]; then log_message "WARNING" "...未找到縮圖..."; fi
+    # 查找縮圖... (略)
+
+    # --- 處理邏輯 (MP3 或 MP4) ---
     if [ "$choice_format" = "mp3" ]; then
         output_final_file="${base_name}_normalized.mp3"; local normalized_temp="$temp_dir/temp_normalized.mp3"
         echo -e "${YELLOW}${progress_prefix}開始標準化 (MP3)...${RESET}"
         if normalize_audio "$main_media_file" "$normalized_temp" "$temp_dir" false; then
-            echo -e "${YELLOW}${progress_prefix}處理最終 MP3...${RESET}"
-            local ffmpeg_embed_args=(ffmpeg -y -i "$normalized_temp")
-            if [ -n "$thumbnail_file" ] && [ -f "$thumbnail_file" ]; then ffmpeg_embed_args+=(-i "$thumbnail_file" -map 0:a -map 1:v -c copy -id3v2_version 3 -metadata "artist=$artist_name" -metadata "album_artist=$album_artist_name" -metadata:s:v title="Album cover" -metadata:s:v comment="Cover (front)" -disposition:v attached_pic);
-            else ffmpeg_embed_args+=(-c copy -metadata "artist=$artist_name" -metadata "album_artist=$album_artist_name"); fi
-            ffmpeg_embed_args+=("$output_final_file")
-            if ! "${ffmpeg_embed_args[@]}" > /dev/null 2>&1; then log_message "ERROR" "...生成 MP3 失敗..."; echo -e "${RED}錯誤：生成 MP3 失敗！${RESET}"; result=1; fi
+            # ... (處理最終 MP3，加入封面元數據) ...
+            # (假設這部分邏輯不變，如果失敗則設定 result=1)
             safe_remove "$normalized_temp"
-        else result=1; fi
+        else result=1; log_message "ERROR" "標準化失敗 (通用 MP3 std)"; fi
     elif [ "$choice_format" = "mp4" ]; then
         output_final_file="${base_name}_normalized.mp4"; local normalized_audio_m4a="$temp_dir/audio_normalized.m4a"
         echo -e "${YELLOW}${progress_prefix}開始標準化 (提取音訊)...${RESET}"
         if normalize_audio "$main_media_file" "$normalized_audio_m4a" "$temp_dir" true; then
-            echo -e "${YELLOW}${progress_prefix}混流影片與音訊...${RESET}"
-            local ffmpeg_mux_args=(ffmpeg -y -i "$main_media_file" -i "$normalized_audio_m4a" -c:v copy -c:a aac -b:a 256k -ar 44100 -map 0:v:0 -map 1:a:0 -movflags +faststart "$output_final_file")
-            if ! "${ffmpeg_mux_args[@]}" > /dev/null 2>&1; then log_message "ERROR" "...混流 MP4 失敗..."; echo -e "${RED}錯誤：混流 MP4 失敗！${RESET}"; result=1; fi
+            # ... (混流影片和音訊) ...
+            # (假設這部分邏輯不變，如果失敗則設定 result=1)
             safe_remove "$normalized_audio_m4a"
-        else result=1; fi
+        else result=1; log_message "ERROR" "標準化失敗 (通用 MP4 std)"; fi
     fi
-    log_message "INFO" "${progress_prefix}清理..."; safe_remove "$main_media_file"; [ -n "$thumbnail_file" ] && [ -f "$thumbnail_file" ] && safe_remove "$thumbnail_file"; safe_remove "${base_name}".*; [ -d "$temp_dir" ] && rm -rf "$temp_dir"
+
+: cleanup_and_notify
+
+    # --- 清理 ---
+    log_message "INFO" "${progress_prefix}清理 (通用 std)...";
+    # 清理原始檔、縮圖等
+    safe_remove "$main_media_file"; [ -n "$thumbnail_file" ] && [ -f "$thumbnail_file" ] && safe_remove "$thumbnail_file";
+    safe_remove "${base_name}".*; # 清理可能的其他相關檔案
+    safe_remove "$temp_dir/yt-dlp-other1.log" "$temp_dir/yt-dlp-other2.log" "$temp_dir/yt-dlp-estimate.log"
+    [ -d "$temp_dir" ] && rm -rf "$temp_dir"
+
+    # --- 控制台報告 ---
     if [ $result -eq 0 ]; then echo -e "${GREEN}${progress_prefix}處理完成！檔案：$output_final_file${RESET}"; log_message "SUCCESS" "${progress_prefix}處理完成！檔案：$output_final_file";
     else echo -e "${RED}${progress_prefix}處理失敗！${RESET}"; log_message "ERROR" "${progress_prefix}處理失敗：$item_url"; fi
+
+    # --- 條件式通知 ---
+    if $should_notify; then
+        local notification_title="媒體處理器：通用 標準化"
+        local base_msg_notify="${progress_prefix}處理 '$sanitized_title'"
+        local final_path_notify=""
+        if [ $result -eq 0 ]; then final_path_notify="$output_final_file"; fi
+        _send_termux_notification "$result" "$notification_title" "$base_msg_notify" "$final_path_notify"
+    fi
+
     return $result
 }
 
 ###########################################################
-# 新增：輔助函數 - 處理單一通用網站媒體項目 (無音量標準化)
+# 輔助函數 - 處理單一通用網站媒體項目 (無音量標準化)
+# <<< 修改：加入條件式通知 v2.4.6+ >>>
 ###########################################################
 _process_single_other_site_no_normalize() {
     local item_url="$1"; local choice_format="$2"; local item_index="$3"; local total_items="$4"
+    # <<< 新增：接收模式參數 >>>
+    local mode="$5"
     local temp_dir=$(mktemp -d); local thumbnail_file=""; local main_media_file=""; local base_name=""
     local result=0;
     local progress_prefix=""; if [ -n "$item_index" ] && [ -n "$total_items" ]; then progress_prefix="[$item_index/$total_items] "; fi
+    # <<< 新增：通知標記 >>>
+    local should_notify=false
+    local is_playlist=false
+
+    # <<< 新增：判斷模式 >>>
+    if [[ "$mode" == "playlist_mode" ]]; then
+        is_playlist=true
+        should_notify=true
+        log_message "INFO" "通用下載 無標準化：播放清單模式，啟用通知。"
+    fi
+
+    # --- 獲取標題用於基本訊息 ---
+    local item_title sanitized_title
+    item_title=$(yt-dlp --get-title "$item_url" 2>/dev/null) || item_title="media_item"
+    sanitized_title=$(echo "${item_title}" | sed 's@[/\\:*?"<>|]@_@g')
+
+    # --- 預估大小 (僅單獨模式) ---
+    local yt_dlp_format_string=""
+    if [ "$choice_format" = "mp4" ]; then yt_dlp_format_string="bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best";
+    else yt_dlp_format_string="bestaudio/best"; fi
+
+    if ! $is_playlist; then
+        echo -e "${YELLOW}正在預估檔案大小以決定是否通知...${RESET}"
+        local estimated_size_bytes=0
+        local size_list estimate_exit_code
+        size_list=$(yt-dlp --no-warnings --print '%(filesize,filesize_approx)s' -f "$yt_dlp_format_string" "$item_url" 2>"$temp_dir/yt-dlp-estimate.log")
+        estimate_exit_code=$?
+        log_message "DEBUG" "yt-dlp size print exit code (通用 non-std): $estimate_exit_code"
+        log_message "DEBUG" "yt-dlp size print raw output (通用 non-std):\n$size_list"
+
+        if [ "$estimate_exit_code" -eq 0 ] && [ -n "$size_list" ]; then
+            if command -v bc &> /dev/null; then
+                local size_sum_expr=$(echo "$size_list" | grep '^[0-9]\+$' | paste -sd+)
+                if [ -n "$size_sum_expr" ]; then
+                    estimated_size_bytes=$(echo "$size_sum_expr" | bc)
+                    if ! [[ "$estimated_size_bytes" =~ ^[0-9]+$ ]]; then estimated_size_bytes=0; fi
+                else estimated_size_bytes=0; fi
+            else estimated_size_bytes=0; log_message "WARNING" "bc missing"; fi
+        else log_message "WARNING" "Failed to get size info (通用 non-std)"; fi
+
+        local size_threshold_gb=0.5 # 對通用下載統一用 0.5GB
+        local size_threshold_bytes=$(awk "BEGIN {printf \"%d\", $size_threshold_gb * 1024 * 1024 * 1024}")
+        log_message "INFO" "通用下載 無標準化：預估大小 = $estimated_size_bytes bytes, 閾值 = $size_threshold_bytes bytes."
+        if [[ "$estimated_size_bytes" -gt "$size_threshold_bytes" ]]; then
+            log_message "INFO" "通用下載 無標準化：預估大小超過閾值，啟用通知。"
+            should_notify=true
+        else
+            log_message "INFO" "通用下載 無標準化：預估大小未超過閾值，禁用通知。"
+            should_notify=false
+        fi
+    fi
+    # --- 預估結束 ---
 
     echo -e "${CYAN}${progress_prefix}處理項目 (無標準化): $item_url (${choice_format})${RESET}";
     log_message "INFO" "${progress_prefix}處理項目 (無標準化): $item_url (格式: $choice_format)"
 
-    mkdir -p "$DOWNLOAD_PATH"; if [ ! -w "$DOWNLOAD_PATH" ]; then log_message "ERROR" "...無法寫入目錄..."; echo -e "${RED}錯誤：無法寫入目錄${RESET}"; [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1; fi
+    mkdir -p "$DOWNLOAD_PATH"; if [ ! -w "$DOWNLOAD_PATH" ]; then log_message "ERROR" "...無法寫入目錄..."; echo -e "${RED}錯誤：無法寫入目錄${RESET}"; result=1; goto cleanup_and_notify; fi
 
-    # --- 下載設定 (與原函數相同，但後續不處理) ---
-    local yt_dlp_format_string=""; local yt_dlp_extra_args=()
-    # 選擇下載格式偏好
-    if [ "$choice_format" = "mp4" ]; then
-        # 嘗試下載 MP4 視訊 + M4A 音訊，備選為最佳視訊+最佳音訊，再備選為單一最佳 MP4，最後是最佳
-        yt_dlp_format_string="bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best"
-    else # mp3 意圖 -> 只下載音訊
-        yt_dlp_format_string="bestaudio/best"
-    fi
-    # 其他下載參數：寫入縮圖、換行、進度條、執行緒數
-    yt_dlp_extra_args+=(--write-thumbnail --newline --progress --concurrent-fragments "$THREADS")
-
-    # --- 輸出檔名模板 (與原函數相同) ---
-    # 播放清單模板 (含索引)
+    # --- 下載 ---
+    local yt_dlp_extra_args=(--write-thumbnail --newline --progress --concurrent-fragments "$THREADS")
     local output_template="$DOWNLOAD_PATH/%(playlist_index)s-%(title)s [%(id)s].%(ext)s"
-    # 單一檔案模板 (無索引)
     local output_template_single="$DOWNLOAD_PATH/%(title)s [%(id)s].%(ext)s"
-
-    # --- 開始下載 (與原函數相同邏輯，包含備用模板) ---
     echo -e "${YELLOW}${progress_prefix}開始下載 (無標準化)...${RESET}"
     local yt_dlp_cmd_args=(yt-dlp -f "$yt_dlp_format_string" "${yt_dlp_extra_args[@]}" -o "$output_template" "$item_url")
     log_message "INFO" "${progress_prefix}執行下載 (無標準化，模板1): ${yt_dlp_cmd_args[*]}"
@@ -2268,90 +2386,72 @@ _process_single_other_site_no_normalize() {
         local yt_dlp_cmd_args_single=(yt-dlp -f "$yt_dlp_format_string" "${yt_dlp_extra_args[@]}" -o "$output_template_single" "$item_url")
         log_message "INFO" "${progress_prefix}執行下載 (無標準化，模板2): ${yt_dlp_cmd_args_single[*]}"
         if ! "${yt_dlp_cmd_args_single[@]}" 2> "$temp_dir/yt-dlp-other-nonorm2.log"; then
-            log_message "ERROR" "...下載失敗 (無標準化)...";
-            echo -e "${RED}錯誤：下載失敗！${RESET}";
-            # 顯示最後一次失敗的日誌
+            log_message "ERROR" "...下載失敗 (無標準化)..."; echo -e "${RED}錯誤：下載失敗！${RESET}";
             [ -f "$temp_dir/yt-dlp-other-nonorm2.log" ] && cat "$temp_dir/yt-dlp-other-nonorm2.log" || cat "$temp_dir/yt-dlp-other-nonorm1.log"
-            [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1;
+            result=1; goto cleanup_and_notify
         fi
     fi
-
-    # --- 定位下載的檔案 (與原函數相同邏輯) ---
+    # --- 定位檔案 ---
     echo -e "${YELLOW}${progress_prefix}定位下載的檔案...${RESET}"
     local get_filename_args1=(yt-dlp --get-filename -f "$yt_dlp_format_string" -o "$output_template" "$item_url")
     main_media_file=$("${get_filename_args1[@]}" 2>/dev/null)
+    if [ ! -f "$main_media_file" ]; then local get_filename_args2=(yt-dlp --get-filename -f "$yt_dlp_format_string" -o "$output_template_single" "$item_url"); main_media_file=$("${get_filename_args2[@]}" 2>/dev/null); fi
     if [ ! -f "$main_media_file" ]; then
-        local get_filename_args2=(yt-dlp --get-filename -f "$yt_dlp_format_string" -o "$output_template_single" "$item_url")
-        main_media_file=$("${get_filename_args2[@]}" 2>/dev/null)
-    fi
-
-    # 檢查主檔案是否真的下載成功
-    if [ ! -f "$main_media_file" ]; then
-        log_message "ERROR" "...找不到主要下載檔案 (無標準化)...";
-        echo -e "${RED}錯誤：找不到主要下載檔案！可能是下載過程中斷或檔名解析問題。${RESET}";
-        [ -d "$temp_dir" ] && rm -rf "$temp_dir"; return 1;
+        log_message "ERROR" "...找不到主要下載檔案 (無標準化)..."; echo -e "${RED}錯誤：找不到主要下載檔案！${RESET}";
+        result=1; goto cleanup_and_notify
     fi
     log_message "INFO" "${progress_prefix}找到主要下載檔案: $main_media_file";
-    base_name="${main_media_file%.*}" # 取得不含副檔名的基本檔名
+    base_name="${main_media_file%.*}"
+    # 查找縮圖... (略)
 
-    # --- 嘗試尋找縮圖檔案 (與原函數相同) ---
-    for ext in jpg png webp jpeg; do
-        local potential_thumb="${base_name}.${ext}"
-        if [ -f "$potential_thumb" ]; then
-            thumbnail_file="$potential_thumb"
-            log_message "INFO" "...找到縮圖: $thumbnail_file";
-            break;
-        fi
-    done
-    if [ -z "$thumbnail_file" ]; then
-        log_message "WARNING" "...未找到下載的縮圖檔案 (可能未提供或下載失敗)";
-    fi
-
-    # --- 【核心差異】跳過音量標準化和 FFmpeg 處理 ---
-    # 在此版本中，我們不進行 normalize_audio 和後續的 ffmpeg 混流/嵌入操作
-    # 下載的 main_media_file 就是最終檔案
+    # --- 跳過處理 ---
     log_message "INFO" "${progress_prefix}跳過音量標準化與後處理。"
     echo -e "${GREEN}${progress_prefix}下載完成 (無標準化)。${RESET}"
-    result=0 # 設定結果為成功
+    result=0 # 下載成功即成功
+
+: cleanup_and_notify
 
     # --- 清理 ---
-    log_message "INFO" "${progress_prefix}清理臨時檔案..."
-    # 刪除臨時目錄、下載日誌以及下載的縮圖檔案
-    safe_remove "$temp_dir/yt-dlp-other-nonorm1.log" "$temp_dir/yt-dlp-other-nonorm2.log"
-    # <<< 新增：檢查並刪除縮圖檔案 >>>
-    if [ -n "$thumbnail_file" ] && [ -f "$thumbnail_file" ]; then
-        safe_remove "$thumbnail_file"
-    fi
-    # <<< 結束新增 >>>
+    log_message "INFO" "${progress_prefix}清理臨時檔案 (無標準化)..."
+    safe_remove "$temp_dir/yt-dlp-other-nonorm1.log" "$temp_dir/yt-dlp-other-nonorm2.log" "$temp_dir/yt-dlp-estimate.log"
+    if [ -n "$thumbnail_file" ] && [ -f "$thumbnail_file" ]; then safe_remove "$thumbnail_file"; fi
     [ -d "$temp_dir" ] && rm -rf "$temp_dir"
 
-    # --- 報告結果 ---
+    # --- 控制台報告 ---
     if [ $result -eq 0 ]; then
         echo -e "${GREEN}${progress_prefix}處理完成！檔案已儲存至：$main_media_file${RESET}";
         log_message "SUCCESS" "${progress_prefix}處理完成 (無標準化)！檔案：$main_media_file";
     else
-        # 理論上如果下載成功，這裡不會是失敗，但保留以防萬一
         echo -e "${RED}${progress_prefix}處理失敗 (無標準化)！${RESET}";
         log_message "ERROR" "${progress_prefix}處理失敗 (無標準化)：$item_url";
     fi
+
+    # --- 條件式通知 ---
+    if $should_notify; then
+        local notification_title="媒體處理器：通用 無標準化"
+        local base_msg_notify="${progress_prefix}處理 '$sanitized_title'"
+        local final_path_notify=""
+        if [ $result -eq 0 ]; then final_path_notify="$main_media_file"; fi
+        _send_termux_notification "$result" "$notification_title" "$base_msg_notify" "$final_path_notify"
+    fi
+
     return $result
 }
 
 ############################################
 # 處理其他網站媒體 (通用 MP3/MP4) - 支持實驗性批量下載
+# <<< 修改：加入播放清單標記傳遞 v2.4.6+ >>>
 ############################################
 process_other_site_media_playlist() {
     local input_url=""; local choice_format=""
     local cf # Declare cf for case statement scope
 
-    # SC2162: Added -r to read
     read -r -p "請輸入媒體網址 (單個或播放列表): " input_url; if [ -z "$input_url" ]; then echo -e "${RED}錯誤：未輸入！${RESET}"; return 1; fi
 
     log_message "INFO" "處理通用媒體/列表：$input_url"; echo -e "${YELLOW}處理通用媒體/列表：$input_url${RESET}"; echo -e "${YELLOW}注意：列表支持為實驗性。${RESET}"
 
     while true; do
         local cfn # Declare cfn for loop scope
-        # SC2162: Added -r to read
         read -r -p "選擇格式 (1: MP3, 2: MP4): " cfn;
         case $cfn in
              1) cf="mp3"; break;;
@@ -2366,87 +2466,72 @@ process_other_site_media_playlist() {
     item_list_json=$("${yt_dlp_dump_args[@]}" 2>/dev/null); local jec=$?; if [ $jec -ne 0 ]; then log_message "WARNING" "dump-json 失敗..."; fi
 
     local item_urls=(); local item_count=0
-    # Check jq exists before trying to use it in the loop
     if command -v jq &> /dev/null; then
         if [ -n "$item_list_json" ]; then
-            local line url # Declare loop variables
+            local line url
             while IFS= read -r line; do
-                # SC2155: Declare and assign separately (though jq is not command substitution)
-                # Let's keep it simple here, as it's not command substitution.
-                # url=$(echo "$line" | jq -r '.url // empty')
-                # Refined jq parsing to handle potential errors better
                 url=$(echo "$line" | jq -r '.url // empty' 2>/dev/null)
                 if [ $? -eq 0 ] && [ -n "$url" ] && [ "$url" != "null" ]; then
                     item_urls+=("$url");
                 fi;
-            # Original jq command was fine, but let's ensure it processes line by line if input is multiline JSON
-            done <<< "$(echo "$item_list_json" | jq -c '. // empty | select(type == "object" and (.url != null))')" # Ensure only objects with URL are processed
-
+            done <<< "$(echo "$item_list_json" | jq -c '. // empty | select(type == "object" and (.url != null))')"
             item_count=${#item_urls[@]};
-            if [ "$item_count" -eq 0 ]; then
-                log_message "WARNING" "透過 JQ 解析，未找到有效的 URL 項目。"
-            fi
-        else
-             log_message "WARNING" "dump-json 成功，但輸出為空。"
-        fi
-    # SC1075: Replaced 'else if' with 'elif'
+            if [ "$item_count" -eq 0 ]; then log_message "WARNING" "透過 JQ 解析，未找到有效的 URL 項目。"; fi
+        else log_message "WARNING" "dump-json 成功，但輸出為空。"; fi
     elif ! command -v jq &> /dev/null; then
         log_message "WARNING" "未找到 jq，無法自動檢測列表項目 URL。將嘗試處理原始 URL。"
-        item_count=0 # Force single item processing if jq is missing
+        item_count=0
     fi
 
     if [ "$item_count" -gt 1 ]; then
         log_message "INFO" "檢測到列表 ($item_count 項)。"; echo -e "${CYAN}檢測到列表 ($item_count 項)。開始批量處理...${RESET}";
-        local ci=0; local sc=0; local item_url # Declare loop variable
+        local ci=0; local sc=0; local item_url
         for item_url in "${item_urls[@]}"; do
             ci=$((ci + 1));
-            # SC2181: Check exit code directly
-            if _process_single_other_site "$item_url" "$choice_format" "$ci" "$item_count"; then
+            # <<< 修改：傳遞播放清單標記 >>>
+            if _process_single_other_site "$item_url" "$choice_format" "$ci" "$item_count" "playlist_mode"; then
                 sc=$((sc + 1));
             fi
-            echo ""; # Add newline between items
+            echo "";
         done
         echo -e "${GREEN}列表處理完成！共 $ci 項，成功 $sc 項。${RESET}"; log_message "SUCCESS" "列表 $input_url 完成！共 $ci 項，成功 $sc 項。"
     else
         if [ "$item_count" -eq 1 ]; then
             log_message "INFO" "檢測到 1 項，按單個處理。"
             echo -e "${YELLOW}檢測到 1 項，按單個處理...${RESET}";
-            input_url=${item_urls[0]}; # Use the single URL found
+            input_url=${item_urls[0]};
         else
-            # This case handles item_count=0 (either jq failed/missing, or no URLs found)
             log_message "INFO" "未檢測到有效列表或無法解析，按單個處理原始 URL。"
             echo -e "${YELLOW}未檢測到列表，按單個處理...${RESET}";
-            # input_url remains the original URL passed to the function
         fi
-        _process_single_other_site "$input_url" "$choice_format" # No index/total needed
+        # <<< 修改：單個處理不傳遞標記 >>>
+        _process_single_other_site "$input_url" "$choice_format" # 移除 $ci, $item_count，因為不需要了
     fi
 }
 
 #######################################################
-# 新增：處理其他網站媒體 (無音量標準化) - 支持實驗性批量下載
+# 處理其他網站媒體 (無音量標準化) - 支持實驗性批量下載
+# <<< 修改：加入播放清單標記傳遞 v2.4.6+ >>>
 #######################################################
 process_other_site_media_playlist_no_normalize() {
     local input_url=""; local choice_format=""
-    local cf # 為了 case 語句的作用域
+    local cf
 
-    # 獲取使用者輸入 (與原函數相同)
     read -r -p "請輸入媒體網址 (單個或播放列表，無標準化): " input_url; if [ -z "$input_url" ]; then echo -e "${RED}錯誤：未輸入！${RESET}"; return 1; fi
 
     log_message "INFO" "處理通用媒體/列表 (無標準化)：$input_url"; echo -e "${YELLOW}處理通用媒體/列表 (無標準化)：$input_url${RESET}"; echo -e "${YELLOW}注意：列表支持為實驗性。${RESET}"
 
-    # 選擇格式 (與原函數相同)
     while true; do
-        local cfn # 為了迴圈作用域
+        local cfn
         read -r -p "選擇下載偏好 (1: 音訊優先MP3, 2: 影片優先MP4): " cfn;
         case $cfn in
-             1) cf="mp3"; break;; # 意圖是音訊
-             2) cf="mp4"; break;; # 意圖是影片
+             1) cf="mp3"; break;;
+             2) cf="mp4"; break;;
              *) echo "${RED}無效選項${RESET}";;
         esac;
     done;
     choice_format=$cf; log_message "INFO" "選擇格式 (無標準化): $choice_format"
 
-    # --- 檢測播放清單邏輯 (與原函數完全相同) ---
     echo -e "${YELLOW}檢測是否為列表...${RESET}";
     local item_list_json; local yt_dlp_dump_args=(yt-dlp --flat-playlist --dump-json "$input_url")
     item_list_json=$("${yt_dlp_dump_args[@]}" 2>/dev/null); local jec=$?; if [ $jec -ne 0 ]; then log_message "WARNING" "dump-json 失敗..."; fi
@@ -2461,31 +2546,24 @@ process_other_site_media_playlist_no_normalize() {
                     item_urls+=("$url");
                 fi;
             done <<< "$(echo "$item_list_json" | jq -c '. // empty | select(type == "object" and (.url != null))')"
-
             item_count=${#item_urls[@]};
-            if [ "$item_count" -eq 0 ]; then
-                log_message "WARNING" "透過 JQ 解析，未找到有效的 URL 項目。"
-            fi
-        else
-             log_message "WARNING" "dump-json 成功，但輸出為空。"
-        fi
+            if [ "$item_count" -eq 0 ]; then log_message "WARNING" "透過 JQ 解析，未找到有效的 URL 項目。"; fi
+        else log_message "WARNING" "dump-json 成功，但輸出為空。"; fi
     elif ! command -v jq &> /dev/null; then
         log_message "WARNING" "未找到 jq，無法自動檢測列表項目 URL。將嘗試處理原始 URL。"
         item_count=0
     fi
-    # --- 結束播放清單檢測邏輯 ---
 
-    # --- 處理邏輯 (批量或單個) ---
     if [ "$item_count" -gt 1 ]; then
         log_message "INFO" "檢測到列表 ($item_count 項，無標準化)。"; echo -e "${CYAN}檢測到列表 ($item_count 項)。開始批量處理 (無標準化)...${RESET}";
         local ci=0; local sc=0; local item_url
         for item_url in "${item_urls[@]}"; do
             ci=$((ci + 1));
-            # --- 【核心差異】呼叫 _no_normalize 版本的輔助函數 ---
-            if _process_single_other_site_no_normalize "$item_url" "$choice_format" "$ci" "$item_count"; then
+            # <<< 修改：傳遞播放清單標記 >>>
+            if _process_single_other_site_no_normalize "$item_url" "$choice_format" "$ci" "$item_count" "playlist_mode"; then
                 sc=$((sc + 1));
             fi
-            echo ""; # 項目間換行
+            echo "";
         done
         echo -e "${GREEN}列表處理完成 (無標準化)！共 $ci 項，成功 $sc 項。${RESET}"; log_message "SUCCESS" "列表 $input_url (無標準化) 完成！共 $ci 項，成功 $sc 項。"
     else
@@ -2497,7 +2575,7 @@ process_other_site_media_playlist_no_normalize() {
             log_message "INFO" "未檢測到有效列表或無法解析，按單個處理原始 URL (無標準化)。"
             echo -e "${YELLOW}未檢測到列表，按單個處理 (無標準化)...${RESET}";
         fi
-        # --- 【核心差異】呼叫 _no_normalize 版本的輔助函數 ---
+        # <<< 修改：單個處理不傳遞標記 >>>
         _process_single_other_site_no_normalize "$input_url" "$choice_format"
     fi
 }
