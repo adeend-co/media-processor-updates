@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.4.4(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v2.4.5(Experimental)" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -1295,7 +1295,7 @@ process_single_mp3_no_normalize() {
             log_message "WARNING" "無法從 yt-dlp 獲取格式大小資訊 (MP3 non-std)。"
         fi
 
-        local size_threshold_gb=0.28
+        local size_threshold_gb=0.2
         local size_threshold_bytes=$(awk "BEGIN {printf \"%d\", $size_threshold_gb * 1024 * 1024 * 1024}")
         log_message "INFO" "MP3 無標準化：預估大小 = $estimated_size_bytes bytes, 閾值 = $size_threshold_bytes bytes."
         if [[ "$estimated_size_bytes" -gt "$size_threshold_bytes" ]]; then
@@ -1484,7 +1484,7 @@ process_single_mp4() {
             log_message "WARNING" "無法從 yt-dlp 獲取格式大小資訊 (MP4 std)。"
         fi
 
-        local size_threshold_gb=0.5
+        local size_threshold_gb=0.6
         local size_threshold_bytes=$(awk "BEGIN {printf \"%d\", $size_threshold_gb * 1024 * 1024 * 1024}")
         log_message "INFO" "MP4 標準化：預估大小 = $estimated_size_bytes bytes, 閾值 = $size_threshold_bytes bytes."
         if [[ "$estimated_size_bytes" -gt "$size_threshold_bytes" ]]; then
@@ -1688,7 +1688,7 @@ process_single_mp4_no_normalize() {
             log_message "WARNING" "無法從 yt-dlp 獲取格式大小資訊 (yt-dlp exit code: $estimate_exit_code)，詳見 $temp_dir/yt-dlp-estimate.log"
         fi
 
-        local size_threshold_gb=0.5
+        local size_threshold_gb=1.0
         local size_threshold_bytes=$(awk "BEGIN {printf \"%d\", $size_threshold_gb * 1024 * 1024 * 1024}")
 
         log_message "INFO" "MP4 無標準化：預估大小 = $estimated_size_bytes bytes, 閾值 = $size_threshold_bytes bytes."
