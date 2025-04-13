@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.4.18(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v2.4.19(Experimental)" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -103,23 +103,33 @@ save_config() {
 }
 
 ############################################
-# <<< Termux 通知輔助函數 (修正變數名) v2.4.18 >>>
+# <<< Termux 通知輔助函數 (加強除錯) v2.3.19 >>>
 ############################################
 _send_termux_notification() {
+    log_message "DEBUG" "--- Entering _send_termux_notification ---"
+    log_message "DEBUG" "Arg 1 (\$1 - result_code): [$1]"
+    log_message "DEBUG" "Arg 2 (\$2 - notification_title): [$2]"
+    log_message "DEBUG" "Arg 3 (\$3 - msg_content_source): [$3]" # 打印原始 $3
+    log_message "DEBUG" "Arg 4 (\$4 - final_filepath): [$4]"
+
     local result_code="$1"
     local notification_title="$2"
-    # <<< 修改：使用不同的局部變數名接收第三個參數 >>>
-    local msg_content="$3" # <--- 不再使用 base_message
+    local msg_content="$3" # 嘗試再次賦值
     local final_filepath="$4"
 
+    log_message "DEBUG" "Assigned local result_code: [$result_code]"
+    log_message "DEBUG" "Assigned local notification_title: [$notification_title]"
+    log_message "DEBUG" "Assigned local msg_content: [$msg_content]" # 打印賦值後的局部變數
+    log_message "DEBUG" "Assigned local final_filepath: [$final_filepath]"
+
     if [[ "$OS_TYPE" != "termux" ]] || ! command -v termux-notification &> /dev/null; then
-        if [[ "$OS_TYPE" == "termux" ]] && ! command -v termux-notification &> /dev/null; then
-             log_message "INFO" "未找到 termux-notification 命令，跳過通知。"
-        fi
+        # ... (這部分不變) ...
+        log_message "INFO" "未找到 termux-notification 命令或非 Termux，跳過通知。"
+        log_message "DEBUG" "--- Exiting _send_termux_notification (no API/not Termux) ---"
         return
     fi
 
-    local notification_content="" # 初始化最終的通知內容
+    local notification_content=""
     local is_summary_notification=false
 
     if [ -z "$final_filepath" ]; then
@@ -130,39 +140,41 @@ _send_termux_notification() {
     fi
 
     # --- 判斷成功或失敗 ---
+    log_message "DEBUG" "Checking result_code: [$result_code]" # 檢查判斷前的值
     if [ "$result_code" -eq 0 ]; then
+        log_message "DEBUG" "Result code is 0 (Success branch)"
         # --- 處理成功情況 ---
         if $is_summary_notification; then
-            # <<< 修改：使用新的變數名 msg_content >>>
-            notification_content="✅ 成功：$msg_content" # <--- 使用 msg_content
-            log_message "INFO" "準備發送 Termux 成功通知 (總結) for $msg_content" # <-- 日誌也用 msg_content
+            log_message "DEBUG" "Inside success/summary branch. Current msg_content: [$msg_content]" # <<< 關鍵檢查點
+            notification_content="✅ 成功：$msg_content"
+            log_message "INFO" "準備發送 Termux 成功通知 (總結) for $msg_content"
         else
-            # 單項處理
+            # ... (單項成功邏輯) ...
+            log_message "DEBUG" "Inside success/single branch. Current msg_content: [$msg_content]"
             local final_basename=$(basename "$final_filepath" 2>/dev/null)
             if [ -n "$final_basename" ] && [ -f "$final_filepath" ]; then
-                # <<< 修改：使用新的變數名 msg_content >>>
-                notification_content="✅ 成功：$msg_content 已儲存為 '$final_basename'。" # <--- 使用 msg_content
+                notification_content="✅ 成功：$msg_content 已儲存為 '$final_basename'。"
                 log_message "INFO" "準備發送 Termux 成功通知 (單項) for $final_basename"
             else
-                 # <<< 修改：使用新的變數名 msg_content >>>
-                notification_content="⚠️ 成功？：$msg_content 但未找到最終檔案 '$final_basename'。" # <--- 使用 msg_content
-                log_message "WARNING" "準備發送 Termux 成功通知但檔案未找到 (單項) for $msg_content" # <-- 日誌也用 msg_content
+                notification_content="⚠️ 成功？：$msg_content 但未找到最終檔案 '$final_basename'。"
+                log_message "WARNING" "準備發送 Termux 成功通知但檔案未找到 (單項) for $msg_content"
             fi
         fi
     else
+        log_message "DEBUG" "Result code is non-zero (Failure branch)"
         # --- 處理失敗情況 ---
-        # <<< 修改：使用新的變數名 msg_content >>>
-        notification_content="❌ 失敗：$msg_content 處理失敗。請查看輸出或日誌。" # <--- 使用 msg_content
+        log_message "DEBUG" "Inside failure branch. Current msg_content: [$msg_content]" # <<< 關鍵檢查點
+        notification_content="❌ 失敗：$msg_content 處理失敗。請查看輸出或日誌。"
         if $is_summary_notification; then
-            log_message "INFO" "準備發送 Termux 失敗通知 (總結) for $msg_content" # <-- 日誌也用 msg_content
+            log_message "INFO" "準備發送 Termux 失敗通知 (總結) for $msg_content"
         else
-             log_message "INFO" "準備發送 Termux 失敗通知 (單項) for $msg_content" # <-- 日誌也用 msg_content
+             log_message "INFO" "準備發送 Termux 失敗通知 (單項) for $msg_content"
         fi
     fi
 
     # --- 發送通知 ---
     if [ -n "$notification_content" ]; then
-        log_message "INFO" "Termux notification content to send: [$notification_content]"
+        log_message "INFO" "Termux notification content to send: [$notification_content]" # 檢查最終內容
         if ! termux-notification --title "$notification_title" --content "$notification_content"; then
             log_message "WARNING" "執行 termux-notification 命令失敗。"
         else
@@ -171,6 +183,7 @@ _send_termux_notification() {
     else
          log_message "WARNING" "Notification content is empty, skipping sending notification."
     fi
+    log_message "DEBUG" "--- Exiting _send_termux_notification ---"
 }
 
 ############################################
