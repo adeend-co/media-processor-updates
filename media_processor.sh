@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.4.14(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v2.4.15(Experimental)" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -2707,14 +2707,19 @@ _process_youtube_playlist() {
     log_message "SUCCESS" "播放清單 $playlist_url 完成！共 $count 個，成功 $success_count 個，失敗 $fail_count 個"
 
     # --- <<< 新增：發送總結通知 >>> ---
-    local notification_title="媒體處理器：播放清單完成"
-    local base_msg_notify="播放清單處理完成 ($success_count/$count 成功)"
-    local overall_result=0
-    # 如果有任何失敗，將總體結果標記為失敗（為了通知圖標）
-    if [[ "$fail_count" -gt 0 ]]; then
+        local overall_result=0
+    # 如果失敗計數 大於 0
+    if [ "$fail_count" -gt 0 ]; then
+         log_message "DEBUG" "Playlist fail_count ($fail_count) > 0, setting overall_result=1"
          overall_result=1
+    else
+         # 確保如果 fail_count 等於 0，overall_result 絕對是 0
+         log_message "DEBUG" "Playlist fail_count ($fail_count) <= 0, ensuring overall_result=0"
+         overall_result=0
     fi
-    # 調用通知函數，第四個參數（檔案路徑）對於總結通知無意義，傳空字串
+    # 添加一個調試輸出，確認傳遞前的值
+    log_message "DEBUG" "Calling notification with overall_result = $overall_result"
+    # 調用通知函數
     _send_termux_notification "$overall_result" "$notification_title" "$base_msg_notify" ""
     # --- 通知結束 ---
 
