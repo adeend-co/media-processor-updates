@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.4.15(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v2.4.16(Experimental)" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -103,45 +103,71 @@ save_config() {
 }
 
 ############################################
-# <<< 新增：Termux 通知輔助函數 (移除 ID) >>>
+# <<< Termux 通知輔助函數 (修正播放清單判斷) v2.4.16 >>>
 ############################################
 _send_termux_notification() {
-    # $1: Result code (0 for success, non-zero for failure)
-    # $2: Notification Title (e.g., "媒體處理器：MP4")
-    # $3: Base message (e.g., "處理影片 'Title'") <-- ID 已移除
-    # $4: Final file path (used to get basename on success)
-
     local result_code="$1"
     local notification_title="$2"
-    local base_message="$3" # ID 已從這裡移除
-    local final_filepath="$4"
+    local base_message="$3"
+    local final_filepath="$4" # 第四個參數，單項處理時是路徑，播放清單時是空
 
-    # 檢查是否為 Termux 環境以及命令是否存在
     if [[ "$OS_TYPE" != "termux" ]] || ! command -v termux-notification &> /dev/null; then
         if [[ "$OS_TYPE" == "termux" ]] && ! command -v termux-notification &> /dev/null; then
              log_message "INFO" "未找到 termux-notification 命令，跳過通知。"
         fi
-        return # 非 Termux 或無命令，直接返回
+        return
     fi
 
     local notification_content=""
-    local final_basename=$(basename "$final_filepath" 2>/dev/null) # 安全獲取檔名
+    local is_summary_notification=false
 
-    if [ "$result_code" -eq 0 ] && [ -n "$final_basename" ] && [ -f "$final_filepath" ]; then
-        # 成功訊息 (不含 ID)
-        notification_content="✅ 成功：$base_message 已儲存為 '$final_basename'。"
-        log_message "INFO" "準備發送 Termux 成功通知 for $final_basename"
+    # <<< 新增：判斷是否為總結通知 (基於第四個參數是否為空) >>>
+    if [ -z "$final_filepath" ]; then
+        is_summary_notification=true
+        log_message "DEBUG" "判定為播放清單/總結通知 (filepath is empty)"
     else
-        # 失敗訊息 (不含 ID)
-        notification_content="❌ 失敗：$base_message 處理失敗。請查看輸出或日誌。"
-        log_message "INFO" "準備發送 Termux 失敗通知 for $base_message"
+         log_message "DEBUG" "判定為單項處理通知 (filepath: $final_filepath)"
     fi
 
-    # 發送通知
-    if ! termux-notification --title "$notification_title" --content "$notification_content"; then
-        log_message "WARNING" "執行 termux-notification 命令失敗。"
+    # --- 判斷成功或失敗 ---
+    if [ "$result_code" -eq 0 ]; then
+        # --- 處理成功情況 ---
+        if $is_summary_notification; then
+            # 總結通知的成功訊息 (不需要檔名)
+            notification_content="✅ 成功：$base_message"
+            log_message "INFO" "準備發送 Termux 成功通知 (總結) for $base_message"
+        else
+            # 單項處理的成功訊息 (需要檢查檔名)
+            local final_basename=$(basename "$final_filepath" 2>/dev/null)
+            if [ -n "$final_basename" ] && [ -f "$final_filepath" ]; then
+                notification_content="✅ 成功：$base_message 已儲存為 '$final_basename'。"
+                log_message "INFO" "準備發送 Termux 成功通知 (單項) for $final_basename"
+            else
+                # 如果成功了但最終檔案找不到 (異常情況)
+                notification_content="⚠️ 成功？：$base_message 但未找到最終檔案 '$final_basename'。"
+                log_message "WARNING" "準備發送 Termux 成功通知但檔案未找到 (單項) for $base_message"
+            fi
+        fi
     else
-        log_message "INFO" "Termux 通知已成功發送。"
+        # --- 處理失敗情況 ---
+        # 無論是總結還是單項，失敗訊息格式可以一樣
+        notification_content="❌ 失敗：$base_message 處理失敗。請查看輸出或日誌。"
+        if $is_summary_notification; then
+            log_message "INFO" "準備發送 Termux 失敗通知 (總結) for $base_message"
+        else
+             log_message "INFO" "準備發送 Termux 失敗通知 (單項) for $base_message"
+        fi
+    fi
+
+    # --- 發送通知 ---
+    if [ -n "$notification_content" ]; then # 確保內容不是空的
+        if ! termux-notification --title "$notification_title" --content "$notification_content"; then
+            log_message "WARNING" "執行 termux-notification 命令失敗。"
+        else
+            log_message "INFO" "Termux 通知已成功發送。"
+        fi
+    else
+         log_message "WARNING" "Notification content is empty, skipping sending notification."
     fi
 }
 
