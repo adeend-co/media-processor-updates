@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.4.16(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v2.4.17(Experimental)" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -160,8 +160,12 @@ _send_termux_notification() {
     fi
 
     # --- 發送通知 ---
-    if [ -n "$notification_content" ]; then # 確保內容不是空的
+    if [ -n "$notification_content" ]; then
+        log_message "INFO" "Termux notification content to send: [$notification_content]" # 增加日誌查看最終內容
+        # <<< 修改：確保內容被正確引用 >>>
         if ! termux-notification --title "$notification_title" --content "$notification_content"; then
+        # 或者嘗試更強的引用 (雖然通常不需要)
+        # if ! termux-notification --title "$notification_title" --content "'$notification_content'"; then
             log_message "WARNING" "執行 termux-notification 命令失敗。"
         else
             log_message "INFO" "Termux 通知已成功發送。"
@@ -169,7 +173,7 @@ _send_termux_notification() {
     else
          log_message "WARNING" "Notification content is empty, skipping sending notification."
     fi
-}
+} # 函數結束
 
 ############################################
 # <<< 修改：載入設定檔 (安全解析版，取代 source) >>>(2.3.9+)
