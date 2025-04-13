@@ -1104,9 +1104,9 @@ process_single_mp3() {
             log_message "WARNING" "無法從 yt-dlp 獲取有效的時長資訊 (MP3 std)。"
         fi
 
-        # 設定閾值：> 1 小時 (3600 秒)
-        local duration_threshold_secs=3600
-        log_message "INFO" "MP3 標準化：媒體時長 = $duration_secs 秒, 通知閾值 = $duration_threshold_secs 秒 (1小時)."
+        # 設定閾值：> 0.5 小時 (1800 秒)
+        local duration_threshold_secs=1800
+        log_message "INFO" "MP3 標準化：媒體時長 = $duration_secs 秒, 通知閾值 = $duration_threshold_secs 秒 (0.5小時)."
         if [[ "$duration_secs" -gt "$duration_threshold_secs" ]]; then
             log_message "INFO" "MP3 標準化：媒體時長超過閾值，啟用通知。"
             should_notify=true
@@ -1436,9 +1436,9 @@ process_single_mp4() {
             log_message "WARNING" "無法從 yt-dlp 獲取有效的時長資訊 (MP4 std)。"
         fi
 
-        # 設定閾值：> 1 小時 (3600 秒) - 與MP3標準化保持一致，也可按需調整
-        local duration_threshold_secs=3600
-        log_message "INFO" "MP4 標準化：媒體時長 = $duration_secs 秒, 通知閾值 = $duration_threshold_secs 秒 (1小時)."
+        # 設定閾值：> 0.35 小時 (1260 秒) - 與MP3標準化保持一致，也可按需調整
+        local duration_threshold_secs=1260
+        log_message "INFO" "MP4 標準化：媒體時長 = $duration_secs 秒, 通知閾值 = $duration_threshold_secs 秒 (0.35小時)."
         if [[ "$duration_secs" -gt "$duration_threshold_secs" ]]; then
             log_message "INFO" "MP4 標準化：媒體時長超過閾值，啟用通知。"
             should_notify=true
