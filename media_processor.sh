@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.4.21(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v2.4.22(Experimental)" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -103,67 +103,51 @@ save_config() {
 }
 
 ############################################
-# <<< Termux 通知輔助函數 (加強除錯) v2.3.19 >>>
+# <<< Termux 通知輔助函數 (最終版) v2.4.22+ >>>
 ############################################
 _send_termux_notification() {
-  #  log_message "DEBUG" "--- Entering _send_termux_notification ---"
-  #  log_message "DEBUG" "Arg 1 (\$1 - result_code): [$1]"
-  #  log_message "DEBUG" "Arg 2 (\$2 - notification_title): [$2]"
-  #  log_message "DEBUG" "Arg 3 (\$3 - msg_content_source): [$3]" # 打印原始 $3
-  #  log_message "DEBUG" "Arg 4 (\$4 - final_filepath): [$4]"
-
     local result_code="$1"
     local notification_title="$2"
-    local msg_content="$3" # 嘗試再次賦值
+    local msg_content="$3"
     local final_filepath="$4"
 
-  #  log_message "DEBUG" "Assigned local result_code: [$result_code]"
-  #  log_message "DEBUG" "Assigned local notification_title: [$notification_title]"
-  #  log_message "DEBUG" "Assigned local msg_content: [$msg_content]" # 打印賦值後的局部變數
-  #  log_message "DEBUG" "Assigned local final_filepath: [$final_filepath]"
-
+    # 檢查環境和命令
     if [[ "$OS_TYPE" != "termux" ]] || ! command -v termux-notification &> /dev/null; then
-        # ... (這部分不變) ...
-        log_message "INFO" "未找到 termux-notification 命令或非 Termux，跳過通知。"
-  #      log_message "DEBUG" "--- Exiting _send_termux_notification (no API/not Termux) ---"
+        if [[ "$OS_TYPE" == "termux" ]] && ! command -v termux-notification &> /dev/null; then
+             log_message "INFO" "未找到 termux-notification 命令，跳過通知。"
+        fi
         return
     fi
 
     local notification_content=""
     local is_summary_notification=false
 
+    # 判斷是否為總結通知
     if [ -z "$final_filepath" ]; then
         is_summary_notification=true
-  #      log_message "DEBUG" "判定為播放清單/總結通知 (filepath is empty)"
-    else
-  #       log_message "DEBUG" "判定為單項處理通知 (filepath: $final_filepath)"
     fi
 
     # --- 判斷成功或失敗 ---
-  #  log_message "DEBUG" "Checking result_code: [$result_code]" # 檢查判斷前的值
     if [ "$result_code" -eq 0 ]; then
-  #      log_message "DEBUG" "Result code is 0 (Success branch)"
         # --- 處理成功情況 ---
         if $is_summary_notification; then
-  #          log_message "DEBUG" "Inside success/summary branch. Current msg_content: [$msg_content]" # <<< 關鍵檢查點
+            # 總結通知的成功訊息
             notification_content="✅ 成功：$msg_content"
             log_message "INFO" "準備發送 Termux 成功通知 (總結) for $msg_content"
         else
-            # ... (單項成功邏輯) ...
-  #          log_message "DEBUG" "Inside success/single branch. Current msg_content: [$msg_content]"
+            # 單項處理的成功訊息
             local final_basename=$(basename "$final_filepath" 2>/dev/null)
             if [ -n "$final_basename" ] && [ -f "$final_filepath" ]; then
                 notification_content="✅ 成功：$msg_content 已儲存為 '$final_basename'。"
                 log_message "INFO" "準備發送 Termux 成功通知 (單項) for $final_basename"
             else
+                # 異常情況
                 notification_content="⚠️ 成功？：$msg_content 但未找到最終檔案 '$final_basename'。"
                 log_message "WARNING" "準備發送 Termux 成功通知但檔案未找到 (單項) for $msg_content"
             fi
         fi
     else
-  #      log_message "DEBUG" "Result code is non-zero (Failure branch)"
         # --- 處理失敗情況 ---
-  #      log_message "DEBUG" "Inside failure branch. Current msg_content: [$msg_content]" # <<< 關鍵檢查點
         notification_content="❌ 失敗：$msg_content 處理失敗。請查看輸出或日誌。"
         if $is_summary_notification; then
             log_message "INFO" "準備發送 Termux 失敗通知 (總結) for $msg_content"
@@ -174,7 +158,7 @@ _send_termux_notification() {
 
     # --- 發送通知 ---
     if [ -n "$notification_content" ]; then
-        log_message "INFO" "Termux notification content to send: [$notification_content]" # 檢查最終內容
+        # log_message "INFO" "Termux notification content to send: [$notification_content]" # DEBUG 已移除
         if ! termux-notification --title "$notification_title" --content "$notification_content"; then
             log_message "WARNING" "執行 termux-notification 命令失敗。"
         else
@@ -183,7 +167,6 @@ _send_termux_notification() {
     else
          log_message "WARNING" "Notification content is empty, skipping sending notification."
     fi
- #   log_message "DEBUG" "--- Exiting _send_termux_notification ---"
 }
 
 ############################################
@@ -2693,14 +2676,14 @@ _get_playlist_video_count() {
 
 ############################################
 # 新增：輔助函數 - 處理 YouTube 播放清單通用流程
-# <<< 修改：改為僅在播放清單完成後發送總結通知 v2.4.14+ >>>
+# <<< v2.4.22+：僅總結通知，去除 DEBUG >>>
 ############################################
 _process_youtube_playlist() {
     local playlist_url="$1"; local single_item_processor_func_name="$2"
     log_message "INFO" "處理 YouTube 播放列表: $playlist_url (處理器: $single_item_processor_func_name)"
     echo -e "${YELLOW}檢測到播放清單，開始批量處理...${RESET}"
 
-    # --- 獲取數量 (保持不變) ---
+    # --- 獲取數量 ---
     local raw_count_output
     raw_count_output=$(_get_playlist_video_count "$playlist_url")
     local total_videos_str
@@ -2713,7 +2696,7 @@ _process_youtube_playlist() {
     local total_videos="$total_videos_str"
     echo -e "${CYAN}播放清單共有 $total_videos 個影片${RESET}"
 
-    # --- 獲取 IDs (保持不變) ---
+    # --- 獲取 IDs ---
     local playlist_ids_output; local yt_dlp_ids_args=(yt-dlp --flat-playlist -j "$playlist_url")
     playlist_ids_output=$("${yt_dlp_ids_args[@]}" 2>/dev/null); local gec=$?; if [ $gec -ne 0 ] || ! command -v jq &> /dev/null ; then log_message "ERROR" "無法獲取播放清單 IDs..."; echo -e "${RED}錯誤：無法獲取影片 ID 列表${RESET}"; return 1; fi
     local playlist_ids=(); while IFS= read -r id; do if [[ -n "$id" ]]; then playlist_ids+=("$id"); fi; done <<< "$(echo "$playlist_ids_output" | jq -r '.id // empty')"
@@ -2725,18 +2708,18 @@ _process_youtube_playlist() {
     fi
 
     # --- 循環處理 ---
-    local count=0; local success_count=0; local fail_count=0 # 新增失敗計數
+    local count=0; local success_count=0; local fail_count=0
     for id in "${playlist_ids[@]}"; do
         count=$((count + 1));
         local video_url="https://www.youtube.com/watch?v=$id"
 
         log_message "INFO" "[$count/$total_videos] 處理影片: $video_url"; echo -e "${CYAN}--- 正在處理第 $count/$total_videos 個影片 ---${RESET}"
 
-        # <<< 修改：不再傳遞 "playlist_mode" 標記 >>>
+        # 調用單項處理函數 (不傳遞模式標記)
         if "$single_item_processor_func_name" "$video_url"; then
             success_count=$((success_count + 1))
         else
-            fail_count=$((fail_count + 1)) # 記錄失敗次數
+            fail_count=$((fail_count + 1))
             log_message "WARNING" "...處理失敗: $video_url"
             echo -e "${RED}處理失敗: $video_url${RESET}"
         fi
@@ -2747,26 +2730,18 @@ _process_youtube_playlist() {
     echo -e "${GREEN}播放清單處理完成！共 $count 個影片，成功 $success_count 個，失敗 $fail_count 個${RESET}";
     log_message "SUCCESS" "播放清單 $playlist_url 完成！共 $count 個，成功 $success_count 個，失敗 $fail_count 個"
 
-    # --- <<< 修改：加強參數傳遞 v2.3.20 >>> ---
-    local nt="媒體處理器：播放清單完成" # 使用非常短的變數名
-    local bm="播放清單處理完成 ($success_count/$count 成功)" # 使用非常短的變數名
+    # --- 發送總結通知 ---
     local ovr=0
     if [ "$fail_count" -gt 0 ]; then
- #        log_message "DEBUG" "Playlist fail_count ($fail_count) > 0, setting ovr=1"
          ovr=1
-    else
- #        log_message "DEBUG" "Playlist fail_count ($fail_count) <= 0, ensuring ovr=0"
-         ovr=0
+    # else # 不需要 else，ovr 預設為 0
+    #     ovr=0
     fi
- #   log_message "DEBUG" "Calling notification with ovr = $ovr"
- #   log_message "DEBUG" "Value of nt before call: [$nt]"
- #   log_message "DEBUG" "Value of bm before call: [$bm]"
-
-    # 直接在調用時使用字串和變數，避免中間變數的潛在問題
+    # 直接在調用時使用字串
     _send_termux_notification "$ovr" "媒體處理器：播放清單完成" "播放清單處理完成 ($success_count/$count 成功)" ""
     # --- 通知結束 ---
 
-    return 0 # 播放清單函數本身返回成功
+    return 0
 }
 
 # ================================================
