@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.4.13(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v2.4.14(Experimental)" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -1070,11 +1070,11 @@ process_single_mp3() {
     local is_playlist=false
     local output_audio="" # 初始化最終輸出路徑
 
-    if [[ "$mode" == "playlist_mode" ]]; then
-        is_playlist=true
-        should_notify=true
-        log_message "INFO" "MP3 標準化：播放清單模式，啟用通知。"
-    fi
+  #  if [[ "$mode" == "playlist_mode" ]]; then
+  #      is_playlist=true
+  #      should_notify=true
+  #      log_message "INFO" "MP3 標準化：播放清單模式，啟用通知。"
+  #  fi
 
     # --- 獲取資訊 ---
     local video_title video_id sanitized_title
@@ -1231,11 +1231,11 @@ process_single_mp3_no_normalize() {
     local is_playlist=false
     local output_audio=""
 
-    if [[ "$mode" == "playlist_mode" ]]; then
-        is_playlist=true
-        should_notify=true
-        log_message "INFO" "MP3 無標準化：播放清單模式，啟用通知。"
-    fi
+  #  if [[ "$mode" == "playlist_mode" ]]; then
+  #      is_playlist=true
+  #      should_notify=true
+  #      log_message "INFO" "MP3 無標準化：播放清單模式，啟用通知。"
+  #  fi
 
     # --- 獲取資訊 ---
     local video_title video_id sanitized_title
@@ -1395,11 +1395,11 @@ process_single_mp4() {
     local video_file=""
     local output_video="" # 初始化最終輸出路徑
 
-    if [[ "$mode" == "playlist_mode" ]]; then
-        is_playlist=true
-        should_notify=true
-        log_message "INFO" "MP4 標準化：播放清單模式，啟用通知。"
-    fi
+  #  if [[ "$mode" == "playlist_mode" ]]; then
+  #      is_playlist=true
+  #      should_notify=true
+  #      log_message "INFO" "MP4 標準化：播放清單模式，啟用通知。"
+  #  fi
 
     # --- 獲取資訊 ---
     local video_title video_id sanitized_title
@@ -1578,11 +1578,11 @@ process_single_mp4_no_normalize() {
     local is_playlist=false
 
     # <<< 新增：判斷是否為播放清單模式 >>>
-    if [[ "$mode" == "playlist_mode" ]]; then
-        is_playlist=true
-        should_notify=true # 播放清單模式下總是通知
-        log_message "INFO" "MP4 無標準化：播放清單模式，啟用通知。"
-    fi
+  #  if [[ "$mode" == "playlist_mode" ]]; then
+  #      is_playlist=true
+  #      should_notify=true # 播放清單模式下總是通知
+  #      log_message "INFO" "MP4 無標準化：播放清單模式，啟用通知。"
+  #  fi
 
     echo -e "${YELLOW}處理 YouTube 影片 (無標準化)：$video_url${RESET}"; log_message "INFO" "處理 YouTube 影片 (無標準化): $video_url"; log_message "INFO" "嘗試字幕: $target_sub_langs"
     echo -e "${YELLOW}嘗試下載繁/簡/通用中文字幕...${RESET}"
@@ -2649,70 +2649,76 @@ _get_playlist_video_count() {
     if ! [[ "$total_videos" =~ ^[0-9]+$ ]] || [ "$total_videos" -eq 0 ]; then local json_output=$(yt-dlp --dump-single-json "$url" 2>/dev/null); if [ -n "$json_output" ]; then local json_output_clean=$(echo "$json_output" | sed -n '/^{/,$p'); if [ -n "$json_output_clean" ] && command -v jq &>/dev/null; then if echo "$json_output_clean" | jq -e '.entries' > /dev/null 2>&1; then total_videos=$(echo "$json_output_clean" | jq '.entries | length'); elif echo "$json_output_clean" | jq -e '.n_entries' > /dev/null 2>&1; then total_videos=$(echo "$json_output_clean" | jq '.n_entries'); elif echo "$json_output_clean" | jq -e '.playlist_count' > /dev/null 2>&1; then total_videos=$(echo "$json_output_clean" | jq '.playlist_count'); fi; fi; fi; fi
     if ! [[ "$total_videos" =~ ^[0-9]+$ ]] || [ -z "$total_videos" ] || [ "$total_videos" -eq 0 ]; then log_message "ERROR" "無法獲取播放清單數量 for $url"; echo ""; else log_message "INFO" "獲取到 $total_videos 個影片 for $url"; echo "$total_videos"; fi
 }
+
 ############################################
 # 新增：輔助函數 - 處理 YouTube 播放清單通用流程
+# <<< 修改：改為僅在播放清單完成後發送總結通知 v2.4.14+ >>>
 ############################################
 _process_youtube_playlist() {
-    # --- 函數邏輯不變 ---
     local playlist_url="$1"; local single_item_processor_func_name="$2"
     log_message "INFO" "處理 YouTube 播放列表: $playlist_url (處理器: $single_item_processor_func_name)"
     echo -e "${YELLOW}檢測到播放清單，開始批量處理...${RESET}"
 
-    # --- !!! 修改點開始 !!! ---
-    # 先執行 _get_playlist_video_count 並捕獲其完整輸出
+    # --- 獲取數量 (保持不變) ---
     local raw_count_output
     raw_count_output=$(_get_playlist_video_count "$playlist_url")
-    
-    # 從捕獲的輸出中，提取最後一行看起來像數字的部分
-    # grep -oE '[0-9]+$' 會嘗試匹配行尾的數字
-    # tail -n 1 確保只取最後一行匹配到的數字 (以防萬一有多行數字)
     local total_videos_str
     total_videos_str=$(echo "$raw_count_output" | grep -oE '[0-9]+$' | tail -n 1)
-
-    # 檢查提取結果是否為純數字
     if ! [[ "$total_videos_str" =~ ^[0-9]+$ ]]; then
         log_message "ERROR" "無法從 _get_playlist_video_count 的輸出中提取有效的影片數量。原始輸出: $raw_count_output"
         echo -e "${RED}錯誤：無法解析播放清單數量。原始輸出:\n$raw_count_output${RESET}"
         return 1
     fi
-    local total_videos="$total_videos_str" # 將提取到的純數字字串賦值給 total_videos
-    # --- !!! 修改點結束 !!! ---
+    local total_videos="$total_videos_str"
+    echo -e "${CYAN}播放清單共有 $total_videos 個影片${RESET}"
 
-    # 接下來的邏輯使用已經清理過的 $total_videos 變數
-    echo -e "${CYAN}播放清單共有 $total_videos 個影片${RESET}" 
-
+    # --- 獲取 IDs (保持不變) ---
     local playlist_ids_output; local yt_dlp_ids_args=(yt-dlp --flat-playlist -j "$playlist_url")
     playlist_ids_output=$("${yt_dlp_ids_args[@]}" 2>/dev/null); local gec=$?; if [ $gec -ne 0 ] || ! command -v jq &> /dev/null ; then log_message "ERROR" "無法獲取播放清單 IDs..."; echo -e "${RED}錯誤：無法獲取影片 ID 列表${RESET}"; return 1; fi
     local playlist_ids=(); while IFS= read -r id; do if [[ -n "$id" ]]; then playlist_ids+=("$id"); fi; done <<< "$(echo "$playlist_ids_output" | jq -r '.id // empty')"
     if [ ${#playlist_ids[@]} -eq 0 ]; then log_message "ERROR" "未找到影片 ID..."; echo -e "${RED}錯誤：未找到影片 ID${RESET}"; return 1; fi
-
-    # --- 這裡的數字比較現在應該可以正常工作了 ---
-    if [ ${#playlist_ids[@]} -ne "$total_videos" ]; then 
+    if [ ${#playlist_ids[@]} -ne "$total_videos" ]; then
         log_message "WARNING" "ID 數量 (${#playlist_ids[@]}) 與獲取的總數 ($total_videos) 不符，將以實際 ID 數量為準..."
         echo -e "${YELLOW}警告：實際數量 (${#playlist_ids[@]}) 與預計 ($total_videos) 不符，將以下載列表為準...${RESET}"
-        total_videos=${#playlist_ids[@]} # 更新 total_videos 為實際 ID 數
+        total_videos=${#playlist_ids[@]}
     fi
 
-    local count=0; local success_count=0
+    # --- 循環處理 ---
+    local count=0; local success_count=0; local fail_count=0 # 新增失敗計數
     for id in "${playlist_ids[@]}"; do
-        count=$((count + 1)); 
+        count=$((count + 1));
         local video_url="https://www.youtube.com/watch?v=$id"
-        
-        # --- 這裡的進度顯示現在也應該正常了 ---
+
         log_message "INFO" "[$count/$total_videos] 處理影片: $video_url"; echo -e "${CYAN}--- 正在處理第 $count/$total_videos 個影片 ---${RESET}"
-        
-        # 調用單個項目處理器
-        if "$single_item_processor_func_name" "$video_url" "playlist_mode"; then 
+
+        # <<< 修改：不再傳遞 "playlist_mode" 標記 >>>
+        if "$single_item_processor_func_name" "$video_url"; then
             success_count=$((success_count + 1))
-        else 
+        else
+            fail_count=$((fail_count + 1)) # 記錄失敗次數
             log_message "WARNING" "...處理失敗: $video_url"
-            echo -e "${RED}處理失敗: $video_url${RESET}" # 也可以加上用戶提示
+            echo -e "${RED}處理失敗: $video_url${RESET}"
         fi
-        echo "" # 保留處理間隔的空行
+        echo ""
     done
 
-    echo -e "${GREEN}播放清單處理完成！共 $count 個影片，成功 $success_count 個${RESET}"; log_message "SUCCESS" "播放清單 $playlist_url 完成！共 $count 個，成功 $success_count 個"
-    return 0
+    # --- 完成後報告 (控制台) ---
+    echo -e "${GREEN}播放清單處理完成！共 $count 個影片，成功 $success_count 個，失敗 $fail_count 個${RESET}";
+    log_message "SUCCESS" "播放清單 $playlist_url 完成！共 $count 個，成功 $success_count 個，失敗 $fail_count 個"
+
+    # --- <<< 新增：發送總結通知 >>> ---
+    local notification_title="媒體處理器：播放清單完成"
+    local base_msg_notify="播放清單處理完成 ($success_count/$count 成功)"
+    local overall_result=0
+    # 如果有任何失敗，將總體結果標記為失敗（為了通知圖標）
+    if [[ "$fail_count" -gt 0 ]]; then
+         overall_result=1
+    fi
+    # 調用通知函數，第四個參數（檔案路徑）對於總結通知無意義，傳空字串
+    _send_termux_notification "$overall_result" "$notification_title" "$base_msg_notify" ""
+    # --- 通知結束 ---
+
+    return 0 # 播放清單函數本身返回成功
 }
 
 # ================================================
