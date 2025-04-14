@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # estimate_size.py (with extensive debugging)
-# Version: v1.1.1(Experimental-Debug) # <<< 標註為除錯版本
 
 import sys
 import subprocess
@@ -12,7 +11,7 @@ import re
 import os # For checking file existence
 
 # --- 全局變數 ---
-SCRIPT_VERSION = "v1.1.1(Experimental-Debug)"
+SCRIPT_VERSION = "v1.1.3(Experimental-Debug)"
 DEBUG_ENABLED = True # Set to False to disable debug prints
 
 def debug_print(*args, **kwargs):
@@ -177,23 +176,30 @@ def sort_key(fmt):
     # 將 has_valid_size 放在最前面，確保有大小的排在前面
     return (has_valid_size, height, video_rate, abr, size)
 
-try:
-    # 保持排序調用不變 (reverse=True 意味著優先級高的值排前面)
-    matching_formats.sort(key=sort_key, reverse=True)
-    debug_print(f"  select_best_filtered_format: Sorting complete (prioritizing valid size).")
+    # <<< 在 sort_key 函數定義之後 >>>
 
+    try:
+        # 排序 (在 try 塊內部)
+        matching_formats.sort(key=sort_key, reverse=True)
+        debug_print(f"  select_best_filtered_format: Sorting complete (prioritizing valid size).")
+
+        # <<< 這三行應該放在 try 塊內部，緊接在 sort 和 debug_print 之後 >>>
+        selected_format = matching_formats[0]
+        debug_print(f"  select_best_filtered_format: Selected Best for '{selector}': ID={selected_format.get('format_id', 'N/A')}, Size={get_format_size(selected_format)}")
+        return selected_format
+
+    # <<< except 與 try 對齊 >>>
     except Exception as e:
+        # except 塊內部縮排
         error_print(f"  select_best_filtered_format: Error during sorting: {e}")
-        # Fallback: return the first unsorted match if sorting fails?
+        # Fallback
         if matching_formats:
              warning_print("  select_best_filtered_format: Returning first match due to sorting error.")
              return matching_formats[0]
         else:
-             return None # Should not happen if matching_formats was not empty
+             return None
 
-    selected_format = matching_formats[0]
-    debug_print(f"  select_best_filtered_format: Selected Best for '{selector}': ID={selected_format.get('format_id', 'N/A')}, Size={get_format_size(selected_format)}")
-    return selected_format
+# <<< 函數定義結束 >>>
 
 
 # --- Main Execution ---
