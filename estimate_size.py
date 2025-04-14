@@ -11,7 +11,7 @@ import re
 import os # For checking file existence
 
 # --- 全局變數 ---
-SCRIPT_VERSION = "v1.1.11(Experimental-Debug)" # Keep your version
+SCRIPT_VERSION = "v1.1.12(Experimental-Debug)" # Keep your version
 DEBUG_ENABLED = True # Set to False to disable debug prints
 
 def debug_print(*args, **kwargs):
@@ -105,9 +105,11 @@ def select_best_filtered_format(available_formats, selector):
             if is_audio_only: type_match_passed = True
         elif base_selector == 'b' or base_selector == 'best':
             if is_video_only or is_audio_only or is_merged: type_match_passed = True
-        else: # Assume specific ID or other selector yt-dlp understands
-            type_match_passed = True # Default to True, rely on filters
-
+                # <<< 修改 else: 只有在 base_selector 不是已知類型時才認為通過 >>>
+        elif base_selector not in ['bv', 'ba', 'b', 'best']:
+             debug_print(f"    Unknown base selector '{base_selector}'. Assuming specific ID/filter reliance. TypeMatchPassed=True")
+             type_match_passed = True # Assume specific ID or rely on filters
+        # <<< 如果以上都不匹配 (例如 base 是 bv 但 is_video_only 是 False)，則 type_match_passed 保持 False >>>
         # --- Determine if the format passes explicit filters ---
         filters_passed = format_matches_filters(fmt, filters)
 
