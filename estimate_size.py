@@ -12,7 +12,7 @@ import re
 import os # For checking file existence
 
 # --- 全局變數 ---
-SCRIPT_VERSION = "v1.1.0(Experimental-Debug)"
+SCRIPT_VERSION = "v1.1.1(Experimental-Debug)"
 DEBUG_ENABLED = True # Set to False to disable debug prints
 
 def debug_print(*args, **kwargs):
@@ -160,27 +160,27 @@ def select_best_filtered_format(available_formats, selector):
     #     debug_print(f"    Match (unsorted): ID={fmt.get('format_id')}, H={fmt.get('height')}, W={fmt.get('width')}, TBR={fmt.get('tbr')}, VBR={fmt.get('vbr')}, ABR={fmt.get('abr')}, Size={get_format_size(fmt)}, Ext={fmt.get('ext')}")
 
 
-    # Sort matching formats: higher resolution/quality first, then larger filesize
-    def sort_key(fmt):
-        # Prioritize video resolution (height)
-        height = fmt.get('height') if isinstance(fmt.get('height'), int) else 0
-        # Then video bitrate (vbr) or total bitrate (tbr) if vbr is missing
-        vbr = fmt.get('vbr') if isinstance(fmt.get('vbr'), (int, float)) else 0
-        tbr = fmt.get('tbr') if isinstance(fmt.get('tbr'), (int, float)) else 0
-        video_rate = vbr if vbr > 0 else tbr # Use tbr as fallback for video quality proxy
-        # Then audio bitrate (abr)
-        abr = fmt.get('abr') if isinstance(fmt.get('abr'), (int, float)) else 0
-        # Lastly, file size as tie-breaker
-        size = get_format_size(fmt)
-        # debug_print(f"      Sort Key for ID {fmt.get('format_id')}: Height={height}, VideoRate={video_rate}, AudioRate={abr}, Size={size}")
-        return (height, video_rate, abr, size)
+    # In select_best_filtered_format function:
+def sort_key(fmt):
+    # <<< 新增：優先級基於是否有有效大小 >>>
+    size = get_format_size(fmt)
+    has_valid_size = 1 if size > 0 else 0 # 1 if size > 0, 0 otherwise
 
-    try:
-        matching_formats.sort(key=sort_key, reverse=True)
-        debug_print(f"  select_best_filtered_format: Sorting complete.")
-        # Print details after sorting
-        # for fmt in matching_formats:
-        #     debug_print(f"    Match (sorted): ID={fmt.get('format_id')}, H={fmt.get('height')}, VR={fmt.get('vbr') or fmt.get('tbr')}, AR={fmt.get('abr')}, Size={get_format_size(fmt)}")
+    # 後續排序條件
+    height = fmt.get('height') if isinstance(fmt.get('height'), int) else 0
+    vbr = fmt.get('vbr') if isinstance(fmt.get('vbr'), (int, float)) else 0
+    tbr = fmt.get('tbr') if isinstance(fmt.get('tbr'), (int, float)) else 0
+    video_rate = vbr if vbr > 0 else tbr
+    abr = fmt.get('abr') if isinstance(fmt.get('abr'), (int, float)) else 0
+
+    # 返回一個元組，優先級從左到右
+    # 將 has_valid_size 放在最前面，確保有大小的排在前面
+    return (has_valid_size, height, video_rate, abr, size)
+
+try:
+    # 保持排序調用不變 (reverse=True 意味著優先級高的值排前面)
+    matching_formats.sort(key=sort_key, reverse=True)
+    debug_print(f"  select_best_filtered_format: Sorting complete (prioritizing valid size).")
 
     except Exception as e:
         error_print(f"  select_best_filtered_format: Error during sorting: {e}")
