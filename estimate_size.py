@@ -11,7 +11,7 @@ import re
 import os # For checking file existence
 
 # --- 全局變數 ---
-SCRIPT_VERSION = "v1.1.3(Experimental-Debug)"
+SCRIPT_VERSION = "v1.1.4(Experimental-Debug)"
 DEBUG_ENABLED = True # Set to False to disable debug prints
 
 def debug_print(*args, **kwargs):
@@ -176,28 +176,53 @@ def sort_key(fmt):
     # 將 has_valid_size 放在最前面，確保有大小的排在前面
     return (has_valid_size, height, video_rate, abr, size)
 
-    # <<< 在 sort_key 函數定義之後 >>>
+        # <<< 在 sort_key 函數定義之後 >>>
 
     try:
         # 排序 (在 try 塊內部)
+        debug_print(f"    Attempting to sort {len(matching_formats)} formats...") # 添加排序前計數
         matching_formats.sort(key=sort_key, reverse=True)
-        debug_print(f"  select_best_filtered_format: Sorting complete (prioritizing valid size).")
+        debug_print(f"    Sorting complete.")
+
+        # 檢查排序後列表是否為空 (理論上不應該，除非 sort_key 有問題)
+        if not matching_formats:
+             error_print("    >>> ERROR: matching_formats became empty after sorting! <<<")
+             return None
 
         # <<< 這三行應該放在 try 塊內部，緊接在 sort 和 debug_print 之後 >>>
         selected_format = matching_formats[0]
-        debug_print(f"  select_best_filtered_format: Selected Best for '{selector}': ID={selected_format.get('format_id', 'N/A')}, Size={get_format_size(selected_format)}")
+        debug_print(f"    Selected Best after sort: ID={selected_format.get('format_id', 'N/A')}, Size={get_format_size(selected_format)}")
         return selected_format
+        # --- try 塊結束 ---
 
     # <<< except 與 try 對齊 >>>
     except Exception as e:
-        # except 塊內部縮排
-        error_print(f"  select_best_filtered_format: Error during sorting: {e}")
-        # Fallback
-        if matching_formats:
-             warning_print("  select_best_filtered_format: Returning first match due to sorting error.")
-             return matching_formats[0]
+        # --- except 塊開始 (與 try 對齊) ---
+        # <<< 加強除錯輸出 >>>
+        error_print(f"    >>> EXCEPTION DURING SORTING OR SELECTION: {e} <<<")
+        # 打印出異常的詳細追蹤信息
+        import traceback
+        traceback.print_exc(file=sys.stderr)
+        error_print(f"    >>> END OF EXCEPTION TRACEBACK <<<")
+
+        # Fallback: 嘗試返回第一個未排序的匹配項
+        # 注意：這裡的 matching_formats 仍然是排序前的列表（如果 sort 出錯）或排序後的列表（如果 selection 出錯）
+        # 我們需要確保它仍然有效且非空
+        warning_print("    Fallback: Attempting to return first match found *before* sorting attempt...")
+
+        # 為了安全，我們應該在 try 之前複製一份列表，或者在這裡重新獲取？
+        # 為簡單起見，假設 matching_formats 在異常發生時仍然包含原始數據
+        # 但更健壯的做法是在 try 前備份: original_matches = matching_formats[:]
+
+        # 檢查列表是否真的存在且非空
+        if 'matching_formats' in locals() and matching_formats: # 檢查變數是否存在且非空
+             fallback_format = matching_formats[0]
+             warning_print(f"    Fallback: Returning unsorted first match: ID={fallback_format.get('format_id', 'N/A')}, Size={get_format_size(fallback_format)}")
+             return fallback_format
         else:
+             error_print("    Fallback: matching_formats list is missing or empty in exception handler!")
              return None
+        # --- except 塊結束 ---
 
 # <<< 函數定義結束 >>>
 
