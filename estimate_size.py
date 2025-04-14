@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # estimate_size.py
+# Version: 1.0.0  # <<< 新增：版本號 >>>
 
 import sys
 import subprocess
