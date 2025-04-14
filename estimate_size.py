@@ -11,7 +11,7 @@ import re
 import os # For checking file existence
 
 # --- 全局變數 ---
-SCRIPT_VERSION = "v1.1.9(Experimental-Debug)" # Keep your version
+SCRIPT_VERSION = "v1.1.10(Experimental-Debug)" # Keep your version
 DEBUG_ENABLED = True # Set to False to disable debug prints
 
 def debug_print(*args, **kwargs):
@@ -70,7 +70,7 @@ def format_matches_filters(format_info, filters):
         except Exception: return False
     return True
 
-# --- Helper Function to Select Best Format based on Filters and Preference (Corrected Version) ---
+# --- Helper Function to Select Best Format based on Filters and Preference (Final Fix Attempt) ---
 def select_best_filtered_format(available_formats, selector):
     debug_print(f"\n===== Running select_best_filtered_format for selector: '{selector}' =====")
     if not available_formats or not selector:
@@ -82,28 +82,23 @@ def select_best_filtered_format(available_formats, selector):
     filters = parse_filter(filter_str)
     debug_print(f"  Base selector='{base_selector}', Parsed filters={filters}")
 
-    matching_formats = []
+    matching_formats = [] # <<< 初始化為空列表 >>>
     debug_print(f"  Filtering {len(available_formats)} available formats...")
     for index, fmt in enumerate(available_formats):
         format_id = fmt.get('format_id', f'Unknown_{index}')
-        vcodec = fmt.get('vcodec') # Get the value
-        acodec = fmt.get('acodec') # Get the value
+        vcodec = fmt.get('vcodec')
+        acodec = fmt.get('acodec')
 
-        # <<< 新增：打印原始 codec 值 >>>
-        debug_print(f"    Format {format_id}: Raw vcodec='{vcodec}' (type: {type(vcodec)}), Raw acodec='{acodec}' (type: {type(acodec)})")
+        # debug_print(f"    Format {format_id}: Raw vcodec='{vcodec}' (type: {type(vcodec)}), Raw acodec='{acodec}' (type: {type(acodec)})")
 
-        # --- Stricter type matching ---
         is_video_only = (vcodec is not None and vcodec != 'none') and \
                         (acodec is None or acodec == 'none')
         is_audio_only = (acodec is not None and acodec != 'none') and \
                         (vcodec is None or vcodec == 'none')
         is_merged = (vcodec is not None and vcodec != 'none') and \
                     (acodec is not None and acodec != 'none')
-        # --- End stricter type matching ---
 
-        # debug_print(f"      Calculated: V_Only={is_video_only}, A_Only={is_audio_only}, Merged={is_merged}") # 打印計算結果
-
-        # --- Revised Type Matching Logic ---
+        # --- Type Matching Logic ---
         type_match = False
         if base_selector.startswith('bv'):
             if is_video_only: type_match = True
@@ -113,19 +108,28 @@ def select_best_filtered_format(available_formats, selector):
              if is_video_only or is_audio_only or is_merged: type_match = True
         elif base_selector == 'best':
              if is_video_only or is_audio_only or is_merged: type_match = True
-        else: type_match = True
+        else: type_match = True # Assume specific ID or rely on filters
 
+        # --- <<< 關鍵修正：只有 type_match 為 True 才檢查 filters >>> ---
         if type_match:
+            # debug_print(f"    Format {format_id} passed TYPE check for base '{base_selector}'. Now checking filters...")
             if format_matches_filters(fmt, filters):
-                matching_formats.append(fmt)
+                # debug_print(f"      Format {format_id} also passed filters. Adding to matching_formats.")
+                matching_formats.append(fmt) # <<< 只有通過兩者才添加 >>>
+            # else:
+                # debug_print(f"      Format {format_id} FAILED filters check.")
+        # else:
+            # debug_print(f"    Format {format_id} FAILED type check for base '{base_selector}'.")
+        # --- <<< 修正結束 >>> ---
 
-    # ... (函數其餘部分不變) ...
-
-    debug_print(f"  Filtering complete. Found {len(matching_formats)} matching formats.")
+    # --- 函數後續的排序和選擇邏輯保持不變 ---
+    debug_print(f"  Filtering complete. Found {len(matching_formats)} matching formats.") # <<< 現在這裡的數量應該是正確的了
 
     if not matching_formats:
         debug_print(f"  select_best_filtered_format: (Exit B) No formats passed filtering for '{selector}'. Returning None.")
         return None
+
+# <<< 函數定義結束 >>>
 
     # --- Sorting ---
     debug_print(f"  Attempting to sort {len(matching_formats)} matching formats (prioritizing valid size)...")
