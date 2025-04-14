@@ -1,11 +1,11 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.0(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.1(Experimental)" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
-SCRIPT_UPDATE_DATE="2025-04-14" # 請根據實際情況修改此日期
+SCRIPT_UPDATE_DATE="2025-04-15" # 請根據實際情況修改此日期
 ############################################
 
 # ... 其他設定 ...
@@ -2120,9 +2120,9 @@ process_single_mkv() {
 
     # --- <<< 新增：使用 Python 估計大小並決定是否通知 >>> ---
     # ... 調用 Python 腳本 ...
-#    python_estimate_output=$($python_exec ... 2> "$temp_dir/py_estimator_mkv_stderr.log")
-#    local py_exit_code=$?
-#    echo -e "${PURPLE}Python 除錯日誌目錄: $temp_dir${RESET}" # <<< 打印目錄路徑
+    python_estimate_output=$($python_exec ... 2> "$temp_dir/py_estimator_mkv_stderr.log")
+    local py_exit_code=$?
+    echo -e "${PURPLE}Python 除錯日誌目錄: $temp_dir${RESET}" # <<< 打印目錄路徑
     # ... 後續處理 ...
     # 定義用於估計的格式字符串 (包含主要目標和一些回退)
     local yt_dlp_format_string_estimate="bestvideo[ext=mp4][height<=1440]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio/best[ext=mp4]/best"
