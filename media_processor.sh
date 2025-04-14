@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.4.26(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.0(Experimental)" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -1639,7 +1639,7 @@ process_single_mp4_no_normalize() {
 
         if [ -n "$python_exec" ] && [ -f "$PYTHON_CONVERTER_INSTALL_PATH" ]; then
             # 使用與下載相同的 format_option 進行估計
-            log_message "DEBUG" "Calling Python estimator (MP4 NoNorm): $python_exec $PYTHON_CONVERTER_INSTALL_PATH \"$video_url\" \"$format_option\""
+   #         log_message "DEBUG" "Calling Python estimator (MP4 NoNorm): $python_exec $PYTHON_CONVERTER_INSTALL_PATH \"$video_url\" \"$format_option\""
             python_estimate_output=$($python_exec "$PYTHON_CONVERTER_INSTALL_PATH" "$video_url" "$format_option" 2> "$temp_dir/py_estimator_mp4nn_stderr.log")
             local py_exit_code=$?
 
@@ -1699,7 +1699,7 @@ process_single_mp4_no_normalize() {
     fi
     yt_dlp_dl_args+=(-o "$output_template" "$video_url" --newline --progress --concurrent-fragments "$THREADS")
 
-    log_message "DEBUG" "執行 yt-dlp 下載 (MP4 NoNorm): ${yt_dlp_dl_args[*]}"
+#    log_message "DEBUG" "執行 yt-dlp 下載 (MP4 NoNorm): ${yt_dlp_dl_args[*]}"
     if ! "${yt_dlp_dl_args[@]}" 2> "$temp_dir/yt-dlp-nonorm.log"; then
         log_message "ERROR" "影片(無標準化)下載失敗。詳見 $temp_dir/yt-dlp-nonorm.log";
         echo -e "${RED}錯誤：影片下載失敗！${RESET}"; cat "$temp_dir/yt-dlp-nonorm.log";
@@ -1766,7 +1766,7 @@ process_single_mp4_no_normalize() {
     # 輸出設定
     ffmpeg_args+=("-movflags" "+faststart" "$final_video")
 
-    log_message("INFO" "執行 FFmpeg 後處理 (MP4 NoNorm): ${ffmpeg_args[*]}")
+    log_message "INFO" "執行 FFmpeg 後處理 (MP4 NoNorm): ${ffmpeg_args[*]}"
     local ffmpeg_stderr_log="$temp_dir/ffmpeg_nonorm_stderr.log"
     if ! "${ffmpeg_args[@]}" 2> "$ffmpeg_stderr_log"; then
         echo -e "${RED}錯誤：影片後處理失敗！...${RESET}"; cat "$ffmpeg_stderr_log";
@@ -2134,7 +2134,7 @@ process_single_mkv() {
     if command -v python3 &> /dev/null; then python_exec="python3"; elif command -v python &> /dev/null; then python_exec="python"; fi
 
     if [ -n "$python_exec" ] && [ -f "$PYTHON_CONVERTER_INSTALL_PATH" ]; then
-        log_message "DEBUG" "Calling Python estimator (MKV): $python_exec $PYTHON_CONVERTER_INSTALL_PATH \"$video_url\" \"$yt_dlp_format_string_estimate\""
+ #       log_message "DEBUG" "Calling Python estimator (MKV): $python_exec $PYTHON_CONVERTER_INSTALL_PATH \"$video_url\" \"$yt_dlp_format_string_estimate\""
         python_estimate_output=$($python_exec "$PYTHON_CONVERTER_INSTALL_PATH" "$video_url" "$yt_dlp_format_string_estimate" 2> "$temp_dir/py_estimator_mkv_stderr.log")
         local py_exit_code=$?
 
