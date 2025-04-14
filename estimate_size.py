@@ -11,7 +11,7 @@ import re
 import os # For checking file existence
 
 # --- 全局變數 ---
-SCRIPT_VERSION = "v1.1.7(Experimental-Debug)" # Keep your version
+SCRIPT_VERSION = "v1.1.8(Experimental-Debug)" # Keep your version
 DEBUG_ENABLED = True # Set to False to disable debug prints
 
 def debug_print(*args, **kwargs):
