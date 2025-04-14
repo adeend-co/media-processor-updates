@@ -11,7 +11,7 @@ import re
 import os # For checking file existence
 
 # --- 全局變數 ---
-SCRIPT_VERSION = "v1.1.8(Experimental-Debug)" # Keep your version
+SCRIPT_VERSION = "v1.1.9(Experimental-Debug)" # Keep your version
 DEBUG_ENABLED = True # Set to False to disable debug prints
 
 def debug_print(*args, **kwargs):
@@ -86,26 +86,40 @@ def select_best_filtered_format(available_formats, selector):
     debug_print(f"  Filtering {len(available_formats)} available formats...")
     for index, fmt in enumerate(available_formats):
         format_id = fmt.get('format_id', f'Unknown_{index}')
-        is_video = fmt.get('vcodec') != 'none' and fmt.get('vcodec') is not None
-        is_audio = fmt.get('acodec') != 'none' and fmt.get('acodec') is not None
+        vcodec = fmt.get('vcodec') # Get the value
+        acodec = fmt.get('acodec') # Get the value
 
-        # --- Corrected Type Matching ---
+        # <<< 新增：打印原始 codec 值 >>>
+        debug_print(f"    Format {format_id}: Raw vcodec='{vcodec}' (type: {type(vcodec)}), Raw acodec='{acodec}' (type: {type(acodec)})")
+
+        # --- Stricter type matching ---
+        is_video_only = (vcodec is not None and vcodec != 'none') and \
+                        (acodec is None or acodec == 'none')
+        is_audio_only = (acodec is not None and acodec != 'none') and \
+                        (vcodec is None or vcodec == 'none')
+        is_merged = (vcodec is not None and vcodec != 'none') and \
+                    (acodec is not None and acodec != 'none')
+        # --- End stricter type matching ---
+
+        # debug_print(f"      Calculated: V_Only={is_video_only}, A_Only={is_audio_only}, Merged={is_merged}") # 打印計算結果
+
+        # --- Revised Type Matching Logic ---
         type_match = False
         if base_selector.startswith('bv'):
-            if is_video and not is_audio: type_match = True
+            if is_video_only: type_match = True
         elif base_selector.startswith('ba'):
-            if is_audio and not is_video: type_match = True
+            if is_audio_only: type_match = True
         elif base_selector == 'b':
-             if is_video or is_audio: type_match = True
+             if is_video_only or is_audio_only or is_merged: type_match = True
         elif base_selector == 'best':
-             if is_video or is_audio: type_match = True
-        else: # Assume specific ID or other; rely on filters
-             type_match = True
-        # --- End Corrected Type Matching ---
+             if is_video_only or is_audio_only or is_merged: type_match = True
+        else: type_match = True
 
         if type_match:
             if format_matches_filters(fmt, filters):
                 matching_formats.append(fmt)
+
+    # ... (函數其餘部分不變) ...
 
     debug_print(f"  Filtering complete. Found {len(matching_formats)} matching formats.")
 
