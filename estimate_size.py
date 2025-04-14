@@ -11,7 +11,7 @@ import re
 import os # For checking file existence
 
 # --- 全局變數 ---
-SCRIPT_VERSION = "v1.1.5(Experimental-Debug)"
+SCRIPT_VERSION = "v1.1.6(Experimental-Debug)"
 DEBUG_ENABLED = True # Set to False to disable debug prints
 
 def debug_print(*args, **kwargs):
@@ -129,22 +129,37 @@ def select_best_filtered_format(available_formats, selector):
 
         # --- Type Matching ---
         type_match = False
-        if base_selector.startswith('bv') and is_video: type_match = True
-        elif base_selector.startswith('ba') and is_audio: type_match = True
-        elif base_selector == 'b' and (is_video or is_audio): type_match = True
-        elif base_selector == 'best': type_match = True # Allow all initially for 'best'
-        # Add handling for specific format IDs if needed:
-        # elif base_selector == format_id: type_match = True
-        else: type_match = True # Default assumption for unknown selectors
+        if base_selector.startswith('bv'):
+            # bestvideo: must have video, must NOT have audio
+            if is_video and not is_audio:
+                type_match = True
+        elif base_selector.startswith('ba'):
+            # bestaudio: must have audio, must NOT have video
+            if is_audio and not is_video:
+                type_match = True
+        elif base_selector == 'b':
+             # best: can have video, audio, or both (but not none)
+             if is_video or is_audio:
+                 type_match = True
+        elif base_selector == 'best':
+             # 'best' often implies video+audio combined if available,
+             # or the best single stream otherwise.
+             # For filtering, let's treat it like 'b' - accept anything with video or audio.
+             # Sorting logic will handle preferring higher quality.
+             if is_video or is_audio:
+                 type_match = True
+        else:
+             # Could be a specific format ID or other selector yt-dlp understands.
+             # We'll assume it matches for now and rely on filters.
+             # A more robust solution would try to match specific IDs here.
+             type_match = True # Keep this permissive for unknown selectors for now
+        # --- <<< 類型匹配修改結束 >>> ---
 
         if type_match:
             if format_matches_filters(fmt, filters):
-                # debug_print(f"      Format {format_id} MATCHED type and filters. Adding.")
                 matching_formats.append(fmt)
-            # else:
-                # debug_print(f"      Format {format_id} type matched but FAILED filters.")
-        # else:
-            # debug_print(f"      Format {format_id} FAILED type match.")
+
+    # ... (函數後面的程式碼不變) ...
     debug_print(f"  Filtering complete. Found {len(matching_formats)} matching formats.")
 
     if not matching_formats:
