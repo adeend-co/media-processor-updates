@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.4.24(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v2.4.25(Experimental)" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -2035,6 +2035,11 @@ process_single_mkv() {
     output_mkv="${output_base_name}_normalized.mkv" # 預先定義最終檔名
 
     # --- <<< 新增：使用 Python 估計大小並決定是否通知 >>> ---
+    # ... 調用 Python 腳本 ...
+    python_estimate_output=$($python_exec ... 2> "$temp_dir/py_estimator_mkv_stderr.log")
+    local py_exit_code=$?
+    echo -e "${PURPLE}Python 除錯日誌目錄: $temp_dir${RESET}" # <<< 打印目錄路徑
+    # ... 後續處理 ...
     # 定義用於估計的格式字符串 (包含主要目標和一些回退)
     local yt_dlp_format_string_estimate="bestvideo[ext=mp4][height<=1440]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio/best[ext=mp4]/best"
 
@@ -2053,6 +2058,8 @@ process_single_mkv() {
             estimated_size_bytes="$python_estimate_output"
             log_message "INFO" "Python 腳本估計大小 (MKV): $estimated_size_bytes bytes"
             [ ! -s "$temp_dir/py_estimator_mkv_stderr.log" ] && rm -f "$temp_dir/py_estimator_mkv_stderr.log"
+
+    # ... 後續處理 ...
         else
             log_message "WARNING" "Python 估計腳本執行失敗 (MKV Code: $py_exit_code) 或輸出無效 ('$python_estimate_output')。詳見 $temp_dir/py_estimator_mkv_stderr.log"
             echo -e "${YELLOW}警告：使用 Python 估計大小失敗，將跳過大小檢查。${RESET}"
