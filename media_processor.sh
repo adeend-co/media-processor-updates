@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.4.23(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v2.4.24(Experimental)" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -2180,7 +2180,7 @@ process_single_mkv() {
     for sub_file in "${subtitle_files[@]}"; do safe_remove "$sub_file"; done
     safe_remove "$temp_dir/yt-dlp-video.log" "$temp_dir/yt-dlp-audio.log" "$temp_dir/yt-dlp-subs.log"
     safe_remove "$temp_dir/ffmpeg_mkv_mux_stderr.log" # 清理 ffmpeg 日誌 (如果存在)
-    safe_remove "$temp_dir/py_estimator_mkv_stderr.log" # 清理 Python 估計器日誌 (如果存在)
+#    safe_remove "$temp_dir/py_estimator_mkv_stderr.log" # 清理 Python 估計器日誌 (如果存在)
     [ -d "$temp_dir" ] && rm -rf "$temp_dir"
 
     # --- 控制台最終報告 ---
