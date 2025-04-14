@@ -11,7 +11,7 @@ import re
 import os # For checking file existence
 
 # --- 全局變數 ---
-SCRIPT_VERSION = "v1.1.4(Experimental-Debug)"
+SCRIPT_VERSION = "v1.1.5(Experimental-Debug)"
 DEBUG_ENABLED = True # Set to False to disable debug prints
 
 def debug_print(*args, **kwargs):
@@ -106,58 +106,115 @@ def format_matches_filters(format_info, filters):
     # debug_print(f"    format_matches_filters: Format {format_id} PASSED all filters.")
     return True
 
-# --- Helper Function to Select Best Format based on Filters and Preference ---
+
+# --- Helper Function to Select Best Format based on Filters and Preference (More Robust Version) ---
 def select_best_filtered_format(available_formats, selector):
-    debug_print(f"  select_best_filtered_format: Trying selector '{selector}'")
+    debug_print(f"\n===== Running select_best_filtered_format for selector: '{selector}' =====")
     if not available_formats or not selector:
-        warning_print("  select_best_filtered_format: No available formats or selector provided.")
+        warning_print("  select_best_filtered_format: (Exit A) No available formats or selector provided. Returning None.")
         return None
 
     base_selector = selector.split('[', 1)[0]
     filter_str = '[' + selector.split('[', 1)[1] if '[' in selector else ''
     filters = parse_filter(filter_str)
-    debug_print(f"    Base selector='{base_selector}', Parsed filters={filters}")
+    debug_print(f"  Base selector='{base_selector}', Parsed filters={filters}")
 
     matching_formats = []
-    for fmt in available_formats:
-        format_id = fmt.get('format_id', 'N/A')
-        # debug_print(f"    Considering Format ID: {format_id}")
+    debug_print(f"  Filtering {len(available_formats)} available formats...")
+    for index, fmt in enumerate(available_formats):
+        format_id = fmt.get('format_id', f'Unknown_{index}')
+        # debug_print(f"    Checking format {index+1}/{len(available_formats)}: ID={format_id}")
         is_video = fmt.get('vcodec') != 'none' and fmt.get('vcodec') is not None
         is_audio = fmt.get('acodec') != 'none' and fmt.get('acodec') is not None
-        # debug_print(f"      Is Video: {is_video}, Is Audio: {is_audio}")
 
+        # --- Type Matching ---
         type_match = False
-        # Adjusted type matching logic slightly for clarity
         if base_selector.startswith('bv') and is_video: type_match = True
         elif base_selector.startswith('ba') and is_audio: type_match = True
-        elif base_selector == 'b' and (is_video or is_audio): type_match = True # 'b' matches anything with video OR audio
-        elif base_selector == 'best':
-             # 'best' implies combined or best available single stream. For selection, treat it like 'b' initially.
-             # yt-dlp might prioritize combined streams if available, but our filtering focuses on individual streams here.
-             type_match = True # Allow video, audio, or combined initially
-        else: # Handle specific format IDs? Not implemented here.
-             type_match = True # Assume if not bv/ba/b/best, it might be specific ID or other selector yt-dlp understands
+        elif base_selector == 'b' and (is_video or is_audio): type_match = True
+        elif base_selector == 'best': type_match = True # Allow all initially for 'best'
+        # Add handling for specific format IDs if needed:
+        # elif base_selector == format_id: type_match = True
+        else: type_match = True # Default assumption for unknown selectors
 
         if type_match:
-             # debug_print(f"      Type matches for {format_id}.")
-             if format_matches_filters(fmt, filters):
-                 # debug_print(f"      Filters MATCHED for {format_id}.")
-                 matching_formats.append(fmt)
-             # else:
-                 # debug_print(f"      Filters FAILED for {format_id}.")
+            if format_matches_filters(fmt, filters):
+                # debug_print(f"      Format {format_id} MATCHED type and filters. Adding.")
+                matching_formats.append(fmt)
+            # else:
+                # debug_print(f"      Format {format_id} type matched but FAILED filters.")
         # else:
-             # debug_print(f"      Type does not match for {format_id}.")
-
+            # debug_print(f"      Format {format_id} FAILED type match.")
+    debug_print(f"  Filtering complete. Found {len(matching_formats)} matching formats.")
 
     if not matching_formats:
-        debug_print(f"  select_best_filtered_format: No formats found matching selector '{selector}' after filtering.")
+        debug_print(f"  select_best_filtered_format: (Exit B) No formats passed filtering for '{selector}'. Returning None.")
         return None
 
-    debug_print(f"  select_best_filtered_format: Found {len(matching_formats)} matching formats for '{selector}'. Sorting...")
-    # Print details of matching formats before sorting
-    # for fmt in matching_formats:
-    #     debug_print(f"    Match (unsorted): ID={fmt.get('format_id')}, H={fmt.get('height')}, W={fmt.get('width')}, TBR={fmt.get('tbr')}, VBR={fmt.get('vbr')}, ABR={fmt.get('abr')}, Size={get_format_size(fmt)}, Ext={fmt.get('ext')}")
+    # --- Sorting ---
+    debug_print(f"  Attempting to sort {len(matching_formats)} matching formats (prioritizing valid size)...")
 
+    # Define sort_key function (same as before)
+    def sort_key(fmt):
+        size = get_format_size(fmt)
+        has_valid_size = 1 if size > 0 else 0
+        height = fmt.get('height') if isinstance(fmt.get('height'), int) else 0
+        vbr = fmt.get('vbr') if isinstance(fmt.get('vbr'), (int, float)) else 0
+        tbr = fmt.get('tbr') if isinstance(fmt.get('tbr'), (int, float)) else 0
+        video_rate = vbr if vbr > 0 else tbr
+        abr = fmt.get('abr') if isinstance(fmt.get('abr'), (int, float)) else 0
+        # Return tuple for sorting
+        return (has_valid_size, height, video_rate, abr, size)
+
+    # Use a separate variable for the sorted list to avoid modifying original in case of error
+    sorted_matching_formats = []
+    try:
+        # Create a copy before sorting if needed, though sort is in-place
+        # We'll sort directly and handle exceptions
+        sorted_matching_formats = sorted(matching_formats, key=sort_key, reverse=True) # Use sorted() for new list
+        # matching_formats.sort(key=sort_key, reverse=True) # In-place sort
+        debug_print(f"  Sorting successful. Top 5 results (or fewer):")
+        for i, fmt in enumerate(sorted_matching_formats[:5]): # Print top 5 for inspection
+             debug_print(f"    {i+1}: ID={fmt.get('format_id')}, HasSize={1 if get_format_size(fmt)>0 else 0}, H={fmt.get('height')}, VR={fmt.get('vbr') or fmt.get('tbr')}, AR={fmt.get('abr')}, Size={get_format_size(fmt)}")
+
+    except Exception as e:
+        error_print(f"  >>> EXCEPTION DURING SORTING: {e} <<<")
+        import traceback
+        traceback.print_exc(file=sys.stderr)
+        error_print(f"  >>> END OF EXCEPTION TRACEBACK <<<")
+        warning_print("  Fallback: Sorting failed. Attempting to use first unsorted match.")
+        # If sorting failed, use the original unsorted list
+        if matching_formats: # Check if original list exists
+             selected_format = matching_formats[0]
+             warning_print(f"  Fallback: Using unsorted first match: ID={selected_format.get('format_id', 'N/A')}, Size={get_format_size(selected_format)}")
+             debug_print(f"  select_best_filtered_format: (Exit C - Fallback due to sort exception). Returning unsorted first match.")
+             return selected_format
+        else:
+             error_print("  Fallback failed: Original matching_formats list is missing or empty in exception handler!")
+             debug_print(f"  select_best_filtered_format: (Exit D - Fallback failed in exception). Returning None.")
+             return None
+
+    # --- Selection after successful sort ---
+    # Check if the sorted list is non-empty (it should be if no exception occurred)
+    if not sorted_matching_formats:
+        error_print("  >>> ERROR: sorted_matching_formats is unexpectedly empty after successful sort call! <<<")
+        debug_print(f"  select_best_filtered_format: (Exit E - List empty after sort). Returning None.")
+        return None
+
+    # Select the best format (the first one after sorting)
+    selected_format = sorted_matching_formats[0]
+
+    # Final check if selected_format is valid
+    if selected_format and isinstance(selected_format, dict):
+        debug_print(f"  Selected Best after sort: ID={selected_format.get('format_id', 'N/A')}, Size={get_format_size(selected_format)}")
+        debug_print(f"===== select_best_filtered_format for '{selector}' finished successfully. Returning format. =====")
+        return selected_format
+    else:
+        error_print(f"  >>> ERROR: selected_format (sorted_matching_formats[0]) is invalid after sorting! Value: {selected_format} <<<")
+        debug_print(f"  select_best_filtered_format: (Exit F - Invalid selected format). Returning None.")
+        return None
+
+# <<< 函數定義結束 >>>
 
     # In select_best_filtered_format function:
 def sort_key(fmt):
