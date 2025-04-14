@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.4.25(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v2.4.26(Experimental)" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -2036,9 +2036,9 @@ process_single_mkv() {
 
     # --- <<< 新增：使用 Python 估計大小並決定是否通知 >>> ---
     # ... 調用 Python 腳本 ...
-    python_estimate_output=$($python_exec ... 2> "$temp_dir/py_estimator_mkv_stderr.log")
-    local py_exit_code=$?
-    echo -e "${PURPLE}Python 除錯日誌目錄: $temp_dir${RESET}" # <<< 打印目錄路徑
+#    python_estimate_output=$($python_exec ... 2> "$temp_dir/py_estimator_mkv_stderr.log")
+#    local py_exit_code=$?
+#    echo -e "${PURPLE}Python 除錯日誌目錄: $temp_dir${RESET}" # <<< 打印目錄路徑
     # ... 後續處理 ...
     # 定義用於估計的格式字符串 (包含主要目標和一些回退)
     local yt_dlp_format_string_estimate="bestvideo[ext=mp4][height<=1440]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio/best[ext=mp4]/best"
@@ -2187,7 +2187,7 @@ process_single_mkv() {
     for sub_file in "${subtitle_files[@]}"; do safe_remove "$sub_file"; done
     safe_remove "$temp_dir/yt-dlp-video.log" "$temp_dir/yt-dlp-audio.log" "$temp_dir/yt-dlp-subs.log"
     safe_remove "$temp_dir/ffmpeg_mkv_mux_stderr.log" # 清理 ffmpeg 日誌 (如果存在)
-#    safe_remove "$temp_dir/py_estimator_mkv_stderr.log" # 清理 Python 估計器日誌 (如果存在)
+    safe_remove "$temp_dir/py_estimator_mkv_stderr.log" # 清理 Python 估計器日誌 (如果存在)
     [ -d "$temp_dir" ] && rm -rf "$temp_dir"
 
     # --- 控制台最終報告 ---
