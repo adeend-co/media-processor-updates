@@ -1,152 +1,204 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# estimate_size.py
-# Version: 1.1.0(Experimental) # <<< 增加版本號
+# estimate_size.py (with extensive debugging)
+# Version: v1.1.1(Experimental-Debug) # <<< 標註為除錯版本
 
 import sys
 import subprocess
 import json
 import argparse
 import shutil
-import re # For parsing format selectors
+import re
+import os # For checking file existence
 
 # --- 全局變數 ---
-SCRIPT_VERSION = "v1.1.0(Experimental)"
+SCRIPT_VERSION = "v1.1.0(Experimental-Debug)"
+DEBUG_ENABLED = True # Set to False to disable debug prints
+
+def debug_print(*args, **kwargs):
+    """Helper function for conditional debug printing to stderr."""
+    if DEBUG_ENABLED:
+        print("DEBUG:", *args, file=sys.stderr, **kwargs)
+
+def error_print(*args, **kwargs):
+    """Helper function for error printing to stderr."""
+    print("ERROR:", *args, file=sys.stderr, **kwargs)
+
+def warning_print(*args, **kwargs):
+    """Helper function for warning printing to stderr."""
+    print("WARNING:", *args, file=sys.stderr, **kwargs)
 
 # --- Helper Function to Get Size ---
 def get_format_size(format_info):
-    """
-    Gets the size of a format, prioritizing 'filesize' over 'filesize_approx'.
-    Returns size in bytes or 0 if neither is available or valid.
-    """
-    if not isinstance(format_info, dict): return 0 # Safety check
-
+    if not isinstance(format_info, dict): return 0
     filesize = format_info.get('filesize')
     filesize_approx = format_info.get('filesize_approx')
+    format_id = format_info.get('format_id', 'N/A')
 
-    # Check for valid integer/float and positive value
     if isinstance(filesize, (int, float)) and filesize > 0:
+        # debug_print(f"  get_format_size: Using filesize {filesize} for format {format_id}")
         return int(filesize)
     elif isinstance(filesize_approx, (int, float)) and filesize_approx > 0:
+        # debug_print(f"  get_format_size: Using filesize_approx {filesize_approx} for format {format_id}")
         return int(filesize_approx)
     else:
+        # debug_print(f"  get_format_size: No valid size found for format {format_id}")
         return 0
 
 # --- Helper Function to Parse yt-dlp format filter string ---
 def parse_filter(filter_str):
-    """
-    Parses a simple yt-dlp filter string like "[height<=1080][ext=mp4]".
-    Returns a dictionary of filters, e.g., {'height': ('<=', 1080), 'ext': ('==', 'mp4')}.
-    Supports <=, >=, == (implicit for ext).
-    """
     filters = {}
-    # Regex to find filters like [key=value], [key<=value], [key>=value]
-    # Handles integers for comparisons, strings for equality
     pattern = r"\[([a-zA-Z_]+)\s*(<=|>=)?\s*([a-zA-Z0-9_.-]+)\]"
     matches = re.findall(pattern, filter_str)
+    # debug_print(f"  parse_filter: Input='{filter_str}', Matches={matches}")
 
     for key, op, value in matches:
-        op = op if op else '==' # Default operator is equality
-        # Try converting value to int for comparison operators
+        op = op if op else '=='
         val_processed = value
         if op in ['<=', '>=']:
             try:
                 val_processed = int(value)
             except ValueError:
-                # If conversion fails for comparison, skip this filter? Or treat as string?
-                # For simplicity, we'll skip if int conversion fails for <=/>=
-                # print(f"Warning: Cannot convert '{value}' to int for comparison '{op}' on key '{key}'. Skipping filter.", file=sys.stderr)
+                warning_print(f"  parse_filter: Cannot convert '{value}' to int for comparison '{op}' on key '{key}'. Skipping filter.")
                 continue
         filters[key] = (op, val_processed)
+    # debug_print(f"  parse_filter: Parsed filters={filters}")
     return filters
 
 # --- Helper Function to Check if a format matches filters ---
 def format_matches_filters(format_info, filters):
-    """Checks if a format dictionary matches the parsed filters."""
     if not isinstance(format_info, dict): return False
+    format_id = format_info.get('format_id', 'N/A')
+    # debug_print(f"    format_matches_filters: Checking format {format_id} against {filters}")
 
     for key, (op, expected_value) in filters.items():
         actual_value = format_info.get(key)
+        # debug_print(f"      Filter Key='{key}', Op='{op}', Expected='{expected_value}', Actual='{actual_value}'")
         if actual_value is None:
-            return False # Key doesn't exist in format info
+            # debug_print(f"      Filter Fail: Key '{key}' not found in format {format_id}")
+            return False
 
         try:
             if op == '==':
-                # Simple string comparison for equality (e.g., ext, vcodec)
                 if str(actual_value).lower() != str(expected_value).lower():
+                    # debug_print(f"      Filter Fail: Equality mismatch ('{str(actual_value).lower()}' != '{str(expected_value).lower()}')")
                     return False
             elif op == '<=':
-                if not (isinstance(actual_value, (int, float)) and actual_value <= expected_value):
-                    return False
+                # Ensure actual value is numeric before comparison
+                if isinstance(actual_value, (int, float)):
+                    if not (actual_value <= expected_value):
+                        # debug_print(f"      Filter Fail: Less than or equal failed ({actual_value} not <= {expected_value})")
+                        return False
+                else:
+                    # debug_print(f"      Filter Fail: Cannot perform '<=' on non-numeric actual value '{actual_value}'")
+                    return False # Cannot compare non-numeric with <=
             elif op == '>=':
-                 if not (isinstance(actual_value, (int, float)) and actual_value >= expected_value):
-                    return False
+                 if isinstance(actual_value, (int, float)):
+                     if not (actual_value >= expected_value):
+                         # debug_print(f"      Filter Fail: Greater than or equal failed ({actual_value} not >= {expected_value})")
+                         return False
+                 else:
+                     # debug_print(f"      Filter Fail: Cannot perform '>=' on non-numeric actual value '{actual_value}'")
+                     return False
             # Add other operators if needed
-        except Exception:
-             # Handle potential type errors during comparison
-             # print(f"Warning: Comparison error for key '{key}' (op '{op}') between '{actual_value}' and '{expected_value}'.", file=sys.stderr)
-             return False
+        except Exception as e:
+             warning_print(f"    format_matches_filters: Comparison error for key '{key}' (op '{op}') between '{actual_value}' and '{expected_value}': {e}")
+             return False # Treat comparison errors as filter failure
+    # debug_print(f"    format_matches_filters: Format {format_id} PASSED all filters.")
     return True
 
 # --- Helper Function to Select Best Format based on Filters and Preference ---
 def select_best_filtered_format(available_formats, selector):
-    """
-    Selects the best format from 'available_formats' that matches the 'selector'.
-    Selector can be like 'bv[ext=mp4][height<=1080]' or 'ba[ext=m4a]' or 'best'.
-    Returns the best matching format dictionary or None.
-    Prioritizes resolution/quality (higher is better), then filesize (if available).
-    """
+    debug_print(f"  select_best_filtered_format: Trying selector '{selector}'")
     if not available_formats or not selector:
+        warning_print("  select_best_filtered_format: No available formats or selector provided.")
         return None
 
-    # Separate base selector (bv, ba, b, best, etc.) from filters
     base_selector = selector.split('[', 1)[0]
     filter_str = '[' + selector.split('[', 1)[1] if '[' in selector else ''
     filters = parse_filter(filter_str)
+    debug_print(f"    Base selector='{base_selector}', Parsed filters={filters}")
 
-    # Filter formats based on type implied by base_selector and explicit filters
     matching_formats = []
     for fmt in available_formats:
+        format_id = fmt.get('format_id', 'N/A')
+        # debug_print(f"    Considering Format ID: {format_id}")
         is_video = fmt.get('vcodec') != 'none' and fmt.get('vcodec') is not None
         is_audio = fmt.get('acodec') != 'none' and fmt.get('acodec') is not None
+        # debug_print(f"      Is Video: {is_video}, Is Audio: {is_audio}")
 
-        # --- Type Matching ---
         type_match = False
-        if base_selector.startswith('bv') or (base_selector == 'best' and is_video and not is_audio) or (base_selector == 'b' and is_video): # Treat 'b' as video-inclusive for simplicity here
-            # Check if it's a video format (or video-only if 'best')
-             if is_video: type_match = True
-        elif base_selector.startswith('ba') or (base_selector == 'best' and is_audio and not is_video) or (base_selector == 'b' and is_audio): # Treat 'b' as audio-inclusive
-            # Check if it's an audio format (or audio-only if 'best')
-            if is_audio: type_match = True
-        elif base_selector == 'best' or base_selector == 'b': # 'best' or 'b' without type filters can be anything
-             type_match = True
-        # --- End Type Matching ---
+        # Adjusted type matching logic slightly for clarity
+        if base_selector.startswith('bv') and is_video: type_match = True
+        elif base_selector.startswith('ba') and is_audio: type_match = True
+        elif base_selector == 'b' and (is_video or is_audio): type_match = True # 'b' matches anything with video OR audio
+        elif base_selector == 'best':
+             # 'best' implies combined or best available single stream. For selection, treat it like 'b' initially.
+             # yt-dlp might prioritize combined streams if available, but our filtering focuses on individual streams here.
+             type_match = True # Allow video, audio, or combined initially
+        else: # Handle specific format IDs? Not implemented here.
+             type_match = True # Assume if not bv/ba/b/best, it might be specific ID or other selector yt-dlp understands
 
-        if type_match and format_matches_filters(fmt, filters):
-            matching_formats.append(fmt)
+        if type_match:
+             # debug_print(f"      Type matches for {format_id}.")
+             if format_matches_filters(fmt, filters):
+                 # debug_print(f"      Filters MATCHED for {format_id}.")
+                 matching_formats.append(fmt)
+             # else:
+                 # debug_print(f"      Filters FAILED for {format_id}.")
+        # else:
+             # debug_print(f"      Type does not match for {format_id}.")
+
 
     if not matching_formats:
-        # print(f"Debug: No formats found matching selector '{selector}'", file=sys.stderr)
+        debug_print(f"  select_best_filtered_format: No formats found matching selector '{selector}' after filtering.")
         return None
 
+    debug_print(f"  select_best_filtered_format: Found {len(matching_formats)} matching formats for '{selector}'. Sorting...")
+    # Print details of matching formats before sorting
+    # for fmt in matching_formats:
+    #     debug_print(f"    Match (unsorted): ID={fmt.get('format_id')}, H={fmt.get('height')}, W={fmt.get('width')}, TBR={fmt.get('tbr')}, VBR={fmt.get('vbr')}, ABR={fmt.get('abr')}, Size={get_format_size(fmt)}, Ext={fmt.get('ext')}")
+
+
     # Sort matching formats: higher resolution/quality first, then larger filesize
-    # This sorting is simplified. yt-dlp's is much more complex.
-    # Prioritize height, then tbr (total bitrate as quality proxy), then filesize
     def sort_key(fmt):
+        # Prioritize video resolution (height)
         height = fmt.get('height') if isinstance(fmt.get('height'), int) else 0
+        # Then video bitrate (vbr) or total bitrate (tbr) if vbr is missing
+        vbr = fmt.get('vbr') if isinstance(fmt.get('vbr'), (int, float)) else 0
         tbr = fmt.get('tbr') if isinstance(fmt.get('tbr'), (int, float)) else 0
+        video_rate = vbr if vbr > 0 else tbr # Use tbr as fallback for video quality proxy
+        # Then audio bitrate (abr)
+        abr = fmt.get('abr') if isinstance(fmt.get('abr'), (int, float)) else 0
+        # Lastly, file size as tie-breaker
         size = get_format_size(fmt)
-        # Prioritize formats *with* size info slightly? Maybe not needed here.
-        return (height, tbr, size)
+        # debug_print(f"      Sort Key for ID {fmt.get('format_id')}: Height={height}, VideoRate={video_rate}, AudioRate={abr}, Size={size}")
+        return (height, video_rate, abr, size)
 
-    matching_formats.sort(key=sort_key, reverse=True)
+    try:
+        matching_formats.sort(key=sort_key, reverse=True)
+        debug_print(f"  select_best_filtered_format: Sorting complete.")
+        # Print details after sorting
+        # for fmt in matching_formats:
+        #     debug_print(f"    Match (sorted): ID={fmt.get('format_id')}, H={fmt.get('height')}, VR={fmt.get('vbr') or fmt.get('tbr')}, AR={fmt.get('abr')}, Size={get_format_size(fmt)}")
 
-    # print(f"Debug: Best format found for '{selector}': ID={matching_formats[0].get('format_id', 'N/A')}", file=sys.stderr)
-    return matching_formats[0]
+    except Exception as e:
+        error_print(f"  select_best_filtered_format: Error during sorting: {e}")
+        # Fallback: return the first unsorted match if sorting fails?
+        if matching_formats:
+             warning_print("  select_best_filtered_format: Returning first match due to sorting error.")
+             return matching_formats[0]
+        else:
+             return None # Should not happen if matching_formats was not empty
+
+    selected_format = matching_formats[0]
+    debug_print(f"  select_best_filtered_format: Selected Best for '{selector}': ID={selected_format.get('format_id', 'N/A')}, Size={get_format_size(selected_format)}")
+    return selected_format
 
 
 # --- Main Execution ---
 def main():
+    debug_print(f"--- estimate_size.py {SCRIPT_VERSION} Starting ---")
     parser = argparse.ArgumentParser(
         description="Estimate media size by simulating yt-dlp format selection.",
         epilog="Example: python estimate_size.py 'https://...' 'bv[ext=mp4]+ba[ext=m4a]/b'"
@@ -155,87 +207,148 @@ def main():
     parser.add_argument("format_selector", nargs='?', default=None, help="yt-dlp format selector string")
     parser.add_argument("-v", "--version", action="version", version=f"%(prog)s {SCRIPT_VERSION}", help="Show program's version number and exit")
 
-    args = parser.parse_args()
+    try:
+        args = parser.parse_args()
+        debug_print(f"Arguments received: URL='{args.url}', Format='{args.format_selector}'")
+    except SystemExit as e:
+        # Handle argparse exit (e.g., for --version or --help)
+        # We don't need to print 0 here as argparse handles the exit.
+         debug_print(f"Argparse exited with code {e.code}")
+         sys.exit(e.code) # Propagate exit code
+    except Exception as e:
+        error_print(f"Error parsing arguments: {e}")
+        print("0") # Output 0 on argument parse error
+        sys.exit(1)
+
 
     if args.url is None or args.format_selector is None:
+        # This check might be redundant due to argparse handling, but good as safety net
         if len(sys.argv) <= 1: parser.print_help(sys.stderr); sys.exit(1)
-        elif args.url is None: print("Error: Media URL is required.", file=sys.stderr); sys.exit(1)
-        elif args.format_selector is None: print("Error: Format selector is required.", file=sys.stderr); sys.exit(1)
+        elif args.url is None: error_print("Media URL is required."); print("0"); sys.exit(1)
+        elif args.format_selector is None: error_print("Format selector is required."); print("0"); sys.exit(1)
         else: sys.exit(1)
 
     # --- Get ALL available formats ---
+    debug_print("Step 1: Getting all available formats using yt-dlp --dump-json...")
     yt_dlp_cmd = shutil.which("yt-dlp")
     if not yt_dlp_cmd:
-        print("Error: yt-dlp command not found.", file=sys.stderr); print("0"); sys.exit(1)
+        error_print("yt-dlp command not found in PATH."); print("0"); sys.exit(1)
+    if not os.path.exists(yt_dlp_cmd):
+         error_print(f"yt-dlp path found ('{yt_dlp_cmd}') but file does not exist."); print("0"); sys.exit(1)
 
-    command_list_formats = [yt_dlp_cmd, "--dump-json", args.url]
+
+    command_list_formats = [yt_dlp_cmd, "--no-warnings", "--dump-json", args.url]
+    available_formats = []
     try:
-        # print(f"Debug: Running command: {' '.join(command_list_formats)}", file=sys.stderr)
-        process = subprocess.run(command_list_formats, capture_output=True, text=True, encoding='utf-8', check=False)
+        debug_print(f"Running command: {' '.join(command_list_formats)}")
+        process = subprocess.run(command_list_formats, capture_output=True, text=True, encoding='utf-8', check=False, timeout=60) # Added timeout
+        debug_print(f"yt-dlp (dump-json) exited with code {process.returncode}")
+
         if process.returncode != 0:
-            print(f"Error: yt-dlp (list formats) exited with code {process.returncode}", file=sys.stderr); print(f"stderr:\n{process.stderr}", file=sys.stderr); print("0"); sys.exit(0)
+            error_print(f"yt-dlp (dump-json) failed.")
+            error_print(f"stderr:\n{process.stderr}")
+            print("0"); sys.exit(0) # Exit 0 for Bash, error logged
+
         if not process.stdout.strip():
-             print(f"Error: yt-dlp (list formats) produced empty output.", file=sys.stderr); print("0"); sys.exit(0)
+             error_print(f"yt-dlp (dump-json) produced empty stdout.")
+             print("0"); sys.exit(0)
 
         media_info = json.loads(process.stdout)
-        if isinstance(media_info, list): media_info = media_info[0] # Take first if playlist
-        if not isinstance(media_info, dict): print("Error: Parsed JSON is not a dict.", file=sys.stderr); print("0"); sys.exit(0)
+        if isinstance(media_info, list): media_info = media_info[0]
+        if not isinstance(media_info, dict): error_print("Parsed JSON is not a dict."); print("0"); sys.exit(0)
 
         available_formats = media_info.get('formats')
         if not available_formats or not isinstance(available_formats, list):
-             # Handle case where the top-level object IS the format info
              if media_info.get('format_id'):
                  available_formats = [media_info]
+                 debug_print("Treating top-level JSON as single format.")
              else:
-                 print("Warning: No 'formats' list found in JSON.", file=sys.stderr); print("0"); sys.exit(0)
+                 warning_print("No 'formats' list found in JSON. Cannot estimate size."); print("0"); sys.exit(0)
 
+        debug_print(f"Successfully retrieved {len(available_formats)} available formats.")
+        # Optionally print all formats here for deep debugging
+        # print("--- Available Formats ---", file=sys.stderr)
+        # for fmt in available_formats:
+        #     print(json.dumps(fmt, indent=2), file=sys.stderr)
+        # print("--- End Available Formats ---", file=sys.stderr)
+
+
+    except subprocess.TimeoutExpired:
+        error_print(f"yt-dlp (dump-json) timed out after 60 seconds."); print("0"); sys.exit(0)
     except json.JSONDecodeError as e:
-        print(f"Error: Failed to decode JSON: {e}", file=sys.stderr); print("0"); sys.exit(0)
+        error_print(f"Failed to decode JSON from yt-dlp: {e}"); print("0"); sys.exit(0)
     except FileNotFoundError:
-        print(f"Error: Failed to execute yt-dlp.", file=sys.stderr); print("0"); sys.exit(1)
+        error_print(f"Failed to execute yt-dlp command '{yt_dlp_cmd}'."); print("0"); sys.exit(1)
     except Exception as e:
-        print(f"Error getting available formats: {e}", file=sys.stderr); print("0"); sys.exit(1)
+        error_print(f"Error getting available formats: {e}"); print("0"); sys.exit(1)
+
+    if not available_formats: # Double check if formats list ended up empty
+        warning_print("Available formats list is empty after processing. Cannot estimate.")
+        print("0")
+        sys.exit(0)
 
     # --- Simulate Format Selection ---
+    debug_print(f"\nStep 2: Simulating format selection for selector: '{args.format_selector}'")
     final_estimated_size = 0
-    selection_groups = args.format_selector.split('/') # Split by fallback '/'
+    selection_groups = args.format_selector.split('/')
+    debug_print(f"Found {len(selection_groups)} selection group(s): {selection_groups}")
 
-    for group in selection_groups:
-        # print(f"Debug: Trying selection group: '{group}'", file=sys.stderr)
+    group_found = False
+    for i, group in enumerate(selection_groups):
+        debug_print(f"\n--- Processing Selection Group {i+1}: '{group}' ---")
         group_estimated_size = 0
         all_parts_found = True
-        individual_selectors = group.split('+') # Split by merge '+'
+        individual_selectors = group.split('+')
+        debug_print(f"  Group parts (split by '+'): {individual_selectors}")
 
-        selected_formats_in_group = [] # Keep track of selected format IDs to avoid double counting if selector is 'b+b' etc.
+        selected_formats_in_group_ids = set() # Use a set for efficient check
 
-        for selector in individual_selectors:
-            # print(f"Debug:   Trying selector part: '{selector}'", file=sys.stderr)
+        for j, selector in enumerate(individual_selectors):
+            debug_print(f"  --- Processing Part {j+1}: '{selector}' ---")
             best_match = select_best_filtered_format(available_formats, selector)
 
             if best_match:
                 format_id = best_match.get('format_id')
-                # Avoid adding size if the same format is selected multiple times in one group
-                if format_id not in selected_formats_in_group:
+                # Check if this specific format ID has already been added in this group
+                if format_id not in selected_formats_in_group_ids:
                     part_size = get_format_size(best_match)
-                    # print(f"Debug:     Found match: ID={format_id}, Size={part_size}", file=sys.stderr)
-                    group_estimated_size += part_size
-                    selected_formats_in_group.append(format_id)
-                # else:
-                #     print(f"Debug:     Skipping already added format: ID={format_id}", file=sys.stderr)
+                    debug_print(f"    Match found: ID={format_id}, Size={part_size}")
+                    if part_size > 0: # Only add if size is valid
+                        group_estimated_size += part_size
+                        selected_formats_in_group_ids.add(format_id)
+                        debug_print(f"    Added size {part_size}. Current group total: {group_estimated_size}")
+                    else:
+                        # Found a match but it has no size info - treat as failure for this part?
+                        # Or allow it but size contribution is 0? Let's be strict for now.
+                        # If a format part MUST have size, uncomment the next lines:
+                        # warning_print(f"    Match found (ID={format_id}) but has zero size. Treating as failure for this part.")
+                        # all_parts_found = False
+                        # break
+                        # If zero size is acceptable (won't contribute to total):
+                        warning_print(f"    Match found (ID={format_id}) but has zero size. Not adding to total.")
+                        selected_formats_in_group_ids.add(format_id) # Still mark as found
+                else:
+                    debug_print(f"    Format ID {format_id} already included in this group. Skipping size addition.")
             else:
-                # print(f"Debug:     No match found for selector '{selector}'", file=sys.stderr)
+                debug_print(f"    >>>>> No suitable format found for selector part '{selector}' <<<<<")
                 all_parts_found = False
-                break # If any part of the merge group is not found, this group fails
+                break # If any part is not found, this group fails
 
         if all_parts_found:
-            # print(f"Debug: Success! Found all parts for group '{group}'. Total size: {group_estimated_size}", file=sys.stderr)
+            debug_print(f"--- SUCCESS: All parts found for Group {i+1} ('{group}') ---")
             final_estimated_size = group_estimated_size
+            group_found = True
             break # Found a working group, stop processing fallbacks
-        # else:
-            # print(f"Debug: Failed to find all parts for group '{group}'. Trying next fallback.", file=sys.stderr)
+        else:
+            debug_print(f"--- FAILED: Could not find all parts for Group {i+1} ('{group}'). Trying next fallback (if any). ---")
+
+    if not group_found:
+         warning_print("Could not satisfy any selection group completely.")
 
     # --- Output the final calculated size ---
-    print(final_estimated_size)
+    debug_print(f"\n--- Final Estimated Size Calculation ---")
+    debug_print(f"Total Estimated Size (bytes): {final_estimated_size}")
+    print(final_estimated_size) # Output ONLY the final number to stdout
     sys.exit(0)
 
 
