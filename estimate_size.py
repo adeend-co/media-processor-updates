@@ -13,7 +13,7 @@ import os     # For checking file existence
 import traceback # For detailed exception logging
 
 # --- Global Variables ---
-SCRIPT_VERSION = "v1.2.2(AI-Integrated-Debug)" # Keeping version from AI integration
+SCRIPT_VERSION = "v1.2.1(AI-Integrated-Debug)" # Keeping version from AI integration
 DEBUG_ENABLED = True # Keep debugging enabled
 
 # --- Logging Helpers ---
@@ -144,10 +144,9 @@ def select_best_filtered_format(available_formats, selector):
         debug_print(f"  select_best_filtered_format: (Exit B) No formats passed filtering for '{selector}'. Returning None.")
         return None
 
-    # --- Sorting ---
-    debug_print(f"  Attempting to sort {len(matching_formats)} matching formats (prioritizing valid size and codec)...") # 修改了提示訊息
+# --- Sorting ---
+    debug_print(f"  Attempting to sort {len(matching_formats)} matching formats (prioritizing valid size)...")
     def sort_key(fmt):
-        # --- 原有變數獲取 (保持不變) ---
         size = get_format_size(fmt)
         has_valid_size = 1 if size > 0 else 0
         height = fmt.get('height') if isinstance(fmt.get('height'), int) else 0
@@ -156,42 +155,16 @@ def select_best_filtered_format(available_formats, selector):
         video_rate = vbr if vbr > 0 else tbr
         abr = fmt.get('abr') if isinstance(fmt.get('abr'), (int, float)) else 0
         ext = fmt.get('ext', '')
+        ext_pref = 1 if ext == 'mp4' else (0 if ext == 'webm' else -1) # Prefer mp4 > webm > others
+        # Sort Tuple
+        return (has_valid_size, height, video_rate, abr, ext_pref, size)
 
-        # --- <<< 新增：獲取視訊編碼並計算偏好分數 >>> ---
-        vcodec = fmt.get('vcodec', '').lower() # 獲取視訊編碼，轉小寫
-        codec_pref = 0 # 預設分數
-        if 'vp09' in vcodec or 'vp9' in vcodec:
-            codec_pref = 3 # VP9 最高分
-        elif 'av01' in vcodec:
-            codec_pref = 2 # AV1 次高分
-        elif 'avc' in vcodec or 'h264' in vcodec:
-            codec_pref = 1 # AVC/H.264 基礎分
-        # 其他編碼 (如 VP8, h263 等) 預設為 0
-
-        # --- 原有的擴展名偏好 (可以保留，但重要性降低) ---
-        # ext_pref = 1 if ext == 'mp4' else (0 if ext == 'webm' else -1)
-        # 或者，我們可以稍微調整，讓 WebM (通常搭配 VP9/Opus) 優先級略高於 MP4
-        ext_pref = 1 if ext == 'webm' else (0 if ext == 'mp4' else -1) # Prefer webm > mp4 > others
-
-        # --- <<< 修改：新的排序元組 (Sort Tuple) >>> ---
-        # 將 codec_pref 加入到排序鍵中，放在 height 之前，使其有較高優先級。
-        # 調整後的順序：有效大小 -> 編碼偏好 -> 解析度 -> 視訊率 -> 音訊率 -> 擴展名偏好 -> 檔案大小(作為最終tie-breaker)
-        return (has_valid_size, codec_pref, height, video_rate, abr, ext_pref, size)
-
-    # --- 後續程式碼 (try...except, 返回值等) 保持不變 ---
     sorted_formats = []
     try:
-        sorted_formats = sorted(matching_formats, key=sort_key, reverse=True) # reverse=True 使得分數高的排前面
+        sorted_formats = sorted(matching_formats, key=sort_key, reverse=True)
         debug_print(f"  Sorting successful. Top 5 results:")
-        # 修改 debug 輸出以包含編碼偏好
         for i, fmt in enumerate(sorted_formats[:5]):
-             # 重新計算 codec_pref 以便顯示
-             vcodec = fmt.get('vcodec', '').lower()
-             codec_pref_disp = 0
-             if 'vp09' in vcodec or 'vp9' in vcodec: codec_pref_disp = 3
-             elif 'av01' in vcodec: codec_pref_disp = 2
-             elif 'avc' in vcodec or 'h264' in vcodec: codec_pref_disp = 1
-             debug_print(f"    {i+1}: ID={fmt.get('format_id')}, HasSize={1 if get_format_size(fmt)>0 else 0}, CodecP={codec_pref_disp}, H={fmt.get('height')}, VR={fmt.get('vbr') or fmt.get('tbr')}, AR={fmt.get('abr')}, Ext={fmt.get('ext')}, Size={get_format_size(fmt)}")
+             debug_print(f"    {i+1}: ID={fmt.get('format_id')}, HasSize={1 if get_format_size(fmt)>0 else 0}, H={fmt.get('height')}, VR={fmt.get('vbr') or fmt.get('tbr')}, AR={fmt.get('abr')}, Ext={fmt.get('ext')}, Size={get_format_size(fmt)}")
     except Exception as e:
         error_print(f"  >>> EXCEPTION DURING SORTING: {e} <<<")
         traceback.print_exc(file=sys.stderr)
