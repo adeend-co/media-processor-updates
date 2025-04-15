@@ -1,11 +1,11 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.0(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.1(Experimental)" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
-SCRIPT_UPDATE_DATE="2025-04-14" # 請根據實際情況修改此日期
+SCRIPT_UPDATE_DATE="2025-04-15" # 請根據實際情況修改此日期
 ############################################
 
 # ... 其他設定 ...
@@ -1888,7 +1888,7 @@ process_single_mp4_no_normalize_sections() {
         "$video_url"
         --newline
         # --progress # 移除，因為它可能在分段下載時不準確或不顯示
-        --concurrent-fragments "$THREADS"
+        --concurrent-fragments "$THREADS" # <<< 添加這一行 >>>
         --merge-output-format mp4
         # --verbose # 可選，用於詳細日誌調試
     )
