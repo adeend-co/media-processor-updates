@@ -28,7 +28,6 @@ CONFIG_FILE="$HOME/.media_processor_rc"
 SCRIPT_INSTALL_PATH="$HOME/media-processor-updates/media_processor.sh"
 
 # Python 輔助腳本的完整路徑 (也在根目錄)
-PYTHON_ENRICHER_SCRIPT_PATH="$HOME/media-processor-updates/enrich_metadata.py" # <<< 修改路徑
 PYTHON_ESTIMATOR_SCRIPT_PATH="$HOME/media-processor-updates/estimate_size.py" # <<< 修改路徑
 
 # Python 版本變數保留 (現在由設定檔管理，不再需要遠程檢查)
