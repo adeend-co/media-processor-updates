@@ -558,7 +558,7 @@ auto_update_script() {
         echo -e "${YELLOW}檢測到新版本！${RESET}"
         read -r -p "是否要立即從遠端拉取更新 (git pull)？ (y/n): " confirm_update
         if [[ ! "$confirm_update" =~ ^[Yy]$ ]]; then
-            log_message "INFO" "使用者取消更新。"; echo -e "${YELLOW}已取消更新。${RESET}"; cd "$original_dir"; read -p "按 Enter 返回..."; return 0
+            log_message "INFO" "使用者取消更新。"; echo -e "${YELLOW}已取消更新。${RESET}"; cd "$original_dir"; return 0
         fi
 
         # 執行更新
@@ -640,127 +640,172 @@ safe_remove() {
 }
 
 ############################################
-# <<< 修改：依賴更新 (只安裝 media_processor(18) + estimate_size.py 必需) >>>
+# <<< 修改：檢查並更新依賴套件 (修正驗證邏輯) >>>
 ############################################
 update_dependencies() {
-    # --- 精簡後的必需系統工具 ---
-    local pkg_tools=("ffmpeg" "jq" "curl" "python" "git" "bc") # 移除 mkvtoolnix
-    # --- Pillow 編譯依賴 (僅 Termux，為了 pip install 穩定性) ---
-    local pillow_build_deps_termux=("libjpeg-turbo" "libpng" "zlib" "libxml2" "build-essential" "python-build" "pkg-config") # 保留 Pillow 依賴
-    # --- 精簡後的必需 pip 包 ---
+    # --- 工具列表定義 (保持不變) ---
+    # 包含需要用包管理器安裝的 *包名*
+    local pkg_tools=("ffmpeg" "jq" "curl" "python" "mkvtoolnix")
+    # 包含需要用 pip 安裝的 *包名*
     local pip_tools=("yt-dlp")
-    # --- 讓 pip 嘗試安裝 Pillow 以確保流程完整 ---
-    local python_libs_to_install=("Pillow") # 只保留 Pillow
+    # --- 結束工具列表定義 ---
 
+    # 用於記錄更新過程中的問題
     local update_failed=false
+    # 用於記錄最終驗證後仍然缺少的 *命令*
     local missing_after_update=()
 
     clear
-    echo -e "${CYAN}--- 開始檢查並更新依賴套件 (精簡版) ---${RESET}"
-    log_message "INFO" "使用者觸發依賴套件更新流程 (精簡版)。"
+    echo -e "${CYAN}--- 開始檢查並更新依賴套件 ---${RESET}"
+    log_message "INFO" "使用者觸發依賴套件更新流程。"
 
-    # --- 步驟 1: 更新包管理器列表 ---
-    echo -e "${YELLOW}[1/5] 正在更新套件列表 (${PACKAGE_MANAGER:-未知} update)...${RESET}"
+    # --- 步驟 1: 更新包管理器列表 (保持不變) ---
+    echo -e "${YELLOW}[1/4] 正在更新套件列表 (${PACKAGE_MANAGER} update)...${RESET}"
+    # 使用檢測到的包管理器
     local update_cmd=""
-    if [[ "$PACKAGE_MANAGER" == "pkg" ]]; then update_cmd="pkg update -y";
-    elif [[ "$PACKAGE_MANAGER" == "apt" ]]; then update_cmd="sudo apt update -y";
-    elif [[ "$PACKAGE_MANAGER" == "dnf" ]]; then update_cmd="sudo dnf check-update";
-    elif [[ "$PACKAGE_MANAGER" == "yum" ]]; then update_cmd="sudo yum check-update";
-    else echo -e "${RED}  > 錯誤：未知的包管理器。${RESET}"; log_message "ERROR" "未知包管理器 '$PACKAGE_MANAGER'"; update_failed=true; fi
-    if [[ -n "$update_cmd" ]]; then
-        if $update_cmd; then log_message "INFO" "$PACKAGE_MANAGER list update succeeded"; echo -e "${GREEN}  > 套件列表更新成功。${RESET}";
-        else log_message "WARNING" "$PACKAGE_MANAGER list update failed (code $?), proceeding anyway."; echo -e "${RED}  > 警告：套件列表更新失敗。${RESET}"; fi
-    fi; echo ""
-
-    # --- 步驟 2: 安裝核心系統工具 (移除 mkvtoolnix) ---
-    echo -e "${YELLOW}[2/5] 正在安裝/更新 ${PACKAGE_MANAGER:-未知} 核心套件: ${pkg_tools[*]}...${RESET}"
-    local core_install_cmd=""
-    if [[ "$PACKAGE_MANAGER" == "pkg" ]]; then core_install_cmd="pkg install -y ${pkg_tools[*]}";
-    elif [[ "$PACKAGE_MANAGER" == "apt" ]]; then core_install_cmd="sudo apt install -y ${pkg_tools[*]}";
-    elif [[ "$PACKAGE_MANAGER" == "dnf" ]]; then core_install_cmd="sudo dnf install -y ${pkg_tools[*]}";
-    elif [[ "$PACKAGE_MANAGER" == "yum" ]]; then core_install_cmd="sudo yum install -y ${pkg_tools[*]}"; # 可能需 epel
-    else echo -e "${RED}  > 錯誤：未知的包管理器。${RESET}"; log_message "ERROR" "未知包管理器 '$PACKAGE_MANAGER'"; update_failed=true; fi
-    if [[ -n "$core_install_cmd" ]]; then
-         if $core_install_cmd; then log_message "INFO" "Installation/update of ${pkg_tools[*]} successful."; echo -e "${GREEN}  > 安裝/更新 ${pkg_tools[*]} 完成。${RESET}";
-         else log_message "ERROR" "Installation/update of ${pkg_tools[*]} failed!"; echo -e "${RED}  > 錯誤：安裝/更新 ${pkg_tools[*]} 失敗！${RESET}"; update_failed=true; fi
-    fi; echo ""
-
-    # --- 步驟 3: 安裝 Pillow 編譯依賴 (僅 Termux) ---
-    if [[ "$OS_TYPE" == "termux" ]]; then
-        echo -e "${YELLOW}[3/5] 正在安裝 Pillow 編譯所需依賴 (Termux)...${RESET}"
-        local pillow_deps_cmd="pkg install -y ${pillow_build_deps_termux[*]}"
-        if $pillow_deps_cmd; then log_message "INFO" "Installation of Pillow build dependencies successful."; echo -e "${GREEN}  > Pillow 編譯依賴安裝完成。${RESET}";
-        else log_message "ERROR" "Installation of Pillow build dependencies failed!"; echo -e "${RED}  > 錯誤：安裝 Pillow 編譯依賴失敗！ Pillow 可能無法正確安裝/更新。${RESET}"; update_failed=true; fi
-        echo ""
+    if [[ "$PACKAGE_MANAGER" == "pkg" ]]; then
+        update_cmd="pkg update -y"
+    elif [[ "$PACKAGE_MANAGER" == "apt" ]]; then
+        update_cmd="sudo apt update -y"
+    elif [[ "$PACKAGE_MANAGER" == "dnf" ]]; then
+        update_cmd="sudo dnf check-update" # dnf 通常不需要 -y
+    elif [[ "$PACKAGE_MANAGER" == "yum" ]]; then
+        update_cmd="sudo yum check-update"
     else
-         log_message "INFO" "非 Termux 環境，跳過自動安裝 Pillow 編譯依賴。"; echo -e "${YELLOW}[3/5] 跳過自動安裝 Pillow 編譯依賴 (非 Termux)。${RESET}"; echo ""
+         echo -e "${RED}  > 錯誤：未知的包管理器 '$PACKAGE_MANAGER'，無法更新列表。${RESET}"
+         log_message "ERROR" "未知包管理器 '$PACKAGE_MANAGER'，跳過列表更新。"
+         update_failed=true # 標記為失敗，因為無法更新
+         # 即使無法更新列表，也繼續嘗試安裝
     fi
 
-    # --- 步驟 4: 更新 pip 及必需的 Python 庫 ---
-    echo -e "${YELLOW}[4/5] 正在更新 pip 及必需 Python 套件: ${pip_tools[*]} ${python_libs_to_install[*]}...${RESET}"
-    local python_cmd=""; if command -v python3 &> /dev/null; then python_cmd="python3"; elif command -v python &> /dev/null; then python_cmd="python"; fi
-    local pip_cmd=""
-    local pip_install_cmd="" # 用於安裝 pip 的命令
-    if [[ -n "$python_cmd" ]]; then
-        if $python_cmd -m pip --version &> /dev/null; then pip_cmd="$python_cmd -m pip";
-        elif command -v pip3 &> /dev/null && [[ "$python_cmd" == "python3" ]]; then pip_cmd="pip3"; pip_install_cmd="pkg install -y python-pip || sudo apt install -y python3-pip || sudo dnf install -y python3-pip || sudo yum install -y python3-pip";
-        elif command -v pip &> /dev/null && [[ "$python_cmd" == "python" ]]; then pip_cmd="pip"; pip_install_cmd="pkg install -y python-pip || sudo apt install -y python-pip || sudo dnf install -y python-pip || sudo yum install -y python-pip";
-        else # 如果找不到 pip，嘗試安裝它
-            echo -e "${YELLOW}  > 未找到 pip 命令，嘗試安裝...${RESET}"
-            if [[ -n "$pip_install_cmd" ]]; then
-                 if $pip_install_cmd; then
-                      log_message INFO "Successfully installed pip package."
-                      # 重新檢測 pip_cmd
-                      if $python_cmd -m pip --version &> /dev/null; then pip_cmd="$python_cmd -m pip";
-                      elif command -v pip3 &> /dev/null; then pip_cmd="pip3";
-                      elif command -v pip &> /dev/null; then pip_cmd="pip"; fi
-                 else
-                      log_message ERROR "Failed to install pip package."
-                 fi
-            else
-                 log_message WARNING "Cannot determine command to install pip for $PACKAGE_MANAGER"
-            fi
+    if [[ -n "$update_cmd" ]]; then
+        if $update_cmd; then
+            log_message "INFO" "$PACKAGE_MANAGER list update succeeded"
+            echo -e "${GREEN}  > 套件列表更新成功。${RESET}"
+        else
+            log_message "WARNING" "$PACKAGE_MANAGER list update failed (exit code $?), proceeding anyway."
+            echo -e "${RED}  > 警告：套件列表更新失敗，將嘗試使用現有列表。${RESET}"
+            # 不標記為 update_failed=true，因為可能只是沒有更新但包已存在
         fi
     fi
+    echo "" # 空行分隔
 
-    if [[ -n "$pip_cmd" ]]; then
-         echo -e "${YELLOW}  > 更新 pip 本身...${RESET}"; $pip_cmd install --upgrade pip > /dev/null 2>&1
-         echo -e "${YELLOW}  > 更新 ${pip_tools[*]} 和 ${python_libs_to_install[*]}...${RESET}"
-         local all_pip_packages=("${pip_tools[@]}" "${python_libs_to_install[@]}")
-         if $pip_cmd install --upgrade --no-cache-dir ${all_pip_packages[@]}; then
-             log_message "INFO" "Update of ${all_pip_packages[*]} via pip succeeded."; echo -e "${GREEN}  > 更新 ${all_pip_packages[*]} 完成。${RESET}"
-         else
-             log_message "ERROR" "Update of ${all_pip_packages[*]} via pip failed!"; echo -e "${RED}  > 錯誤：更新 ${all_pip_packages[*]} 失敗！${RESET}"; update_failed=true
-         fi
+    # --- 步驟 2: 安裝/更新 包管理器管理的工具 (保持不變) ---
+    echo -e "${YELLOW}[2/4] 正在安裝/更新 ${PACKAGE_MANAGER} 套件: ${pkg_tools[*]}...${RESET}"
+    local install_cmd=""
+    if [[ "$PACKAGE_MANAGER" == "pkg" ]]; then
+        install_cmd="pkg install -y ${pkg_tools[*]}"
+    elif [[ "$PACKAGE_MANAGER" == "apt" ]]; then
+        install_cmd="sudo apt install -y ${pkg_tools[*]}"
+    elif [[ "$PACKAGE_MANAGER" == "dnf" ]]; then
+        install_cmd="sudo dnf install -y ${pkg_tools[*]}"
+    elif [[ "$PACKAGE_MANAGER" == "yum" ]]; then
+         install_cmd="sudo yum install -y ${pkg_tools[*]}"
     else
-        log_message "ERROR" "Python/pip command not found or install failed, cannot update pip packages."
-        echo -e "${RED}  > 錯誤：找不到或無法安裝 pip 命令，無法更新 Python 套件。${RESET}"; update_failed=true
-    fi; echo ""
-
-    # --- 步驟 5: 最終驗證 (移除 mkvmerge) ---
-    echo -e "${YELLOW}[5/5] 正在驗證必需工具是否已安裝...${RESET}"
-    local all_tools_check=("${pkg_tools[@]}" "${pip_tools[@]}" "ffprobe" "bc") # 移除 mkvtoolnix, 加入 bc
-    missing_after_update=()
-    for tool_in_list in "${all_tools_check[@]}"; do
-        local command_to_check="$tool_in_list"
-        # 不需要特殊處理 mkvtoolnix 了
-        if ! command -v "$command_to_check" &> /dev/null; then
-            missing_after_update+=("$tool_in_list"); echo -e "${RED}  > 驗證失敗：找不到 $command_to_check ${RESET}"
-        else echo -e "${GREEN}  > 驗證成功：找到 $command_to_check ${RESET}"; fi
-    done; echo ""
-
-    # --- 總結結果 ---
-    if [ ${#missing_after_update[@]} -ne 0 ]; then
-        log_message "ERROR" "Update process completed, but still missing tools: ${missing_after_update[*]}"
-        echo -e "${RED}--- 更新結果：失敗 ---${RESET}"; echo -e "${RED}更新/安裝後，仍缺少：${RESET}"; for tool in "${missing_after_update[@]}"; do echo -e "${YELLOW}  - $tool${RESET}"; done; echo -e "${CYAN}請檢查錯誤或手動安裝。${RESET}"
-    elif [ "$update_failed" = true ]; then
-        log_message "WARNING" "Update process completed with errors. Tools might exist now."
-        echo -e "${YELLOW}--- 更新結果：部分成功 ---${RESET}"; echo -e "${YELLOW}更新過程有錯誤，但工具可能已安裝。${RESET}"
-    else
-        log_message "SUCCESS" "All dependencies checked and successfully updated/installed."; echo -e "${GREEN}--- 更新結果：成功 ---${RESET}"; echo -e "${GREEN}所有必需依賴套件均已成功檢查並更新/安裝。${RESET}"
+        echo -e "${RED}  > 錯誤：未知的包管理器 '$PACKAGE_MANAGER'，無法安裝套件。${RESET}"
+        log_message "ERROR" "未知包管理器 '$PACKAGE_MANAGER'，跳過套件安裝。"
+        update_failed=true # 標記為失敗
     fi
 
-    echo ""; read -p "按 Enter 返回主選單..."
+    if [[ -n "$install_cmd" ]]; then
+         if $install_cmd; then
+             log_message "INFO" "Installation/update of ${pkg_tools[*]} via $PACKAGE_MANAGER successful or already up-to-date."
+             echo -e "${GREEN}  > 安裝/更新 ${pkg_tools[*]} 完成。${RESET}"
+         else
+             log_message "ERROR" "Installation/update of ${pkg_tools[*]} via $PACKAGE_MANAGER failed!"
+             echo -e "${RED}  > 錯誤：安裝/更新 ${pkg_tools[*]} 失敗！${RESET}"
+             update_failed=true
+         fi
+    fi
+    echo ""
+
+    # --- 步驟 3: 更新 pip 管理的工具 (保持不變) ---
+    echo -e "${YELLOW}[3/4] 正在更新 pip 套件: ${pip_tools[*]}...${RESET}"
+    local python_cmd=""
+    if command -v python3 &> /dev/null; then python_cmd="python3";
+    elif command -v python &> /dev/null; then python_cmd="python"; fi
+
+    if [[ -n "$python_cmd" ]]; then
+         # 使用 --user 可能在某些系統上避免權限問題，但需確保 $HOME/.local/bin 在 PATH 中
+         # 或者直接全局安裝 (需要 root/sudo 或在 venv 中)
+         # 這裡保留原來的全局升級方式
+         if $python_cmd -m pip install --upgrade "${pip_tools[@]}"; then
+             log_message "INFO" "Update of ${pip_tools[*]} via pip succeeded."
+             echo -e "${GREEN}  > 更新 ${pip_tools[*]} 完成。${RESET}"
+         else
+             log_message "ERROR" "Update of ${pip_tools[*]} via pip failed!"
+             echo -e "${RED}  > 錯誤：更新 ${pip_tools[*]} 失敗！${RESET}"
+             update_failed=true
+         fi
+    else
+        log_message "ERROR" "Python command not found, cannot update pip packages: ${pip_tools[*]}."
+        echo -e "${RED}  > 錯誤：找不到 python/python3 命令，無法更新 ${pip_tools[*]}。請確保步驟 2 已成功安裝 python。${RESET}"
+        update_failed=true
+    fi
+    echo ""
+    
+    # --- 步驟 5: 最終驗證所有工具 (核心修改處) ---
+    echo -e "${YELLOW}[4/4] 正在驗證所有必要工具是否已安裝...${RESET}"
+    # <<< 保持 all_tools 的原始構建邏輯 >>>
+    #    它會包含 pkg_tools 中的 *包名* 和 pip_tools 中的 *包名*，再加上 ffprobe
+    local all_tools=("${pkg_tools[@]}" "${pip_tools[@]}" "ffprobe")
+
+    # <<< 修改驗證循環 >>>
+    for tool_in_list in "${all_tools[@]}"; do
+        local command_to_check="" # 要實際檢查的命令
+
+        # --- 在這裡處理特殊情況：包名和命令名不一致 ---
+        if [[ "$tool_in_list" == "mkvtoolnix" ]]; then
+            command_to_check="mkvmerge" # 如果列表項是 mkvtoolnix(包名)，我們實際檢查 mkvmerge(命令名)
+        # --- 如果有其他特殊情況，可以在這裡加 elif ---
+        # elif [[ "$tool_in_list" == "some-package" ]]; then
+        #     command_to_check="some-command"
+        else
+            # 默認情況：假設列表中的名稱就是要檢查的命令名
+            command_to_check="$tool_in_list"
+        fi
+        # --- 特殊情況處理結束 ---
+
+        # 使用 command -v 檢查實際的命令是否存在
+        if ! command -v "$command_to_check" &> /dev/null; then
+            # 如果命令不存在，將 *列表中的原始名稱* (更符合用戶預期) 加入缺少列表
+            missing_after_update+=("$tool_in_list")
+            echo -e "${RED}  > 驗證失敗：找不到 $command_to_check (來自 $tool_in_list)${RESET}"
+            # 或者更簡潔的報告：
+            # echo -e "${RED}  > 驗證失敗：找不到 $command_to_check ${RESET}"
+        else
+            # 如果命令存在，報告成功
+            echo -e "${GREEN}  > 驗證成功：找到 $command_to_check (來自 $tool_in_list)${RESET}"
+            # 或者更簡潔的報告：
+            # echo -e "${GREEN}  > 驗證成功：找到 $command_to_check ${RESET}"
+        fi
+    done
+    echo ""
+
+    # --- 總結結果 (保持不變) ---
+    if [ ${#missing_after_update[@]} -ne 0 ]; then
+        log_message "ERROR" "Update process completed, but still missing tools: ${missing_after_update[*]}"
+        echo -e "${RED}--- 更新結果：失敗 ---${RESET}"
+        echo -e "${RED}更新/安裝後，仍然缺少以下必要工具或其對應命令：${RESET}"
+        for tool in "${missing_after_update[@]}"; do
+            # 顯示列表中的原始名稱
+            echo -e "${YELLOW}  - $tool${RESET}"
+        done
+        echo -e "${CYAN}請檢查網路連線或嘗試手動安裝。${RESET}"
+    elif [ "$update_failed" = true ]; then
+        log_message "WARNING" "Update process completed with some errors during the process. Tools seem to exist now, but might not be the latest version."
+        echo -e "${YELLOW}--- 更新結果：部分成功 ---${RESET}"
+        echo -e "${YELLOW}更新過程中出現一些錯誤，但所有必要工具似乎都已安裝。${RESET}"
+        echo -e "${YELLOW}可能部分工具未能更新到最新版本。${RESET}"
+    else
+        log_message "SUCCESS" "All dependencies checked and successfully updated/installed."
+        echo -e "${GREEN}--- 更新結果：成功 ---${RESET}"
+        echo -e "${GREEN}所有依賴套件均已成功檢查並更新/安裝。${RESET}"
+    fi
+
+    # 等待使用者按 Enter 返回
+    echo ""
+    read -p "按 Enter 返回主選單..."
 }
 
 ############################################
