@@ -581,10 +581,10 @@ auto_update_script() {
             update_message="${YELLOW}已取消更新。${RESET}"
         fi
     elif [ "$remote_commit" = "$base_commit" ]; then
-        log_message("WARNING", "本地分支領先遠端。")
+        log_message "WARNING", "本地分支領先遠端。"
         update_message="${YELLOW}本地版本比遠端更新。無需更新。${RESET}"
     else
-        log_message("WARNING", "本地和遠端分支已分叉。")
+        log_message "WARNING", "本地和遠端分支已分叉。"
         update_message="${RED}錯誤：本地和遠端分支已分叉！無法自動更新。請手動解決。${RESET}"; cd "$original_dir"; return 1
     fi
 
