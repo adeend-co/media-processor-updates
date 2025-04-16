@@ -478,7 +478,6 @@ auto_update_script() {
     if ! command -v git &> /dev/null; then
         log_message "ERROR" "未找到 'git' 命令。無法使用 Git 進行更新。"
         echo -e "${RED}錯誤：找不到 'git' 命令！請先安裝 git 或運行依賴更新。${RESET}"
-        read -p "按 Enter 返回..."
         return 1
     fi
 
@@ -491,14 +490,13 @@ auto_update_script() {
          log_message "ERROR" "腳本目錄 '$repo_dir' 不是一個有效的 Git 倉庫。"
          echo -e "${RED}錯誤：腳本目錄 '$repo_dir' 看起來不像一個 Git 倉庫。${RESET}"
          echo -e "${YELLOW}請確保您是通過 'git clone' 獲取的腳本，並且腳本位於倉庫目錄內。${RESET}"
-         read -p "按 Enter 返回..."
          return 1
     fi
 
     log_message "INFO" "檢查 Git 倉庫: $repo_dir"
     # 切換到倉庫目錄執行 Git 命令
     if ! cd "$repo_dir"; then
-        log_message "ERROR" "無法切換到倉庫目錄 '$repo_dir'"; echo -e "${RED}錯誤：無法進入倉庫目錄！${RESET}"; read -p "按 Enter 返回..."; return 1;
+        log_message "ERROR" "無法切換到倉庫目錄 '$repo_dir'"; echo -e "${RED}錯誤：無法進入倉庫目錄！${RESET}"; return 1;
     fi
 
     # 1. 檢查本地是否有未提交的更改
@@ -531,7 +529,6 @@ auto_update_script() {
         log_message "ERROR" "'git fetch' 失敗。請檢查網路連線和 Git 遠端設定。"
         echo -e "${RED}錯誤：無法從遠端獲取更新資訊！請檢查網路和 Git 遠端。${RESET}"
         cd "$original_dir"
-        read -p "按 Enter 返回..."
         return 1
     fi
     log_message "INFO" "'git fetch' 成功。"
@@ -546,7 +543,6 @@ auto_update_script() {
          log_message "ERROR" "無法獲取 Git commit 信息。可能未設置上游分支或倉庫狀態異常。"
          echo -e "${RED}錯誤：無法比較版本信息。請確保已設置 Git 上游分支 ('git branch --set-upstream-to=origin/main')。${RESET}"
          cd "$original_dir"
-         read -p "按 Enter 返回..."
          return 1
     fi
 
@@ -555,7 +551,6 @@ auto_update_script() {
         log_message "INFO" "腳本已是最新版本。"
         echo -e "${GREEN}腳本已是最新版本。無需更新。${RESET}"
         cd "$original_dir"
-        read -p "按 Enter 返回..."
         return 0
     elif [ "$local_commit" = "$base_commit" ]; then
         # 本地是基礎，遠端有更新 (Fast-forward)
