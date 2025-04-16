@@ -3485,101 +3485,131 @@ show_about_enhanced() {
 ############################################
 
 ############################################
-# <<< 修改：環境檢查 (只檢查 media_processor(18) + estimate_size.py 必需) >>>
+# <<< 修改：環境檢查 (加入 Python 庫檢查提示) >>>
 ############################################
 check_environment() {
-    # --- 精簡後的必需系統工具 ---
-    local core_tools=("yt-dlp" "ffmpeg" "ffprobe" "jq" "curl" "git" "python" "bc" "realpath") # 移除 mkvmerge, 加入 bc, realpath
+    local core_tools=("yt-dlp" "ffmpeg" "ffprobe" "jq" "curl" "mkvmerge") # <<< 新增 mkvmerge
     local missing_tools=()
     local python_found=false
     local python_cmd=""
-    # --- 精簡後的必需 Python 庫 ---
-    local python_libs=("Pillow") # 只保留 Pillow (為了檢查 pip install 流程)
-    # --- 精簡後的必需輔助腳本 ---
-    local essential_helper_scripts=("$PYTHON_ESTIMATOR_SCRIPT_PATH") # 只檢查 estimate_size.py
+    local webvtt_lib_found=false
 
-    echo -e "${CYAN}正在進行環境檢查 (精簡版)...${RESET}"
-    log_message "INFO" "開始環境檢查 (精簡版, OS: $OS_TYPE)..."
+    echo -e "${CYAN}正在進行環境檢查...${RESET}"
+    log_message "INFO" "開始環境檢查 (OS: $OS_TYPE)..."
 
     # 檢查核心工具
-    echo -e "${YELLOW}  檢查核心工具...${RESET}"
     for tool in "${core_tools[@]}"; do
         if ! command -v "$tool" &> /dev/null; then
-            # 特殊處理 realpath，可能內建
-            if [[ "$tool" == "realpath" ]] && command -v realpath &>/dev/null; then
-                 continue # 如果找到了就跳過
-            fi
-            missing_tools+=("工具: $tool")
-            echo -e "${RED}    - 缺少: $tool ${RESET}"
+            missing_tools+=("$tool")
+            echo -e "${YELLOW}  - 缺少: $tool ${RESET}"
         fi
     done
 
     # 檢查 Python
-    echo -e "${YELLOW}  檢查 Python 環境...${RESET}"
-    if command -v python3 &> /dev/null; then python_found=true; python_cmd="python3"; echo -e "${GREEN}    - 找到: python3 ${RESET}";
-    elif command -v python &> /dev/null; then python_found=true; python_cmd="python"; echo -e "${GREEN}    - 找到: python ${RESET}";
-    else missing_tools+=("工具: python 或 python3"); echo -e "${RED}    - 缺少: python 或 python3 ${RESET}"; fi
-
-    # 檢查必需的 Python 庫 (只檢查 Pillow)
+    if command -v python3 &> /dev/null; then 
+        python_found=true; python_cmd="python3"; 
+    elif command -v python &> /dev/null; then 
+        python_found=true; python_cmd="python"; 
+    else
+        missing_tools+=("python/python3")
+        echo -e "${YELLOW}  - 缺少: python 或 python3 ${RESET}"
+    fi
+    
+    # 如果找到 Python，檢查 webvtt-py 庫
     if $python_found; then
-        echo -e "${YELLOW}  檢查必需的 Python 庫 (Pillow)...${RESET}"
-        for lib in "${python_libs[@]}"; do
-            local import_name=$lib; local install_name=$lib
-            if [[ "$lib" == "PIL" ]]; then install_name="Pillow"; import_name="PIL"; fi # Pillow 導入名是 PIL
-            if ! $python_cmd -c "import $import_name" &> /dev/null; then
-                 missing_tools+=("Python 庫: $install_name"); echo -e "${RED}    - 缺少庫: $install_name ${RESET}"
-            fi
-        done
-    else missing_tools+=("Python 庫 (因缺少 Python)"); echo -e "${RED}    - 無法檢查 Python 庫 ${RESET}"; fi
-
-    # 檢查必需的輔助腳本
-    echo -e "${YELLOW}  檢查必需的輔助腳本...${RESET}"
-    for script_path in "${essential_helper_scripts[@]}"; do
-        if [ -n "$script_path" ] && [ ! -f "$script_path" ]; then
-             missing_tools+=("輔助腳本: $(basename "$script_path")")
-             echo -e "${RED}    - 缺少輔助腳本: $(basename "$script_path") (檢查路徑: $script_path) ${RESET}"
+        if $python_cmd -c "import webvtt" &> /dev/null; then
+            webvtt_lib_found=true
+        else
+             missing_tools+=("Python 庫: webvtt-py")
+             echo -e "${YELLOW}  - 缺少 Python 庫: webvtt-py ${RESET}"
         fi
-    done
+    fi
 
-    # 處理檢查結果
     if [ ${#missing_tools[@]} -ne 0 ]; then
-        clear; echo -e "${RED}=== 環境檢查失敗 ===${RESET}"
-        echo -e "${YELLOW}缺少以下必需項目：${RESET}"; for tool in "${missing_tools[@]}"; do echo -e "${RED}  - $tool${RESET}"; done
-        echo -e "\n${CYAN}請嘗試運行 '檢查並更新依賴套件' 或手動安裝。${RESET}"
-        # 提供精簡的安裝提示
+        clear
+        echo -e "${RED}=== 環境檢查失敗 ===${RESET}"
+        echo -e "${YELLOW}缺少以下必要工具或組件：${RESET}"
+        for tool in "${missing_tools[@]}"; do echo -e "${RED}  - $tool${RESET}"; done
+        echo -e "\n${CYAN}請嘗試運行選項 '6' (檢查並更新依賴套件) 來自動安裝，"
+        echo -e "或者根據你的系統手動安裝它們。${RESET}"
+        # 提供安裝提示
         if [[ "$OS_TYPE" == "termux" ]]; then
-             echo -e "\n${GREEN}Termux 建議命令:"
-             echo -e "  pkg up -y && pkg install -y ffmpeg jq curl python git bc libjpeg-turbo libpng zlib libxml2 build-essential python-build pkg-config python-pip" #<-- 精簡依賴
-             echo -e "  pip install --upgrade pip yt-dlp Pillow" #<-- 精簡 pip
+             echo -e "${GREEN}Termux:"
+             echo -e "  pkg install ffmpeg jq curl python mkvmerge python-pip" 
+             echo -e "  pip install -U yt-dlp webvtt-py"
+             echo -e "${RESET}"
         elif [[ "$OS_TYPE" == "wsl" || "$OS_TYPE" == "linux" ]]; then
-             local install_cmd="" #<-- 精簡依賴
-             if [[ "$PACKAGE_MANAGER" == "apt" ]]; then install_cmd="sudo apt install -y ffmpeg jq curl python3 git bc python3-pip libjpeg-dev zlib1g-dev libxml2-dev build-essential pkg-config";
-             elif [[ "$PACKAGE_MANAGER" == "dnf" ]]; then install_cmd="sudo dnf install -y ffmpeg jq curl python3 git bc python3-pip libjpeg-turbo-devel zlib-devel libxml2-devel gcc python3-devel pkgconf-pkg-config";
-             elif [[ "$PACKAGE_MANAGER" == "yum" ]]; then install_cmd="sudo yum install -y ffmpeg jq curl python3 git bc python3-pip libjpeg-turbo-devel zlib-devel libxml2-devel gcc python3-devel pkgconf-pkg-config"; fi # 可能需要 epel
-             if [ -n "$install_cmd" ]; then echo -e "\n${GREEN}WSL/Linux ($PACKAGE_MANAGER) 建議命令:\n  $install_cmd"; echo -e "  $python_cmd -m pip install --upgrade --user yt-dlp Pillow";
-             else echo -e "\n${YELLOW}請參考你的 Linux 發行版文檔安裝必需工具。\n然後執行: pip install --upgrade yt-dlp Pillow"; fi
+             local install_cmd=""
+             if [[ "$PACKAGE_MANAGER" == "apt" ]]; then install_cmd="sudo apt install -y ffmpeg jq curl python3 python3-pip mkvmerge"; 
+             elif [[ "$PACKAGE_MANAGER" == "dnf" ]]; then install_cmd="sudo dnf install -y ffmpeg jq curl python3 python3-pip mkvmerge"; 
+             elif [[ "$PACKAGE_MANAGER" == "yum" ]]; then install_cmd="sudo yum install -y ffmpeg jq curl python3 python3-pip mkvmerge"; fi
+             
+             if [ -n "$install_cmd" ]; then
+                 echo -e "${GREEN}WSL/Linux ($PACKAGE_MANAGER):"
+                 echo -e "  $install_cmd"
+                 echo -e "  $python_cmd -m pip install --upgrade --user yt-dlp webvtt-py" # 使用 --user 可能更安全
+                 echo -e "${RESET}"
+             else
+                 echo -e "${YELLOW}請參考你的 Linux 發行版文檔安裝: ffmpeg, jq, curl, python3, pip, mkvmerge${RESET}"
+                 echo -e "${YELLOW}然後執行: pip install --upgrade yt-dlp webvtt-py${RESET}"
+             fi
         fi
-        if [[ " ${missing_tools[*]} " =~ " 輔助腳本: " ]]; then echo -e "\n${YELLOW}缺少輔助腳本！請確保通過 'git clone' 獲取了完整的專案。${RESET}"; fi
-        echo -e "\n${RED}腳本無法繼續執行。${RESET}"; log_message "ERROR" "環境檢查失敗，缺少必需項: ${missing_tools[*]}"; exit 1
+        # 提示 webvtt-py 的單獨安裝方法
+        if ! $webvtt_lib_found && $python_found; then
+             echo -e "\n${YELLOW}如果僅缺少 webvtt-py 庫，請執行:${RESET}"
+             echo -e "${GREEN}  pip install webvtt-py${RESET}"
+        fi
+        
+        echo -e "\n${RED}腳本無法繼續執行，請安裝所需工具後重試。${RESET}"
+        log_message "ERROR" "環境檢查失敗，缺少: ${missing_tools[*]}"
+        exit 1
     fi
-    echo -e "${GREEN}  > 必需工具、庫和輔助腳本檢查通過。${RESET}"
+    echo -e "${GREEN}  > 必要工具和庫檢查通過。${RESET}"
 
-    # --- Termux 存儲和目錄檢查 (保持不變) ---
+    # --- Termux 特定儲存權限檢查 ---
     if [[ "$OS_TYPE" == "termux" ]]; then
-        echo -e "${YELLOW}  檢查 Termux 儲存權限...${RESET}"
+        echo -e "${CYAN}正在檢查 Termux 儲存權限...${RESET}"
         if [ ! -d "/sdcard" ] || ! touch "/sdcard/.termux-test-write" 2>/dev/null; then
-            clear; echo -e "${RED}=== 環境檢查失敗 (Termux) ===${RESET}"; echo -e "${YELLOW}無法存取 /sdcard！${RESET}"; echo -e "${CYAN}請運行：${GREEN}termux-setup-storage${RESET}"; echo -e "${CYAN}然後重啟 Termux 和此腳本。${RESET}"; log_message "ERROR" "無法存取 /sdcard"; rm -f "/sdcard/.termux-test-write"; exit 1
-        else rm -f "/sdcard/.termux-test-write"; echo -e "${GREEN}    > Termux 儲存權限正常。${RESET}"; fi
-    fi
-    echo -e "${YELLOW}  檢查目錄權限...${RESET}"
-    local path_check_failed=false
-    if ! mkdir -p "$DOWNLOAD_PATH" 2>/dev/null || [ ! -w "$DOWNLOAD_PATH" ]; then echo -e "${RED}    - 錯誤：下載目錄 '$DOWNLOAD_PATH' 無法創建或不可寫！${RESET}"; log_message "ERROR" "下載目錄問題"; path_check_failed=true; else echo -e "${GREEN}    > 下載目錄可寫。${RESET}"; fi
-    if ! mkdir -p "$TEMP_DIR" 2>/dev/null || [ ! -w "$TEMP_DIR" ]; then echo -e "${RED}    - 錯誤：臨時目錄 '$TEMP_DIR' 無法創建或不可寫！${RESET}"; log_message "ERROR" "臨時目錄問題"; path_check_failed=true; else echo -e "${GREEN}    > 臨時目錄可寫。${RESET}"; fi
-    if [ "$path_check_failed" = true ]; then echo -e "\n${RED}腳本因目錄問題無法繼續執行。${RESET}"; exit 1; fi
+            clear
+            echo -e "${RED}=== 環境檢查失敗 (Termux) ===${RESET}"
+            echo -e "${YELLOW}無法存取或寫入外部存儲 (/sdcard)！${RESET}"
+            echo -e "${CYAN}請先在 Termux 中執行以下命令授予權限：${RESET}"
+            echo -e "${GREEN}termux-setup-storage${RESET}"
+            echo -e "${CYAN}然後重新啟動 Termux 和此腳本。${RESET}"
+            log_message "ERROR" "環境檢查失敗：無法存取或寫入 /sdcard"
+            rm -f "/sdcard/.termux-test-write"
+            exit 1
+        else
+            rm -f "/sdcard/.termux-test-write"
+             echo -e "${GREEN}  > Termux 儲存權限正常。${RESET}"
+        fi
+    fi # 結束 Termux 特定檢查
 
-    log_message "INFO" "環境檢查通過 (精簡版)。"
-    echo -e "\n${GREEN}=== 環境檢查通過 ===${RESET}"
-    sleep 1
+    # --- 通用下載和臨時目錄檢查 ---
+    echo -e "${CYAN}正在檢查目錄權限...${RESET}"
+    if [ -z "$DOWNLOAD_PATH" ]; then
+         echo -e "${RED}錯誤：下載目錄路徑未設定！${RESET}"; log_message "ERROR" "環境檢查失敗：下載目錄未設定。"; exit 1;
+    elif ! mkdir -p "$DOWNLOAD_PATH" 2>/dev/null; then
+        echo -e "${RED}錯誤：無法創建下載目錄：$DOWNLOAD_PATH ${RESET}"; log_message "ERROR" "環境檢查失敗：無法創建下載目錄 $DOWNLOAD_PATH"; exit 1;
+    elif [ ! -w "$DOWNLOAD_PATH" ]; then
+         echo -e "${RED}錯誤：下載目錄不可寫：$DOWNLOAD_PATH ${RESET}"; log_message "ERROR" "環境檢查失敗：下載目錄不可寫 $DOWNLOAD_PATH"; exit 1;
+    else
+         echo -e "${GREEN}  > 下載目錄 '$DOWNLOAD_PATH' 可寫。${RESET}"
+    fi
+
+    if [ -z "$TEMP_DIR" ]; then
+         echo -e "${RED}錯誤：臨時目錄路徑未設定！${RESET}"; log_message "ERROR" "環境檢查失敗：臨時目錄未設定。"; exit 1;
+    elif ! mkdir -p "$TEMP_DIR" 2>/dev/null; then
+        echo -e "${RED}錯誤：無法創建臨時目錄：$TEMP_DIR ${RESET}"; log_message "ERROR" "環境檢查失敗：無法創建臨時目錄 $TEMP_DIR"; exit 1;
+    elif [ ! -w "$TEMP_DIR" ]; then
+         echo -e "${RED}錯誤：臨時目錄不可寫：$TEMP_DIR ${RESET}"; log_message "ERROR" "環境檢查失敗：臨時目錄不可寫 $TEMP_DIR"; exit 1;
+    else
+         echo -e "${GREEN}  > 臨時目錄 '$TEMP_DIR' 可寫。${RESET}"
+    fi
+
+    log_message "INFO" "環境檢查通過。"
+    echo -e "${GREEN}環境檢查通過。${RESET}"
+    sleep 2
     return 0
 }
 
