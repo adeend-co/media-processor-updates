@@ -640,22 +640,27 @@ safe_remove() {
 }
 
 ############################################
-# <<< 修改：依賴更新 (加入 git，合併 Python 庫安裝) >>>
+# <<< 修改：依賴更新 (只安裝 media_processor(18) + estimate_size.py 必需) >>>
 ############################################
 update_dependencies() {
-    local pkg_tools=("ffmpeg" "jq" "curl" "python" "mkvmerge" "git") # <-- 加入 git
+    # --- 精簡後的必需系統工具 ---
+    local pkg_tools=("ffmpeg" "jq" "curl" "python" "git" "bc") # 移除 mkvtoolnix
+    # --- Pillow 編譯依賴 (僅 Termux，為了 pip install 穩定性) ---
+    local pillow_build_deps_termux=("libjpeg-turbo" "libpng" "zlib" "libxml2" "build-essential" "python-build" "pkg-config") # 保留 Pillow 依賴
+    # --- 精簡後的必需 pip 包 ---
     local pip_tools=("yt-dlp")
-    local python_libs_to_install=("mutagen" "requests" "musicbrainzngs" "Pillow" "webvtt-py")
+    # --- 讓 pip 嘗試安裝 Pillow 以確保流程完整 ---
+    local python_libs_to_install=("Pillow") # 只保留 Pillow
 
     local update_failed=false
     local missing_after_update=()
 
     clear
-    echo -e "${CYAN}--- 開始檢查並更新依賴套件 ---${RESET}"
-    log_message "INFO" "使用者觸發依賴套件更新流程。"
+    echo -e "${CYAN}--- 開始檢查並更新依賴套件 (精簡版) ---${RESET}"
+    log_message "INFO" "使用者觸發依賴套件更新流程 (精簡版)。"
 
     # --- 步驟 1: 更新包管理器列表 ---
-    echo -e "${YELLOW}[1/4] 正在更新套件列表 (${PACKAGE_MANAGER:-未知} update)...${RESET}"
+    echo -e "${YELLOW}[1/5] 正在更新套件列表 (${PACKAGE_MANAGER:-未知} update)...${RESET}"
     local update_cmd=""
     if [[ "$PACKAGE_MANAGER" == "pkg" ]]; then update_cmd="pkg update -y";
     elif [[ "$PACKAGE_MANAGER" == "apt" ]]; then update_cmd="sudo apt update -y";
@@ -667,50 +672,78 @@ update_dependencies() {
         else log_message "WARNING" "$PACKAGE_MANAGER list update failed (code $?), proceeding anyway."; echo -e "${RED}  > 警告：套件列表更新失敗。${RESET}"; fi
     fi; echo ""
 
-    # --- 步驟 2: 安裝/更新 包管理器管理的工具 (含 git 和 pip) ---
-    echo -e "${YELLOW}[2/4] 正在安裝/更新 ${PACKAGE_MANAGER:-未知} 套件: ${pkg_tools[*]} 及 pip...${RESET}"
-    local install_cmd=""
-    if [[ "$PACKAGE_MANAGER" == "pkg" ]]; then install_cmd="pkg install -y ${pkg_tools[*]} python-pip";
-    elif [[ "$PACKAGE_MANAGER" == "apt" ]]; then install_cmd="sudo apt install -y ${pkg_tools[*]} python3-pip";
-    elif [[ "$PACKAGE_MANAGER" == "dnf" ]]; then install_cmd="sudo dnf install -y ${pkg_tools[*]} python3-pip";
-    elif [[ "$PACKAGE_MANAGER" == "yum" ]]; then install_cmd="sudo yum install -y ${pkg_tools[*]} python3-pip"; # 可能需 epel
+    # --- 步驟 2: 安裝核心系統工具 (移除 mkvtoolnix) ---
+    echo -e "${YELLOW}[2/5] 正在安裝/更新 ${PACKAGE_MANAGER:-未知} 核心套件: ${pkg_tools[*]}...${RESET}"
+    local core_install_cmd=""
+    if [[ "$PACKAGE_MANAGER" == "pkg" ]]; then core_install_cmd="pkg install -y ${pkg_tools[*]}";
+    elif [[ "$PACKAGE_MANAGER" == "apt" ]]; then core_install_cmd="sudo apt install -y ${pkg_tools[*]}";
+    elif [[ "$PACKAGE_MANAGER" == "dnf" ]]; then core_install_cmd="sudo dnf install -y ${pkg_tools[*]}";
+    elif [[ "$PACKAGE_MANAGER" == "yum" ]]; then core_install_cmd="sudo yum install -y ${pkg_tools[*]}"; # 可能需 epel
     else echo -e "${RED}  > 錯誤：未知的包管理器。${RESET}"; log_message "ERROR" "未知包管理器 '$PACKAGE_MANAGER'"; update_failed=true; fi
-    if [[ -n "$install_cmd" ]]; then
-         if $install_cmd; then log_message "INFO" "Installation/update of ${pkg_tools[*]} & pip via $PACKAGE_MANAGER successful."; echo -e "${GREEN}  > 安裝/更新 ${pkg_tools[*]} 及 pip 完成。${RESET}";
-         else log_message "ERROR" "Installation/update of ${pkg_tools[*]} or pip failed!"; echo -e "${RED}  > 錯誤：安裝/更新 ${pkg_tools[*]} 或 pip 失敗！${RESET}"; update_failed=true; fi
+    if [[ -n "$core_install_cmd" ]]; then
+         if $core_install_cmd; then log_message "INFO" "Installation/update of ${pkg_tools[*]} successful."; echo -e "${GREEN}  > 安裝/更新 ${pkg_tools[*]} 完成。${RESET}";
+         else log_message "ERROR" "Installation/update of ${pkg_tools[*]} failed!"; echo -e "${RED}  > 錯誤：安裝/更新 ${pkg_tools[*]} 失敗！${RESET}"; update_failed=true; fi
     fi; echo ""
 
-    # --- 步驟 3: 更新 pip 本身及所有 Python 依賴 ---
-    echo -e "${YELLOW}[3/4] 正在更新 pip 及 Python 套件: ${pip_tools[*]} ${python_libs_to_install[*]}...${RESET}"
+    # --- 步驟 3: 安裝 Pillow 編譯依賴 (僅 Termux) ---
+    if [[ "$OS_TYPE" == "termux" ]]; then
+        echo -e "${YELLOW}[3/5] 正在安裝 Pillow 編譯所需依賴 (Termux)...${RESET}"
+        local pillow_deps_cmd="pkg install -y ${pillow_build_deps_termux[*]}"
+        if $pillow_deps_cmd; then log_message "INFO" "Installation of Pillow build dependencies successful."; echo -e "${GREEN}  > Pillow 編譯依賴安裝完成。${RESET}";
+        else log_message "ERROR" "Installation of Pillow build dependencies failed!"; echo -e "${RED}  > 錯誤：安裝 Pillow 編譯依賴失敗！ Pillow 可能無法正確安裝/更新。${RESET}"; update_failed=true; fi
+        echo ""
+    else
+         log_message "INFO" "非 Termux 環境，跳過自動安裝 Pillow 編譯依賴。"; echo -e "${YELLOW}[3/5] 跳過自動安裝 Pillow 編譯依賴 (非 Termux)。${RESET}"; echo ""
+    fi
+
+    # --- 步驟 4: 更新 pip 及必需的 Python 庫 ---
+    echo -e "${YELLOW}[4/5] 正在更新 pip 及必需 Python 套件: ${pip_tools[*]} ${python_libs_to_install[*]}...${RESET}"
     local python_cmd=""; if command -v python3 &> /dev/null; then python_cmd="python3"; elif command -v python &> /dev/null; then python_cmd="python"; fi
     local pip_cmd=""
+    local pip_install_cmd="" # 用於安裝 pip 的命令
     if [[ -n "$python_cmd" ]]; then
         if $python_cmd -m pip --version &> /dev/null; then pip_cmd="$python_cmd -m pip";
-        elif command -v pip3 &> /dev/null; then pip_cmd="pip3";
-        elif command -v pip &> /dev/null; then pip_cmd="pip"; fi
+        elif command -v pip3 &> /dev/null && [[ "$python_cmd" == "python3" ]]; then pip_cmd="pip3"; pip_install_cmd="pkg install -y python-pip || sudo apt install -y python3-pip || sudo dnf install -y python3-pip || sudo yum install -y python3-pip";
+        elif command -v pip &> /dev/null && [[ "$python_cmd" == "python" ]]; then pip_cmd="pip"; pip_install_cmd="pkg install -y python-pip || sudo apt install -y python-pip || sudo dnf install -y python-pip || sudo yum install -y python-pip";
+        else # 如果找不到 pip，嘗試安裝它
+            echo -e "${YELLOW}  > 未找到 pip 命令，嘗試安裝...${RESET}"
+            if [[ -n "$pip_install_cmd" ]]; then
+                 if $pip_install_cmd; then
+                      log_message INFO "Successfully installed pip package."
+                      # 重新檢測 pip_cmd
+                      if $python_cmd -m pip --version &> /dev/null; then pip_cmd="$python_cmd -m pip";
+                      elif command -v pip3 &> /dev/null; then pip_cmd="pip3";
+                      elif command -v pip &> /dev/null; then pip_cmd="pip"; fi
+                 else
+                      log_message ERROR "Failed to install pip package."
+                 fi
+            else
+                 log_message WARNING "Cannot determine command to install pip for $PACKAGE_MANAGER"
+            fi
+        fi
     fi
+
     if [[ -n "$pip_cmd" ]]; then
-         echo -e "${YELLOW}  > 更新 pip 本身...${RESET}"
-         $pip_cmd install --upgrade pip > /dev/null 2>&1 # 靜默更新 pip
-         echo -e "${YELLOW}  > 更新 yt-dlp 及 Python 庫...${RESET}"
+         echo -e "${YELLOW}  > 更新 pip 本身...${RESET}"; $pip_cmd install --upgrade pip > /dev/null 2>&1
+         echo -e "${YELLOW}  > 更新 ${pip_tools[*]} 和 ${python_libs_to_install[*]}...${RESET}"
          local all_pip_packages=("${pip_tools[@]}" "${python_libs_to_install[@]}")
-         if $pip_cmd install --upgrade ${all_pip_packages[@]}; then
+         if $pip_cmd install --upgrade --no-cache-dir ${all_pip_packages[@]}; then
              log_message "INFO" "Update of ${all_pip_packages[*]} via pip succeeded."; echo -e "${GREEN}  > 更新 ${all_pip_packages[*]} 完成。${RESET}"
          else
              log_message "ERROR" "Update of ${all_pip_packages[*]} via pip failed!"; echo -e "${RED}  > 錯誤：更新 ${all_pip_packages[*]} 失敗！${RESET}"; update_failed=true
          fi
     else
-        log_message "ERROR" "Python/pip command not found, cannot update pip packages."
-        echo -e "${RED}  > 錯誤：找不到 python 或 pip 命令，無法更新 Python 套件。${RESET}"; update_failed=true
+        log_message "ERROR" "Python/pip command not found or install failed, cannot update pip packages."
+        echo -e "${RED}  > 錯誤：找不到或無法安裝 pip 命令，無法更新 Python 套件。${RESET}"; update_failed=true
     fi; echo ""
 
-    # --- 步驟 4: 最終驗證所有工具 (含 git) ---
-    echo -e "${YELLOW}[4/4] 正在驗證所有必要工具是否已安裝...${RESET}"
-    local all_tools_check=("${core_tools[@]}" "${pip_tools[@]}" "ffprobe") # core_tools 已包含 git
+    # --- 步驟 5: 最終驗證 (移除 mkvmerge) ---
+    echo -e "${YELLOW}[5/5] 正在驗證必需工具是否已安裝...${RESET}"
+    local all_tools_check=("${pkg_tools[@]}" "${pip_tools[@]}" "ffprobe" "bc") # 移除 mkvtoolnix, 加入 bc
     missing_after_update=()
     for tool_in_list in "${all_tools_check[@]}"; do
         local command_to_check="$tool_in_list"
-        if [[ "$tool_in_list" == "mkvtoolnix" ]]; then command_to_check="mkvmerge"; fi
+        # 不需要特殊處理 mkvtoolnix 了
         if ! command -v "$command_to_check" &> /dev/null; then
             missing_after_update+=("$tool_in_list"); echo -e "${RED}  > 驗證失敗：找不到 $command_to_check ${RESET}"
         else echo -e "${GREEN}  > 驗證成功：找到 $command_to_check ${RESET}"; fi
@@ -721,10 +754,10 @@ update_dependencies() {
         log_message "ERROR" "Update process completed, but still missing tools: ${missing_after_update[*]}"
         echo -e "${RED}--- 更新結果：失敗 ---${RESET}"; echo -e "${RED}更新/安裝後，仍缺少：${RESET}"; for tool in "${missing_after_update[@]}"; do echo -e "${YELLOW}  - $tool${RESET}"; done; echo -e "${CYAN}請檢查錯誤或手動安裝。${RESET}"
     elif [ "$update_failed" = true ]; then
-        log_message "WARNING" "Update process completed with errors. Tools seem to exist now."
-        echo -e "${YELLOW}--- 更新結果：部分成功 ---${RESET}"; echo -e "${YELLOW}更新過程有錯誤，但工具似乎已安裝。${RESET}"
+        log_message "WARNING" "Update process completed with errors. Tools might exist now."
+        echo -e "${YELLOW}--- 更新結果：部分成功 ---${RESET}"; echo -e "${YELLOW}更新過程有錯誤，但工具可能已安裝。${RESET}"
     else
-        log_message "SUCCESS" "All dependencies checked and successfully updated/installed."; echo -e "${GREEN}--- 更新結果：成功 ---${RESET}"; echo -e "${GREEN}所有依賴套件均已成功檢查並更新/安裝。${RESET}"
+        log_message "SUCCESS" "All dependencies checked and successfully updated/installed."; echo -e "${GREEN}--- 更新結果：成功 ---${RESET}"; echo -e "${GREEN}所有必需依賴套件均已成功檢查並更新/安裝。${RESET}"
     fi
 
     echo ""; read -p "按 Enter 返回主選單..."
@@ -3407,23 +3440,30 @@ show_about_enhanced() {
 ############################################
 
 ############################################
-# <<< 修改：環境檢查 (加入 git，更新輔助腳本路徑檢查) >>>
+# <<< 修改：環境檢查 (只檢查 media_processor(18) + estimate_size.py 必需) >>>
 ############################################
 check_environment() {
-    local core_tools=("yt-dlp" "ffmpeg" "ffprobe" "jq" "curl" "mkvmerge" "git") # <-- 加入 git
+    # --- 精簡後的必需系統工具 ---
+    local core_tools=("yt-dlp" "ffmpeg" "ffprobe" "jq" "curl" "git" "python" "bc" "realpath") # 移除 mkvmerge, 加入 bc, realpath
     local missing_tools=()
     local python_found=false
     local python_cmd=""
-    local python_libs=("mutagen" "requests" "musicbrainzngs" "PIL") # PIL for Pillow
-    local webvtt_lib_found=false # 保留，以防其他地方用到
+    # --- 精簡後的必需 Python 庫 ---
+    local python_libs=("Pillow") # 只保留 Pillow (為了檢查 pip install 流程)
+    # --- 精簡後的必需輔助腳本 ---
+    local essential_helper_scripts=("$PYTHON_ESTIMATOR_SCRIPT_PATH") # 只檢查 estimate_size.py
 
-    echo -e "${CYAN}正在進行環境檢查...${RESET}"
-    log_message "INFO" "開始環境檢查 (OS: $OS_TYPE)..."
+    echo -e "${CYAN}正在進行環境檢查 (精簡版)...${RESET}"
+    log_message "INFO" "開始環境檢查 (精簡版, OS: $OS_TYPE)..."
 
     # 檢查核心工具
     echo -e "${YELLOW}  檢查核心工具...${RESET}"
     for tool in "${core_tools[@]}"; do
         if ! command -v "$tool" &> /dev/null; then
+            # 特殊處理 realpath，可能內建
+            if [[ "$tool" == "realpath" ]] && command -v realpath &>/dev/null; then
+                 continue # 如果找到了就跳過
+            fi
             missing_tools+=("工具: $tool")
             echo -e "${RED}    - 缺少: $tool ${RESET}"
         fi
@@ -3431,81 +3471,68 @@ check_environment() {
 
     # 檢查 Python
     echo -e "${YELLOW}  檢查 Python 環境...${RESET}"
-    if command -v python3 &> /dev/null; then
-        python_found=true; python_cmd="python3"; echo -e "${GREEN}    - 找到: python3 ${RESET}"
-    elif command -v python &> /dev/null; then
-        python_found=true; python_cmd="python"; echo -e "${GREEN}    - 找到: python ${RESET}"
-    else
-        missing_tools+=("工具: python 或 python3"); echo -e "${RED}    - 缺少: python 或 python3 ${RESET}"
-    fi
+    if command -v python3 &> /dev/null; then python_found=true; python_cmd="python3"; echo -e "${GREEN}    - 找到: python3 ${RESET}";
+    elif command -v python &> /dev/null; then python_found=true; python_cmd="python"; echo -e "${GREEN}    - 找到: python ${RESET}";
+    else missing_tools+=("工具: python 或 python3"); echo -e "${RED}    - 缺少: python 或 python3 ${RESET}"; fi
 
-    # 檢查 Python 庫
+    # 檢查必需的 Python 庫 (只檢查 Pillow)
     if $python_found; then
-        echo -e "${YELLOW}  檢查 Python 庫...${RESET}"
+        echo -e "${YELLOW}  檢查必需的 Python 庫 (Pillow)...${RESET}"
         for lib in "${python_libs[@]}"; do
             local import_name=$lib; local install_name=$lib
-            if [[ "$lib" == "PIL" ]]; then install_name="Pillow"; fi
+            if [[ "$lib" == "PIL" ]]; then install_name="Pillow"; import_name="PIL"; fi # Pillow 導入名是 PIL
             if ! $python_cmd -c "import $import_name" &> /dev/null; then
-                 missing_tools+=("Python 庫: $install_name"); echo -e "${RED}    - 缺少庫: $install_name (導入名: $import_name) ${RESET}"
+                 missing_tools+=("Python 庫: $install_name"); echo -e "${RED}    - 缺少庫: $install_name ${RESET}"
             fi
         done
-        # 檢查 webvtt (如果需要)
-        if $python_cmd -c "import webvtt" &> /dev/null; then webvtt_lib_found=true; else echo -e "${YELLOW}    - (可選)缺少庫: webvtt-py ${RESET}"; fi
-    else
-        missing_tools+=("Python 庫 (因缺少 Python)"); echo -e "${RED}    - 無法檢查 Python 庫 (缺少 Python) ${RESET}"
-    fi
+    else missing_tools+=("Python 庫 (因缺少 Python)"); echo -e "${RED}    - 無法檢查 Python 庫 ${RESET}"; fi
 
-    # 檢查輔助腳本是否存在 (使用修改後的路徑變數)
-    echo -e "${YELLOW}  檢查輔助腳本...${RESET}"
-    if [ -n "$PYTHON_ENRICHER_SCRIPT_PATH" ] && [ ! -f "$PYTHON_ENRICHER_SCRIPT_PATH" ]; then
-        missing_tools+=("輔助腳本: $(basename "$PYTHON_ENRICHER_SCRIPT_PATH")")
-        echo -e "${RED}    - 缺少輔助腳本: $(basename "$PYTHON_ENRICHER_SCRIPT_PATH") (檢查路徑: $PYTHON_ENRICHER_SCRIPT_PATH) ${RESET}"
-    fi
-     if [ -n "$PYTHON_ESTIMATOR_SCRIPT_PATH" ] && [ ! -f "$PYTHON_ESTIMATOR_SCRIPT_PATH" ]; then
-        missing_tools+=("輔助腳本: $(basename "$PYTHON_ESTIMATOR_SCRIPT_PATH")")
-        echo -e "${RED}    - 缺少輔助腳本: $(basename "$PYTHON_ESTIMATOR_SCRIPT_PATH") (檢查路徑: $PYTHON_ESTIMATOR_SCRIPT_PATH) ${RESET}"
-    fi
+    # 檢查必需的輔助腳本
+    echo -e "${YELLOW}  檢查必需的輔助腳本...${RESET}"
+    for script_path in "${essential_helper_scripts[@]}"; do
+        if [ -n "$script_path" ] && [ ! -f "$script_path" ]; then
+             missing_tools+=("輔助腳本: $(basename "$script_path")")
+             echo -e "${RED}    - 缺少輔助腳本: $(basename "$script_path") (檢查路徑: $script_path) ${RESET}"
+        fi
+    done
 
     # 處理檢查結果
     if [ ${#missing_tools[@]} -ne 0 ]; then
-        clear
-        echo -e "${RED}=== 環境檢查失敗 ===${RESET}"
-        echo -e "${YELLOW}缺少以下必要工具或組件：${RESET}"; for tool in "${missing_tools[@]}"; do echo -e "${RED}  - $tool${RESET}"; done
-        echo -e "\n${CYAN}請嘗試運行選項 '檢查並更新依賴套件' 來自動安裝，或手動安裝。${RESET}"
-        # 提供安裝提示 (加入 git)
+        clear; echo -e "${RED}=== 環境檢查失敗 ===${RESET}"
+        echo -e "${YELLOW}缺少以下必需項目：${RESET}"; for tool in "${missing_tools[@]}"; do echo -e "${RED}  - $tool${RESET}"; done
+        echo -e "\n${CYAN}請嘗試運行 '檢查並更新依賴套件' 或手動安裝。${RESET}"
+        # 提供精簡的安裝提示
         if [[ "$OS_TYPE" == "termux" ]]; then
              echo -e "\n${GREEN}Termux 建議命令:"
-             echo -e "  pkg up -y && pkg install -y ffmpeg jq curl python mkvmerge python-pip git" # <-- 加入 git
-             echo -e "  pip install --upgrade pip yt-dlp mutagen requests musicbrainzngs Pillow webvtt-py"
+             echo -e "  pkg up -y && pkg install -y ffmpeg jq curl python git bc libjpeg-turbo libpng zlib libxml2 build-essential python-build pkg-config python-pip" #<-- 精簡依賴
+             echo -e "  pip install --upgrade pip yt-dlp Pillow" #<-- 精簡 pip
         elif [[ "$OS_TYPE" == "wsl" || "$OS_TYPE" == "linux" ]]; then
-             local install_cmd=""
-             if [[ "$PACKAGE_MANAGER" == "apt" ]]; then install_cmd="sudo apt install -y ffmpeg jq curl python3 python3-pip mkvmerge git";
-             elif [[ "$PACKAGE_MANAGER" == "dnf" ]]; then install_cmd="sudo dnf install -y ffmpeg jq curl python3 python3-pip mkvmerge git";
-             elif [[ "$PACKAGE_MANAGER" == "yum" ]]; then install_cmd="sudo yum install -y ffmpeg jq curl python3 python3-pip mkvmerge git"; fi
-             if [ -n "$install_cmd" ]; then echo -e "\n${GREEN}WSL/Linux ($PACKAGE_MANAGER) 建議命令:\n  $install_cmd"; echo -e "  $python_cmd -m pip install --upgrade --user yt-dlp mutagen requests musicbrainzngs Pillow webvtt-py";
-             else echo -e "\n${YELLOW}請參考你的 Linux 發行版文檔安裝: ffmpeg, jq, curl, python3, pip, mkvmerge, git\n然後執行: pip install --upgrade yt-dlp mutagen requests musicbrainzngs Pillow webvtt-py"; fi
+             local install_cmd="" #<-- 精簡依賴
+             if [[ "$PACKAGE_MANAGER" == "apt" ]]; then install_cmd="sudo apt install -y ffmpeg jq curl python3 git bc python3-pip libjpeg-dev zlib1g-dev libxml2-dev build-essential pkg-config";
+             elif [[ "$PACKAGE_MANAGER" == "dnf" ]]; then install_cmd="sudo dnf install -y ffmpeg jq curl python3 git bc python3-pip libjpeg-turbo-devel zlib-devel libxml2-devel gcc python3-devel pkgconf-pkg-config";
+             elif [[ "$PACKAGE_MANAGER" == "yum" ]]; then install_cmd="sudo yum install -y ffmpeg jq curl python3 git bc python3-pip libjpeg-turbo-devel zlib-devel libxml2-devel gcc python3-devel pkgconf-pkg-config"; fi # 可能需要 epel
+             if [ -n "$install_cmd" ]; then echo -e "\n${GREEN}WSL/Linux ($PACKAGE_MANAGER) 建議命令:\n  $install_cmd"; echo -e "  $python_cmd -m pip install --upgrade --user yt-dlp Pillow";
+             else echo -e "\n${YELLOW}請參考你的 Linux 發行版文檔安裝必需工具。\n然後執行: pip install --upgrade yt-dlp Pillow"; fi
         fi
-        if [[ " ${missing_tools[*]} " =~ " 輔助腳本: " ]]; then echo -e "\n${YELLOW}缺少輔助腳本！請確保通過 'git clone' 獲取了完整的專案，並正確設定了腳本路徑。${RESET}"; fi
-        echo -e "\n${RED}腳本無法繼續執行。${RESET}"; log_message "ERROR" "環境檢查失敗，缺少: ${missing_tools[*]}"; exit 1
+        if [[ " ${missing_tools[*]} " =~ " 輔助腳本: " ]]; then echo -e "\n${YELLOW}缺少輔助腳本！請確保通過 'git clone' 獲取了完整的專案。${RESET}"; fi
+        echo -e "\n${RED}腳本無法繼續執行。${RESET}"; log_message "ERROR" "環境檢查失敗，缺少必需項: ${missing_tools[*]}"; exit 1
     fi
-    echo -e "${GREEN}  > 必要工具、庫和輔助腳本檢查通過。${RESET}"
+    echo -e "${GREEN}  > 必需工具、庫和輔助腳本檢查通過。${RESET}"
 
-    # --- Termux 特定儲存權限檢查 ---
+    # --- Termux 存儲和目錄檢查 (保持不變) ---
     if [[ "$OS_TYPE" == "termux" ]]; then
         echo -e "${YELLOW}  檢查 Termux 儲存權限...${RESET}"
         if [ ! -d "/sdcard" ] || ! touch "/sdcard/.termux-test-write" 2>/dev/null; then
             clear; echo -e "${RED}=== 環境檢查失敗 (Termux) ===${RESET}"; echo -e "${YELLOW}無法存取 /sdcard！${RESET}"; echo -e "${CYAN}請運行：${GREEN}termux-setup-storage${RESET}"; echo -e "${CYAN}然後重啟 Termux 和此腳本。${RESET}"; log_message "ERROR" "無法存取 /sdcard"; rm -f "/sdcard/.termux-test-write"; exit 1
         else rm -f "/sdcard/.termux-test-write"; echo -e "${GREEN}    > Termux 儲存權限正常。${RESET}"; fi
     fi
-
-    # --- 通用下載和臨時目錄檢查 ---
     echo -e "${YELLOW}  檢查目錄權限...${RESET}"
     local path_check_failed=false
     if ! mkdir -p "$DOWNLOAD_PATH" 2>/dev/null || [ ! -w "$DOWNLOAD_PATH" ]; then echo -e "${RED}    - 錯誤：下載目錄 '$DOWNLOAD_PATH' 無法創建或不可寫！${RESET}"; log_message "ERROR" "下載目錄問題"; path_check_failed=true; else echo -e "${GREEN}    > 下載目錄可寫。${RESET}"; fi
     if ! mkdir -p "$TEMP_DIR" 2>/dev/null || [ ! -w "$TEMP_DIR" ]; then echo -e "${RED}    - 錯誤：臨時目錄 '$TEMP_DIR' 無法創建或不可寫！${RESET}"; log_message "ERROR" "臨時目錄問題"; path_check_failed=true; else echo -e "${GREEN}    > 臨時目錄可寫。${RESET}"; fi
     if [ "$path_check_failed" = true ]; then echo -e "\n${RED}腳本因目錄問題無法繼續執行。${RESET}"; exit 1; fi
 
-    log_message "INFO" "環境檢查通過。"
+    log_message "INFO" "環境檢查通過 (精簡版)。"
     echo -e "\n${GREEN}=== 環境檢查通過 ===${RESET}"
     sleep 1
     return 0
