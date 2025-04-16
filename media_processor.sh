@@ -19,17 +19,40 @@ COLOR_ENABLED=true
 # --- Configuration File ---
 # <<< 新增：設定檔路徑 >>>
 CONFIG_FILE="$HOME/.media_processor_rc"
-# 自動更新設定保留
-REMOTE_VERSION_URL="https://raw.githubusercontent.com/adeend-co/media-processor-updates/refs/heads/main/latest_version.txt" # <<< 請務必修改此 URL
-REMOTE_SCRIPT_URL="https://raw.githubusercontent.com/adeend-co/media-processor-updates/refs/heads/main/media_processor.sh"   # <<< 請務必修改此 URL
-SCRIPT_INSTALL_PATH="$HOME/scripts/media_processor.sh"
-# --- Python 轉換器相關設定 --- (指向新腳本)
-PYTHON_CONVERTER_SCRIPT_NAME="estimate_size.py" # <--- 修改
-PYTHON_CONVERTER_INSTALL_PATH="$HOME/scripts/$PYTHON_CONVERTER_SCRIPT_NAME" # 路徑會自動更新
-PYTHON_CONVERTER_VERSION="1.0.0" # 給新腳本一個初始版本號
-# ---【重要】修改以下 URL 指向你的新腳本和版本文件 ---
-PYTHON_CONVERTER_VERSION_URL="https://raw.githubusercontent.com/adeend-co/media-processor-updates/refs/heads/main/(estimate)_latest_version" # <--- 修改
-PYTHON_CONVERTER_REMOTE_URL="https://raw.githubusercontent.com/adeend-co/media-processor-updates/refs/heads/main/estimate_size.py"   # <--- 修改
+
+# --- 【重要】路徑設定 (根據您的實際情況修改) ---
+# 假設您將 GitHub 倉庫 clone 到 $HOME/media-processor-updates
+# 並且所有腳本 (bash + python) 都在倉庫根目錄下
+
+# 主 Bash 腳本的完整路徑
+SCRIPT_INSTALL_PATH="$HOME/media-processor-updates/media_processor.sh"
+
+# Python 輔助腳本的完整路徑 (也在根目錄)
+PYTHON_ENRICHER_SCRIPT_PATH="$HOME/media-processor-updates/enrich_metadata.py" # <<< 修改路徑
+PYTHON_ESTIMATOR_SCRIPT_PATH="$HOME/media-processor-updates/estimate_size.py" # <<< 修改路徑
+
+# Python 版本變數保留 (現在由設定檔管理，不再需要遠程檢查)
+PYTHON_CONVERTER_VERSION="1.0.0" # 可以設定一個基礎版本或從設定檔讀取
+
+# SCRIPT_DIR 應該指向 Git 倉庫的根目錄
+SCRIPT_DIR="$HOME/media-processor-updates" # <<< 直接設定為倉庫根目錄
+# 或者通過 SCRIPT_INSTALL_PATH 推導 (如果 SCRIPT_INSTALL_PATH 格式固定)
+# SCRIPT_DIR=$(dirname "$SCRIPT_INSTALL_PATH")
+
+# --- 檢查 SCRIPT_DIR 是否是有效的 Git 倉庫根目錄 ---
+if [ ! -d "$SCRIPT_DIR/.git" ]; then
+    echo -e "\033[0;31m[錯誤] SCRIPT_DIR ('$SCRIPT_DIR') 看起來不是有效的 Git 倉庫根目錄！\033[0m" >&2
+    echo -e "\033[0;33m[提示] 請確保您已通過 'git clone' 獲取專案，並正確設定了 SCRIPT_INSTALL_PATH 和 SCRIPT_DIR。\033[0m" >&2
+    # exit 1 # 首次運行或未 clone 時可能觸發，暫不退出，但更新功能會失敗
+fi
+# -------------------------------------------------------
+
+# --- 平台偵測相關變數 ---
+OS_TYPE="unknown"
+DOWNLOAD_PATH_DEFAULT="" # 會被 detect_platform_and_set_vars 設定
+TEMP_DIR_DEFAULT=""      # 會被 detect_platform_and_set_vars 設定
+PACKAGE_MANAGER=""
+
 # <<< 修改：確保腳本安裝目錄存在，僅在創建時顯示訊息 >>>
 SCRIPT_DIR=$(dirname "$SCRIPT_INSTALL_PATH") # 從完整路徑獲取目錄名稱 (~/scripts)
 
@@ -445,254 +468,134 @@ detect_platform_and_set_vars() {
 }
 
 ############################################
-# 腳本自我更新函數 (手動觸發)
-# MODIFIED: Added Checksum Verification (v2 - Simplified expected checksum reading)
+# <<< 重寫：腳本自我更新函數 (使用 Git) >>>
 ############################################
 auto_update_script() {
-    # 與其他選單選項行為一致
     clear
-    echo -e "${CYAN}--- 開始檢查腳本更新 ---${RESET}"
-    log_message "INFO" "使用者觸發檢查腳本更新。"
-    
-    local local_version="$SCRIPT_VERSION"
-    local remote_version=""
-    local remote_version_raw="" # 用於儲存原始下載內容
-    local remote_version_file="$TEMP_DIR/remote_version.txt"
-    local temp_script="$TEMP_DIR/media_processor_new.sh"
-    
-    # --- 新增：定義校驗和相關變數 ---
-    local temp_checksum_file="$TEMP_DIR/media_processor_new.sh.sha256"
-    # 假設校驗和檔案與腳本檔案在同一目錄下，名稱為腳本檔名加上 .sha256
-    local remote_checksum_url="${REMOTE_SCRIPT_URL}.sha256"
+    echo -e "${CYAN}--- 使用 Git 檢查腳本更新 ---${RESET}"
+    log_message "INFO" "使用者觸發 Git 腳本更新檢查。"
 
-    # --- 1. 獲取遠程版本號 ---
-    echo -e "${YELLOW}正在從 $REMOTE_VERSION_URL 獲取最新版本號...${RESET}"
-    if curl -Ls "$REMOTE_VERSION_URL" -o "$remote_version_file" --fail --connect-timeout 5; then
-        remote_version_raw=$(tr -d '\r\n' < "$remote_version_file")
-        # 移除 UTF-8 BOM (如果有的話)
-        remote_version=${remote_version_raw/#$'\xEF\xBB\xBF'/}
-
-        if [ -z "$remote_version" ]; then
-             log_message "ERROR" "無法從遠程文件讀取有效的版本號。"
-             echo -e "${RED}錯誤：無法讀取遠程版本號。${RESET}"
-             rm -f "$remote_version_file"
-             return 1
-        fi
-        log_message "INFO" "獲取的遠程版本號：$remote_version"
-        rm -f "$remote_version_file"
-    else
-        log_message "ERROR" "無法下載版本文件：$REMOTE_VERSION_URL (Curl failed with code $?)"
-        echo -e "${RED}錯誤：無法下載版本文件，請檢查網路連線或 URL。${RESET}"
+    # 檢查 git 命令是否存在
+    if ! command -v git &> /dev/null; then
+        log_message "ERROR" "未找到 'git' 命令。無法使用 Git 進行更新。"
+        echo -e "${RED}錯誤：找不到 'git' 命令！請先安裝 git 或運行依賴更新。${RESET}"
+        read -p "按 Enter 返回..."
         return 1
     fi
 
-    # --- 2. 比較版本號 ---
-    local local_version_clean
-    local remote_version_clean
-    local_version_clean=${local_version//\(*\)/}
-    remote_version_clean=${remote_version//\(*\)/}
-    
-    latest_version=$(printf '%s\n%s\n' "$remote_version_clean" "$local_version_clean" | sort -V | tail -n 1)
+    # 獲取腳本所在的 Git 倉庫目錄 (使用開頭計算的 SCRIPT_DIR)
+    local repo_dir="$SCRIPT_DIR"
+    local original_dir=$(pwd) # 記錄當前目錄
 
-    # 使用字串比較和 sort -V 聯合判斷
-    if [[ "$local_version_clean" == "$remote_version_clean" ]] || [[ "$local_version_clean" == "$latest_version" && "$local_version_clean" != "$remote_version_clean" ]]; then
-        log_message "INFO" "腳本已是最新版本 ($local_version)。"
-        echo -e "${GREEN}腳本已是最新版本 ($local_version)。${RESET}"
-        return 0
+    # 檢查是否是有效的 Git 倉庫
+    if [ ! -d "$repo_dir/.git" ]; then
+         log_message "ERROR" "腳本目錄 '$repo_dir' 不是一個有效的 Git 倉庫。"
+         echo -e "${RED}錯誤：腳本目錄 '$repo_dir' 看起來不像一個 Git 倉庫。${RESET}"
+         echo -e "${YELLOW}請確保您是通過 'git clone' 獲取的腳本，並且腳本位於倉庫目錄內。${RESET}"
+         read -p "按 Enter 返回..."
+         return 1
     fi
 
-    # --- 3. 確認更新 ---
-    echo -e "${YELLOW}發現新版本：$remote_version (當前版本：$local_version)。${RESET}"
-    read -r -p "是否要立即下載並更新腳本？ (y/n): " confirm_update
-    if [[ ! "$confirm_update" =~ ^[Yy]$ ]]; then
-        log_message "INFO" "使用者取消更新。"
-        echo -e "${YELLOW}已取消更新。${RESET}"
-        return 0
+    log_message "INFO" "檢查 Git 倉庫: $repo_dir"
+    # 切換到倉庫目錄執行 Git 命令
+    if ! cd "$repo_dir"; then
+        log_message "ERROR" "無法切換到倉庫目錄 '$repo_dir'"; echo -e "${RED}錯誤：無法進入倉庫目錄！${RESET}"; read -p "按 Enter 返回..."; return 1;
     fi
 
-    # --- 4. 下載新腳本 ---
-    echo -e "${YELLOW}正在從 $REMOTE_SCRIPT_URL 下載新版本腳本...${RESET}"
-    if curl -Ls "$REMOTE_SCRIPT_URL" -o "$temp_script" --fail --connect-timeout 30; then
-        log_message "INFO" "新版本腳本下載成功：$temp_script"
-
-        # --- 4.1 新增：下載校驗和檔案 ---
-        echo -e "${YELLOW}正在從 $remote_checksum_url 下載校驗和檔案...${RESET}"
-        if ! curl -Ls "$remote_checksum_url" -o "$temp_checksum_file" --fail --connect-timeout 5; then
-            log_message "ERROR" "下載校驗和檔案失敗：$remote_checksum_url (Curl failed with code $?)"
-            echo -e "${RED}錯誤：下載校驗和檔案失敗，請檢查網路連線或 URL。取消更新。${RESET}"
-            # 清理已下載的腳本檔案
-            rm -f "$temp_script"
+    # 1. 檢查本地是否有未提交的更改
+    echo -e "${YELLOW}檢查本地是否有未提交的更改...${RESET}"
+    if ! git diff --quiet HEAD --; then
+        log_message "WARNING" "檢測到本地有未提交的更改。"
+        echo -e "${RED}警告：檢測到您對本地腳本進行了修改！${RESET}"
+        echo -e "${YELLOW}強行更新可能會覆蓋您的修改或導致衝突。${RESET}"
+        read -r -p "是否要放棄本地修改並強行更新？ (輸入 'yes' 確認，其他則取消): " confirm_force
+        if [[ "$confirm_force" != "yes" ]]; then
+            log_message "INFO" "使用者因本地更改取消更新。"
+            echo -e "${YELLOW}已取消更新。請先處理您的本地修改。${RESET}"
+            cd "$original_dir" # 切回原目錄
+            read -p "按 Enter 返回..."
             return 1
         fi
-        log_message "INFO" "校驗和檔案下載成功：$temp_checksum_file"
-
-        # --- 4.2 新增：校驗和驗證 ---
-        echo -e "${YELLOW}正在驗證檔案完整性...${RESET}"
-        # 計算本地下載腳本的 SHA256 校驗和
-        local calculated_checksum
-        local expected_checksum
-        calculated_checksum=$(sha256sum "$temp_script" | awk '{print $1}')
-        # 讀取從伺服器下載的預期校驗和
-        expected_checksum=$(cat "$temp_checksum_file")
-
-        # 比較校驗和
-        if [[ "$calculated_checksum" == "$expected_checksum" ]]; then
-            echo -e "${GREEN}校驗和驗證通過。檔案完整且未被篡改。${RESET}"
-            log_message "SUCCESS" "校驗和驗證通過 (SHA256: $calculated_checksum)"
-            # 驗證通過後，刪除臨時校驗和檔案
-            rm -f "$temp_checksum_file"
-
-            # --- 5. 替換舊腳本 (校驗和驗證通過後才執行) ---
-            echo -e "${YELLOW}正在替換舊腳本：$SCRIPT_INSTALL_PATH ${RESET}"
-            # 賦予新腳本執行權限
-            chmod +x "$temp_script"
-            # 確保目標目錄存在
-            mkdir -p "$(dirname "$SCRIPT_INSTALL_PATH")"
-
-            # 嘗試移動替換
-            if mv "$temp_script" "$SCRIPT_INSTALL_PATH"; then
-                log_message "SUCCESS" "腳本已成功更新至版本 $remote_version。"
-                echo -e "${GREEN}腳本更新成功！版本：$remote_version ${RESET}"
-                echo -e "${CYAN}請重新啟動腳本 ('media' 或執行 '$SCRIPT_INSTALL_PATH') 以載入新版本。${RESET}"
-                # 成功更新後退出腳本，強制使用者重新啟動
-                exit 0
-            else
-                log_message "ERROR" "無法替換舊腳本 '$SCRIPT_INSTALL_PATH'。請檢查權限。"
-                echo -e "${RED}錯誤：無法替換舊腳本。請檢查權限。${RESET}"
-                echo -e "${YELLOW}下載的新腳本保留在：$temp_script ${RESET}" # 提示使用者手動替換
-                # 不刪除 temp_script，方便手動處理
-                return 1 # 返回到主選單，但提示錯誤
-            fi
-
-        else # 校驗和驗證失敗
-            log_message "ERROR" "校驗和驗證失敗！下載的檔案可能已損壞或被篡改。"
-            log_message "ERROR" "預期校驗和 (來自伺服器): $expected_checksum"
-            log_message "ERROR" "計算出的校驗和 (本地下載): $calculated_checksum"
-            echo -e "${RED}錯誤：校驗和驗證失敗！下載的檔案可能已損壞或被篡改。取消更新。${RESET}"
-            # 清理下載的腳本檔案和校驗和檔案
-            rm -f "$temp_script" "$temp_checksum_file"
-            return 1 # 返回到主選單
+        # 放棄本地更改
+        echo -e "${YELLOW}正在放棄本地更改 ('git reset --hard HEAD')...${RESET}"
+        if ! git reset --hard HEAD --quiet; then
+             log_message "ERROR" "放棄本地更改失敗！"; echo -e "${RED}錯誤：放棄本地更改失敗！${RESET}"; cd "$original_dir"; read -p "按 Enter 返回..."; return 1
         fi
-    else # 下載新腳本失敗
-        log_message "ERROR" "下載新腳本失敗：$REMOTE_SCRIPT_URL (Curl failed with code $?)"
-        echo -e "${RED}錯誤：下載新腳本失敗。${RESET}"
-        return 1
-    fi
-}
-
-############################################
-# <<< 新增：Python 轉換器更新函數 >>>
-############################################
-update_python_converter() {
-    echo -e "${CYAN}--- 開始檢查 Python 字幕轉換器更新 ---${RESET}"
-    log_message "INFO" "開始檢查 Python 轉換器更新。"
-    
-    local local_py_version="$PYTHON_CONVERTER_VERSION" # 使用從設定檔載入或預設的本地版本
-    local remote_py_version=""
-    local remote_py_version_raw="" 
-    local remote_py_version_file="$TEMP_DIR/remote_py_version.txt"
-    local temp_py_script="$TEMP_DIR/vtt_to_ass_converter_new.py"
-    local temp_py_checksum_file="$TEMP_DIR/vtt_to_ass_converter_new.py.sha256"
-    local remote_py_checksum_url="${PYTHON_CONVERTER_REMOTE_URL}.sha256" # 假設校驗和檔名規則
-
-    # --- 1. 獲取遠程版本號 ---
-    echo -e "${YELLOW}正在從 $PYTHON_CONVERTER_VERSION_URL 獲取最新版本號...${RESET}"
-    if curl -Ls "$PYTHON_CONVERTER_VERSION_URL" -o "$remote_py_version_file" --fail --connect-timeout 5; then
-        remote_py_version_raw=$(tr -d '\r\n' < "$remote_py_version_file")
-        remote_py_version=${remote_py_version_raw/#$'\xEF\xBB\xBF'/} # 移除 BOM
-
-        if [ -z "$remote_py_version" ]; then
-             log_message "ERROR" "無法讀取 Python 轉換器遠程版本號。"
-             echo -e "${RED}錯誤：無法讀取 Python 轉換器遠程版本號。${RESET}"
-             rm -f "$remote_py_version_file"
-             return 1 # 返回失敗，但不退出主腳本
-        fi
-        log_message "INFO" "獲取的 Python 轉換器遠程版本號：$remote_py_version"
-        rm -f "$remote_py_version_file"
+        echo -e "${GREEN}本地更改已放棄。${RESET}"
     else
-        log_message "ERROR" "無法下載 Python 轉換器版本文件：$PYTHON_CONVERTER_VERSION_URL (Curl failed with code $?)"
-        echo -e "${RED}錯誤：無法下載 Python 轉換器版本文件。${RESET}"
-        return 1 # 返回失敗
+         echo -e "${GREEN}本地無未提交更改。${RESET}"
     fi
 
-    # --- 2. 比較版本號 ---
-    # 使用 sort -V 進行版本比較
-    latest_py_version=$(printf '%s\n%s\n' "$remote_py_version" "$local_py_version" | sort -V | tail -n 1)
 
-    if [[ "$local_py_version" == "$remote_py_version" ]] || [[ "$local_py_version" == "$latest_py_version" && "$local_py_version" != "$remote_py_version" ]]; then
-        log_message "INFO" "Python 轉換器已是最新版本 ($local_py_version)。"
-        echo -e "${GREEN}Python 字幕轉換器已是最新版本 ($local_py_version)。${RESET}"
-        return 0 # 返回成功，無需更新
-    fi
-
-    # --- 3. 確認更新 (可選，或直接更新) ---
-    echo -e "${YELLOW}發現 Python 轉換器新版本：$remote_py_version (當前版本：$local_py_version)。${RESET}"
-    # 由於是在依賴更新流程中，可以考慮直接更新，或添加確認
-    # read -r -p "是否要立即下載並更新 Python 轉換器？ (y/n): " confirm_py_update
-    # if [[ ! "$confirm_py_update" =~ ^[Yy]$ ]]; then
-    #     log_message "INFO" "使用者取消 Python 轉換器更新。"
-    #     echo -e "${YELLOW}已取消 Python 轉換器更新。${RESET}"
-    #     return 0
-    # fi
-
-    # --- 4. 下載新腳本 ---
-    echo -e "${YELLOW}正在從 $PYTHON_CONVERTER_REMOTE_URL 下載新版本 Python 轉換器...${RESET}"
-    if curl -Ls "$PYTHON_CONVERTER_REMOTE_URL" -o "$temp_py_script" --fail --connect-timeout 30; then
-        log_message "INFO" "新版本 Python 轉換器下載成功：$temp_py_script"
-
-        # --- 4.1 下載校驗和檔案 ---
-        echo -e "${YELLOW}正在從 $remote_py_checksum_url 下載校驗和檔案...${RESET}"
-        if ! curl -Ls "$remote_py_checksum_url" -o "$temp_py_checksum_file" --fail --connect-timeout 5; then
-            log_message "ERROR" "下載 Python 轉換器校驗和檔案失敗：$remote_py_checksum_url (Curl failed with code $?)"
-            echo -e "${RED}錯誤：下載 Python 轉換器校驗和檔案失敗。取消更新。${RESET}"
-            rm -f "$temp_py_script"
-            return 1
-        fi
-        log_message "INFO" "Python 轉換器校驗和檔案下載成功：$temp_py_checksum_file"
-
-        # --- 4.2 校驗和驗證 ---
-        echo -e "${YELLOW}正在驗證 Python 轉換器檔案完整性...${RESET}"
-        local calculated_py_checksum expected_py_checksum
-        calculated_py_checksum=$(sha256sum "$temp_py_script" | awk '{print $1}')
-        expected_py_checksum=$(cat "$temp_py_checksum_file")
-
-        if [[ "$calculated_py_checksum" == "$expected_py_checksum" ]]; then
-            echo -e "${GREEN}Python 轉換器校驗和驗證通過。${RESET}"
-            log_message "SUCCESS" "Python 轉換器校驗和驗證通過 (SHA256: $calculated_py_checksum)"
-            rm -f "$temp_py_checksum_file"
-
-            # --- 5. 替換舊腳本 ---
-            echo -e "${YELLOW}正在替換舊的 Python 轉換器：$PYTHON_CONVERTER_INSTALL_PATH ${RESET}"
-            chmod +x "$temp_py_script" # 賦予執行權限 (雖然通常用 python 執行)
-            mkdir -p "$(dirname "$PYTHON_CONVERTER_INSTALL_PATH")" # 確保目錄存在
-
-            if mv "$temp_py_script" "$PYTHON_CONVERTER_INSTALL_PATH"; then
-                log_message "SUCCESS" "Python 轉換器已成功更新至版本 $remote_py_version。"
-                echo -e "${GREEN}Python 轉換器更新成功！版本：$remote_py_version ${RESET}"
-                # <<< 更新 Bash 中的版本變數並儲存設定檔 >>>
-                PYTHON_CONVERTER_VERSION="$remote_py_version" 
-                save_config 
-                return 0 # 更新成功
-            else
-                log_message "ERROR" "無法替換舊的 Python 轉換器 '$PYTHON_CONVERTER_INSTALL_PATH'。請檢查權限。"
-                echo -e "${RED}錯誤：無法替換舊的 Python 轉換器。請檢查權限。${RESET}"
-                echo -e "${YELLOW}下載的新轉換器保留在：$temp_py_script ${RESET}" 
-                return 1 # 更新失敗
-            fi
-
-        else # 校驗和驗證失敗
-            log_message "ERROR" "Python 轉換器校驗和驗證失敗！"
-            log_message "ERROR" "預期校驗和: $expected_py_checksum"
-            log_message "ERROR" "計算出的校驗和: $calculated_py_checksum"
-            echo -e "${RED}錯誤：Python 轉換器校驗和驗證失敗！取消更新。${RESET}"
-            rm -f "$temp_py_script" "$temp_py_checksum_file"
-            return 1 # 更新失敗
-        fi
-    else # 下載新腳本失敗
-        log_message "ERROR" "下載新 Python 轉換器失敗：$PYTHON_CONVERTER_REMOTE_URL (Curl failed with code $?)"
-        echo -e "${RED}錯誤：下載新 Python 轉換器失敗。${RESET}"
+    # 2. 從遠端獲取最新資訊
+    echo -e "${YELLOW}正在從遠端倉庫獲取最新資訊 (git fetch)...${RESET}"
+    if ! git fetch --quiet; then
+        log_message "ERROR" "'git fetch' 失敗。請檢查網路連線和 Git 遠端設定。"
+        echo -e "${RED}錯誤：無法從遠端獲取更新資訊！請檢查網路和 Git 遠端。${RESET}"
+        cd "$original_dir"
+        read -p "按 Enter 返回..."
         return 1
     fi
+    log_message "INFO" "'git fetch' 成功。"
+
+    # 3. 比較本地和遠端版本
+    local local_commit=$(git rev-parse @ 2>/dev/null)
+    local remote_commit=$(git rev-parse @{u} 2>/dev/null) # @{u} 代表 upstream tracking branch
+    local base_commit=$(git merge-base @ @{u} 2>/dev/null)
+
+    # 檢查命令是否成功執行
+    if [ -z "$local_commit" ] || [ -z "$remote_commit" ] || [ -z "$base_commit" ]; then
+         log_message "ERROR" "無法獲取 Git commit 信息。可能未設置上游分支或倉庫狀態異常。"
+         echo -e "${RED}錯誤：無法比較版本信息。請確保已設置 Git 上游分支 ('git branch --set-upstream-to=origin/main')。${RESET}"
+         cd "$original_dir"
+         read -p "按 Enter 返回..."
+         return 1
+    fi
+
+
+    if [ "$local_commit" = "$remote_commit" ]; then
+        log_message "INFO" "腳本已是最新版本。"
+        echo -e "${GREEN}腳本已是最新版本。無需更新。${RESET}"
+        cd "$original_dir"
+        read -p "按 Enter 返回..."
+        return 0
+    elif [ "$local_commit" = "$base_commit" ]; then
+        # 本地是基礎，遠端有更新 (Fast-forward)
+        log_message "INFO" "檢測到新版本 (本地落後遠端)。"
+        echo -e "${YELLOW}檢測到新版本！${RESET}"
+        read -r -p "是否要立即從遠端拉取更新 (git pull)？ (y/n): " confirm_update
+        if [[ ! "$confirm_update" =~ ^[Yy]$ ]]; then
+            log_message "INFO" "使用者取消更新。"; echo -e "${YELLOW}已取消更新。${RESET}"; cd "$original_dir"; read -p "按 Enter 返回..."; return 0
+        fi
+
+        # 執行更新
+        echo -e "${YELLOW}正在從遠端拉取更新 (git pull)...${RESET}"
+        if git pull --quiet --ff-only || git pull --quiet; then # 優先嘗試 ff-only
+            log_message "SUCCESS" "腳本更新成功！"
+            echo -e "${GREEN}腳本更新成功！${RESET}"
+            # 賦予執行權限
+            echo -e "${YELLOW}正在更新腳本執行權限...${RESET}"
+            if [ -f "$SCRIPT_INSTALL_PATH" ]; then chmod +x "$SCRIPT_INSTALL_PATH"; fi
+            if [ -f "$PYTHON_ENRICHER_SCRIPT_PATH" ]; then chmod +x "$PYTHON_ENRICHER_SCRIPT_PATH"; fi
+            if [ -f "$PYTHON_ESTIMATOR_SCRIPT_PATH" ]; then chmod +x "$PYTHON_ESTIMATOR_SCRIPT_PATH"; fi
+            echo -e "${CYAN}建議重新啟動腳本以應用所有更改。${RESET}"
+        else
+            log_message "ERROR" "'git pull' 失敗。"; echo -e "${RED}錯誤：'git pull' 失敗！${RESET}"; echo -e "${YELLOW}請手動進入倉庫目錄 '$repo_dir' 查看問題。${RESET}"; cd "$original_dir"; read -p "按 Enter 返回..."; return 1
+        fi
+    elif [ "$remote_commit" = "$base_commit" ]; then
+        # 本地領先遠端
+        log_message("WARNING", "本地分支領先遠端。")
+        echo -e "${YELLOW}您的本地版本比遠端更新。無需更新。${RESET}"; cd "$original_dir"; read -p "按 Enter 返回..."; return 0
+    else
+        # 分叉狀態
+        log_message("WARNING", "本地和遠端分支已分叉。")
+        echo -e "${RED}錯誤：本地和遠端分支已分叉！${RESET}"; echo -e "${YELLOW}無法自動更新。請手動進入倉庫目錄 '$repo_dir' 解決衝突。${RESET}"; cd "$original_dir"; read -p "按 Enter 返回..."; return 1
+    fi
+
+    # 確保切換回之前的目錄
+    cd "$original_dir"
+    read -p "按 Enter 返回工具選單..." # 確保更新流程結束後有提示
+    return 0
 }
 
 # 高解析度封面圖片下載函數（僅用於 YouTube 下載）
@@ -744,180 +647,94 @@ safe_remove() {
 }
 
 ############################################
-# <<< 修改：檢查並更新依賴套件 (修正驗證邏輯) >>>
+# <<< 修改：依賴更新 (加入 git，合併 Python 庫安裝) >>>
 ############################################
 update_dependencies() {
-    # --- 工具列表定義 (保持不變) ---
-    # 包含需要用包管理器安裝的 *包名*
-    local pkg_tools=("ffmpeg" "jq" "curl" "python" "mkvtoolnix")
-    # 包含需要用 pip 安裝的 *包名*
+    local pkg_tools=("ffmpeg" "jq" "curl" "python" "mkvmerge" "git") # <-- 加入 git
     local pip_tools=("yt-dlp")
-    # --- 結束工具列表定義 ---
+    local python_libs_to_install=("mutagen" "requests" "musicbrainzngs" "Pillow" "webvtt-py")
 
-    # 用於記錄更新過程中的問題
     local update_failed=false
-    # 用於記錄最終驗證後仍然缺少的 *命令*
     local missing_after_update=()
 
     clear
     echo -e "${CYAN}--- 開始檢查並更新依賴套件 ---${RESET}"
     log_message "INFO" "使用者觸發依賴套件更新流程。"
 
-    # --- 步驟 1: 更新包管理器列表 (保持不變) ---
-    echo -e "${YELLOW}[1/5] 正在更新套件列表 (${PACKAGE_MANAGER} update)...${RESET}"
-    # 使用檢測到的包管理器
+    # --- 步驟 1: 更新包管理器列表 ---
+    echo -e "${YELLOW}[1/4] 正在更新套件列表 (${PACKAGE_MANAGER:-未知} update)...${RESET}"
     local update_cmd=""
-    if [[ "$PACKAGE_MANAGER" == "pkg" ]]; then
-        update_cmd="pkg update -y"
-    elif [[ "$PACKAGE_MANAGER" == "apt" ]]; then
-        update_cmd="sudo apt update -y"
-    elif [[ "$PACKAGE_MANAGER" == "dnf" ]]; then
-        update_cmd="sudo dnf check-update" # dnf 通常不需要 -y
-    elif [[ "$PACKAGE_MANAGER" == "yum" ]]; then
-        update_cmd="sudo yum check-update"
-    else
-         echo -e "${RED}  > 錯誤：未知的包管理器 '$PACKAGE_MANAGER'，無法更新列表。${RESET}"
-         log_message "ERROR" "未知包管理器 '$PACKAGE_MANAGER'，跳過列表更新。"
-         update_failed=true # 標記為失敗，因為無法更新
-         # 即使無法更新列表，也繼續嘗試安裝
-    fi
-
+    if [[ "$PACKAGE_MANAGER" == "pkg" ]]; then update_cmd="pkg update -y";
+    elif [[ "$PACKAGE_MANAGER" == "apt" ]]; then update_cmd="sudo apt update -y";
+    elif [[ "$PACKAGE_MANAGER" == "dnf" ]]; then update_cmd="sudo dnf check-update";
+    elif [[ "$PACKAGE_MANAGER" == "yum" ]]; then update_cmd="sudo yum check-update";
+    else echo -e "${RED}  > 錯誤：未知的包管理器。${RESET}"; log_message "ERROR" "未知包管理器 '$PACKAGE_MANAGER'"; update_failed=true; fi
     if [[ -n "$update_cmd" ]]; then
-        if $update_cmd; then
-            log_message "INFO" "$PACKAGE_MANAGER list update succeeded"
-            echo -e "${GREEN}  > 套件列表更新成功。${RESET}"
-        else
-            log_message "WARNING" "$PACKAGE_MANAGER list update failed (exit code $?), proceeding anyway."
-            echo -e "${RED}  > 警告：套件列表更新失敗，將嘗試使用現有列表。${RESET}"
-            # 不標記為 update_failed=true，因為可能只是沒有更新但包已存在
-        fi
-    fi
-    echo "" # 空行分隔
+        if $update_cmd; then log_message "INFO" "$PACKAGE_MANAGER list update succeeded"; echo -e "${GREEN}  > 套件列表更新成功。${RESET}";
+        else log_message "WARNING" "$PACKAGE_MANAGER list update failed (code $?), proceeding anyway."; echo -e "${RED}  > 警告：套件列表更新失敗。${RESET}"; fi
+    fi; echo ""
 
-    # --- 步驟 2: 安裝/更新 包管理器管理的工具 (保持不變) ---
-    echo -e "${YELLOW}[2/5] 正在安裝/更新 ${PACKAGE_MANAGER} 套件: ${pkg_tools[*]}...${RESET}"
+    # --- 步驟 2: 安裝/更新 包管理器管理的工具 (含 git 和 pip) ---
+    echo -e "${YELLOW}[2/4] 正在安裝/更新 ${PACKAGE_MANAGER:-未知} 套件: ${pkg_tools[*]} 及 pip...${RESET}"
     local install_cmd=""
-    if [[ "$PACKAGE_MANAGER" == "pkg" ]]; then
-        install_cmd="pkg install -y ${pkg_tools[*]}"
-    elif [[ "$PACKAGE_MANAGER" == "apt" ]]; then
-        install_cmd="sudo apt install -y ${pkg_tools[*]}"
-    elif [[ "$PACKAGE_MANAGER" == "dnf" ]]; then
-        install_cmd="sudo dnf install -y ${pkg_tools[*]}"
-    elif [[ "$PACKAGE_MANAGER" == "yum" ]]; then
-         install_cmd="sudo yum install -y ${pkg_tools[*]}"
-    else
-        echo -e "${RED}  > 錯誤：未知的包管理器 '$PACKAGE_MANAGER'，無法安裝套件。${RESET}"
-        log_message "ERROR" "未知包管理器 '$PACKAGE_MANAGER'，跳過套件安裝。"
-        update_failed=true # 標記為失敗
-    fi
-
+    if [[ "$PACKAGE_MANAGER" == "pkg" ]]; then install_cmd="pkg install -y ${pkg_tools[*]} python-pip";
+    elif [[ "$PACKAGE_MANAGER" == "apt" ]]; then install_cmd="sudo apt install -y ${pkg_tools[*]} python3-pip";
+    elif [[ "$PACKAGE_MANAGER" == "dnf" ]]; then install_cmd="sudo dnf install -y ${pkg_tools[*]} python3-pip";
+    elif [[ "$PACKAGE_MANAGER" == "yum" ]]; then install_cmd="sudo yum install -y ${pkg_tools[*]} python3-pip"; # 可能需 epel
+    else echo -e "${RED}  > 錯誤：未知的包管理器。${RESET}"; log_message "ERROR" "未知包管理器 '$PACKAGE_MANAGER'"; update_failed=true; fi
     if [[ -n "$install_cmd" ]]; then
-         if $install_cmd; then
-             log_message "INFO" "Installation/update of ${pkg_tools[*]} via $PACKAGE_MANAGER successful or already up-to-date."
-             echo -e "${GREEN}  > 安裝/更新 ${pkg_tools[*]} 完成。${RESET}"
-         else
-             log_message "ERROR" "Installation/update of ${pkg_tools[*]} via $PACKAGE_MANAGER failed!"
-             echo -e "${RED}  > 錯誤：安裝/更新 ${pkg_tools[*]} 失敗！${RESET}"
-             update_failed=true
-         fi
-    fi
-    echo ""
+         if $install_cmd; then log_message "INFO" "Installation/update of ${pkg_tools[*]} & pip via $PACKAGE_MANAGER successful."; echo -e "${GREEN}  > 安裝/更新 ${pkg_tools[*]} 及 pip 完成。${RESET}";
+         else log_message "ERROR" "Installation/update of ${pkg_tools[*]} or pip failed!"; echo -e "${RED}  > 錯誤：安裝/更新 ${pkg_tools[*]} 或 pip 失敗！${RESET}"; update_failed=true; fi
+    fi; echo ""
 
-    # --- 步驟 3: 更新 pip 管理的工具 (保持不變) ---
-    echo -e "${YELLOW}[3/5] 正在更新 pip 套件: ${pip_tools[*]}...${RESET}"
-    local python_cmd=""
-    if command -v python3 &> /dev/null; then python_cmd="python3";
-    elif command -v python &> /dev/null; then python_cmd="python"; fi
-
+    # --- 步驟 3: 更新 pip 本身及所有 Python 依賴 ---
+    echo -e "${YELLOW}[3/4] 正在更新 pip 及 Python 套件: ${pip_tools[*]} ${python_libs_to_install[*]}...${RESET}"
+    local python_cmd=""; if command -v python3 &> /dev/null; then python_cmd="python3"; elif command -v python &> /dev/null; then python_cmd="python"; fi
+    local pip_cmd=""
     if [[ -n "$python_cmd" ]]; then
-         # 使用 --user 可能在某些系統上避免權限問題，但需確保 $HOME/.local/bin 在 PATH 中
-         # 或者直接全局安裝 (需要 root/sudo 或在 venv 中)
-         # 這裡保留原來的全局升級方式
-         if $python_cmd -m pip install --upgrade "${pip_tools[@]}"; then
-             log_message "INFO" "Update of ${pip_tools[*]} via pip succeeded."
-             echo -e "${GREEN}  > 更新 ${pip_tools[*]} 完成。${RESET}"
+        if $python_cmd -m pip --version &> /dev/null; then pip_cmd="$python_cmd -m pip";
+        elif command -v pip3 &> /dev/null; then pip_cmd="pip3";
+        elif command -v pip &> /dev/null; then pip_cmd="pip"; fi
+    fi
+    if [[ -n "$pip_cmd" ]]; then
+         echo -e "${YELLOW}  > 更新 pip 本身...${RESET}"
+         $pip_cmd install --upgrade pip > /dev/null 2>&1 # 靜默更新 pip
+         echo -e "${YELLOW}  > 更新 yt-dlp 及 Python 庫...${RESET}"
+         local all_pip_packages=("${pip_tools[@]}" "${python_libs_to_install[@]}")
+         if $pip_cmd install --upgrade ${all_pip_packages[@]}; then
+             log_message "INFO" "Update of ${all_pip_packages[*]} via pip succeeded."; echo -e "${GREEN}  > 更新 ${all_pip_packages[*]} 完成。${RESET}"
          else
-             log_message "ERROR" "Update of ${pip_tools[*]} via pip failed!"
-             echo -e "${RED}  > 錯誤：更新 ${pip_tools[*]} 失敗！${RESET}"
-             update_failed=true
+             log_message "ERROR" "Update of ${all_pip_packages[*]} via pip failed!"; echo -e "${RED}  > 錯誤：更新 ${all_pip_packages[*]} 失敗！${RESET}"; update_failed=true
          fi
     else
-        log_message "ERROR" "Python command not found, cannot update pip packages: ${pip_tools[*]}."
-        echo -e "${RED}  > 錯誤：找不到 python/python3 命令，無法更新 ${pip_tools[*]}。請確保步驟 2 已成功安裝 python。${RESET}"
-        update_failed=true
-    fi
-    echo ""
+        log_message "ERROR" "Python/pip command not found, cannot update pip packages."
+        echo -e "${RED}  > 錯誤：找不到 python 或 pip 命令，無法更新 Python 套件。${RESET}"; update_failed=true
+    fi; echo ""
 
-    # --- 步驟 4: 更新 Python 字幕轉換器 (保持不變) ---
-    echo -e "${YELLOW}[4/5] 正在檢查並更新 Python 字幕轉換器...${RESET}"
-    if ! update_python_converter; then
-        log_message "WARNING" "Python subtitle converter update failed or was not completed."
-        # 不標記為 update_failed=true
-    fi
-    echo ""
-
-    # --- 步驟 5: 最終驗證所有工具 (核心修改處) ---
-    echo -e "${YELLOW}[5/5] 正在驗證所有必要工具是否已安裝...${RESET}"
-    # <<< 保持 all_tools 的原始構建邏輯 >>>
-    #    它會包含 pkg_tools 中的 *包名* 和 pip_tools 中的 *包名*，再加上 ffprobe
-    local all_tools=("${pkg_tools[@]}" "${pip_tools[@]}" "ffprobe")
-
-    # <<< 修改驗證循環 >>>
-    for tool_in_list in "${all_tools[@]}"; do
-        local command_to_check="" # 要實際檢查的命令
-
-        # --- 在這裡處理特殊情況：包名和命令名不一致 ---
-        if [[ "$tool_in_list" == "mkvtoolnix" ]]; then
-            command_to_check="mkvmerge" # 如果列表項是 mkvtoolnix(包名)，我們實際檢查 mkvmerge(命令名)
-        # --- 如果有其他特殊情況，可以在這裡加 elif ---
-        # elif [[ "$tool_in_list" == "some-package" ]]; then
-        #     command_to_check="some-command"
-        else
-            # 默認情況：假設列表中的名稱就是要檢查的命令名
-            command_to_check="$tool_in_list"
-        fi
-        # --- 特殊情況處理結束 ---
-
-        # 使用 command -v 檢查實際的命令是否存在
+    # --- 步驟 4: 最終驗證所有工具 (含 git) ---
+    echo -e "${YELLOW}[4/4] 正在驗證所有必要工具是否已安裝...${RESET}"
+    local all_tools_check=("${core_tools[@]}" "${pip_tools[@]}" "ffprobe") # core_tools 已包含 git
+    missing_after_update=()
+    for tool_in_list in "${all_tools_check[@]}"; do
+        local command_to_check="$tool_in_list"
+        if [[ "$tool_in_list" == "mkvtoolnix" ]]; then command_to_check="mkvmerge"; fi
         if ! command -v "$command_to_check" &> /dev/null; then
-            # 如果命令不存在，將 *列表中的原始名稱* (更符合用戶預期) 加入缺少列表
-            missing_after_update+=("$tool_in_list")
-            echo -e "${RED}  > 驗證失敗：找不到 $command_to_check (來自 $tool_in_list)${RESET}"
-            # 或者更簡潔的報告：
-            # echo -e "${RED}  > 驗證失敗：找不到 $command_to_check ${RESET}"
-        else
-            # 如果命令存在，報告成功
-            echo -e "${GREEN}  > 驗證成功：找到 $command_to_check (來自 $tool_in_list)${RESET}"
-            # 或者更簡潔的報告：
-            # echo -e "${GREEN}  > 驗證成功：找到 $command_to_check ${RESET}"
-        fi
-    done
-    echo ""
+            missing_after_update+=("$tool_in_list"); echo -e "${RED}  > 驗證失敗：找不到 $command_to_check ${RESET}"
+        else echo -e "${GREEN}  > 驗證成功：找到 $command_to_check ${RESET}"; fi
+    done; echo ""
 
-    # --- 總結結果 (保持不變) ---
+    # --- 總結結果 ---
     if [ ${#missing_after_update[@]} -ne 0 ]; then
         log_message "ERROR" "Update process completed, but still missing tools: ${missing_after_update[*]}"
-        echo -e "${RED}--- 更新結果：失敗 ---${RESET}"
-        echo -e "${RED}更新/安裝後，仍然缺少以下必要工具或其對應命令：${RESET}"
-        for tool in "${missing_after_update[@]}"; do
-            # 顯示列表中的原始名稱
-            echo -e "${YELLOW}  - $tool${RESET}"
-        done
-        echo -e "${CYAN}請檢查網路連線或嘗試手動安裝。${RESET}"
+        echo -e "${RED}--- 更新結果：失敗 ---${RESET}"; echo -e "${RED}更新/安裝後，仍缺少：${RESET}"; for tool in "${missing_after_update[@]}"; do echo -e "${YELLOW}  - $tool${RESET}"; done; echo -e "${CYAN}請檢查錯誤或手動安裝。${RESET}"
     elif [ "$update_failed" = true ]; then
-        log_message "WARNING" "Update process completed with some errors during the process. Tools seem to exist now, but might not be the latest version."
-        echo -e "${YELLOW}--- 更新結果：部分成功 ---${RESET}"
-        echo -e "${YELLOW}更新過程中出現一些錯誤，但所有必要工具似乎都已安裝。${RESET}"
-        echo -e "${YELLOW}可能部分工具未能更新到最新版本。${RESET}"
+        log_message "WARNING" "Update process completed with errors. Tools seem to exist now."
+        echo -e "${YELLOW}--- 更新結果：部分成功 ---${RESET}"; echo -e "${YELLOW}更新過程有錯誤，但工具似乎已安裝。${RESET}"
     else
-        log_message "SUCCESS" "All dependencies checked and successfully updated/installed."
-        echo -e "${GREEN}--- 更新結果：成功 ---${RESET}"
-        echo -e "${GREEN}所有依賴套件均已成功檢查並更新/安裝。${RESET}"
+        log_message "SUCCESS" "All dependencies checked and successfully updated/installed."; echo -e "${GREEN}--- 更新結果：成功 ---${RESET}"; echo -e "${GREEN}所有依賴套件均已成功檢查並更新/安裝。${RESET}"
     fi
 
-    # 等待使用者按 Enter 返回
-    echo ""
-    read -p "按 Enter 返回主選單..."
+    echo ""; read -p "按 Enter 返回主選單..."
 }
 
 ############################################
@@ -3543,31 +3360,46 @@ view_log() {
 }
 
 ############################################
-# <<< 新增/替換：關於訊息 (增強版) >>>
+# <<< 修改：關於訊息 (顯示 Git 版本) >>>
 ############################################
 show_about_enhanced() {
     clear
     echo -e "${CYAN}=== 關於 整合式影音處理平台 ===${RESET}"
     echo -e "---------------------------------------------"
-    # --- 顯示版本和日期 ---
-    echo -e "${BOLD}版本:${RESET}        ${GREEN}${SCRIPT_VERSION}${RESET}"
-    # 檢查日期變數是否存在
-    if [ -n "$SCRIPT_UPDATE_DATE" ]; then
-        echo -e "${BOLD}更新日期:${RESET}    ${GREEN}${SCRIPT_UPDATE_DATE}${RESET}"
-    fi
 
-    # --- 顯示腳本校驗和 ---
-    local current_script_checksum="無法計算"
-    # 檢查 sha256sum 命令是否存在，以及 SCRIPT_INSTALL_PATH 是否已定義且檔案存在
-    if command -v sha256sum &> /dev/null && [ -n "$SCRIPT_INSTALL_PATH" ] && [ -f "$SCRIPT_INSTALL_PATH" ]; then
-        # 計算校驗和，只取校驗和部分
-        current_script_checksum=$(sha256sum "$SCRIPT_INSTALL_PATH" | awk '{print $1}')
-    elif command -v sha256sum &> /dev/null && [ -f "$0" ]; then
-        # 如果 SCRIPT_INSTALL_PATH 無法使用，嘗試計算當前執行檔案的校驗和 ($0)
-        current_script_checksum=$(sha256sum "$0" | awk '{print $1}')
-        current_script_checksum="${current_script_checksum} (當前執行檔)" # 加上標註
+    # --- 嘗試從 Git 獲取版本信息 ---
+    local git_version_info=""
+    local git_commit_hash=""
+    local git_tag=""
+    if command -v git &> /dev/null && [ -d "$SCRIPT_DIR/.git" ]; then
+        # 獲取最近的 tag
+        git_tag=$(git -C "$SCRIPT_DIR" describe --tags --abbrev=0 2>/dev/null)
+        # 獲取當前 commit 的短 hash
+        git_commit_hash=$(git -C "$SCRIPT_DIR" log -1 --pretty=%h 2>/dev/null)
+        if [ -n "$git_tag" ]; then
+            git_version_info="$git_tag"
+            if [ -n "$git_commit_hash" ]; then
+                 # 檢查 tag 是否指向當前 commit
+                 local commit_for_tag=$(git -C "$SCRIPT_DIR" rev-list -n 1 "$git_tag" 2>/dev/null)
+                 local current_head=$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null)
+                 if [[ "$commit_for_tag" != "$current_head" ]]; then
+                      git_version_info+=" (+${git_commit_hash})" # 標記非 tag 的最新 commit
+                 fi
+            fi
+        elif [ -n "$git_commit_hash" ]; then
+             git_version_info="commit ${git_commit_hash}" # 如果沒有 tag，顯示 commit hash
+        fi
     fi
-    echo -e "${BOLD}腳本 SHA256:${RESET} ${YELLOW}${current_script_checksum}${RESET}"
+    # 如果無法從 Git 獲取，則使用腳本內定義的版本
+    local display_version="${git_version_info:-$SCRIPT_VERSION}"
+
+    echo -e "${BOLD}版本:${RESET}        ${GREEN}${display_version}${RESET}"
+    if [ -n "$SCRIPT_UPDATE_DATE" ]; then echo -e "${BOLD}更新日期:${RESET}    ${GREEN}${SCRIPT_UPDATE_DATE}${RESET}"; fi
+
+    # --- 腳本 SHA256 (可以保留作為參考，但 Git hash 更可靠) ---
+    local current_script_checksum="無法計算"
+    if command -v sha256sum &> /dev/null && [ -f "$SCRIPT_INSTALL_PATH" ]; then current_script_checksum=$(sha256sum "$SCRIPT_INSTALL_PATH" | awk '{print $1}'); fi
+    echo -e "${BOLD}主腳本 SHA256:${RESET} ${YELLOW}${current_script_checksum}${RESET}"
     echo -e "---------------------------------------------"
 
     echo -e "${GREEN}主要功能特色：${RESET}"
@@ -3595,133 +3427,108 @@ show_about_enhanced() {
 }
 ############################################
 
-
 ############################################
-# <<< 修改：環境檢查 (加入 Python 庫檢查提示) >>>
+# <<< 修改：環境檢查 (加入 git，更新輔助腳本路徑檢查) >>>
 ############################################
 check_environment() {
-    local core_tools=("yt-dlp" "ffmpeg" "ffprobe" "jq" "curl" "mkvmerge") # <<< 新增 mkvmerge
+    local core_tools=("yt-dlp" "ffmpeg" "ffprobe" "jq" "curl" "mkvmerge" "git") # <-- 加入 git
     local missing_tools=()
     local python_found=false
     local python_cmd=""
-    local webvtt_lib_found=false
+    local python_libs=("mutagen" "requests" "musicbrainzngs" "PIL") # PIL for Pillow
+    local webvtt_lib_found=false # 保留，以防其他地方用到
 
     echo -e "${CYAN}正在進行環境檢查...${RESET}"
     log_message "INFO" "開始環境檢查 (OS: $OS_TYPE)..."
 
     # 檢查核心工具
+    echo -e "${YELLOW}  檢查核心工具...${RESET}"
     for tool in "${core_tools[@]}"; do
         if ! command -v "$tool" &> /dev/null; then
-            missing_tools+=("$tool")
-            echo -e "${YELLOW}  - 缺少: $tool ${RESET}"
+            missing_tools+=("工具: $tool")
+            echo -e "${RED}    - 缺少: $tool ${RESET}"
         fi
     done
 
     # 檢查 Python
-    if command -v python3 &> /dev/null; then 
-        python_found=true; python_cmd="python3"; 
-    elif command -v python &> /dev/null; then 
-        python_found=true; python_cmd="python"; 
+    echo -e "${YELLOW}  檢查 Python 環境...${RESET}"
+    if command -v python3 &> /dev/null; then
+        python_found=true; python_cmd="python3"; echo -e "${GREEN}    - 找到: python3 ${RESET}"
+    elif command -v python &> /dev/null; then
+        python_found=true; python_cmd="python"; echo -e "${GREEN}    - 找到: python ${RESET}"
     else
-        missing_tools+=("python/python3")
-        echo -e "${YELLOW}  - 缺少: python 或 python3 ${RESET}"
-    fi
-    
-    # 如果找到 Python，檢查 webvtt-py 庫
-    if $python_found; then
-        if $python_cmd -c "import webvtt" &> /dev/null; then
-            webvtt_lib_found=true
-        else
-             missing_tools+=("Python 庫: webvtt-py")
-             echo -e "${YELLOW}  - 缺少 Python 庫: webvtt-py ${RESET}"
-        fi
+        missing_tools+=("工具: python 或 python3"); echo -e "${RED}    - 缺少: python 或 python3 ${RESET}"
     fi
 
+    # 檢查 Python 庫
+    if $python_found; then
+        echo -e "${YELLOW}  檢查 Python 庫...${RESET}"
+        for lib in "${python_libs[@]}"; do
+            local import_name=$lib; local install_name=$lib
+            if [[ "$lib" == "PIL" ]]; then install_name="Pillow"; fi
+            if ! $python_cmd -c "import $import_name" &> /dev/null; then
+                 missing_tools+=("Python 庫: $install_name"); echo -e "${RED}    - 缺少庫: $install_name (導入名: $import_name) ${RESET}"
+            fi
+        done
+        # 檢查 webvtt (如果需要)
+        if $python_cmd -c "import webvtt" &> /dev/null; then webvtt_lib_found=true; else echo -e "${YELLOW}    - (可選)缺少庫: webvtt-py ${RESET}"; fi
+    else
+        missing_tools+=("Python 庫 (因缺少 Python)"); echo -e "${RED}    - 無法檢查 Python 庫 (缺少 Python) ${RESET}"
+    fi
+
+    # 檢查輔助腳本是否存在 (使用修改後的路徑變數)
+    echo -e "${YELLOW}  檢查輔助腳本...${RESET}"
+    if [ -n "$PYTHON_ENRICHER_SCRIPT_PATH" ] && [ ! -f "$PYTHON_ENRICHER_SCRIPT_PATH" ]; then
+        missing_tools+=("輔助腳本: $(basename "$PYTHON_ENRICHER_SCRIPT_PATH")")
+        echo -e "${RED}    - 缺少輔助腳本: $(basename "$PYTHON_ENRICHER_SCRIPT_PATH") (檢查路徑: $PYTHON_ENRICHER_SCRIPT_PATH) ${RESET}"
+    fi
+     if [ -n "$PYTHON_ESTIMATOR_SCRIPT_PATH" ] && [ ! -f "$PYTHON_ESTIMATOR_SCRIPT_PATH" ]; then
+        missing_tools+=("輔助腳本: $(basename "$PYTHON_ESTIMATOR_SCRIPT_PATH")")
+        echo -e "${RED}    - 缺少輔助腳本: $(basename "$PYTHON_ESTIMATOR_SCRIPT_PATH") (檢查路徑: $PYTHON_ESTIMATOR_SCRIPT_PATH) ${RESET}"
+    fi
+
+    # 處理檢查結果
     if [ ${#missing_tools[@]} -ne 0 ]; then
         clear
         echo -e "${RED}=== 環境檢查失敗 ===${RESET}"
-        echo -e "${YELLOW}缺少以下必要工具或組件：${RESET}"
-        for tool in "${missing_tools[@]}"; do echo -e "${RED}  - $tool${RESET}"; done
-        echo -e "\n${CYAN}請嘗試運行選項 '6' (檢查並更新依賴套件) 來自動安裝，"
-        echo -e "或者根據你的系統手動安裝它們。${RESET}"
-        # 提供安裝提示
+        echo -e "${YELLOW}缺少以下必要工具或組件：${RESET}"; for tool in "${missing_tools[@]}"; do echo -e "${RED}  - $tool${RESET}"; done
+        echo -e "\n${CYAN}請嘗試運行選項 '檢查並更新依賴套件' 來自動安裝，或手動安裝。${RESET}"
+        # 提供安裝提示 (加入 git)
         if [[ "$OS_TYPE" == "termux" ]]; then
-             echo -e "${GREEN}Termux:"
-             echo -e "  pkg install ffmpeg jq curl python mkvmerge python-pip" 
-             echo -e "  pip install -U yt-dlp webvtt-py"
-             echo -e "${RESET}"
+             echo -e "\n${GREEN}Termux 建議命令:"
+             echo -e "  pkg up -y && pkg install -y ffmpeg jq curl python mkvmerge python-pip git" # <-- 加入 git
+             echo -e "  pip install --upgrade pip yt-dlp mutagen requests musicbrainzngs Pillow webvtt-py"
         elif [[ "$OS_TYPE" == "wsl" || "$OS_TYPE" == "linux" ]]; then
              local install_cmd=""
-             if [[ "$PACKAGE_MANAGER" == "apt" ]]; then install_cmd="sudo apt install -y ffmpeg jq curl python3 python3-pip mkvmerge"; 
-             elif [[ "$PACKAGE_MANAGER" == "dnf" ]]; then install_cmd="sudo dnf install -y ffmpeg jq curl python3 python3-pip mkvmerge"; 
-             elif [[ "$PACKAGE_MANAGER" == "yum" ]]; then install_cmd="sudo yum install -y ffmpeg jq curl python3 python3-pip mkvmerge"; fi
-             
-             if [ -n "$install_cmd" ]; then
-                 echo -e "${GREEN}WSL/Linux ($PACKAGE_MANAGER):"
-                 echo -e "  $install_cmd"
-                 echo -e "  $python_cmd -m pip install --upgrade --user yt-dlp webvtt-py" # 使用 --user 可能更安全
-                 echo -e "${RESET}"
-             else
-                 echo -e "${YELLOW}請參考你的 Linux 發行版文檔安裝: ffmpeg, jq, curl, python3, pip, mkvmerge${RESET}"
-                 echo -e "${YELLOW}然後執行: pip install --upgrade yt-dlp webvtt-py${RESET}"
-             fi
+             if [[ "$PACKAGE_MANAGER" == "apt" ]]; then install_cmd="sudo apt install -y ffmpeg jq curl python3 python3-pip mkvmerge git";
+             elif [[ "$PACKAGE_MANAGER" == "dnf" ]]; then install_cmd="sudo dnf install -y ffmpeg jq curl python3 python3-pip mkvmerge git";
+             elif [[ "$PACKAGE_MANAGER" == "yum" ]]; then install_cmd="sudo yum install -y ffmpeg jq curl python3 python3-pip mkvmerge git"; fi
+             if [ -n "$install_cmd" ]; then echo -e "\n${GREEN}WSL/Linux ($PACKAGE_MANAGER) 建議命令:\n  $install_cmd"; echo -e "  $python_cmd -m pip install --upgrade --user yt-dlp mutagen requests musicbrainzngs Pillow webvtt-py";
+             else echo -e "\n${YELLOW}請參考你的 Linux 發行版文檔安裝: ffmpeg, jq, curl, python3, pip, mkvmerge, git\n然後執行: pip install --upgrade yt-dlp mutagen requests musicbrainzngs Pillow webvtt-py"; fi
         fi
-        # 提示 webvtt-py 的單獨安裝方法
-        if ! $webvtt_lib_found && $python_found; then
-             echo -e "\n${YELLOW}如果僅缺少 webvtt-py 庫，請執行:${RESET}"
-             echo -e "${GREEN}  pip install webvtt-py${RESET}"
-        fi
-        
-        echo -e "\n${RED}腳本無法繼續執行，請安裝所需工具後重試。${RESET}"
-        log_message "ERROR" "環境檢查失敗，缺少: ${missing_tools[*]}"
-        exit 1
+        if [[ " ${missing_tools[*]} " =~ " 輔助腳本: " ]]; then echo -e "\n${YELLOW}缺少輔助腳本！請確保通過 'git clone' 獲取了完整的專案，並正確設定了腳本路徑。${RESET}"; fi
+        echo -e "\n${RED}腳本無法繼續執行。${RESET}"; log_message "ERROR" "環境檢查失敗，缺少: ${missing_tools[*]}"; exit 1
     fi
-    echo -e "${GREEN}  > 必要工具和庫檢查通過。${RESET}"
+    echo -e "${GREEN}  > 必要工具、庫和輔助腳本檢查通過。${RESET}"
 
     # --- Termux 特定儲存權限檢查 ---
     if [[ "$OS_TYPE" == "termux" ]]; then
-        echo -e "${CYAN}正在檢查 Termux 儲存權限...${RESET}"
+        echo -e "${YELLOW}  檢查 Termux 儲存權限...${RESET}"
         if [ ! -d "/sdcard" ] || ! touch "/sdcard/.termux-test-write" 2>/dev/null; then
-            clear
-            echo -e "${RED}=== 環境檢查失敗 (Termux) ===${RESET}"
-            echo -e "${YELLOW}無法存取或寫入外部存儲 (/sdcard)！${RESET}"
-            echo -e "${CYAN}請先在 Termux 中執行以下命令授予權限：${RESET}"
-            echo -e "${GREEN}termux-setup-storage${RESET}"
-            echo -e "${CYAN}然後重新啟動 Termux 和此腳本。${RESET}"
-            log_message "ERROR" "環境檢查失敗：無法存取或寫入 /sdcard"
-            rm -f "/sdcard/.termux-test-write"
-            exit 1
-        else
-            rm -f "/sdcard/.termux-test-write"
-             echo -e "${GREEN}  > Termux 儲存權限正常。${RESET}"
-        fi
-    fi # 結束 Termux 特定檢查
+            clear; echo -e "${RED}=== 環境檢查失敗 (Termux) ===${RESET}"; echo -e "${YELLOW}無法存取 /sdcard！${RESET}"; echo -e "${CYAN}請運行：${GREEN}termux-setup-storage${RESET}"; echo -e "${CYAN}然後重啟 Termux 和此腳本。${RESET}"; log_message "ERROR" "無法存取 /sdcard"; rm -f "/sdcard/.termux-test-write"; exit 1
+        else rm -f "/sdcard/.termux-test-write"; echo -e "${GREEN}    > Termux 儲存權限正常。${RESET}"; fi
+    fi
 
     # --- 通用下載和臨時目錄檢查 ---
-    echo -e "${CYAN}正在檢查目錄權限...${RESET}"
-    if [ -z "$DOWNLOAD_PATH" ]; then
-         echo -e "${RED}錯誤：下載目錄路徑未設定！${RESET}"; log_message "ERROR" "環境檢查失敗：下載目錄未設定。"; exit 1;
-    elif ! mkdir -p "$DOWNLOAD_PATH" 2>/dev/null; then
-        echo -e "${RED}錯誤：無法創建下載目錄：$DOWNLOAD_PATH ${RESET}"; log_message "ERROR" "環境檢查失敗：無法創建下載目錄 $DOWNLOAD_PATH"; exit 1;
-    elif [ ! -w "$DOWNLOAD_PATH" ]; then
-         echo -e "${RED}錯誤：下載目錄不可寫：$DOWNLOAD_PATH ${RESET}"; log_message "ERROR" "環境檢查失敗：下載目錄不可寫 $DOWNLOAD_PATH"; exit 1;
-    else
-         echo -e "${GREEN}  > 下載目錄 '$DOWNLOAD_PATH' 可寫。${RESET}"
-    fi
-
-    if [ -z "$TEMP_DIR" ]; then
-         echo -e "${RED}錯誤：臨時目錄路徑未設定！${RESET}"; log_message "ERROR" "環境檢查失敗：臨時目錄未設定。"; exit 1;
-    elif ! mkdir -p "$TEMP_DIR" 2>/dev/null; then
-        echo -e "${RED}錯誤：無法創建臨時目錄：$TEMP_DIR ${RESET}"; log_message "ERROR" "環境檢查失敗：無法創建臨時目錄 $TEMP_DIR"; exit 1;
-    elif [ ! -w "$TEMP_DIR" ]; then
-         echo -e "${RED}錯誤：臨時目錄不可寫：$TEMP_DIR ${RESET}"; log_message "ERROR" "環境檢查失敗：臨時目錄不可寫 $TEMP_DIR"; exit 1;
-    else
-         echo -e "${GREEN}  > 臨時目錄 '$TEMP_DIR' 可寫。${RESET}"
-    fi
+    echo -e "${YELLOW}  檢查目錄權限...${RESET}"
+    local path_check_failed=false
+    if ! mkdir -p "$DOWNLOAD_PATH" 2>/dev/null || [ ! -w "$DOWNLOAD_PATH" ]; then echo -e "${RED}    - 錯誤：下載目錄 '$DOWNLOAD_PATH' 無法創建或不可寫！${RESET}"; log_message "ERROR" "下載目錄問題"; path_check_failed=true; else echo -e "${GREEN}    > 下載目錄可寫。${RESET}"; fi
+    if ! mkdir -p "$TEMP_DIR" 2>/dev/null || [ ! -w "$TEMP_DIR" ]; then echo -e "${RED}    - 錯誤：臨時目錄 '$TEMP_DIR' 無法創建或不可寫！${RESET}"; log_message "ERROR" "臨時目錄問題"; path_check_failed=true; else echo -e "${GREEN}    > 臨時目錄可寫。${RESET}"; fi
+    if [ "$path_check_failed" = true ]; then echo -e "\n${RED}腳本因目錄問題無法繼續執行。${RESET}"; exit 1; fi
 
     log_message "INFO" "環境檢查通過。"
-    echo -e "${GREEN}環境檢查通過。${RESET}"
-    sleep 2
+    echo -e "\n${GREEN}=== 環境檢查通過 ===${RESET}"
+    sleep 1
     return 0
 }
 
