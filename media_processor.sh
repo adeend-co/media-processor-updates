@@ -1,11 +1,11 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.1(Experimental)" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.2(Experimental)" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
-SCRIPT_UPDATE_DATE="2025-04-15" # 請根據實際情況修改此日期
+SCRIPT_UPDATE_DATE="2025-04-16" # 請根據實際情況修改此日期
 ############################################
 
 # ... 其他設定 ...
@@ -513,7 +513,6 @@ auto_update_script() {
             log_message "INFO" "使用者因本地更改取消更新。"
             echo -e "${YELLOW}已取消更新。請先處理您的本地修改。${RESET}"
             cd "$original_dir" # 切回原目錄
-            read -p "按 Enter 返回..."
             return 1
         fi
         # 放棄本地更改
@@ -584,11 +583,11 @@ auto_update_script() {
         fi
     elif [ "$remote_commit" = "$base_commit" ]; then
         # 本地領先遠端
-        log_message("WARNING", "本地分支領先遠端。")
+        log_message "WARNING", "本地分支領先遠端。"
         echo -e "${YELLOW}您的本地版本比遠端更新。無需更新。${RESET}"; cd "$original_dir"; read -p "按 Enter 返回..."; return 0
     else
         # 分叉狀態
-        log_message("WARNING", "本地和遠端分支已分叉。")
+        log_message "WARNING", "本地和遠端分支已分叉。"
         echo -e "${RED}錯誤：本地和遠端分支已分叉！${RESET}"; echo -e "${YELLOW}無法自動更新。請手動進入倉庫目錄 '$repo_dir' 解決衝突。${RESET}"; cd "$original_dir"; read -p "按 Enter 返回..."; return 1
     fi
 
