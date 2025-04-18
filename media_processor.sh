@@ -1,11 +1,11 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.2(git推送)" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.3(git推送)" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
-SCRIPT_UPDATE_DATE="2025-04-16" # 請根據實際情況修改此日期
+SCRIPT_UPDATE_DATE="2025-04-18" # 請根據實際情況修改此日期
 ############################################
 
 # ... 其他設定 ...
@@ -2448,29 +2448,30 @@ _process_single_other_site() {
 ###########################################################
 # 輔助函數 - 處理單一通用網站媒體項目 (無音量標準化)
 # <<< 修改：加入條件式通知 v2.4.6+ >>>
+# <<< 修正：改進下載後檔案定位及 goto 錯誤 >>>
 ###########################################################
 _process_single_other_site_no_normalize() {
     local item_url="$1"; local choice_format="$2"; local item_index="$3"; local total_items="$4"
-    # <<< 新增：接收模式參數 >>>
     local mode="$5"
     local temp_dir=$(mktemp -d); local thumbnail_file=""; local main_media_file=""; local base_name=""
     local result=0;
     local progress_prefix=""; if [ -n "$item_index" ] && [ -n "$total_items" ]; then progress_prefix="[$item_index/$total_items] "; fi
-    # <<< 新增：通知標記 >>>
     local should_notify=false
     local is_playlist=false
 
-    # <<< 新增：判斷模式 >>>
     if [[ "$mode" == "playlist_mode" ]]; then
         is_playlist=true
-        should_notify=true
-        log_message "INFO" "通用下載 無標準化：播放清單模式，啟用通知。"
+        # 在播放列表模式下，通知由 _process_youtube_playlist 的總結觸發，此處不啟用單項通知
+        # should_notify=true 
+        log_message "INFO" "通用下載 無標準化：播放清單模式。"
     fi
 
-    # --- 獲取標題用於基本訊息 ---
-    local item_title sanitized_title
-    item_title=$(yt-dlp --get-title "$item_url" 2>/dev/null) || item_title="media_item"
+    # --- 獲取標題和 ID ---
+    local item_title sanitized_title video_id
+    item_title=$(yt-dlp --get-title "$item_url" 2>/dev/null) || item_title="media_item_$(date +%s)" # 增加備用標題
+    video_id=$(yt-dlp --get-id "$item_url" 2>/dev/null) || video_id="no_id_$(date +%s)"          # 增加備用 ID
     sanitized_title=$(echo "${item_title}" | sed 's@[/\\:*?"<>|]@_@g')
+    log_message "DEBUG" "基礎標題: '$item_title', ID: '$video_id', 清理後: '$sanitized_title'"
 
     # --- 預估大小 (僅單獨模式) ---
     local yt_dlp_format_string=""
@@ -2478,14 +2479,15 @@ _process_single_other_site_no_normalize() {
     else yt_dlp_format_string="bestaudio/best"; fi
 
     if ! $is_playlist; then
+        # ... (預估大小邏輯保持不變) ...
         echo -e "${YELLOW}正在預估檔案大小以決定是否通知...${RESET}"
         local estimated_size_bytes=0
         local size_list estimate_exit_code
         size_list=$(yt-dlp --no-warnings --print '%(filesize,filesize_approx)s' -f "$yt_dlp_format_string" "$item_url" 2>"$temp_dir/yt-dlp-estimate.log")
         estimate_exit_code=$?
+        # ... (其餘大小判斷邏輯不變) ...
         log_message "DEBUG" "yt-dlp size print exit code (通用 non-std): $estimate_exit_code"
         log_message "DEBUG" "yt-dlp size print raw output (通用 non-std):\n$size_list"
-
         if [ "$estimate_exit_code" -eq 0 ] && [ -n "$size_list" ]; then
             if command -v bc &> /dev/null; then
                 local size_sum_expr=$(echo "$size_list" | grep '^[0-9]\+$' | paste -sd+)
@@ -2512,64 +2514,117 @@ _process_single_other_site_no_normalize() {
     echo -e "${CYAN}${progress_prefix}處理項目 (無標準化): $item_url (${choice_format})${RESET}";
     log_message "INFO" "${progress_prefix}處理項目 (無標準化): $item_url (格式: $choice_format)"
 
-    mkdir -p "$DOWNLOAD_PATH"; if [ ! -w "$DOWNLOAD_PATH" ]; then log_message "ERROR" "...無法寫入目錄..."; echo -e "${RED}錯誤：無法寫入目錄${RESET}"; result=1; goto cleanup_and_notify; fi
+    mkdir -p "$DOWNLOAD_PATH"; if [ ! -w "$DOWNLOAD_PATH" ]; then log_message "ERROR" "...無法寫入目錄..."; echo -e "${RED}錯誤：無法寫入目錄${RESET}"; result=1; rm -rf "$temp_dir"; return 1; fi # 修正: 失敗時清理 temp_dir 並返回
 
     # --- 下載 ---
-    local yt_dlp_extra_args=(--write-thumbnail --newline --progress --concurrent-fragments "$THREADS")
+    # <<< 修改：始終包含 --write-thumbnail，但下載後單獨處理 >>>
+    local yt_dlp_extra_args=(--write-thumbnail --newline --progress --concurrent-fragments "$THREADS" --no-simulate --no-abort-on-error) # 增加 --no-simulate 等參數
     local output_template="$DOWNLOAD_PATH/%(playlist_index)s-%(title)s [%(id)s].%(ext)s"
     local output_template_single="$DOWNLOAD_PATH/%(title)s [%(id)s].%(ext)s"
+    local download_success=false
+    local actual_download_path="" # 用於存儲實際下載路徑
+
     echo -e "${YELLOW}${progress_prefix}開始下載 (無標準化)...${RESET}"
-    local yt_dlp_cmd_args=(yt-dlp -f "$yt_dlp_format_string" "${yt_dlp_extra_args[@]}" -o "$output_template" "$item_url")
-    log_message "INFO" "${progress_prefix}執行下載 (無標準化，模板1): ${yt_dlp_cmd_args[*]}"
-    if ! "${yt_dlp_cmd_args[@]}" 2> "$temp_dir/yt-dlp-other-nonorm1.log"; then
+
+    # --- 嘗試模板1 (帶索引) ---
+    local yt_dlp_cmd_args1=(yt-dlp -f "$yt_dlp_format_string" "${yt_dlp_extra_args[@]}" -o "$output_template" "$item_url")
+    log_message "INFO" "${progress_prefix}執行下載 (無標準化，模板1): ${yt_dlp_cmd_args1[*]}"
+    if "${yt_dlp_cmd_args1[@]}" 2> "$temp_dir/yt-dlp-other-nonorm1.log"; then
+        download_success=true
+    else
+        # 模板1失敗，嘗試模板2
         echo -e "${YELLOW}${progress_prefix}模板1下載失敗，嘗試模板2...${RESET}"
-        local yt_dlp_cmd_args_single=(yt-dlp -f "$yt_dlp_format_string" "${yt_dlp_extra_args[@]}" -o "$output_template_single" "$item_url")
-        log_message "INFO" "${progress_prefix}執行下載 (無標準化，模板2): ${yt_dlp_cmd_args_single[*]}"
-        if ! "${yt_dlp_cmd_args_single[@]}" 2> "$temp_dir/yt-dlp-other-nonorm2.log"; then
-            log_message "ERROR" "...下載失敗 (無標準化)..."; echo -e "${RED}錯誤：下載失敗！${RESET}";
+        local yt_dlp_cmd_args2=(yt-dlp -f "$yt_dlp_format_string" "${yt_dlp_extra_args[@]}" -o "$output_template_single" "$item_url")
+        log_message "INFO" "${progress_prefix}執行下載 (無標準化，模板2): ${yt_dlp_cmd_args2[*]}"
+        if "${yt_dlp_cmd_args2[@]}" 2> "$temp_dir/yt-dlp-other-nonorm2.log"; then
+            download_success=true
+        else
+            log_message "ERROR" "...下載失敗 (兩個模板都失敗)..."; echo -e "${RED}錯誤：下載失敗！${RESET}";
             [ -f "$temp_dir/yt-dlp-other-nonorm2.log" ] && cat "$temp_dir/yt-dlp-other-nonorm2.log" || cat "$temp_dir/yt-dlp-other-nonorm1.log"
-            result=1; goto cleanup_and_notify
+            result=1 # 標記失敗
+            # <<< 直接跳到清理和報告（移除 goto） >>>
         fi
     fi
-    # --- 定位檔案 ---
-    echo -e "${YELLOW}${progress_prefix}定位下載的檔案...${RESET}"
-    local get_filename_args1=(yt-dlp --get-filename -f "$yt_dlp_format_string" -o "$output_template" "$item_url")
-    main_media_file=$("${get_filename_args1[@]}" 2>/dev/null)
-    if [ ! -f "$main_media_file" ]; then local get_filename_args2=(yt-dlp --get-filename -f "$yt_dlp_format_string" -o "$output_template_single" "$item_url"); main_media_file=$("${get_filename_args2[@]}" 2>/dev/null); fi
-    if [ ! -f "$main_media_file" ]; then
-        log_message "ERROR" "...找不到主要下載檔案 (無標準化)..."; echo -e "${RED}錯誤：找不到主要下載檔案！${RESET}";
-        result=1; goto cleanup_and_notify
+
+    # --- 定位檔案 (僅在下載成功時進行) ---
+    # <<< 修改：使用更可靠的方式查找檔案 >>>
+    if $download_success; then
+        echo -e "${YELLOW}${progress_prefix}定位下載的檔案...${RESET}"
+        # 構建可能的基礎檔名 (移除副檔名)
+        local base_pattern1="NA-${sanitized_title} [${video_id}]"
+        local base_pattern2="${sanitized_title} [${video_id}]"
+
+        # 查找實際存在的檔案 (優先匹配帶 NA 的，然後不帶 NA 的)
+        # 使用 find -print -quit 找到第一個匹配項
+        actual_download_path=$(find "$DOWNLOAD_PATH" -maxdepth 1 -type f \( -name "${base_pattern1}.*" -o -name "${base_pattern2}.*" \) -print -quit)
+
+        if [ -n "$actual_download_path" ] && [ -f "$actual_download_path" ]; then
+            # 找到了實際檔案！
+            main_media_file="$actual_download_path" # << 關鍵：將找到的路徑賦值給 main_media_file
+            log_message "INFO" "${progress_prefix}成功定位到下載檔案: $main_media_file"
+            base_name="${main_media_file%.*}" # 更新 base_name
+            result=0 # 確保 result 為 0
+        else
+            # 理論上 yt-dlp 成功退出後應該能找到檔案，如果找不到說明有問題
+            log_message "ERROR" "...下載命令成功，但在 '$DOWNLOAD_PATH' 中找不到預期檔案 (模式: '${base_pattern1}.*' 或 '${base_pattern2}.*')"
+            echo -e "${RED}錯誤：下載後找不到主要檔案！檢查日誌。${RESET}"
+            result=1 # 標記失敗
+        fi
+    else
+        # 如果 download_success 為 false (即下載失敗)，result 已被設為 1
+        # 不需要額外操作，流程會自然走到清理和報告
+         log_message "DEBUG" "下載標記為失敗，跳過檔案定位。"
     fi
-    log_message "INFO" "${progress_prefix}找到主要下載檔案: $main_media_file";
-    base_name="${main_media_file%.*}"
-    # 查找縮圖... (略)
+    # --- 檔案定位結束 ---
 
-    # --- 跳過處理 ---
-    log_message "INFO" "${progress_prefix}跳過音量標準化與後處理。"
-    echo -e "${GREEN}${progress_prefix}下載完成 (無標準化)。${RESET}"
-    result=0 # 下載成功即成功
 
-: cleanup_and_notify # 跳轉標籤保持不變
-
-    # --- [修正開始] 清理 (無標準化版本) ---
-    log_message "INFO" "${progress_prefix}清理臨時檔案 (無標準化)..."
-    # 刪除臨時目錄、下載日誌以及下載的縮圖檔案
-    safe_remove "$temp_dir/yt-dlp-other-nonorm1.log" "$temp_dir/yt-dlp-other-nonorm2.log" "$temp_dir/yt-dlp-estimate.log"
-    # 移除對 main_media_file 的清理！
-    if [ -n "$thumbnail_file" ] && [ -f "$thumbnail_file" ]; then
-        safe_remove "$thumbnail_file"
-    fi
-    [ -d "$temp_dir" ] && rm -rf "$temp_dir"
-    # --- [修正結束] 清理 ---
-
-    # --- 控制台報告 (保持不變) ---
+    # --- 處理縮圖（如果下載成功） ---
     if [ $result -eq 0 ]; then
-        # 檢查最終檔案是否存在
+        log_message "DEBUG" "${progress_prefix}查找縮圖..."
+        # 使用 find 命令在下載目錄中查找匹配的圖片檔案
+        thumbnail_file=$(find "$DOWNLOAD_PATH" -maxdepth 1 -type f -iname "${base_name}.*" \
+                         \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.webp" \) \
+                         -print -quit)
+
+        if [ -n "$thumbnail_file" ]; then
+            log_message "INFO" "...找到縮圖: $thumbnail_file";
+        else
+            log_message "WARNING" "...在下載目錄中未找到縮圖檔案 (jpg/jpeg/png/webp)。";
+        fi
+    fi
+    # --- 縮圖處理結束 ---
+
+
+    # --- 跳過處理 (如果下載成功) ---
+    if [ $result -eq 0 ]; then
+        log_message "INFO" "${progress_prefix}跳過音量標準化與後處理。"
+        echo -e "${GREEN}${progress_prefix}下載完成 (無標準化)。${RESET}"
+        # result 保持 0 (下載成功即成功)
+    fi
+
+
+    # --- 清理 ---
+    log_message "INFO" "${progress_prefix}清理臨時檔案 (無標準化)..."
+    safe_remove "$temp_dir/yt-dlp-other-nonorm1.log" "$temp_dir/yt-dlp-other-nonorm2.log" "$temp_dir/yt-dlp-estimate.log"
+    # <<< 修改：只在下載成功時才考慮刪除縮圖（但一般不刪除，因為無標準化輸出就是主檔案）>>>
+    # 如果縮圖和主檔案分開，且不需要縮圖，可以在這裡刪除
+    # if [ -n "$thumbnail_file" ] && [ -f "$thumbnail_file" ]; then
+    #     # safe_remove "$thumbnail_file" # 按需決定是否刪除縮圖
+    #     log_message "DEBUG" "保留找到的縮圖（如有）：$thumbnail_file"
+    # fi
+    [ -d "$temp_dir" ] && rm -rf "$temp_dir"
+    # --- 清理結束 ---
+
+
+    # --- 控制台最終報告 ---
+    # <<< 修改：最終檢查使用正確找到的 main_media_file >>>
+    if [ $result -eq 0 ]; then
+        # 再次確認檔案是否存在（使用正確的路徑）
         if [ -f "$main_media_file" ]; then
             echo -e "${GREEN}${progress_prefix}處理完成！檔案已儲存至：$main_media_file${RESET}";
             log_message "SUCCESS" "${progress_prefix}處理完成 (無標準化)！檔案：$main_media_file";
         else
-            # 如果檔案意外消失 (理論上不該發生，除非下載本身有問題)
+            # 如果檔案意外消失
             echo -e "${RED}${progress_prefix}處理似乎已完成，但最終檔案 '$main_media_file' 未找到！${RESET}";
             log_message "ERROR" "${progress_prefix}處理完成但最終檔案未找到 (無標準化)";
             result=1 # 標記為失敗
@@ -2579,8 +2634,8 @@ _process_single_other_site_no_normalize() {
         log_message "ERROR" "${progress_prefix}處理失敗 (無標準化)：$item_url";
     fi
 
-    # --- 條件式通知 (邏輯基本不變，確保傳遞正確路徑) ---
-    if $should_notify; then
+    # --- 條件式通知 (邏輯保持不變，但依賴正確的 result 和 main_media_file) ---
+    if ! $is_playlist && $should_notify; then # <<< 修正：僅在非播放列表且需要通知時觸發 >>>
         local notification_title="媒體處理器：通用 無標準化"
         local base_msg_notify="${progress_prefix}處理 '$sanitized_title'"
         local final_path_notify=""
@@ -2592,7 +2647,7 @@ _process_single_other_site_no_normalize() {
     fi
 
     return $result
-} # 確保這是函數的結尾大括號
+}
 
 ############################################
 # 處理其他網站媒體 (通用 MP3/MP4) - 支持實驗性批量下載
