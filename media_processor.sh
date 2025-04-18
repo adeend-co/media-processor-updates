@@ -950,34 +950,149 @@ process_local_mp3() {
 
 ############################################
 # 處理本機 MP4 影片（音量標準化）
+# <<< 修改：加入基於時長 (0.35小時) 的條件式通知 >>>
 ############################################
 process_local_mp4() {
-    # --- 函數邏輯不變 ---
     local video_file="$1"
-    if [ ! -f "$video_file" ]; then echo -e "${RED}錯誤：檔案不存在！${RESET}"; return 1; fi
-    local temp_dir=$(mktemp -d)
-    local base=$(basename "$video_file" | sed 's/\.[^.]*$//')
-    local output_video="$(dirname "$video_file")/${base}_normalized.mp4"
-    local normalized_audio="$temp_dir/audio_normalized.m4a"
+    local temp_dir base output_video normalized_audio result duration_secs should_notify_local=false
+
+    # 檢查輸入檔案是否存在
+    if [ ! -f "$video_file" ]; then
+        echo -e "${RED}錯誤：檔案不存在！${RESET}"
+        log_message "ERROR" "process_local_mp4: 檔案不存在 '$video_file'"
+        return 1
+    fi
+
+    # --- <<< 新增：獲取時長並判斷是否通知 >>> ---
+    echo -e "${YELLOW}正在獲取影片時長以決定是否需要通知...${RESET}"
+    local duration_secs_str duration_exit_code
+    # 使用 ffprobe 獲取格式信息中的時長 (秒)
+    # -v error: 只顯示錯誤訊息
+    # -show_entries format=duration: 只顯示 format section 中的 duration
+    # -of default=noprint_wrappers=1:nokey=1: 以簡單格式輸出值 (無鍵名和外框)
+    duration_secs_str=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$video_file")
+    duration_exit_code=$?
+
+    if [ $duration_exit_code -eq 0 ] && [[ "$duration_secs_str" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+        duration_secs=$(printf "%.0f" "$duration_secs_str") # 四捨五入到整數秒
+        local duration_threshold_secs=1260 # 0.35 小時 * 3600 秒/小時
+        log_message "INFO" "本機 MP4：檔案時長 = $duration_secs 秒, 通知閾值 = $duration_threshold_secs 秒 (0.35小時)."
+
+        if [[ "$duration_secs" -gt "$duration_threshold_secs" ]]; then
+            log_message "INFO" "本機 MP4：時長超過閾值，啟用通知。"
+            should_notify_local=true
+            # 給使用者一個明確的提示
+            echo -e "${CYAN}提示：影片時長 ($duration_secs 秒) 超過 0.35 小時，處理完成後將發送通知。${RESET}"
+            sleep 1 # 短暫停留讓使用者看到提示
+        else
+            log_message "INFO" "本機 MP4：時長未超過閾值，禁用通知。"
+            # 時長較短，保持安靜，不打擾使用者
+        fi
+    else
+        # 如果 ffprobe 失敗或輸出格式不對，則記錄警告並禁用通知
+        log_message "WARNING" "無法從 ffprobe 獲取有效的時長資訊 (退出碼: $duration_exit_code, 輸出: '$duration_secs_str')。將禁用通知。"
+        echo -e "${YELLOW}警告：無法獲取影片時長，將禁用完成通知。${RESET}"
+        should_notify_local=false
+    fi
+    # --- 時長判斷結束 ---
+
+    # --- 原有的處理流程開始 ---
+    # 創建臨時目錄
+    temp_dir=$(mktemp -d)
+    # 獲取基礎檔名（不含副檔名）
+    base=$(basename "$video_file" | sed 's/\.[^.]*$//')
+    # 設定最終輸出檔名
+    output_video="$(dirname "$video_file")/${base}_normalized.mp4"
+    # 設定標準化後臨時音訊檔的路徑
+    normalized_audio="$temp_dir/audio_normalized.m4a"
+
     echo -e "${YELLOW}處理本機影片檔案：$video_file${RESET}"
-    log_message "INFO" "處理本機影片檔案：$video_file"
+    log_message "INFO" "處理本機影片檔案：$video_file (啟用通知: $should_notify_local)"
+
+    # 調用音量標準化函數，處理音訊部分
+    # 第一個參數是輸入影片，第二個是輸出的標準化音訊（臨時），第三個是臨時目錄，第四個 true 表示是影片
     normalize_audio "$video_file" "$normalized_audio" "$temp_dir" true
-    local result=$?
+    result=$? # 保存 normalize_audio 的退出狀態 (0 為成功)
+
+    # 僅在音量標準化成功時，才進行混流
     if [ $result -eq 0 ]; then
         echo -e "${YELLOW}正在混流標準化音訊與影片...${RESET}"
-        ffmpeg -y -i "$video_file" -i "$normalized_audio" -c:v copy -c:a aac -b:a 256k -ar 44100 -map 0:v:0 -map 1:a:0 -movflags +faststart "$output_video" > /dev/null 2>&1
-        if [ $? -ne 0 ]; then echo -e "${RED}錯誤：混流失敗！${RESET}"; result=1;
-        else echo -e "${GREEN}混流完成${RESET}"; fi
-    fi
-    safe_remove "$normalized_audio"
-    [ -d "$temp_dir" ] && rmdir "$temp_dir" 2>/dev/null
-    if [ $result -eq 0 ]; then
-        echo -e "${GREEN}處理完成！音量標準化後的影片已儲存至：$output_video${RESET}"
-        log_message "SUCCESS" "處理完成！音量標準化後的影片已儲存至：$output_video"
+        # 使用 ffmpeg 合併
+        # -i "$video_file": 輸入原始影片
+        # -i "$normalized_audio": 輸入標準化後的音訊
+        # -c:v copy: 直接複製視訊流，不重新編碼
+        # -c:a aac -b:a 256k -ar 44100: 將音訊重新編碼為 AAC，設置位元速率和取樣率
+        # -map 0:v:0: 映射第一個輸入(原始影片)的第0個視訊流
+        # -map 1:a:0: 映射第二個輸入(標準化音訊)的第0個音訊流
+        # -movflags +faststart: 優化 MP4 檔案，使其適合網路串流
+        # "$output_video": 輸出檔案路徑
+        ffmpeg -y -i "$video_file" -i "$normalized_audio" \
+               -c:v copy -c:a aac -b:a 256k -ar 44100 \
+               -map 0:v:0 -map 1:a:0 -movflags +faststart \
+               "$output_video" > "$temp_dir/ffmpeg_local_mux.log" 2>&1
+        local mux_result=$? # 保存 ffmpeg 混流的退出狀態
+
+        if [ $mux_result -ne 0 ]; then
+            # 混流失敗
+            echo -e "${RED}錯誤：混流失敗！詳見日誌。${RESET}"
+            log_message "ERROR" "本機 MP4 混流失敗！詳見 $temp_dir/ffmpeg_local_mux.log"
+            cat "$temp_dir/ffmpeg_local_mux.log" # 在控制台顯示 ffmpeg 錯誤訊息
+            result=1 # 將最終結果標記為失敗
+        else
+            # 混流成功
+            echo -e "${GREEN}混流完成${RESET}"
+            log_message "INFO" "本機 MP4 混流成功。"
+            # result 保持 0 (成功)
+        fi
+        # 清理標準化後的臨時音訊檔 (無論混流成功與否)
+        safe_remove "$normalized_audio"
+        rm -f "$temp_dir/ffmpeg_local_mux.log" # 清理混流日誌
     else
-        echo -e "${RED}處理失敗！${RESET}"
-        log_message "ERROR" "處理失敗：$video_file"
+        # 如果 normalize_audio 失敗 (result 非 0)
+        log_message "ERROR" "本機 MP4 音量標準化失敗，跳過混流。"
+        # 確保清理可能存在的臨時音訊檔
+        safe_remove "$normalized_audio"
     fi
+
+    # 清理臨時目錄
+    [ -d "$temp_dir" ] && rmdir "$temp_dir" 2>/dev/null
+
+    # --- 控制台最終報告 ---
+    if [ $result -eq 0 ]; then
+        # 處理成功，再次確認最終檔案是否存在
+        if [ -f "$output_video" ]; then
+            echo -e "${GREEN}處理完成！音量標準化後的影片已儲存至：$output_video${RESET}"
+            log_message "SUCCESS" "本機 MP4 處理完成！音量標準化後的影片已儲存至：$output_video"
+        else
+            # 理論上不應發生，但作為防禦性程式設計
+            echo -e "${RED}處理似乎已完成，但最終檔案 '$output_video' 未找到！${RESET}"
+            log_message "ERROR" "本機 MP4 處理完成但最終檔案未找到！"
+            result=1 # 將結果更正為失敗
+        fi
+    else
+        # 處理失敗
+        echo -e "${RED}處理失敗！${RESET}"
+        log_message "ERROR" "本機 MP4 處理失敗：$video_file"
+        # 可以考慮提示使用者原始檔案仍然存在
+        # echo -e "${YELLOW}原始檔案 '$video_file' 未被修改。${RESET}"
+    fi
+
+    # --- <<< 新增：條件式通知 >>> ---
+    if $should_notify_local; then
+        local notification_title="媒體處理器：本機 MP4 標準化"
+        local base_name_for_notify=$(basename "$video_file") # 使用原始檔名，讓使用者知道是哪個檔案
+        local base_msg_notify="處理本機檔案 '$base_name_for_notify'"
+        local final_path_notify=""
+        # 只有在處理成功且最終檔案確實存在時，才將最終路徑傳遞給通知函數
+        if [ $result -eq 0 ] && [ -f "$output_video" ]; then
+            final_path_notify="$output_video"
+        fi
+        # 調用通用的通知函數
+        _send_termux_notification "$result" "$notification_title" "$base_msg_notify" "$final_path_notify"
+    fi
+    # --- 通知結束 ---
+
+    # 返回最終的處理結果 (0 代表成功，非 0 代表失敗)
     return $result
 }
 
