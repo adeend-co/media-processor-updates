@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.3-beta.7" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.3-beta.8" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -3751,15 +3751,16 @@ show_about_enhanced() {
 ############################################
 
 ############################################
-# <<< 修改：環境檢查 (返回狀態碼，加入更清晰的Termux提示) >>>
+# <<< 修改：環境檢查 (移除 webvtt-py 和 mkvmerge 相關內容) >>>
 ############################################
 check_environment() {
+    # <<< core_tools 保持不變 (beta.7 已移除 mkvmerge) >>>
     local core_tools=("yt-dlp" "ffmpeg" "ffprobe" "jq" "curl")
     local missing_tools=()
     local python_found=false
     local python_cmd=""
-    local webvtt_lib_found=false
-    local check_failed=false # <<< 新增：失敗標記
+    # local webvtt_lib_found=false # 移除 webvtt-py 變數
+    local check_failed=false
 
     echo -e "${CYAN}正在進行環境檢查...${RESET}"
     log_message "INFO" "開始環境檢查 (OS: $OS_TYPE)..."
@@ -3769,7 +3770,7 @@ check_environment() {
         if ! command -v "$tool" &> /dev/null; then
             missing_tools+=("$tool")
             echo -e "${YELLOW}  - 缺少: $tool ${RESET}"
-            check_failed=true # <<< 標記失敗
+            check_failed=true
         fi
     done
 
@@ -3781,45 +3782,31 @@ check_environment() {
     else
         missing_tools+=("python/python3")
         echo -e "${YELLOW}  - 缺少: python 或 python3 ${RESET}"
-        check_failed=true # <<< 標記失敗
+        check_failed=true
     fi
 
-    # 如果找到 Python，檢查 webvtt-py 庫
-    if $python_found; then
-        # 嘗試導入 webvtt 庫，忽略 stderr 輸出
-        if $python_cmd -c "import webvtt" > /dev/null 2>&1; then
-             webvtt_lib_found=true
-        else
-             missing_tools+=("Python 庫: webvtt-py")
-             echo -e "${YELLOW}  - 缺少 Python 庫: webvtt-py ${RESET}"
-             check_failed=true # <<< 標記失敗
-        fi
-    fi
+    # <<< 移除檢查 webvtt-py 庫的程式碼區塊 >>>
 
     # --- Termux 特定儲存權限檢查 ---
     if [[ "$OS_TYPE" == "termux" ]]; then
         echo -e "${CYAN}正在檢查 Termux 儲存權限...${RESET}"
         if [ ! -d "/sdcard" ] || ! touch "/sdcard/.termux-test-write" 2>/dev/null; then
-            # <<< 修改：加入清晰指令提示，但不直接退出 >>>
-            clear # 清屏以突出顯示錯誤
+            clear
             echo -e "${RED}=== 環境檢查失敗 (Termux 儲存權限) ===${RESET}"
             echo -e "${YELLOW}無法存取或寫入外部存儲 (/sdcard)！${RESET}"
             echo -e "${CYAN}請先在 Termux 中手動執行以下命令授予權限：${RESET}"
-            echo -e "${GREEN}termux-setup-storage${RESET}" # 清晰顯示命令
+            echo -e "${GREEN}termux-setup-storage${RESET}"
             echo -e "${CYAN}然後重新啟動 Termux 和此腳本。${RESET}"
             log_message "ERROR" "環境檢查失敗：無法存取或寫入 /sdcard"
-            rm -f "/sdcard/.termux-test-write" # 嘗試清理測試文件
-            check_failed=true # <<< 標記失敗
-            # 不要 exit，讓 main 函數處理
+            rm -f "/sdcard/.termux-test-write"
+            check_failed=true
         else
-            rm -f "/sdcard/.termux-test-write" # 清理成功的測試文件
+            rm -f "/sdcard/.termux-test-write"
              echo -e "${GREEN}  > Termux 儲存權限正常。${RESET}"
         fi
-    fi # 結束 Termux 特定檢查
+    fi
 
     # --- 通用下載和臨時目錄檢查 ---
-    # (這部分檢查在 load_config 後期進行了更健壯的處理，這裡可以簡化或移除)
-    # 為了保持與您最新腳本的結構一致，我們保留基本檢查，但確保它們也只標記失敗
     echo -e "${CYAN}正在檢查目錄權限...${RESET}"
     if [ -z "$DOWNLOAD_PATH" ]; then
          echo -e "${RED}錯誤：下載目錄路徑未設定！${RESET}"; log_message "ERROR" "環境檢查失敗：下載目錄未設定。"; check_failed=true;
@@ -3840,41 +3827,43 @@ check_environment() {
     else
          echo -e "${GREEN}  > 臨時目錄 '$TEMP_DIR' 可寫。${RESET}"
     fi
-    # --- 目錄檢查結束 ---
 
     # --- 檢查是否有任何失敗標記 ---
     if [ "$check_failed" = true ]; then
         log_message "ERROR" "環境檢查檢測到問題。"
-        # 顯示缺失工具列表（如果有的話）
         if [ ${#missing_tools[@]} -ne 0 ]; then
              echo -e "\n${YELLOW}檢測到缺少以下工具或庫：${RESET}"
              for tool in "${missing_tools[@]}"; do echo -e "${RED}  - $tool${RESET}"; done
-             # 提供安裝提示（僅供參考，主要依賴 update_dependencies）
              echo -e "\n${CYAN}安裝提示:${RESET}"
              if [[ "$OS_TYPE" == "termux" ]]; then
-                  echo -e "${GREEN}Termux: pkg install ffmpeg jq curl python python-pip && pip install -U yt-dlp webvtt-py${RESET}"
+                  # <<< 移除提示中的 webvtt-py >>>
+                  # <<< update_dependencies 不安裝 mkvtoolnix，所以提示也不需要 mkvmerge >>>
+                  echo -e "${GREEN}Termux: pkg install ffmpeg jq curl python python-pip && pip install -U yt-dlp${RESET}"
              elif [[ "$OS_TYPE" == "wsl" || "$OS_TYPE" == "linux" ]]; then
                  local install_cmd=""
-                 if [[ "$PACKAGE_MANAGER" == "apt" ]]; then install_cmd="sudo apt install -y ffmpeg jq curl python3 python3-pip mkvmerge";
-                 elif [[ "$PACKAGE_MANAGER" == "dnf" ]]; then install_cmd="sudo dnf install -y ffmpeg jq curl python3 python3-pip mkvmerge";
-                 elif [[ "$PACKAGE_MANAGER" == "yum" ]]; then install_cmd="sudo yum install -y ffmpeg jq curl python3 python3-pip mkvmerge"; fi
+                 # <<< 從安裝命令建議中移除 mkvmerge >>>
+                 if [[ "$PACKAGE_MANAGER" == "apt" ]]; then install_cmd="sudo apt install -y ffmpeg jq curl python3 python3-pip";
+                 elif [[ "$PACKAGE_MANAGER" == "dnf" ]]; then install_cmd="sudo dnf install -y ffmpeg jq curl python3 python3-pip";
+                 elif [[ "$PACKAGE_MANAGER" == "yum" ]]; then install_cmd="sudo yum install -y ffmpeg jq curl python3 python3-pip"; fi
 
                  if [ -n "$install_cmd" ]; then
-                     echo -e "${GREEN}WSL/Linux ($PACKAGE_MANAGER): $install_cmd ; $python_cmd -m pip install --upgrade --user yt-dlp webvtt-py${RESET}"
+                     # <<< 移除提示中的 webvtt-py >>>
+                     echo -e "${GREEN}WSL/Linux ($PACKAGE_MANAGER): $install_cmd ; $python_cmd -m pip install --upgrade --user yt-dlp${RESET}"
                  else
-                     echo -e "${YELLOW}請參考你的 Linux 發行版文檔安裝 ffmpeg, jq, curl, python3, pip, 然後執行 pip install --upgrade yt-dlp webvtt-py${RESET}"
+                     # <<< 從安裝命令建議中移除 mkvmerge, 移除 webvtt-py >>>
+                     echo -e "${YELLOW}請參考你的 Linux 發行版文檔安裝 ffmpeg, jq, curl, python3, pip, 然後執行 pip install --upgrade yt-dlp${RESET}"
                  fi
              fi
-             if ! $webvtt_lib_found && $python_found; then echo -e "${YELLOW}單獨安裝 webvtt-py: pip install webvtt-py${RESET}"; fi
+             # <<< 移除單獨安裝 webvtt-py 的提示 >>>
         fi
-        return 1 # <<< 返回失敗狀態碼
+        return 1 # 返回失敗狀態碼
     fi
 
     # 如果所有檢查都通過
     log_message "INFO" "環境檢查通過。"
     echo -e "${GREEN}環境檢查通過。${RESET}"
     sleep 1 # 短暫顯示成功信息
-    return 0 # <<< 返回成功狀態碼
+    return 0 # 返回成功狀態碼
 }
 
 ############################################
