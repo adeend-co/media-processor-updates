@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.3-beta.5" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.3-beta.6" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -3751,14 +3751,15 @@ show_about_enhanced() {
 ############################################
 
 ############################################
-# <<< 修改：環境檢查 (加入 Python 庫檢查提示) >>>
+# <<< 修改：環境檢查 (返回狀態碼，加入更清晰的Termux提示) >>>
 ############################################
 check_environment() {
-    local core_tools=("yt-dlp" "ffmpeg" "ffprobe" "jq" "curl" "mkvmerge") # <<< 新增 mkvmerge
+    local core_tools=("yt-dlp" "ffmpeg" "ffprobe" "jq" "curl" "mkvmerge")
     local missing_tools=()
     local python_found=false
     local python_cmd=""
     local webvtt_lib_found=false
+    local check_failed=false # <<< 新增：失敗標記
 
     echo -e "${CYAN}正在進行環境檢查...${RESET}"
     log_message "INFO" "開始環境檢查 (OS: $OS_TYPE)..."
@@ -3768,115 +3769,112 @@ check_environment() {
         if ! command -v "$tool" &> /dev/null; then
             missing_tools+=("$tool")
             echo -e "${YELLOW}  - 缺少: $tool ${RESET}"
+            check_failed=true # <<< 標記失敗
         fi
     done
 
     # 檢查 Python
-    if command -v python3 &> /dev/null; then 
-        python_found=true; python_cmd="python3"; 
-    elif command -v python &> /dev/null; then 
-        python_found=true; python_cmd="python"; 
+    if command -v python3 &> /dev/null; then
+        python_found=true; python_cmd="python3";
+    elif command -v python &> /dev/null; then
+        python_found=true; python_cmd="python";
     else
         missing_tools+=("python/python3")
         echo -e "${YELLOW}  - 缺少: python 或 python3 ${RESET}"
+        check_failed=true # <<< 標記失敗
     fi
-    
+
     # 如果找到 Python，檢查 webvtt-py 庫
     if $python_found; then
-        if $python_cmd -c "import webvtt" &> /dev/null; then
-            webvtt_lib_found=true
+        # 嘗試導入 webvtt 庫，忽略 stderr 輸出
+        if $python_cmd -c "import webvtt" > /dev/null 2>&1; then
+             webvtt_lib_found=true
         else
              missing_tools+=("Python 庫: webvtt-py")
              echo -e "${YELLOW}  - 缺少 Python 庫: webvtt-py ${RESET}"
+             check_failed=true # <<< 標記失敗
         fi
     fi
-
-    if [ ${#missing_tools[@]} -ne 0 ]; then
-        clear
-        echo -e "${RED}=== 環境檢查失敗 ===${RESET}"
-        echo -e "${YELLOW}缺少以下必要工具或組件：${RESET}"
-        for tool in "${missing_tools[@]}"; do echo -e "${RED}  - $tool${RESET}"; done
-        echo -e "\n${CYAN}請嘗試運行選項 '6' (檢查並更新依賴套件) 來自動安裝，"
-        echo -e "或者根據你的系統手動安裝它們。${RESET}"
-        # 提供安裝提示
-        if [[ "$OS_TYPE" == "termux" ]]; then
-             echo -e "${GREEN}Termux:"
-             echo -e "  pkg install ffmpeg jq curl python mkvmerge python-pip" 
-             echo -e "  pip install -U yt-dlp webvtt-py"
-             echo -e "${RESET}"
-        elif [[ "$OS_TYPE" == "wsl" || "$OS_TYPE" == "linux" ]]; then
-             local install_cmd=""
-             if [[ "$PACKAGE_MANAGER" == "apt" ]]; then install_cmd="sudo apt install -y ffmpeg jq curl python3 python3-pip mkvmerge"; 
-             elif [[ "$PACKAGE_MANAGER" == "dnf" ]]; then install_cmd="sudo dnf install -y ffmpeg jq curl python3 python3-pip mkvmerge"; 
-             elif [[ "$PACKAGE_MANAGER" == "yum" ]]; then install_cmd="sudo yum install -y ffmpeg jq curl python3 python3-pip mkvmerge"; fi
-             
-             if [ -n "$install_cmd" ]; then
-                 echo -e "${GREEN}WSL/Linux ($PACKAGE_MANAGER):"
-                 echo -e "  $install_cmd"
-                 echo -e "  $python_cmd -m pip install --upgrade --user yt-dlp webvtt-py" # 使用 --user 可能更安全
-                 echo -e "${RESET}"
-             else
-                 echo -e "${YELLOW}請參考你的 Linux 發行版文檔安裝: ffmpeg, jq, curl, python3, pip, mkvmerge${RESET}"
-                 echo -e "${YELLOW}然後執行: pip install --upgrade yt-dlp webvtt-py${RESET}"
-             fi
-        fi
-        # 提示 webvtt-py 的單獨安裝方法
-        if ! $webvtt_lib_found && $python_found; then
-             echo -e "\n${YELLOW}如果僅缺少 webvtt-py 庫，請執行:${RESET}"
-             echo -e "${GREEN}  pip install webvtt-py${RESET}"
-        fi
-        
-        echo -e "\n${RED}腳本無法繼續執行，請安裝所需工具後重試。${RESET}"
-        log_message "ERROR" "環境檢查失敗，缺少: ${missing_tools[*]}"
-        exit 1
-    fi
-    echo -e "${GREEN}  > 必要工具和庫檢查通過。${RESET}"
 
     # --- Termux 特定儲存權限檢查 ---
     if [[ "$OS_TYPE" == "termux" ]]; then
         echo -e "${CYAN}正在檢查 Termux 儲存權限...${RESET}"
         if [ ! -d "/sdcard" ] || ! touch "/sdcard/.termux-test-write" 2>/dev/null; then
-            clear
-            echo -e "${RED}=== 環境檢查失敗 (Termux) ===${RESET}"
+            # <<< 修改：加入清晰指令提示，但不直接退出 >>>
+            clear # 清屏以突出顯示錯誤
+            echo -e "${RED}=== 環境檢查失敗 (Termux 儲存權限) ===${RESET}"
             echo -e "${YELLOW}無法存取或寫入外部存儲 (/sdcard)！${RESET}"
-            echo -e "${CYAN}請先在 Termux 中執行以下命令授予權限：${RESET}"
-            echo -e "${GREEN}termux-setup-storage${RESET}"
+            echo -e "${CYAN}請先在 Termux 中手動執行以下命令授予權限：${RESET}"
+            echo -e "${GREEN}termux-setup-storage${RESET}" # 清晰顯示命令
             echo -e "${CYAN}然後重新啟動 Termux 和此腳本。${RESET}"
             log_message "ERROR" "環境檢查失敗：無法存取或寫入 /sdcard"
-            rm -f "/sdcard/.termux-test-write"
-            exit 1
+            rm -f "/sdcard/.termux-test-write" # 嘗試清理測試文件
+            check_failed=true # <<< 標記失敗
+            # 不要 exit，讓 main 函數處理
         else
-            rm -f "/sdcard/.termux-test-write"
+            rm -f "/sdcard/.termux-test-write" # 清理成功的測試文件
              echo -e "${GREEN}  > Termux 儲存權限正常。${RESET}"
         fi
     fi # 結束 Termux 特定檢查
 
     # --- 通用下載和臨時目錄檢查 ---
+    # (這部分檢查在 load_config 後期進行了更健壯的處理，這裡可以簡化或移除)
+    # 為了保持與您最新腳本的結構一致，我們保留基本檢查，但確保它們也只標記失敗
     echo -e "${CYAN}正在檢查目錄權限...${RESET}"
     if [ -z "$DOWNLOAD_PATH" ]; then
-         echo -e "${RED}錯誤：下載目錄路徑未設定！${RESET}"; log_message "ERROR" "環境檢查失敗：下載目錄未設定。"; exit 1;
+         echo -e "${RED}錯誤：下載目錄路徑未設定！${RESET}"; log_message "ERROR" "環境檢查失敗：下載目錄未設定。"; check_failed=true;
     elif ! mkdir -p "$DOWNLOAD_PATH" 2>/dev/null; then
-        echo -e "${RED}錯誤：無法創建下載目錄：$DOWNLOAD_PATH ${RESET}"; log_message "ERROR" "環境檢查失敗：無法創建下載目錄 $DOWNLOAD_PATH"; exit 1;
+        echo -e "${RED}錯誤：無法創建下載目錄：$DOWNLOAD_PATH ${RESET}"; log_message "ERROR" "環境檢查失敗：無法創建下載目錄 $DOWNLOAD_PATH"; check_failed=true;
     elif [ ! -w "$DOWNLOAD_PATH" ]; then
-         echo -e "${RED}錯誤：下載目錄不可寫：$DOWNLOAD_PATH ${RESET}"; log_message "ERROR" "環境檢查失敗：下載目錄不可寫 $DOWNLOAD_PATH"; exit 1;
+         echo -e "${RED}錯誤：下載目錄不可寫：$DOWNLOAD_PATH ${RESET}"; log_message "ERROR" "環境檢查失敗：下載目錄不可寫 $DOWNLOAD_PATH"; check_failed=true;
     else
          echo -e "${GREEN}  > 下載目錄 '$DOWNLOAD_PATH' 可寫。${RESET}"
     fi
 
     if [ -z "$TEMP_DIR" ]; then
-         echo -e "${RED}錯誤：臨時目錄路徑未設定！${RESET}"; log_message "ERROR" "環境檢查失敗：臨時目錄未設定。"; exit 1;
+         echo -e "${RED}錯誤：臨時目錄路徑未設定！${RESET}"; log_message "ERROR" "環境檢查失敗：臨時目錄未設定。"; check_failed=true;
     elif ! mkdir -p "$TEMP_DIR" 2>/dev/null; then
-        echo -e "${RED}錯誤：無法創建臨時目錄：$TEMP_DIR ${RESET}"; log_message "ERROR" "環境檢查失敗：無法創建臨時目錄 $TEMP_DIR"; exit 1;
+        echo -e "${RED}錯誤：無法創建臨時目錄：$TEMP_DIR ${RESET}"; log_message "ERROR" "環境檢查失敗：無法創建臨時目錄 $TEMP_DIR"; check_failed=true;
     elif [ ! -w "$TEMP_DIR" ]; then
-         echo -e "${RED}錯誤：臨時目錄不可寫：$TEMP_DIR ${RESET}"; log_message "ERROR" "環境檢查失敗：臨時目錄不可寫 $TEMP_DIR"; exit 1;
+         echo -e "${RED}錯誤：臨時目錄不可寫：$TEMP_DIR ${RESET}"; log_message "ERROR" "環境檢查失敗：臨時目錄不可寫 $TEMP_DIR"; check_failed=true;
     else
          echo -e "${GREEN}  > 臨時目錄 '$TEMP_DIR' 可寫。${RESET}"
     fi
+    # --- 目錄檢查結束 ---
 
+    # --- 檢查是否有任何失敗標記 ---
+    if [ "$check_failed" = true ]; then
+        log_message "ERROR" "環境檢查檢測到問題。"
+        # 顯示缺失工具列表（如果有的話）
+        if [ ${#missing_tools[@]} -ne 0 ]; then
+             echo -e "\n${YELLOW}檢測到缺少以下工具或庫：${RESET}"
+             for tool in "${missing_tools[@]}"; do echo -e "${RED}  - $tool${RESET}"; done
+             # 提供安裝提示（僅供參考，主要依賴 update_dependencies）
+             echo -e "\n${CYAN}安裝提示:${RESET}"
+             if [[ "$OS_TYPE" == "termux" ]]; then
+                  echo -e "${GREEN}Termux: pkg install ffmpeg jq curl python mkvmerge python-pip && pip install -U yt-dlp webvtt-py${RESET}"
+             elif [[ "$OS_TYPE" == "wsl" || "$OS_TYPE" == "linux" ]]; then
+                 local install_cmd=""
+                 if [[ "$PACKAGE_MANAGER" == "apt" ]]; then install_cmd="sudo apt install -y ffmpeg jq curl python3 python3-pip mkvmerge";
+                 elif [[ "$PACKAGE_MANAGER" == "dnf" ]]; then install_cmd="sudo dnf install -y ffmpeg jq curl python3 python3-pip mkvmerge";
+                 elif [[ "$PACKAGE_MANAGER" == "yum" ]]; then install_cmd="sudo yum install -y ffmpeg jq curl python3 python3-pip mkvmerge"; fi
+
+                 if [ -n "$install_cmd" ]; then
+                     echo -e "${GREEN}WSL/Linux ($PACKAGE_MANAGER): $install_cmd ; $python_cmd -m pip install --upgrade --user yt-dlp webvtt-py${RESET}"
+                 else
+                     echo -e "${YELLOW}請參考你的 Linux 發行版文檔安裝 ffmpeg, jq, curl, python3, pip, mkvmerge, 然後執行 pip install --upgrade yt-dlp webvtt-py${RESET}"
+                 fi
+             fi
+             if ! $webvtt_lib_found && $python_found; then echo -e "${YELLOW}單獨安裝 webvtt-py: pip install webvtt-py${RESET}"; fi
+        fi
+        return 1 # <<< 返回失敗狀態碼
+    fi
+
+    # 如果所有檢查都通過
     log_message "INFO" "環境檢查通過。"
     echo -e "${GREEN}環境檢查通過。${RESET}"
-    sleep 2
-    return 0
+    sleep 1 # 短暫顯示成功信息
+    return 0 # <<< 返回成功狀態碼
 }
 
 ############################################
@@ -3956,35 +3954,90 @@ if ! mkdir -p "$TEMP_DIR" 2>/dev/null; then
      exit 1
 fi
 
-# 主程式
+############################################
+# <<< 修改：主程式 (處理環境檢查失敗情況) >>>
+############################################
 main() {
     # --- 設定預設值 (假設這些已在腳本頂部完成) ---
     # DEFAULT_URL="..."; THREADS=4; MAX_THREADS=8; MIN_THREADS=1; COLOR_ENABLED=true; etc.
     # DOWNLOAD_PATH="$DOWNLOAD_PATH_DEFAULT"; TEMP_DIR="$TEMP_DIR_DEFAULT"; etc.
 
-    # --- <<< 新增：載入使用者設定檔 >>> ---
-    #      這會覆蓋上面設定的預設值（如果設定檔存在且有效）
-    #      並且會根據最終的 DOWNLOAD_PATH 更新 LOG_FILE
+    # --- 載入使用者設定檔 ---
     load_config
 
-    # --- <<< 新增：應用載入後的顏色設定 >>> ---
-    #      這一步會根據 load_config 後的 COLOR_ENABLED 值，
-    #      正確地定義 RED, GREEN 等變數。
+    # --- 應用載入後的顏色設定 ---
     apply_color_settings
 
-    # --- 在 load_config 之後記錄啟動訊息，因為 LOG_FILE 路徑此時才最終確定 ---
+    # --- 在 load_config 之後記錄啟動訊息 ---
     log_message "INFO" "腳本啟動 (版本: $SCRIPT_VERSION, OS: $OS_TYPE, Config: $CONFIG_FILE)"
 
-    # --- 環境檢查 (現在會使用載入後的 DOWNLOAD_PATH 和 TEMP_DIR) ---
+    # --- 環境檢查 ---
+    # <<< 修改：調用 check_environment 並檢查返回值 >>>
     if ! check_environment; then
-        # check_environment 內部會在失敗時 exit
-        return 1
-    fi
+        # <<< 環境檢查失敗後的處理流程 >>>
+        clear # 清屏以顯示重要提示
+        echo -e "${RED}##############################################${RESET}"
+        echo -e "${RED}# ${BOLD}環境檢查失敗！腳本無法正常運行。${RESET}${RED} #${RESET}"
+        echo -e "${RED}##############################################${RESET}"
+        echo -e "${YELLOW}檢測到缺少必要的工具、權限或設定。${RESET}"
+        echo -e "${YELLOW}請查看上面的具體錯誤訊息。${RESET}"
+        echo -e "\n${CYAN}您可以嘗試運行「依賴更新」功能來自動安裝缺失的軟體包。${RESET}"
+        echo -e "${YELLOW}注意：Termux 儲存權限問題需要手動執行 'termux-setup-storage'。${RESET}"
+        echo ""
 
-    # --- 自動調整執行緒 (可能會根據載入的或預設的 THREADS 再次調整並儲存) ---
+        # 詢問使用者是否運行依賴更新
+        local run_dep_update=""
+        read -rp "是否立即嘗試運行依賴更新？ (y/n): " run_dep_update
+
+        if [[ "$run_dep_update" =~ ^[Yy]$ ]]; then
+            log_message "INFO" "使用者選擇在環境檢查失敗後運行依賴更新。"
+            # <<< 調用依賴更新函數 >>>
+            update_dependencies
+
+            # <<< 依賴更新後再次檢查環境 >>>
+            echo -e "\n${CYAN}---------------------------------------------${RESET}"
+            echo -e "${CYAN}依賴更新流程已執行完畢。${RESET}"
+            echo -e "${CYAN}正在重新檢查環境以確認問題是否解決...${RESET}"
+            echo -e "${CYAN}---------------------------------------------${RESET}"
+            sleep 2 # 給使用者一點時間看提示
+
+            if ! check_environment; then
+                # <<< 如果再次檢查仍然失敗 >>>
+                log_message "ERROR" "依賴更新後環境再次檢查失敗，腳本退出。"
+                echo -e "\n${RED}##############################################${RESET}"
+                echo -e "${RED}# ${BOLD}環境重新檢查仍然失敗！${RESET}${RED}           #${RESET}"
+                echo -e "${RED}# ${BOLD}腳本無法繼續執行。${RESET}${RED}                 #${RESET}"
+                echo -e "${RED}# ${BOLD}請仔細檢查上面的錯誤訊息，${RESET}${RED}         #${RESET}"
+                echo -e "${RED}# ${BOLD}或嘗試手動安裝缺失的依賴。${RESET}${RED}       #${RESET}"
+                echo -e "${RED}##############################################${RESET}"
+                exit 1 # 退出腳本
+            else
+                # <<< 如果再次檢查成功 >>>
+                log_message "INFO" "依賴更新後環境重新檢查通過。"
+                echo -e "\n${GREEN}##############################################${RESET}"
+                echo -e "${GREEN}# ${BOLD}環境重新檢查通過！準備進入主選單...${RESET}${GREEN} #${RESET}"
+                echo -e "${GREEN}##############################################${RESET}"
+                sleep 2 # 顯示成功信息
+                # 不需要 exit，腳本會繼續往下執行
+            fi
+        else
+            # <<< 如果使用者選擇不運行依賴更新 >>>
+            log_message "INFO" "使用者拒絕在環境檢查失敗後運行依賴更新，腳本退出。"
+            echo -e "\n${YELLOW}##############################################${RESET}"
+            echo -e "${YELLOW}# ${BOLD}已取消依賴更新。${RESET}${YELLOW}                 #${RESET}"
+            echo -e "${YELLOW}# ${BOLD}腳本無法在當前環境下運行，正在退出。${RESET}${YELLOW} #${RESET}"
+            echo -e "${YELLOW}##############################################${RESET}"
+            exit 1 # 退出腳本
+        fi
+        # <<< 結束環境檢查失敗的處理 >>>
+    fi # 結束 if ! check_environment
+
+    # --- 環境檢查通過（或修復後通過）後的正常流程 ---
+    log_message "INFO" "環境檢查通過，繼續執行腳本。"
+
+    # --- 自動調整執行緒 ---
     adjust_threads
-    # 給使用者一點時間看到調整結果
-    sleep 0
+    sleep 0 # 短暫暫停
 
     # --- 進入主選單 ---
     main_menu
