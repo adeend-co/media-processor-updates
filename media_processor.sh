@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.3-beta.6" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.3-beta.7" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -661,7 +661,7 @@ safe_remove() {
 update_dependencies() {
     # --- 工具列表定義 (保持不變) ---
     # 包含需要用包管理器安裝的 *包名*
-    local pkg_tools=("ffmpeg" "jq" "curl" "python" "mkvtoolnix")
+    local pkg_tools=("ffmpeg" "jq" "curl" "python")
     # 包含需要用 pip 安裝的 *包名*
     local pip_tools=("yt-dlp")
     # --- 結束工具列表定義 ---
@@ -3754,7 +3754,7 @@ show_about_enhanced() {
 # <<< 修改：環境檢查 (返回狀態碼，加入更清晰的Termux提示) >>>
 ############################################
 check_environment() {
-    local core_tools=("yt-dlp" "ffmpeg" "ffprobe" "jq" "curl" "mkvmerge")
+    local core_tools=("yt-dlp" "ffmpeg" "ffprobe" "jq" "curl")
     local missing_tools=()
     local python_found=false
     local python_cmd=""
@@ -3852,7 +3852,7 @@ check_environment() {
              # 提供安裝提示（僅供參考，主要依賴 update_dependencies）
              echo -e "\n${CYAN}安裝提示:${RESET}"
              if [[ "$OS_TYPE" == "termux" ]]; then
-                  echo -e "${GREEN}Termux: pkg install ffmpeg jq curl python mkvmerge python-pip && pip install -U yt-dlp webvtt-py${RESET}"
+                  echo -e "${GREEN}Termux: pkg install ffmpeg jq curl python python-pip && pip install -U yt-dlp webvtt-py${RESET}"
              elif [[ "$OS_TYPE" == "wsl" || "$OS_TYPE" == "linux" ]]; then
                  local install_cmd=""
                  if [[ "$PACKAGE_MANAGER" == "apt" ]]; then install_cmd="sudo apt install -y ffmpeg jq curl python3 python3-pip mkvmerge";
@@ -3862,7 +3862,7 @@ check_environment() {
                  if [ -n "$install_cmd" ]; then
                      echo -e "${GREEN}WSL/Linux ($PACKAGE_MANAGER): $install_cmd ; $python_cmd -m pip install --upgrade --user yt-dlp webvtt-py${RESET}"
                  else
-                     echo -e "${YELLOW}請參考你的 Linux 發行版文檔安裝 ffmpeg, jq, curl, python3, pip, mkvmerge, 然後執行 pip install --upgrade yt-dlp webvtt-py${RESET}"
+                     echo -e "${YELLOW}請參考你的 Linux 發行版文檔安裝 ffmpeg, jq, curl, python3, pip, 然後執行 pip install --upgrade yt-dlp webvtt-py${RESET}"
                  fi
              fi
              if ! $webvtt_lib_found && $python_found; then echo -e "${YELLOW}單獨安裝 webvtt-py: pip install webvtt-py${RESET}"; fi
