@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.3(git推送)" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.3-beta.5" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -2764,18 +2764,18 @@ _process_single_other_site_no_normalize() {
 
 ############################################
 # 處理其他網站媒體 (通用 MP3/MP4) - 支持實驗性批量下載 (含標準化)
-# <<< 修改 v2.5.x：加入模板選擇邏輯以處理 Bilibili >>>
+# <<< 修改 v2.5.x：加入模板選擇邏輯；批量下載後發送總結通知 >>>
 ############################################
 process_other_site_media_playlist() {
     local input_url=""; local choice_format=""
-    local cf # Declare cf for case statement scope
+    local cf
 
     read -r -p "請輸入媒體網址 (單個或播放列表): " input_url; if [ -z "$input_url" ]; then echo -e "${RED}錯誤：未輸入！${RESET}"; return 1; fi
 
     log_message "INFO" "處理通用媒體/列表：$input_url"; echo -e "${YELLOW}處理通用媒體/列表：$input_url${RESET}"; echo -e "${YELLOW}注意：列表支持為實驗性。${RESET}"
 
     while true; do
-        local cfn # Declare cfn for loop scope
+        local cfn
         read -r -p "選擇格式 (1: MP3, 2: MP4): " cfn;
         case $cfn in
              1) cf="mp3"; break;;
@@ -2785,19 +2785,15 @@ process_other_site_media_playlist() {
     done;
     choice_format=$cf; log_message "INFO" "選擇格式: $choice_format"
 
-    # --- <<< 新增：選擇輸出模板 >>> ---
+    # --- 選擇輸出模板 (處理 Bilibili 長檔名) ---
     local template_playlist=""
     local template_single=""
     if [[ "$input_url" == *"bilibili.com"* ]]; then
         log_message "INFO" "檢測到 Bilibili URL (含標準化)，使用短檔名模板。"
-        # Bilibili 使用較短的模板 (例如限制標題長度或只用 ID)
-        # 使用索引+ID (避免重複)
         template_playlist="$DOWNLOAD_PATH/%(playlist_index)s-%(id)s.%(ext)s"
-        # 單個影片只用ID (因為無索引)
         template_single="$DOWNLOAD_PATH/%(id)s.%(ext)s"
     else
         log_message "INFO" "非 Bilibili URL (含標準化)，使用預設檔名模板。"
-        # 其他網站使用原有的模板
         template_playlist="$DOWNLOAD_PATH/%(playlist_index)s-%(title)s [%(id)s].%(ext)s"
         template_single="$DOWNLOAD_PATH/%(title)s [%(id)s].%(ext)s"
     fi
@@ -2805,25 +2801,31 @@ process_other_site_media_playlist() {
     log_message "DEBUG" "使用的單一項目模板: $template_single"
     # --- 模板選擇結束 ---
 
-
     echo -e "${YELLOW}檢測是否為列表...${RESET}";
     local item_list_json; local yt_dlp_dump_args=(yt-dlp --flat-playlist --dump-json "$input_url")
     item_list_json=$("${yt_dlp_dump_args[@]}" 2>/dev/null); local jec=$?; if [ $jec -ne 0 ]; then log_message "WARNING" "dump-json 失敗..."; fi
 
     local item_urls=(); local item_count=0
+    # ... (獲取 item_urls 和 item_count 的邏輯保持不變) ...
     if command -v jq &> /dev/null; then
         if [ -n "$item_list_json" ]; then
             local line url
             while IFS= read -r line; do
                 url=$(echo "$line" | jq -r '.url // empty' 2>/dev/null)
                 if [ $? -eq 0 ] && [ -n "$url" ] && [ "$url" != "null" ]; then
-                    # 如果 URL 是相對路徑 (例如 /video/BV...)，嘗試補全
                     if [[ "$url" != "http"* ]]; then
-                        url="https://www.bilibili.com${url}" # 假設是 Bilibili
+                        # 嘗試從原始 URL 推斷域名
+                        local domain=$(echo "$input_url" | grep -oP 'https?://[^/]+')
+                        if [ -n "$domain" ]; then
+                            url="${domain}${url}"
+                        else # 如果無法推斷，預設 Bilibili (或提供錯誤)
+                            url="https://www.bilibili.com${url}"
+                            log_message "WARNING" "無法從原始URL推斷域名，預設為 Bilibili 補全相對路徑: $url"
+                        fi
                     fi
                     item_urls+=("$url");
                 fi;
-            done <<< "$(echo "$item_list_json" | jq -c '. // empty | select(type == "object" and (.url != null))')" # <<< 修正 jq 語法以正確處理 JSON Lines
+            done <<< "$(echo "$item_list_json" | jq -c '. // empty | select(type == "object" and (.url != null))')"
             item_count=${#item_urls[@]};
             if [ "$item_count" -eq 0 ]; then log_message "WARNING" "透過 JQ 解析，未找到有效的 URL 項目。"; fi
         else log_message "WARNING" "dump-json 成功，但輸出為空。"; fi
@@ -2832,38 +2834,50 @@ process_other_site_media_playlist() {
         item_count=0
     fi
 
+
     if [ "$item_count" -gt 1 ]; then
         log_message "INFO" "檢測到列表 ($item_count 項)。"; echo -e "${CYAN}檢測到列表 ($item_count 項)。開始批量處理...${RESET}";
-        local ci=0; local sc=0; local item_url_from_list
+        local ci=0; local success_count=0; local fail_count=0; local item_url_from_list # << 將 sc 改為 success_count, 新增 fail_count
         for item_url_from_list in "${item_urls[@]}"; do
             ci=$((ci + 1));
-            # <<< 修改：傳遞選好的模板作為參數 >>>
+            # 傳遞模板參數，模式為 playlist_mode
             if _process_single_other_site "$item_url_from_list" "$choice_format" "$ci" "$item_count" "playlist_mode" "$template_playlist" "$template_single"; then
-                sc=$((sc + 1));
+                success_count=$((success_count + 1)); # << 更新 success_count
+            else
+                fail_count=$((fail_count + 1));     # << 更新 fail_count
             fi
             echo "";
         done
-        echo -e "${GREEN}列表處理完成！共 $ci 項，成功 $sc 項。${RESET}"; log_message "SUCCESS" "列表 $input_url 完成！共 $ci 項，成功 $sc 項。"
-        # 播放列表的總結通知由 _process_youtube_playlist (如果調用的話) 或這裡的批量循環結束後統一處理 (目前通用下載沒有總結通知，只有單項通知)
-    else
+        # --- 批量處理控制台總結 ---
+        echo -e "${GREEN}列表處理完成！共 $ci 項，成功 $success_count 項，失敗 $fail_count 項。${RESET}"; # << 使用新變數名
+        log_message "SUCCESS" "列表 $input_url 完成！共 $ci 項，成功 $success_count 項，失敗 $fail_count 項。"
+
+        # --- <<< 新增：批量處理後發送總結通知 >>> ---
+        local ovr=0
+        if [ "$fail_count" -gt 0 ]; then ovr=1; fi
+        local notification_title="媒體處理器：通用列表完成 (標準化)"
+        local summary_msg="通用列表處理完成 ($success_count/$ci 成功)"
+        _send_termux_notification "$ovr" "$notification_title" "$summary_msg" "" # 最後一個參數為空代表總結通知
+        # --- 通知結束 ---
+
+    else # 處理單個項目
         if [ "$item_count" -eq 1 ]; then
             log_message "INFO" "檢測到 1 項，按單個處理。"
             echo -e "${YELLOW}檢測到 1 項，按單個處理...${RESET}";
-            input_url=${item_urls[0]}; # 使用從列表獲取的 URL
+            input_url=${item_urls[0]};
         else
             log_message "INFO" "未檢測到有效列表或無法解析，按單個處理原始 URL。"
             echo -e "${YELLOW}未檢測到列表，按單個處理...${RESET}";
-            # 使用者輸入的原始 URL input_url
         fi
-        # <<< 修改：單個處理，仍然傳遞選好的模板 >>>
-        # 注意：單個處理時 $ci 和 $item_count 為空，mode 不是 playlist_mode
+        # 單個處理，傳遞模板，不傳遞模式標記 (mode 為空)
+        # _process_single_other_site 內部會執行大小判斷並觸發單項通知 (如果需要)
         _process_single_other_site "$input_url" "$choice_format" "" "" "" "$template_playlist" "$template_single"
     fi
 }
 
 #######################################################
 # 處理其他網站媒體 (無音量標準化) - 支持實驗性批量下載
-# <<< 修改 v2.5.x：加入模板選擇邏輯以處理 Bilibili >>>
+# <<< 修改 v2.5.x：加入模板選擇邏輯；批量下載後發送總結通知 >>>
 #######################################################
 process_other_site_media_playlist_no_normalize() {
     local input_url=""; local choice_format=""
@@ -2877,25 +2891,22 @@ process_other_site_media_playlist_no_normalize() {
         local cfn
         read -r -p "選擇下載偏好 (1: 音訊優先MP3, 2: 影片優先MP4): " cfn;
         case $cfn in
-             1) cf="mp3"; break;; # 這裡用戶選的是格式偏好，實際下載仍基於 yt-dlp 選擇
+             1) cf="mp3"; break;;
              2) cf="mp4"; break;;
              *) echo "${RED}無效選項${RESET}";;
         esac;
     done;
     choice_format=$cf; log_message "INFO" "選擇格式 (無標準化): $choice_format"
 
-
-    # --- <<< 新增：選擇輸出模板 >>> ---
+    # --- 選擇輸出模板 (處理 Bilibili 長檔名) ---
     local template_playlist=""
     local template_single=""
     if [[ "$input_url" == *"bilibili.com"* ]]; then
         log_message "INFO" "檢測到 Bilibili URL (無標準化)，使用短檔名模板。"
-        # Bilibili 使用較短的模板
         template_playlist="$DOWNLOAD_PATH/%(playlist_index)s-%(id)s.%(ext)s"
         template_single="$DOWNLOAD_PATH/%(id)s.%(ext)s"
     else
         log_message "INFO" "非 Bilibili URL (無標準化)，使用預設檔名模板。"
-        # 其他網站使用原有的模板
         template_playlist="$DOWNLOAD_PATH/%(playlist_index)s-%(title)s [%(id)s].%(ext)s"
         template_single="$DOWNLOAD_PATH/%(title)s [%(id)s].%(ext)s"
     fi
@@ -2903,25 +2914,30 @@ process_other_site_media_playlist_no_normalize() {
     log_message "DEBUG" "使用的單一項目模板: $template_single"
     # --- 模板選擇結束 ---
 
-
     echo -e "${YELLOW}檢測是否為列表...${RESET}";
     local item_list_json; local yt_dlp_dump_args=(yt-dlp --flat-playlist --dump-json "$input_url")
     item_list_json=$("${yt_dlp_dump_args[@]}" 2>/dev/null); local jec=$?; if [ $jec -ne 0 ]; then log_message "WARNING" "dump-json 失敗..."; fi
 
     local item_urls=(); local item_count=0
+    # ... (獲取 item_urls 和 item_count 的邏輯保持不變) ...
     if command -v jq &> /dev/null; then
         if [ -n "$item_list_json" ]; then
             local line url
             while IFS= read -r line; do
                 url=$(echo "$line" | jq -r '.url // empty' 2>/dev/null)
                 if [ $? -eq 0 ] && [ -n "$url" ] && [ "$url" != "null" ]; then
-                    # 如果 URL 是相對路徑 (例如 /video/BV...)，嘗試補全
                     if [[ "$url" != "http"* ]]; then
-                        url="https://www.bilibili.com${url}" # 假設是 Bilibili
+                        local domain=$(echo "$input_url" | grep -oP 'https?://[^/]+')
+                        if [ -n "$domain" ]; then
+                            url="${domain}${url}"
+                        else
+                            url="https://www.bilibili.com${url}"
+                            log_message "WARNING" "無法從原始URL推斷域名，預設為 Bilibili 補全相對路徑: $url"
+                        fi
                     fi
                     item_urls+=("$url");
                 fi;
-            done <<< "$(echo "$item_list_json" | jq -c '. // empty | select(type == "object" and (.url != null))')" # <<< 修正 jq 語法
+            done <<< "$(echo "$item_list_json" | jq -c '. // empty | select(type == "object" and (.url != null))')"
             item_count=${#item_urls[@]};
             if [ "$item_count" -eq 0 ]; then log_message "WARNING" "透過 JQ 解析，未找到有效的 URL 項目。"; fi
         else log_message "WARNING" "dump-json 成功，但輸出為空。"; fi
@@ -2932,28 +2948,40 @@ process_other_site_media_playlist_no_normalize() {
 
     if [ "$item_count" -gt 1 ]; then
         log_message "INFO" "檢測到列表 ($item_count 項，無標準化)。"; echo -e "${CYAN}檢測到列表 ($item_count 項)。開始批量處理 (無標準化)...${RESET}";
-        local ci=0; local sc=0; local item_url_from_list
+        local ci=0; local success_count=0; local fail_count=0; local item_url_from_list # << 同上修改
         for item_url_from_list in "${item_urls[@]}"; do
             ci=$((ci + 1));
-            # <<< 修改：傳遞選好的模板作為參數 >>>
+            # <<< 修改：傳遞模板參數，模式為 playlist_mode >>>
             if _process_single_other_site_no_normalize "$item_url_from_list" "$choice_format" "$ci" "$item_count" "playlist_mode" "$template_playlist" "$template_single"; then
-                sc=$((sc + 1));
+                success_count=$((success_count + 1)); # << 更新
+            else
+                fail_count=$((fail_count + 1));     # << 更新
             fi
             echo "";
         done
-        echo -e "${GREEN}列表處理完成 (無標準化)！共 $ci 項，成功 $sc 項。${RESET}"; log_message "SUCCESS" "列表 $input_url (無標準化) 完成！共 $ci 項，成功 $sc 項。"
-        # 播放列表的總結通知 (目前無)
-    else
+        # --- 批量處理控制台總結 ---
+        echo -e "${GREEN}列表處理完成 (無標準化)！共 $ci 項，成功 $success_count 項，失敗 $fail_count 項。${RESET}"; # << 使用新變數
+        log_message "SUCCESS" "列表 $input_url (無標準化) 完成！共 $ci 項，成功 $success_count 項，失敗 $fail_count 項。"
+
+        # --- <<< 新增：批量處理後發送總結通知 >>> ---
+        local ovr=0
+        if [ "$fail_count" -gt 0 ]; then ovr=1; fi
+        local notification_title="媒體處理器：通用列表完成 (無標準化)" # << 標題區分
+        local summary_msg="通用列表處理完成 ($success_count/$ci 成功)"
+        _send_termux_notification "$ovr" "$notification_title" "$summary_msg" ""
+        # --- 通知結束 ---
+
+    else # 處理單個項目
         if [ "$item_count" -eq 1 ]; then
             log_message "INFO" "檢測到 1 項，按單個處理 (無標準化)。"
             echo -e "${YELLOW}檢測到 1 項，按單個處理 (無標準化)...${RESET}";
-            input_url=${item_urls[0]}; # 使用從列表獲取的 URL
+            input_url=${item_urls[0]};
         else
             log_message "INFO" "未檢測到有效列表或無法解析，按單個處理原始 URL (無標準化)。"
             echo -e "${YELLOW}未檢測到列表，按單個處理 (無標準化)...${RESET}";
-            # 使用者輸入的原始 URL input_url
         fi
-        # <<< 修改：單個處理，仍然傳遞選好的模板 >>>
+        # 單個處理，傳遞模板，不傳遞模式標記 (mode 為空)
+        # _process_single_other_site_no_normalize 內部會執行大小判斷並觸發單項通知 (如果需要)
         _process_single_other_site_no_normalize "$input_url" "$choice_format" "" "" "" "$template_playlist" "$template_single"
     fi
 }
