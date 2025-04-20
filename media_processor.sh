@@ -1,11 +1,11 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.3-beta.8" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.3-beta.9" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
-SCRIPT_UPDATE_DATE="2025-04-19" # 請根據實際情況修改此日期
+SCRIPT_UPDATE_DATE="2025-04-20" # 請根據實際情況修改此日期
 ############################################
 
 # ... 其他設定 ...
@@ -3872,7 +3872,7 @@ check_environment() {
 main_menu() {
     while true; do
         clear
-        echo -e "${CYAN}=== 整合式影音處理平台 ${SCRIPT_VERSION} ===${RESET}"
+        echo -e "${CYAN}=== 整合式影音處理平台(IAVPP) ${SCRIPT_VERSION} ===${RESET}"
         display_countdown # 保留倒數計時顯示
         echo -e "${YELLOW}請選擇主要功能分類：${RESET}"
         echo -e " 1. ${BOLD}MP3 相關處理${RESET} (YouTube/本機)"
