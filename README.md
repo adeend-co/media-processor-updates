@@ -1,9 +1,10 @@
 # media-processor-updates
 影片下載自動更新伺服器
-
+-
 腳本下載指令：
+
 git clone https://github.com/adeend-co/media-processor-updates.git
--------------------------------
+-
 安裝流程
 
 1.請先確保Termux擁有手機儲存空間之位置權限，請先運行：termux-setup-storage
