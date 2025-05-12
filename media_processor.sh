@@ -1,11 +1,11 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.3-beta.9" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.3-beta.10" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
-SCRIPT_UPDATE_DATE="2025-04-20" # 請根據實際情況修改此日期
+SCRIPT_UPDATE_DATE="2025-05-12" # 請根據實際情況修改此日期
 ############################################
 
 # ... 其他設定 ...
@@ -1428,7 +1428,7 @@ process_single_mp3_no_normalize() {
 process_single_mp4() {
     local video_url="$1"
     local mode="$2" # 接收模式參數
-    local target_sub_langs="zh-Hant,zh-TW,zh-Hans,zh-CN,zh"
+    local target_sub_langs="zh-Hant,zh-TW,zh-Hans,zh-CN,zh,zh-Hant-AAj-uoGhMZA" # （zh-Hant-AAj-uoGhMZA）ヨルシカ 影片繁中cc字幕專用
     local subtitle_options="--write-subs --sub-lang $target_sub_langs --convert-subs srt"
     local subtitle_files=()
     local temp_dir=$(mktemp -d)
@@ -1610,7 +1610,7 @@ process_single_mp4() {
 process_single_mp4_no_normalize() {
     local video_url="$1"
     local mode="$2" # 接收模式參數 (雖然此函數目前主要由 playlist 調用或單獨執行)
-    local target_sub_langs="zh-Hant,zh-TW,zh-Hans,zh-CN,zh" # 保持多語言嘗試
+    local target_sub_langs="zh-Hant,zh-TW,zh-Hans,zh-CN,zh,zh-Hant-AAj-uoGhMZA" # （zh-Hant-AAj-uoGhMZA）ヨルシカ 影片繁中cc字幕專用
     local subtitle_options="--write-subs --sub-lang $target_sub_langs --convert-subs srt"
     local subtitle_files=()
     local temp_dir=$(mktemp -d)
