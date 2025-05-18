@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.3-beta.11" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.3-beta.12" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -1606,36 +1606,34 @@ process_single_mp4() {
 #######################################################
 # 處理單一 YouTube 影片（MP4）下載與處理（無音量標準化）
 # <<< 修改 vNext：整合 Python 大小估計實現條件式通知 >>>
-# <<< 修改：更容忍無字幕導致的 yt-dlp 錯誤，調整輸出訊息 >>>
+# <<< 修改 v3：適應 yt-dlp 的自動合併行為，修正檔案判斷和 ffmpeg 輸入 >>>
 #######################################################
 process_single_mp4_no_normalize() {
     local video_url="$1"
-    local mode="$2" # 接收模式參數
+    local mode="$2"
     local target_sub_langs="zh-Hant,zh-TW,zh-Hans,zh-CN,zh,zh-Hant-AAj-uoGhMZA"
     local subtitle_options="--write-subs --sub-lang $target_sub_langs --convert-subs srt"
     local subtitle_files=()
     local temp_dir=$(mktemp -d)
-    local result=0 # 初始化結果為成功
+    local result=0
     local should_notify=false
-    local is_playlist=false # 預設不是播放列表模式
-    local video_file="" # 原始下載檔名 (yt-dlp 直接輸出的檔案)
-    local final_video="" # 最終輸出檔名 (經過字幕混流等後處理後)
+    local is_playlist=false
+    local ytdlp_final_media_file="" # yt-dlp 下載並可能合併後的最終媒體檔案
+    local final_video_with_subs="" # 加入字幕後的最終檔案
 
     if [[ "$mode" == "playlist_mode" ]]; then
         is_playlist=true
-        log_message "INFO" "MP4 無標準化：播放清單模式，單項通知將被禁用 (由播放清單總結通知處理)。"
+        log_message "INFO" "MP4 無標準化：播放清單模式，單項通知將被禁用。"
     fi
 
-    # --- 獲取基本資訊 ---
     local video_title video_id sanitized_title base_name
     echo -e "${YELLOW}正在分析媒體資訊 (MP4 無標準化)...${RESET}"
-    video_title=$(yt-dlp --get-title "$video_url" 2>/dev/null) || video_title="video_$(date +%s)" # 如果獲取失敗，給一個唯一標識
+    video_title=$(yt-dlp --get-title "$video_url" 2>/dev/null) || video_title="video_$(date +%s)"
     video_id=$(yt-dlp --get-id "$video_url" 2>/dev/null) || video_id="id_$(date +%s)"
     sanitized_title=$(echo "${video_title}" | sed 's@[/\\:*?"<>|]@_@g')
-    base_name=$(echo "${sanitized_title} [${video_id}]" | sed 's@[/\\:*?"<>|]@_@g') # 用於 yt-dlp 輸出的基礎模板部分
+    base_name=$(echo "${sanitized_title} [${video_id}]" | sed 's@[/\\:*?"<>|]@_@g')
     log_message "INFO" "MP4 無標準化 - 處理URL: $video_url, 標題: '$video_title', ID: '$video_id'"
 
-    # --- 格式設定 ---
     local format_option="bestvideo[ext=mp4][height<=1440]+bestaudio[ext=m4a]/bestvideo[ext=mp4][height<=1440]+bestaudio/best[ext=mp4][height<=1440]/best[height<=1440]/best"
     if [[ "$video_url" != *"youtube.com"* && "$video_url" != *"youtu.be"* ]]; then
         format_option="best"; subtitle_options=""; echo -e "${YELLOW}非 YouTube URL，使用 'best' 格式且不下載字幕...${RESET}";
@@ -1643,48 +1641,41 @@ process_single_mp4_no_normalize() {
     fi
     log_message "INFO" "MP4 無標準化：使用格式 '$format_option'"
 
-    # --- 使用 Python 估計大小並決定是否通知 (僅非播放清單模式) ---
     if ! $is_playlist; then
+        # ... (Python 估計大小邏輯不變) ...
         echo -e "${YELLOW}正在預估檔案大小 (使用 Python 腳本)...${RESET}"
         local estimated_size_bytes=0
         local python_estimate_output
         local python_exec=""
         if command -v python3 &> /dev/null; then python_exec="python3"; elif command -v python &> /dev/null; then python_exec="python"; fi
 
-        if [ -n "$python_exec" ] && [ -f "$PYTHON_ESTIMATOR_SCRIPT_PATH" ]; then # <<< 修正：使用 PYTHON_ESTIMATOR_SCRIPT_PATH
+        if [ -n "$python_exec" ] && [ -f "$PYTHON_ESTIMATOR_SCRIPT_PATH" ]; then
             log_message "DEBUG" "Calling Python estimator (MP4 NoNorm): $python_exec $PYTHON_ESTIMATOR_SCRIPT_PATH \"$video_url\" \"$format_option\""
             python_estimate_output=$($python_exec "$PYTHON_ESTIMATOR_SCRIPT_PATH" "$video_url" "$format_option" 2> "$temp_dir/py_estimator_mp4nn_stderr.log")
             local py_exit_code=$?
-
             if [ $py_exit_code -eq 0 ] && [[ "$python_estimate_output" =~ ^[0-9]+$ ]]; then
-                estimated_size_bytes="$python_estimate_output"
+                estimated_size_bytes="$python_estimate_output"; # ... (後續處理不變)
                 log_message "INFO" "Python 估計大小 (MP4 NoNorm): $estimated_size_bytes bytes"
                 [ ! -s "$temp_dir/py_estimator_mp4nn_stderr.log" ] && rm -f "$temp_dir/py_estimator_mp4nn_stderr.log"
             else
                 log_message "WARNING" "Python 估計失敗 (MP4 NoNorm Code: $py_exit_code, Output: '$python_estimate_output'). 詳見 $temp_dir/py_estimator_mp4nn_stderr.log"
-                echo -e "${YELLOW}警告：估計大小失敗，將禁用條件通知。${RESET}"
-                estimated_size_bytes=0
+                echo -e "${YELLOW}警告：估計大小失敗，將禁用條件通知。${RESET}"; estimated_size_bytes=0
             fi
         else
             log_message "WARNING" "找不到 Python 或估計腳本 '$PYTHON_ESTIMATOR_SCRIPT_PATH' (MP4 NoNorm)，無法估計大小。"
-            echo -e "${YELLOW}警告：找不到 Python 或估計腳本，無法估計大小。${RESET}"
-            estimated_size_bytes=0
+            echo -e "${YELLOW}警告：找不到 Python 或估計腳本，無法估計大小。${RESET}"; estimated_size_bytes=0
         fi
-
         local size_threshold_gb_mp4nn=1.0
         local size_threshold_bytes_mp4nn=$(awk "BEGIN {printf \"%d\", $size_threshold_gb_mp4nn * 1024 * 1024 * 1024}")
         log_message "INFO" "檔案大小預估 (MP4 NoNorm): $estimated_size_bytes bytes, 閾值: $size_threshold_bytes_mp4nn bytes."
         if [[ "$estimated_size_bytes" -gt "$size_threshold_bytes_mp4nn" ]]; then
-            log_message "INFO" "大小超過閾值 (MP4 NoNorm)，啟用通知。"
-            should_notify=true
+            log_message "INFO" "大小超過閾值 (MP4 NoNorm)，啟用通知。"; should_notify=true
         else
-            log_message "INFO" "大小未超過閾值 (MP4 NoNorm)，禁用通知。"
-            should_notify=false
+            log_message "INFO" "大小未超過閾值 (MP4 NoNorm)，禁用通知。"; should_notify=false
         fi
     fi
-    # --- 預估大小結束 ---
 
-    mkdir -p "$DOWNLOAD_PATH"; if [ ! -w "$DOWNLOAD_PATH" ]; then log_message "ERROR" "無法寫入下載目錄 (MP4 NoNorm)"; echo -e "${RED}錯誤：無法寫入目錄${RESET}"; result=1; goto cleanup_and_notify; fi
+    mkdir -p "$DOWNLOAD_PATH"; if [ ! -w "$DOWNLOAD_PATH" ]; then log_message "ERROR" "無法寫入下載目錄 (MP4 NoNorm)"; echo -e "${RED}錯誤：無法寫入目錄${RESET}"; result=1; goto cleanup_and_notify; fi # goto 問題
 
     echo -e "${YELLOW}處理 YouTube 影片 (無標準化)：$video_url${RESET}";
     log_message "INFO" "處理 YouTube 影片 (無標準化): $video_url";
@@ -1693,8 +1684,11 @@ process_single_mp4_no_normalize() {
         echo -e "${YELLOW}嘗試下載繁/簡/通用中文字幕...${RESET}"
     fi
 
-    echo -e "${YELLOW}開始下載影片（及嘗試字幕，音訊將重新編碼）...${RESET}"
-    local output_template="$DOWNLOAD_PATH/${base_name}.%(ext)s" # 使用之前定義的 base_name
+    echo -e "${YELLOW}開始下載影片 (yt-dlp 可能會自動合併視訊和音訊)...${RESET}"
+    # 預期 yt-dlp 輸出的最終檔案名 (不含 .%(ext)s)
+    local output_base_template_path="$DOWNLOAD_PATH/${base_name}"
+    # 實際的 output_template 給 yt-dlp，讓它加上副檔名
+    local output_template_for_ytdlp="${output_base_template_path}.%(ext)s"
 
     local yt_dlp_dl_args=(yt-dlp -f "$format_option")
     if [[ -n "$subtitle_options" ]]; then
@@ -1702,84 +1696,49 @@ process_single_mp4_no_normalize() {
         IFS=' ' read -r -a sub_opts_array <<< "$subtitle_options"
         yt_dlp_dl_args+=("${sub_opts_array[@]}")
     fi
-    # 重要：移除 --merge-output-format mp4，讓 yt-dlp 自行決定臨時檔，後續用 ffmpeg 混流
-    # yt_dlp_dl_args+=(-o "$output_template" "$video_url" --newline --progress --concurrent-fragments "$THREADS" --merge-output-format mp4)
-    # 改為先下載分離的流，如果 yt-dlp 選擇分離下載的話
-    yt_dlp_dl_args+=(-o "$output_template" "$video_url" --newline --progress --concurrent-fragments "$THREADS")
+    # 讓 yt-dlp 決定是否以及如何合併，它通常會合併成 MP4 (如果可能)
+    # 我們不再移除 --merge-output-format，讓它使用預設行為，或者明確指定 --merge-output-format mp4
+    yt_dlp_dl_args+=(-o "$output_template_for_ytdlp" --merge-output-format mp4 "$video_url" --newline --progress --concurrent-fragments "$THREADS")
 
-    log_message "DEBUG" "執行 yt-dlp 下載 (MP4 NoNorm): ${yt_dlp_dl_args[*]}"
-    # 執行下載命令，並儲存其退出碼
+    log_message "DEBUG" "執行 yt_dlp 下載 (MP4 NoNorm, 允許自動合併): ${yt_dlp_dl_args[*]}"
     "${yt_dlp_dl_args[@]}" 2> "$temp_dir/yt-dlp-nonorm.log"
     local ytdlp_download_exit_code=$?
 
-    # 無論退出碼如何，都嘗試獲取 yt-dlp 應該生成的最終合併檔名
-    # 注意：如果 yt-dlp 因為 format_option 的原因下載了分離的視訊和音訊檔，
-    # --get-filename 可能只返回視訊檔名或第一個檔案。
-    # 我們更關心的是 yt-dlp 最終合併的檔案。
-    # 通常 output_template 會是 yt-dlp 嘗試創建的最終檔案名（如果它自己合併的話）。
-    # 如果 yt-dlp 沒有合併 (例如因為我們移除了 --merge-output-format)，
-    # 我們需要自己找到視訊和音訊流。
+    # --- <<< 修改後的檔案存在性檢查 >>> ---
+    # yt-dlp 會嘗試將合併後的檔案命名為 output_base_template_path.mp4
+    ytdlp_final_media_file="${output_base_template_path}.mp4"
 
-    # 更好的做法是：檢查 output_template 指定的檔名 (去掉.%(ext)s，加上.mp4) 是否存在
-    # 或者，讓 yt-dlp 告訴我們它下載了什麼。
-    # 由於我們後面會用 ffmpeg 自己混流，所以我們先關心視訊檔和音訊檔是否下載成功。
-
-    # 簡化邏輯：我們先信任 yt-dlp 如果下載了主要內容，即使字幕失敗，也應該繼續。
-    # `video_file` 將是 yt-dlp 根據模板生成的檔案名（可能是 .mp4，也可能是其他臨時副檔名，如果它沒有合併）
-    # 這裡假設 yt-dlp 下載的最終結果是基於 output_template 的，並且如果成功，副檔名會是 .mp4 (如果它自己合併了)
-    # 或者，我們需要分別獲取視訊檔和音訊檔的路徑。
-
-    # --- <<< 修改後的檔案定位和成功判斷 >>> ---
-    # 獲取 yt-dlp 可能下載的視訊檔名 (使用 -S ext 優先選擇 mp4)
-    local downloaded_video_stream
-    downloaded_video_stream=$(yt-dlp --print filename -f "${format_option%,*/*}" -S "ext:mp4" -o "$output_template" "$video_url" 2>/dev/null | head -n 1)
-    if [ -z "$downloaded_video_stream" ]; then # 如果沒有 mp4，嘗試 mkv 或 webm
-        downloaded_video_stream=$(yt-dlp --print filename -f "${format_option%,*/*}" -S "ext:mkv,ext:webm" -o "$output_template" "$video_url" 2>/dev/null | head -n 1)
-    fi
-
-    # 獲取 yt-dlp 可能下載的音訊檔名 (優先 m4a)
-    local downloaded_audio_stream
-    downloaded_audio_stream=$(yt-dlp --print filename -f "bestaudio[ext=m4a]/bestaudio" -o "${DOWNLOAD_PATH}/${base_name}_audio.%(ext)s" "$video_url" 2>/dev/null | head -n 1)
-
-
-    if [ ! -f "$downloaded_video_stream" ] || [ ! -f "$downloaded_audio_stream" ]; then
-        # 如果視訊流或音訊流任一不存在，則認為下載失敗
-        log_message "ERROR" "影片(無標準化)下載失敗。主要視訊流 ('$downloaded_video_stream') 或音訊流 ('$downloaded_audio_stream') 未找到。yt-dlp 下載退出碼: $ytdlp_download_exit_code. 詳見 $temp_dir/yt-dlp-nonorm.log";
-        echo -e "${RED}錯誤：影片下載核心檔案失敗！視訊或音訊流未找到。${RESET}";
-        [ -s "$temp_dir/yt-dlp-nonorm.log" ] && cat "$temp_dir/yt-dlp-nonorm.log"; # 只有在日誌非空時顯示
+    if [ ! -f "$ytdlp_final_media_file" ]; then
+        # 如果 yt-dlp 生成的最終合併檔案不存在
+        log_message "ERROR" "影片(無標準化)下載失敗。預期的最終媒體檔案 '$ytdlp_final_media_file' 未找到。yt-dlp 下載退出碼: $ytdlp_download_exit_code. 詳見 $temp_dir/yt-dlp-nonorm.log";
+        echo -e "${RED}錯誤：影片下載核心檔案失敗！預期的媒體檔案未找到。${RESET}";
+        [ -s "$temp_dir/yt-dlp-nonorm.log" ] && cat "$temp_dir/yt-dlp-nonorm.log";
         result=1;
     elif [ $ytdlp_download_exit_code -ne 0 ]; then
-        # 視訊和音訊流都存在，但是 yt-dlp 返回了非零退出碼。
-        # 這很可能是因為字幕問題。我們將記錄一個警告，但繼續處理。
-        log_message "WARNING" "影片(無標準化)主要流已下載 ('$downloaded_video_stream', '$downloaded_audio_stream')，但 yt-dlp 回報錯誤 (代碼: $ytdlp_download_exit_code)。可能是字幕問題。將繼續處理。詳見 $temp_dir/yt-dlp-nonorm.log";
-        echo -e "${YELLOW}警告：影片核心檔案已下載，但 yt-dlp 可能因字幕等問題回報錯誤。將嘗試繼續處理。${RESET}";
-        result=0 # 關鍵：即使有yt-dlp錯誤，只要主要流存在，就認為核心下載成功
+        # 檔案存在，但 yt-dlp 返回非零退出碼 (可能是字幕問題)
+        log_message "WARNING" "影片(無標準化) '$ytdlp_final_media_file' 已下載，但 yt-dlp 回報錯誤 (代碼: $ytdlp_download_exit_code)。可能是字幕問題。將繼續處理。詳見 $temp_dir/yt-dlp-nonorm.log";
+        echo -e "${YELLOW}警告：影片已下載，但 yt-dlp 可能因字幕等問題回報錯誤。將嘗試繼續處理。${RESET}";
+        result=0 # 核心下載成功
     else
-        # 視訊和音訊流都存在，且 yt-dlp 退出碼為 0 (最理想情況)
-        echo -e "${GREEN}影片及音訊流下載完成。視訊: '$(basename "$downloaded_video_stream" 2>/dev/null || echo "未知")' 音訊: '$(basename "$downloaded_audio_stream" 2>/dev/null || echo "未知")' ${RESET}";
-        log_message "INFO" "影片(無標準化)下載命令成功完成。視訊: '$downloaded_video_stream', 音訊: '$downloaded_audio_stream'"
+        # 檔案存在且退出碼為0
+        echo -e "${GREEN}影片下載及合併完成 (by yt-dlp)：$(basename "$ytdlp_final_media_file")${RESET}";
+        log_message "INFO" "影片(無標準化)下載命令成功完成：$ytdlp_final_media_file"
         result=0
     fi
 
     if [ $result -eq 1 ]; then
-        # 如果在這裡標記為失敗 (核心檔案未找到)，則清理並返回
-        # 注意: goto 問題依然存在，理想情況下應使用函數返回
-        goto cleanup_and_notify
+        goto cleanup_and_notify # goto 問題
     fi
-    # --- <<< 檔案定位和成功判斷結束 >>> ---
-
-    # `video_file` 現在應該指向下載的視訊流，我們用它進行後續處理
-    # 音訊流是 `downloaded_audio_stream`
+    # --- <<< 檔案存在性檢查結束 >>> ---
 
     # --- 字幕處理 ---
-    # 字幕檔的基礎名稱應該與 output_template 的基礎部分一致
-    local base_path_no_ext_for_subs="${DOWNLOAD_PATH}/${base_name}" # 使用 output_template 的基礎
+    # 字幕檔的基礎名稱應該與 output_base_template_path 一致
     subtitle_files=()
-    if [[ -n "$subtitle_options" ]]; then # 只有嘗試下載了字幕才需要檢查
-        log_message "INFO" "檢查字幕 (基於: ${base_path_no_ext_for_subs}.*.srt)"
+    if [[ -n "$subtitle_options" ]]; then
+        log_message "INFO" "檢查字幕 (基於: ${output_base_template_path}.*.srt)"
         IFS=',' read -r -a langs_to_check <<< "$target_sub_langs"
         for lang in "${langs_to_check[@]}"; do
-            local potential_srt_file="${base_path_no_ext_for_subs}.${lang}.srt"
+            local potential_srt_file="${output_base_template_path}.${lang}.srt"
             if [ -f "$potential_srt_file" ]; then
                  local already_added=false
                  for existing_file in "${subtitle_files[@]}"; do [[ "$existing_file" == "$potential_srt_file" ]] && { already_added=true; break; }; done
@@ -1792,50 +1751,63 @@ process_single_mp4_no_normalize() {
         if [ ${#subtitle_files[@]} -eq 0 ]; then log_message "INFO" "未找到請求的中文字幕。"; echo -e "${YELLOW}未找到請求的中文字幕。${RESET}"; fi
     fi
 
-    # --- 後處理：重新編碼音訊為 AAC 並混流 ---
-    # 最終檔名使用原始的 base_name 加上 _final.mp4，確保唯一性
-    final_video="$DOWNLOAD_PATH/${base_name}_final.mp4"
-    echo -e "${YELLOW}開始後處理，重新編碼音訊為 AAC 並與視訊、字幕混流...${RESET}"
-    local ffmpeg_args=(ffmpeg -hide_banner -loglevel error -y -i "$downloaded_video_stream" -i "$downloaded_audio_stream") # 使用下載的視訊和音訊流
-
-    for sub_file in "${subtitle_files[@]}"; do ffmpeg_args+=("-sub_charenc" "UTF-8" -i "$sub_file"); done
-    # 映射：0:v:0 (第一個輸入的視訊流), 1:a:0 (第二個輸入的音訊流)
-    ffmpeg_args+=("-c:v" "copy" "-c:a" "aac" "-b:a" "256k" "-ar" "44100" "-map" "0:v:0" "-map" "1:a:0")
-
-    local sub_stream_input_index=2 # 字幕輸入從第 2 個開始 (0 是視訊, 1 是音訊)
+    # --- 後處理：如果找到字幕，則將字幕混入已有的 MP4 檔案 ---
+    # 如果沒有字幕，ytdlp_final_media_file 就是最終檔案。
+    # 如果有字幕，我們需要創建一個新的帶字幕的檔案。
     if [ ${#subtitle_files[@]} -gt 0 ]; then
-         for ((i=0; i<${#subtitle_files[@]}; i++)); do
-             ffmpeg_args+=("-map" "$sub_stream_input_index:0") # 映射第 i 個字幕輸入的第 0 個流
-             ((sub_stream_input_index++))
-         done
-         ffmpeg_args+=("-c:s" "mov_text")
-         # 添加字幕語言元數據 (sub_output_stream_index 從 0 開始計數最終輸出中的字幕流)
-         for ((i=0; i<${#subtitle_files[@]}; i++)); do
-             local sub_lang_code=$(basename "${subtitle_files[$i]}" | rev | cut -d'.' -f2 | rev) # 從檔名獲取語言代碼
-             local ffmpeg_lang=""; case "$sub_lang_code" in zh-Hant|zh-TW) ffmpeg_lang="zht" ;; zh-Hans|zh-CN) ffmpeg_lang="zhs" ;; zh) ffmpeg_lang="chi" ;; *) ffmpeg_lang=$(echo "$sub_lang_code" | cut -c1-3) ;; esac
-             ffmpeg_args+=("-metadata:s:s:$i" "language=$ffmpeg_lang") # :s:$i 指的是第 i 個輸出的字幕流
-         done
-    fi
-    ffmpeg_args+=("-movflags" "+faststart" "$final_video")
+        final_video_with_subs="${output_base_template_path}_with_subs.mp4" # 新的帶字幕檔名
+        echo -e "${YELLOW}開始將字幕嵌入到已下載的影片中...${RESET}"
+        # 輸入只有一個主媒體檔案 ytdlp_final_media_file
+        local ffmpeg_args=(ffmpeg -hide_banner -loglevel error -y -i "$ytdlp_final_media_file")
 
-    log_message "INFO" "執行 FFmpeg 後處理 (MP4 NoNorm): ${ffmpeg_args[*]}"
-    local ffmpeg_stderr_log="$temp_dir/ffmpeg_nonorm_stderr.log"
-    if ! "${ffmpeg_args[@]}" 2> "$ffmpeg_stderr_log"; then
-        echo -e "${RED}錯誤：影片後處理（混流）失敗！詳情如下：${RESET}";
-        [ -s "$ffmpeg_stderr_log" ] && cat "$ffmpeg_stderr_log"; # 只有在日誌非空時顯示
-        log_message "ERROR" "影片後處理失敗 (MP4 NoNorm)。詳見 $ffmpeg_stderr_log";
-        result=1;
+        for sub_file in "${subtitle_files[@]}"; do ffmpeg_args+=("-sub_charenc" "UTF-8" -i "$sub_file"); done
+
+        # 映射：0:v (第一個輸入的所有視訊流), 0:a (第一個輸入的所有音訊流)
+        # 然後是字幕流
+        ffmpeg_args+=("-c:v" "copy" "-c:a" "copy") # 直接複製已有的視訊和音訊
+        ffmpeg_args+=("-map" "0:v" "-map" "0:a")
+
+        local sub_stream_input_index=1 # 字幕輸入從第 1 個開始 (0 是主媒體檔案)
+        for ((i=0; i<${#subtitle_files[@]}; i++)); do
+            ffmpeg_args+=("-map" "$sub_stream_input_index") # 映射第 i 個字幕輸入
+            ((sub_stream_input_index++))
+        done
+        ffmpeg_args+=("-c:s" "mov_text")
+        for ((i=0; i<${#subtitle_files[@]}; i++)); do
+            local sub_lang_code=$(basename "${subtitle_files[$i]}" | rev | cut -d'.' -f2 | rev)
+            local ffmpeg_lang=""; case "$sub_lang_code" in zh-Hant|zh-TW) ffmpeg_lang="zht" ;; zh-Hans|zh-CN) ffmpeg_lang="zhs" ;; zh) ffmpeg_lang="chi" ;; *) ffmpeg_lang=$(echo "$sub_lang_code" | cut -c1-3) ;; esac
+            ffmpeg_args+=("-metadata:s:s:$i" "language=$ffmpeg_lang")
+        done
+        ffmpeg_args+=("-movflags" "+faststart" "$final_video_with_subs")
+
+        log_message "INFO" "執行 FFmpeg 字幕嵌入 (MP4 NoNorm): ${ffmpeg_args[*]}"
+        local ffmpeg_stderr_log="$temp_dir/ffmpeg_subs_embed.log"
+        if ! "${ffmpeg_args[@]}" 2> "$ffmpeg_stderr_log"; then
+            echo -e "${RED}錯誤：字幕嵌入失敗！詳情如下：${RESET}";
+            [ -s "$ffmpeg_stderr_log" ] && cat "$ffmpeg_stderr_log";
+            log_message "ERROR" "字幕嵌入失敗 (MP4 NoNorm)。詳見 $ffmpeg_stderr_log";
+            result=1; # 嵌入失敗，但原始的 ytdlp_final_media_file (無字幕) 仍然存在
+            # 在這種情況下，我們應該將 ytdlp_final_media_file 視為最終結果（儘管無字幕）
+            # 或者標記整個過程失敗，取決於你的需求。
+            # 這裡我們選擇將字幕嵌入失敗視為整體處理的一個問題。
+        else
+            echo -e "${GREEN}字幕嵌入完成：$(basename "$final_video_with_subs")${RESET}";
+            log_message "SUCCESS" "字幕嵌入成功：$final_video_with_subs";
+            result=0;
+            rm -f "$ffmpeg_stderr_log";
+            echo -e "${YELLOW}清理原始下載的無字幕影片和字幕檔...${RESET}";
+            safe_remove "$ytdlp_final_media_file"; # 刪除無字幕版本
+            for sub_file in "${subtitle_files[@]}"; do safe_remove "$sub_file"; done;
+            # final_video_with_subs 現在是我們的最終產品
+        fi
     else
-        echo -e "${GREEN}影片後處理完成：$(basename "$final_video")${RESET}";
-        log_message "SUCCESS" "影片(無標準化)處理完成：$final_video";
-        result=0;
-        rm -f "$ffmpeg_stderr_log";
-        echo -e "${YELLOW}清理原始下載的視訊和音訊流...${RESET}";
-        safe_remove "$downloaded_video_stream";
-        safe_remove "$downloaded_audio_stream";
-        for sub_file in "${subtitle_files[@]}"; do safe_remove "$sub_file"; done;
-        echo -e "${GREEN}清理完成，最終檔案：$(basename "$final_video")${RESET}";
+        # 沒有字幕需要嵌入，所以 yt-dlp 生成的檔案就是最終檔案
+        log_message "INFO" "未找到字幕或無需嵌入字幕。'$ytdlp_final_media_file' 即為最終檔案。"
+        echo -e "${GREEN}影片無需額外字幕處理。最終檔案：$(basename "$ytdlp_final_media_file")${RESET}"
+        final_video_with_subs="$ytdlp_final_media_file" # 讓後續的通知和報告使用這個變數
+        result=0 # 保持成功狀態
     fi
+
 
 # <<< 標籤用於跳轉 >>>
 : cleanup_and_notify
@@ -1843,44 +1815,56 @@ process_single_mp4_no_normalize() {
     # --- 清理臨時檔案 ---
     log_message "INFO" "清理主要臨時檔案 (MP4 NoNorm)..."
     safe_remove "$temp_dir/yt-dlp-nonorm.log"
-    safe_remove "$temp_dir/ffmpeg_nonorm_stderr.log" # 即使混流失敗也嘗試清理
+    safe_remove "$temp_dir/ffmpeg_subs_embed.log" # 即使嵌入失敗也嘗試清理
     safe_remove "$temp_dir/py_estimator_mp4nn_stderr.log"
     [ -d "$temp_dir" ] && rm -rf "$temp_dir"
 
     # --- 控制台最終報告 ---
-    if [ $result -eq 0 ]; then
-        if [ -f "$final_video" ]; then
-             echo -e "${GREEN}處理完成！影片已儲存至：${final_video}${RESET}";
-        else
-             echo -e "${RED}處理似乎已完成，但最終檔案 '$final_video' 未找到！請檢查日誌。${RESET}";
-             log_message "ERROR" "處理完成但最終檔案未找到 (MP4 NoNorm): $final_video";
-             result=1
+    # final_video_to_report 應該是 final_video_with_subs (如果嵌入了字幕)
+    # 或者 ytdlp_final_media_file (如果沒有字幕或字幕嵌入失敗但我們仍想保留無字幕版)
+    # 為了簡化，我們假設如果字幕嵌入失敗，我們仍然以 ytdlp_final_media_file 作為 "部分成功" 的結果
+    local final_file_to_report=""
+    if [ $result -eq 0 ]; then # 如果所有步驟都成功 (包括可能的字幕嵌入)
+        final_file_to_report="$final_video_with_subs"
+    elif [ -f "$ytdlp_final_media_file" ]; then # 如果字幕嵌入失敗，但原始下載的MP4還在
+        final_file_to_report="$ytdlp_final_media_file"
+        # 可以考慮將 result 修改為一個特定的 "部分成功" 狀態碼，如果需要更細緻的通知
+        echo -e "${YELLOW}警告：字幕處理可能失敗，但影片主體已下載。${RESET}"
+    fi
+
+
+    if [ -n "$final_file_to_report" ] && [ -f "$final_file_to_report" ]; then
+        if [ $result -eq 0 ]; then
+            echo -e "${GREEN}處理完成！影片已儲存至：${final_file_to_report}${RESET}";
+            log_message "SUCCESS" "處理完成 (MP4 無標準化)！影片已儲存至：$final_file_to_report";
+        else # result 可能為 1 (字幕嵌入失敗，但主要檔案存在)
+            echo -e "${YELLOW}處理完成 (可能帶有警告)！影片已儲存至：${final_file_to_report}${RESET}";
+            log_message "WARNING" "處理完成但帶有警告 (MP4 無標準化)！影片已儲存至：$final_file_to_report";
+            # 確保通知時能反映這個 "部分成功"
         fi
     else
-        echo -e "${RED}處理失敗 (MP4 無標準化)！${RESET}";
-        log_message "ERROR" "處理失敗 (MP4 無標準化)：$video_url"
-        # 如果失敗，提示原始檔可能保留
-        # 注意：downloaded_video_stream 和 downloaded_audio_stream 在混流成功後會被刪除
-        # 所以這裡只在 result=1 (混流失敗或更早失敗) 且檔案存在時提示
-        if [ -f "$downloaded_video_stream" ]; then
-            echo -e "${YELLOW}原始下載的視訊流可能保留在：$downloaded_video_stream ${RESET}"
-        fi
-        if [ -f "$downloaded_audio_stream" ]; then
-            echo -e "${YELLOW}原始下載的音訊流可能保留在：$downloaded_audio_stream ${RESET}"
-        fi
+        echo -e "${RED}處理失敗 (MP4 無標準化)！最終檔案未找到。${RESET}";
+        log_message "ERROR" "處理失敗 (MP4 無標準化)：$video_url. 最終檔案未找到。";
+        result=1 # 確保 result 為失敗狀態
     fi
+
 
     # --- 條件式通知 (僅非播放清單模式) ---
     if ! $is_playlist && $should_notify; then
         local notification_title="媒體處理器：MP4 無標準化"
         local base_msg_notify="處理影片 '$sanitized_title'"
-        local final_path_notify=""
-        if [ $result -eq 0 ] && [ -f "$final_video" ]; then
-            final_path_notify="$final_video"
-        elif [ -f "$downloaded_video_stream" ]; then # 如果失敗但視訊流存在
-            final_path_notify="$downloaded_video_stream"
+        local path_for_notify="$final_file_to_report" # 使用上面確定的 final_file_to_report
+
+        # 如果 result 不是嚴格的 0 (例如字幕嵌入失敗)，但我們有檔案，可以調整通知
+        local effective_result_for_notify=$result
+        if [ $result -ne 0 ] && [ -n "$final_file_to_report" ] && [ -f "$final_file_to_report" ]; then
+            # 如果有檔案但 result 不是 0 (例如字幕失敗)，通知可以報成功但帶有提示
+            # 或者，如果你的 _send_termux_notification 能處理自訂訊息，可以在那裡調整
+            # 這裡我們暫時仍用原始 result，但 _send_termux_notification 的訊息可以更通用
+             log_message "INFO" "為通知準備：結果非0但檔案存在，通知將反映這一點。"
+             # base_msg_notify="處理影片 '$sanitized_title' (可能部分成功)" # 可選
         fi
-        _send_termux_notification "$result" "$notification_title" "$base_msg_notify" "$final_path_notify"
+        _send_termux_notification "$effective_result_for_notify" "$notification_title" "$base_msg_notify" "$path_for_notify"
     fi
     # --- 通知結束 ---
 
