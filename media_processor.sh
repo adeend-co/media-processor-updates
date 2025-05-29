@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.3-beta.13" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.3-beta.14" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -3841,11 +3841,11 @@ view_log() {
 }
 
 ############################################
-# <<< 修改：關於訊息 (顯示 Git 版本) >>>
+# <<< 修改：關於訊息 (顯示 Git 版本、環境狀態、yt-dlp版本) >>>
 ############################################
 show_about_enhanced() {
     clear
-    echo -e "${CYAN}=== 關於 整合式影音處理平台 ===${RESET}"
+    echo -e "${CYAN}=== 整合式影音處理平台 ===${RESET}"
     echo -e "---------------------------------------------"
 
     # --- 嘗試從 Git 獲取版本信息 ---
@@ -3853,39 +3853,109 @@ show_about_enhanced() {
     local git_commit_hash=""
     local git_tag=""
     if command -v git &> /dev/null && [ -d "$SCRIPT_DIR/.git" ]; then
-        # 獲取最近的 tag
         git_tag=$(git -C "$SCRIPT_DIR" describe --tags --abbrev=0 2>/dev/null)
-        # 獲取當前 commit 的短 hash
         git_commit_hash=$(git -C "$SCRIPT_DIR" log -1 --pretty=%h 2>/dev/null)
         if [ -n "$git_tag" ]; then
             git_version_info="$git_tag"
             if [ -n "$git_commit_hash" ]; then
-                 # 檢查 tag 是否指向當前 commit
                  local commit_for_tag=$(git -C "$SCRIPT_DIR" rev-list -n 1 "$git_tag" 2>/dev/null)
                  local current_head=$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null)
                  if [[ "$commit_for_tag" != "$current_head" ]]; then
-                      git_version_info+=" (+${git_commit_hash})" # 標記非 tag 的最新 commit
+                      git_version_info+=" (+${git_commit_hash})"
                  fi
             fi
         elif [ -n "$git_commit_hash" ]; then
-             git_version_info="commit ${git_commit_hash}" # 如果沒有 tag，顯示 commit hash
+             git_version_info="commit ${git_commit_hash}"
         fi
     fi
-    # 如果無法從 Git 獲取，則使用腳本內定義的版本
     local display_version="${git_version_info:-$SCRIPT_VERSION}"
 
     echo -e "${BOLD}版本:${RESET}        ${GREEN}${display_version}${RESET}"
     if [ -n "$SCRIPT_UPDATE_DATE" ]; then echo -e "${BOLD}更新日期:${RESET}    ${GREEN}${SCRIPT_UPDATE_DATE}${RESET}"; fi
-
-    # --- 腳本 SHA256 (可以保留作為參考，但 Git hash 更可靠) ---
     local current_script_checksum="無法計算"
     if command -v sha256sum &> /dev/null && [ -f "$SCRIPT_INSTALL_PATH" ]; then current_script_checksum=$(sha256sum "$SCRIPT_INSTALL_PATH" | awk '{print $1}'); fi
     echo -e "${BOLD}主腳本 SHA256:${RESET} ${YELLOW}${current_script_checksum}${RESET}"
     echo -e "---------------------------------------------"
 
-    echo -e "${GREEN}主要功能特色：${RESET}"
+    # --- 新增：腳本環境狀態 ---
+    echo -e "${CYAN}--- 腳本環境狀態 ---${RESET}"
+
+    # 輔助函數顯示狀態
+    display_status() {
+        local item_name="$1"
+        local is_ok="$2" # true or false
+        local detail="$3"  # e.g., version or path
+
+        if [ "$is_ok" = true ]; then
+            echo -e "${BOLD}${item_name}:${RESET}\t${GREEN}已安裝 / 已獲取${RESET} ${GREEN}${detail}${RESET}"
+        else
+            echo -e "${BOLD}${item_name}:${RESET}\t${RED}未安裝 / 未獲取${RESET} ${RED}${detail}${RESET}"
+        fi
+    }
+
+    local tool_status py_status ytdlp_status aria2c_status
+    local py_exe py_version ytdlp_version
+
+    # 檢查核心工具 (不含 python, yt-dlp, aria2c，它們單獨處理)
+    echo -e "${YELLOW}核心工具:${RESET}"
+    for tool in ffmpeg ffprobe jq curl; do
+        tool_status=false; command -v "$tool" &> /dev/null && tool_status=true
+        display_status "  $tool" "$tool_status" ""
+    done
+
+    # 檢查 Python
+    py_status=false; py_exe=""
+    if command -v python3 &> /dev/null; then py_exe="python3"; py_status=true;
+    elif command -v python &> /dev/null; then py_exe="python"; py_status=true; fi
+    if $py_status; then
+        py_version=$($py_exe --version 2>&1 | sed 's/Python //') # 獲取並清理版本號
+        display_status "  Python" true "(版本: $py_version)"
+    else
+        display_status "  Python" false ""
+    fi
+
+    # 檢查 yt-dlp
+    ytdlp_status=false; ytdlp_version="N/A"
+    if command -v yt-dlp &> /dev/null; then
+        ytdlp_status=true
+        ytdlp_version=$(yt-dlp --version 2>/dev/null || echo "無法獲取")
+    fi
+    display_status "  yt-dlp" "$ytdlp_status" "(版本: $ytdlp_version)"
+    
+    # 檢查 aria2c (Bilibili 加速下載)
+    aria2c_status=false
+    command -v aria2c &> /dev/null && aria2c_status=true
+    display_status "  aria2c" "$aria2c_status" "(用於 Bilibili 加速)"
+
+    # 檢查權限
+    echo -e "\n${YELLOW}權限與路徑:${RESET}"
+    if [[ "$OS_TYPE" == "termux" ]]; then
+        local termux_storage_ok=false
+        if [ -d "/sdcard" ] && touch "/sdcard/.termux-test-write-about" 2>/dev/null; then
+            termux_storage_ok=true
+            rm -f "/sdcard/.termux-test-write-about" # 清理測試檔案
+        fi
+        display_status "  Termux 儲存權限" "$termux_storage_ok" ""
+    fi
+
+    local dl_path_ok=false
+    local dl_path_display="$DOWNLOAD_PATH"
+    if [ -z "$dl_path_display" ]; then dl_path_display="(未設定)"; fi
+    if [ -n "$DOWNLOAD_PATH" ] && [ -d "$DOWNLOAD_PATH" ] && [ -w "$DOWNLOAD_PATH" ]; then dl_path_ok=true; fi
+    display_status "  下載目錄可寫" "$dl_path_ok" "$dl_path_display"
+
+    local temp_dir_ok=false
+    local temp_dir_display="$TEMP_DIR"
+    if [ -z "$temp_dir_display" ]; then temp_dir_display="(未設定)"; fi
+    if [ -n "$TEMP_DIR" ] && [ -d "$TEMP_DIR" ] && [ -w "$TEMP_DIR" ]; then temp_dir_ok=true; fi
+    display_status "  臨時目錄可寫" "$temp_dir_ok" "$temp_dir_display"
+    echo -e "---------------------------------------------"
+    # --- 環境狀態結束 ---
+
+
+    echo -e "\n${GREEN}主要功能特色：${RESET}"
     echo -e "- YouTube 影音下載 (MP3/MP4/MKV)"
-    echo -e "- 通用網站媒體下載 (MP3/MP4, 實驗性)"
+    echo -e "- 通用網站媒體下載 (MP3/MP4, 實驗性, Bilibili 使用 aria2c 加速)"
     echo -e "- 音量標準化 (EBU R128) / 無標準化選項"
     echo -e "- YouTube 字幕處理 (下載/轉換/嵌入)"
     echo -e "- 播放清單批次處理 (YouTube/通用實驗性)"
