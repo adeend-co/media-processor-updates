@@ -1,11 +1,11 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.3-beta.12" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.3-beta.13" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
-SCRIPT_UPDATE_DATE="2025-05-18" # 請根據實際情況修改此日期
+SCRIPT_UPDATE_DATE="2025-05-29" # 請根據實際情況修改此日期
 ############################################
 
 # ... 其他設定 ...
@@ -2349,46 +2349,47 @@ process_single_mkv() {
 ############################################
 # 輔助函數：處理單一通用網站媒體項目 (含標準化)
 # <<< 修改 v2.5.x：接收輸出模板參數以處理 Bilibili 長檔名 >>>
+# <<< 新增修改：針對 Bilibili 使用 aria2c 並優化參數 (標準化版本) >>>
 ############################################
 _process_single_other_site() {
     # --- 接收參數 ---
     local item_url="$1"; local choice_format="$2"; local item_index="$3"; local total_items="$4"
     local mode="$5"
-    # <<< 新增參數：接收來自入口函數選定的模板 >>>
-    local output_template_playlist="$6"
+    local output_template_playlist="$6" 
     local output_template_single_item="$7"
 
     # --- 局部變數 ---
-    local temp_dir=$(mktemp -d); local thumbnail_file=""; local main_media_file=""; local base_name=""
+    local temp_dir=$(mktemp -d); local thumbnail_file=""; local main_media_file="";
     local result=0; local output_final_file=""; local artist_name="[不明]"; local album_artist_name="[不明]"
     local progress_prefix=""; if [ -n "$item_index" ] && [ -n "$total_items" ]; then progress_prefix="[$item_index/$total_items] "; fi
     local should_notify=false
     local is_playlist=false
-    local final_output_template_used="" # << 記錄實際使用的成功模板
+    local final_output_template_used=""
+    local base_name_calculated_from_file="" # 用於從實際下載的檔名中提取基礎名
 
     if [[ "$mode" == "playlist_mode" ]]; then
         is_playlist=true
-        # should_notify=true # 播放列表在外部 _process*playlist 函數發送總結通知
         log_message "INFO" "通用下載 標準化：播放清單模式。"
     fi
 
-    # --- 獲取標題用於基本訊息 ---
-    local item_title sanitized_title
+    local item_title sanitized_title video_id
     item_title=$(yt-dlp --get-title "$item_url" 2>/dev/null) || item_title="media_item_$(date +%s)"
+    video_id=$(yt-dlp --get-id "$item_url" 2>/dev/null) || video_id="no_id_$(date +%s)"
     sanitized_title=$(echo "${item_title}" | sed 's@[/\\:*?"<>|]@_@g')
+    log_message "DEBUG" "基礎標題: '$item_title', ID: '$video_id', 清理後: '$sanitized_title'"
 
-    # --- 預估大小 (僅單獨模式，邏輯不變) ---
-    local yt_dlp_format_string=""
-    if [ "$choice_format" = "mp4" ]; then yt_dlp_format_string="bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best";
-    else yt_dlp_format_string="bestaudio/best"; fi
+    # --- 預估大小 (僅單獨模式) ---
+    local yt_dlp_format_string_for_estimate=""
+    if [ "$choice_format" = "mp4" ]; then yt_dlp_format_string_for_estimate="bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best";
+    else yt_dlp_format_string_for_estimate="bestaudio/best"; fi # 標準化前獲取最佳音訊
 
     if ! $is_playlist; then
-        # ... (預估大小和判斷 should_notify 的邏輯保持不變) ...
         echo -e "${YELLOW}正在預估檔案大小以決定是否通知...${RESET}"
         local estimated_size_bytes=0
         local size_list estimate_exit_code
-        size_list=$(yt-dlp --no-warnings --print '%(filesize,filesize_approx)s' -f "$yt_dlp_format_string" "$item_url" 2>"$temp_dir/yt-dlp-estimate.log")
+        size_list=$(yt-dlp --no-warnings --print '%(filesize,filesize_approx)s' -f "$yt_dlp_format_string_for_estimate" "$item_url" 2>"$temp_dir/yt-dlp-estimate.log")
         estimate_exit_code=$?
+        # ... (後續大小估計邏輯不變) ...
         log_message "DEBUG" "yt-dlp size print exit code (通用 std): $estimate_exit_code"
         log_message "DEBUG" "yt-dlp size print raw output (通用 std):\n$size_list"
         if [ "$estimate_exit_code" -eq 0 ] && [ -n "$size_list" ]; then
@@ -2411,101 +2412,162 @@ _process_single_other_site() {
             should_notify=false
         fi
     fi
-    # --- 預估結束 ---
-
+    
     echo -e "${CYAN}${progress_prefix}處理項目: $item_url (${choice_format})${RESET}"; log_message "INFO" "${progress_prefix}處理項目: $item_url (格式: $choice_format)"
     mkdir -p "$DOWNLOAD_PATH"; if [ ! -w "$DOWNLOAD_PATH" ]; then log_message "ERROR" "...無法寫入目錄..."; echo -e "${RED}錯誤：無法寫入目錄${RESET}"; result=1; rm -rf "$temp_dir"; return 1; fi
 
     # --- 下載 ---
-    local yt_dlp_extra_args=(--newline --progress --concurrent-fragments "$THREADS" --no-simulate --no-abort-on-error)
-    # <<< 移除固定的模板定義 >>>
-    # local output_template=...
-    # local output_template_single=...
     local download_success=false
+    local actual_yt_dlp_args=()
+    local chosen_output_template=""
 
     echo -e "${YELLOW}${progress_prefix}開始下載主檔案...${RESET}"
-    # --- 嘗試模板1 (播放列表模板) ---
-    # <<< 使用傳入的參數 output_template_playlist >>>
-    local yt_dlp_cmd_args1=(yt-dlp -f "$yt_dlp_format_string" "${yt_dlp_extra_args[@]}" -o "$output_template_playlist" "$item_url")
-    log_message "INFO" "${progress_prefix}執行下載 (模板1): ${yt_dlp_cmd_args1[*]}"
-    if "${yt_dlp_cmd_args1[@]}" 2> "$temp_dir/yt-dlp-other1.log"; then
-        download_success=true
-        final_output_template_used="$output_template_playlist" # 記錄成功的模板
+
+### MODIFIED BLOCK START (下載邏輯) ###
+    if [[ "$item_url" == *"bilibili.com"* ]]; then
+        log_message "INFO" "檢測到 Bilibili URL (標準化流程)，將使用 aria2c 及優化參數。"
+        echo -e "${CYAN}${progress_prefix}檢測到 Bilibili 網站，啟用 aria2c 加速下載 (標準化流程)。${RESET}"
+        
+        local bili_format_select=""
+        if [ "$choice_format" = "mp4" ]; then
+            bili_format_select="bestvideo[height<=1440][vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080][vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/bestvideo[vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+        else # mp3 (下載最佳音訊給 normalize_audio)
+            bili_format_select="bestaudio[ext=m4a]/bestaudio/best"
+        fi
+
+        actual_yt_dlp_args=(
+            yt-dlp
+            --no-warnings
+            --no-simulate
+            --newline
+            --downloader aria2c
+            --downloader-args "aria2c:-x4 -s4 -k1M --retry-wait=5 --max-tries=0 --lowest-speed-limit=10K"
+            --retries infinite
+            --fragment-retries infinite
+            --add-metadata
+            --embed-thumbnail
+            -f "$bili_format_select"
+        )
+        if [ "$choice_format" = "mp4" ]; then
+            actual_yt_dlp_args+=(--merge-output-format mp4)
+        # 注意：對於 MP3 標準化流程，不在此處用 yt-dlp 轉換為 MP3
+        # elif [ "$choice_format" = "mp3" ]; then
+            # NO --extract-audio --audio-format mp3 here for normalization flow
+        fi
     else
-        echo -e "${YELLOW}${progress_prefix}模板1下載失敗，嘗試模板2...${RESET}"
-        # --- 嘗試模板2 (單一項目模板) ---
-        # <<< 使用傳入的參數 output_template_single_item >>>
-        local yt_dlp_cmd_args2=(yt-dlp -f "$yt_dlp_format_string" "${yt_dlp_extra_args[@]}" -o "$output_template_single_item" "$item_url")
-        log_message "INFO" "${progress_prefix}執行下載 (模板2): ${yt_dlp_cmd_args2[*]}"
-        if "${yt_dlp_cmd_args2[@]}" 2> "$temp_dir/yt-dlp-other2.log"; then
-            download_success=true
-            final_output_template_used="$output_template_single_item" # 記錄成功的模板
-        else
-             log_message "ERROR" "...下載失敗 (通用 std)..."; echo -e "${RED}錯誤：下載失敗！${RESET}";
-             [ -f "$temp_dir/yt-dlp-other2.log" ] && cat "$temp_dir/yt-dlp-other2.log" || cat "$temp_dir/yt-dlp-other1.log"
-             result=1
+        # 非 Bilibili 網站，使用通用參數
+        local generic_format_select=""
+        if [ "$choice_format" = "mp4" ]; then
+            generic_format_select="bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best"
+        else # mp3 (下載最佳音訊給 normalize_audio)
+            generic_format_select="bestaudio/best"
+        fi
+
+        actual_yt_dlp_args=(
+            yt-dlp
+            -f "$generic_format_select"
+            --newline 
+            --progress 
+            --concurrent-fragments "$THREADS" 
+            --no-simulate 
+            --no-abort-on-error
+        )
+        if [ "$choice_format" = "mp4" ]; then
+             actual_yt_dlp_args+=(--merge-output-format mp4)
+        # 注意：對於 MP3 標準化流程，不在此處用 yt-dlp 轉換為 MP3
         fi
     fi
 
-    # --- 定位主檔案 (僅在下載成功時) ---
+    if $is_playlist; then
+        chosen_output_template="$output_template_playlist"
+    else
+        chosen_output_template="$output_template_single_item"
+    fi
+    
+    actual_yt_dlp_args+=(-o "$chosen_output_template")
+    actual_yt_dlp_args+=("$item_url")
+
+    log_message "INFO" "${progress_prefix}執行下載 (標準化流程): ${actual_yt_dlp_args[*]}"
+    if "${actual_yt_dlp_args[@]}" 2> "$temp_dir/yt-dlp-other-std.log"; then
+        download_success=true
+        final_output_template_used="$chosen_output_template"
+    else
+        log_message "ERROR" "...下載失敗 (標準化流程)..."; echo -e "${RED}錯誤：下載失敗！${RESET}";
+        cat "$temp_dir/yt-dlp-other-std.log"
+        result=1
+    fi
+### MODIFIED BLOCK END (下載邏輯) ###
+
     if $download_success; then
         echo -e "${YELLOW}${progress_prefix}定位主檔案...${RESET}"
-        # <<< 使用 --print filename 和記錄的 final_output_template_used >>>
-        local get_filename_args=(yt-dlp --no-warnings --print filename -f "$yt_dlp_format_string" -o "$final_output_template_used" "$item_url")
-        log_message "DEBUG" "執行命令獲取檔名: ${get_filename_args[*]}"
-        local actual_download_path=$( "${get_filename_args[@]}" | tr -d '\n' )
+        local format_for_getfn="" # 需要和下載時的 format 選擇邏輯一致
+        if [[ "$item_url" == *"bilibili.com"* ]]; then
+             if [ "$choice_format" = "mp4" ]; then format_for_getfn="bestvideo[height<=1440][vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080][vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/bestvideo[vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best";
+             else format_for_getfn="bestaudio[ext=m4a]/bestaudio/best"; fi
+        else
+             if [ "$choice_format" = "mp4" ]; then format_for_getfn="bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best";
+             else format_for_getfn="bestaudio/best"; fi
+        fi
+
+        local yt_dlp_getfn_args=(yt-dlp --no-warnings --print filename -f "$format_for_getfn" -o "$final_output_template_used" "$item_url")
+        local actual_download_path=$( "${yt_dlp_getfn_args[@]}" | tr -d '\n' )
         local getfn_exit_code=$?
-        log_message "DEBUG" "獲取檔名命令退出碼: $getfn_exit_code, 獲取的路徑: '$actual_download_path'"
+        log_message "DEBUG" "獲取檔名命令(標準化流程)退出碼: $getfn_exit_code, 獲取的路徑: '$actual_download_path'"
 
         if [ $getfn_exit_code -eq 0 ] && [ -n "$actual_download_path" ] && [ -f "$actual_download_path" ]; then
             main_media_file="$actual_download_path"
             log_message "INFO" "${progress_prefix}找到主檔案: $main_media_file";
-            local media_dir=$(dirname "$main_media_file")
-            local base_filename=$(basename "$main_media_file")
-            base_name="${base_filename%.*}" # << 更新 base_name
-            log_message "DEBUG" "計算出的 Base Name: [$base_name]"
-            result=0 # 確保成功
+            # 從實際檔案路徑計算 base_name_calculated_from_file (不含副檔名)
+            base_name_calculated_from_file=$(basename "$main_media_file" | sed 's/\.[^.]*$//')
+            log_message "DEBUG" "從檔案計算出的 Base Name: [$base_name_calculated_from_file]"
+            result=0 
         else
             log_message "ERROR" "...找不到主檔案 (通用 std)..."; echo -e "${RED}錯誤：找不到主檔案！${RESET}";
             result=1
         fi
     else
-        # download_success 為 false，result 已為 1
          log_message "DEBUG" "下載標記為失敗，跳過檔案定位。"
     fi
 
     # --- 下載縮圖 (僅在定位檔案成功時) ---
     if [ $result -eq 0 ]; then
         echo -e "${YELLOW}${progress_prefix}嘗試下載縮圖...${RESET}"
-        # 確保 base_name 已被設置
-        if [ -n "$base_name" ]; then
-            local base_name_with_path="${media_dir}/${base_name}" # << 使用計算出的路徑
-            local thumb_dl_template="${base_name_with_path}.%(ext)s"
+        if [ -n "$base_name_calculated_from_file" ]; then # 使用從檔案計算的基礎名
+            local media_dir=$(dirname "$main_media_file")
+            # 縮圖模板使用計算出的基礎名，確保與主檔案名一致（除了副檔名）
+            local thumb_dl_template="${media_dir}/${base_name_calculated_from_file}.%(ext)s"
             log_message "DEBUG" "嘗試使用縮圖模板: $thumb_dl_template"
+            
+            # yt-dlp --write-thumbnail 會下載並嘗試使用 base_name_calculated_from_file.<actual_thumb_ext> 這樣的檔名
             if ! yt-dlp --no-warnings --skip-download --write-thumbnail -o "$thumb_dl_template" "$item_url" 2> "$temp_dir/yt-dlp-thumb.log"; then
                 log_message "WARNING" "...下載縮圖指令失敗或無縮圖，詳見 $temp_dir/yt-dlp-thumb.log"
             fi
-
-            # 查找縮圖 (邏輯不變)
-            thumbnail_file=$(find "$media_dir" -maxdepth 1 -type f -iname "${base_name}.*" \
+            # 查找縮圖 (使用計算出的基礎名)
+            thumbnail_file=$(find "$media_dir" -maxdepth 1 -type f -iname "${base_name_calculated_from_file}.*" \
                              \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.webp" \) \
                              -print -quit)
             if [ -n "$thumbnail_file" ]; then log_message "INFO" "...找到縮圖: $thumbnail_file";
-            else log_message "WARNING" "...在下載目錄中未找到縮圖檔案 (jpg/jpeg/png/webp)。"; fi
+            else log_message "WARNING" "...在下載目錄中未找到縮圖檔案 (jpg/jpeg/png/webp) 匹配基礎名: ${base_name_calculated_from_file}"; fi
         else
-            log_message "WARNING" "Base name 未設定，跳過縮圖下載和查找。"
+            log_message "WARNING" "Base name (base_name_calculated_from_file) 未設定，跳過縮圖下載和查找。"
         fi
     fi
 
     # --- 處理邏輯 (MP3 或 MP4) (僅在成功時執行) ---
     if [ $result -eq 0 ]; then
+        local media_output_dir=$(dirname "$main_media_file") # 獲取實際下載檔案的目錄
+
         if [ "$choice_format" = "mp3" ]; then
-            output_final_file="${media_dir}/${base_name}_normalized.mp3";
-            local normalized_temp="$temp_dir/temp_normalized.mp3"
+            # 最終輸出檔名基於計算出的基礎名和實際目錄
+            output_final_file="${media_output_dir}/${base_name_calculated_from_file}_normalized.mp3";
+            local normalized_temp_audio_for_mp3="$temp_dir/temp_normalized_for_mp3.mp3" # 臨時標準化後的 MP3
+            
             echo -e "${YELLOW}${progress_prefix}開始標準化 (MP3)...${RESET}"
-            if normalize_audio "$main_media_file" "$normalized_temp" "$temp_dir" false; then
-                echo -e "${YELLOW}${progress_prefix}處理最終 MP3...${RESET}"
-                local ffmpeg_embed_args=(ffmpeg -y -i "$normalized_temp")
+            # normalize_audio 的第二個參數是 *最終* 標準化音訊的輸出位置 (mp3 for mp3, m4a for video)
+            # 所以這裡我們讓它輸出到一個臨時的 MP3，然後再加入封面
+            if normalize_audio "$main_media_file" "$normalized_temp_audio_for_mp3" "$temp_dir" false; then # false 表示是音訊
+                echo -e "${YELLOW}${progress_prefix}處理最終 MP3 (加入封面與元數據)...${RESET}"
+                local ffmpeg_embed_args=(ffmpeg -y -i "$normalized_temp_audio_for_mp3")
                 if [ -n "$thumbnail_file" ] && [ -f "$thumbnail_file" ]; then
                     ffmpeg_embed_args+=(-i "$thumbnail_file" -map 0:a -map 1:v -c copy -id3v2_version 3 -metadata "artist=$artist_name" -metadata "album_artist=$album_artist_name" -metadata:s:v title="Album cover" -metadata:s:v comment="Cover (front)" -disposition:v attached_pic)
                 else
@@ -2514,44 +2576,46 @@ _process_single_other_site() {
                 ffmpeg_embed_args+=("$output_final_file")
                 if ! "${ffmpeg_embed_args[@]}" > /dev/null 2>&1; then
                     log_message "ERROR" "...生成 MP3 失敗 (通用 std)..."; echo -e "${RED}錯誤：生成 MP3 失敗！${RESET}";
-                    result=1; # 嵌入失敗
+                    result=1; 
                 else
-                     result=0; # 成功
-                     safe_remove "$normalized_temp"
+                     result=0; 
+                     safe_remove "$normalized_temp_audio_for_mp3" # 清理臨時標準化後的MP3
                 fi
             else result=1; log_message "ERROR" "標準化失敗 (通用 MP3 std)"; fi
+
         elif [ "$choice_format" = "mp4" ]; then
-            output_final_file="${media_dir}/${base_name}_normalized.mp4";
-            local normalized_audio_m4a="$temp_dir/audio_normalized.m4a"
-            echo -e "${YELLOW}${progress_prefix}開始標準化 (提取音訊)...${RESET}"
-            if normalize_audio "$main_media_file" "$normalized_audio_m4a" "$temp_dir" true; then
-                echo -e "${YELLOW}${progress_prefix}混流影片與音訊...${RESET}"
-                local ffmpeg_mux_args=(ffmpeg -y -i "$main_media_file" -i "$normalized_audio_m4a" -c:v copy -c:a aac -b:a 256k -ar 44100 -map 0:v:0 -map 1:a:0 -movflags +faststart "$output_final_file")
+            output_final_file="${media_output_dir}/${base_name_calculated_from_file}_normalized.mp4";
+            local normalized_audio_m4a_for_mp4="$temp_dir/audio_normalized_for_mp4.m4a" # 標準化後的音訊(M4A)
+            
+            echo -e "${YELLOW}${progress_prefix}開始標準化 (提取音訊為 M4A)...${RESET}"
+            # normalize_audio 的 is_video 參數為 true，所以它會輸出 M4A
+            if normalize_audio "$main_media_file" "$normalized_audio_m4a_for_mp4" "$temp_dir" true; then # true 表示是影片
+                echo -e "${YELLOW}${progress_prefix}混流影片與標準化音訊...${RESET}"
+                local ffmpeg_mux_args=(ffmpeg -y -i "$main_media_file" -i "$normalized_audio_m4a_for_mp4" -c:v copy -c:a aac -b:a 256k -ar 44100 -map 0:v:0 -map 1:a:0 -movflags +faststart "$output_final_file")
                 log_message "INFO" "執行 FFmpeg 混流 (通用 std): ${ffmpeg_mux_args[*]}"
                 if ! "${ffmpeg_mux_args[@]}" > "$temp_dir/ffmpeg_mux.log" 2>&1; then
                      log_message "ERROR" "...混流 MP4 失敗 (通用 std)... 詳見 $temp_dir/ffmpeg_mux.log"; echo -e "${RED}錯誤：混流 MP4 失敗！${RESET}";
-                     result=1; # 混流失敗
+                     cat "$temp_dir/ffmpeg_mux.log"
+                     result=1; 
                 else
-                     result=0; # 成功
-                     safe_remove "$normalized_audio_m4a"
+                     result=0; 
+                     safe_remove "$normalized_audio_m4a_for_mp4" # 清理標準化後的M4A
                      rm -f "$temp_dir/ffmpeg_mux.log"
                 fi
             else result=1; log_message "ERROR" "標準化失敗 (通用 MP4 std)"; fi
         fi
-    fi # end if [ $result -eq 0 ] for processing logic
+    fi 
 
     # --- 清理 ---
     log_message "INFO" "${progress_prefix}清理 (通用 std)...";
-    # 只有在處理成功時才刪除原始檔，因為失敗時可能希望保留它
-    if [ $result -eq 0 ] && [ -f "$main_media_file" ]; then
+    if [ $result -eq 0 ] && [ -f "$main_media_file" ]; then # 處理成功才刪原始檔
         safe_remove "$main_media_file";
     fi
-    if [ -n "$thumbnail_file" ] && [ -f "$thumbnail_file" ]; then
+    if [ -n "$thumbnail_file" ] && [ -f "$thumbnail_file" ]; then # 封面通常也應該在成功後與原始檔一起清理或嵌入後清理
         safe_remove "$thumbnail_file";
     fi
-    safe_remove "$temp_dir/yt-dlp-other1.log" "$temp_dir/yt-dlp-other2.log" "$temp_dir/yt-dlp-estimate.log" "$temp_dir/yt-dlp-thumb.log" "$temp_dir/ffmpeg_mux.log"
+    safe_remove "$temp_dir/yt-dlp-other-std.log" "$temp_dir/yt-dlp-estimate.log" "$temp_dir/yt-dlp-thumb.log" "$temp_dir/ffmpeg_mux.log"
     [ -d "$temp_dir" ] && rm -rf "$temp_dir"
-    # --- 清理結束 ---
 
     # --- 控制台報告 ---
     if [ $result -eq 0 ]; then
@@ -2566,7 +2630,6 @@ _process_single_other_site() {
     else
         echo -e "${RED}${progress_prefix}處理失敗！${RESET}";
         log_message "ERROR" "${progress_prefix}處理失敗：$item_url";
-        # 如果失敗，提示原始檔可能還在 (如果下載成功但後續處理失敗)
         if [ -f "$main_media_file" ]; then echo -e "${YELLOW}原始下載檔案可能保留在：$main_media_file${RESET}"; fi
     fi
 
@@ -2577,7 +2640,7 @@ _process_single_other_site() {
         local final_path_notify=""
         if [ $result -eq 0 ] && [ -f "$output_final_file" ]; then
             final_path_notify="$output_final_file";
-        elif [ -f "$main_media_file" ]; then # 如果失敗但原始檔存在
+        elif [ -f "$main_media_file" ]; then 
              final_path_notify="$main_media_file"
         fi
         _send_termux_notification "$result" "$notification_title" "$base_msg_notify" "$final_path_notify"
@@ -2589,49 +2652,48 @@ _process_single_other_site() {
 ###########################################################
 # 輔助函數 - 處理單一通用網站媒體項目 (無音量標準化)
 # <<< 修改 v2.5.x：接收輸出模板參數，修正檔名定位 >>>
+# <<< 新增修改：針對 Bilibili 使用 aria2c 並優化參數 >>>
 ###########################################################
 _process_single_other_site_no_normalize() {
     # --- 接收參數 ---
     local item_url="$1"; local choice_format="$2"; local item_index="$3"; local total_items="$4"
     local mode="$5"
-    # <<< 新增參數：接收來自入口函數選定的模板 >>>
-    local output_template_playlist="$6"
-    local output_template_single_item="$7"
+    local output_template_playlist="$6" # 例如 "$DOWNLOAD_PATH/%(playlist_index)s-%(id)s.%(ext)s"
+    local output_template_single_item="$7" # 例如 "$DOWNLOAD_PATH/%(id)s.%(ext)s"
 
     # --- 局部變數 ---
-    local temp_dir=$(mktemp -d); local thumbnail_file=""; local main_media_file=""; local base_name=""
+    local temp_dir=$(mktemp -d); local thumbnail_file=""; local main_media_file="";
+    # base_name 將在成功獲取檔名後從實際檔名計算
+    local base_name_from_template="" 
     local result=0;
     local progress_prefix=""; if [ -n "$item_index" ] && [ -n "$total_items" ]; then progress_prefix="[$item_index/$total_items] "; fi
     local should_notify=false
     local is_playlist=false
-    local final_output_template_used="" # << 記錄實際使用的成功模板
+    local final_output_template_used="" 
 
     if [[ "$mode" == "playlist_mode" ]]; then
         is_playlist=true
-        # should_notify=true # 播放列表在外部處理總結通知
         log_message "INFO" "通用下載 無標準化：播放清單模式。"
     fi
 
-    # --- 獲取標題和 ID ---
     local item_title sanitized_title video_id
     item_title=$(yt-dlp --get-title "$item_url" 2>/dev/null) || item_title="media_item_$(date +%s)"
-    video_id=$(yt-dlp --get-id "$item_url" 2>/dev/null) || video_id="no_id_$(date +%s)"
+    video_id=$(yt-dlp --get-id "$item_url" 2>/dev/null) || video_id="no_id_$(date +%s)" # 確保 video_id 有值
     sanitized_title=$(echo "${item_title}" | sed 's@[/\\:*?"<>|]@_@g')
     log_message "DEBUG" "基礎標題: '$item_title', ID: '$video_id', 清理後: '$sanitized_title'"
 
-
-    # --- 預估大小 (僅單獨模式，邏輯不變) ---
-    local yt_dlp_format_string=""
-    if [ "$choice_format" = "mp4" ]; then yt_dlp_format_string="bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best";
-    else yt_dlp_format_string="bestaudio/best"; fi
+    # --- 預估大小 (僅單獨模式) ---
+    local yt_dlp_format_string_for_estimate=""
+    if [ "$choice_format" = "mp4" ]; then yt_dlp_format_string_for_estimate="bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best";
+    else yt_dlp_format_string_for_estimate="bestaudio/best"; fi
 
     if ! $is_playlist; then
-        # ... (預估大小和判斷 should_notify 的邏輯保持不變) ...
         echo -e "${YELLOW}正在預估檔案大小以決定是否通知...${RESET}"
         local estimated_size_bytes=0
         local size_list estimate_exit_code
-        size_list=$(yt-dlp --no-warnings --print '%(filesize,filesize_approx)s' -f "$yt_dlp_format_string" "$item_url" 2>"$temp_dir/yt-dlp-estimate.log")
+        size_list=$(yt-dlp --no-warnings --print '%(filesize,filesize_approx)s' -f "$yt_dlp_format_string_for_estimate" "$item_url" 2>"$temp_dir/yt-dlp-estimate.log")
         estimate_exit_code=$?
+        # ... (後續大小估計邏輯不變) ...
         log_message "DEBUG" "yt-dlp size print exit code (通用 non-std): $estimate_exit_code"
         log_message "DEBUG" "yt-dlp size print raw output (通用 non-std):\n$size_list"
         if [ "$estimate_exit_code" -eq 0 ] && [ -n "$size_list" ]; then
@@ -2643,7 +2705,7 @@ _process_single_other_site_no_normalize() {
                 else estimated_size_bytes=0; fi
             else estimated_size_bytes=0; log_message "WARNING" "bc missing"; fi
         else log_message "WARNING" "Failed to get size info (通用 non-std)"; fi
-        local size_threshold_gb=0.5
+        local size_threshold_gb=0.5 
         local size_threshold_bytes=$(awk "BEGIN {printf \"%d\", $size_threshold_gb * 1024 * 1024 * 1024}")
         log_message "INFO" "通用下載 無標準化：預估大小 = $estimated_size_bytes bytes, 閾值 = $size_threshold_bytes bytes."
         if [[ "$estimated_size_bytes" -gt "$size_threshold_bytes" ]]; then
@@ -2654,7 +2716,6 @@ _process_single_other_site_no_normalize() {
             should_notify=false
         fi
     fi
-    # --- 預估結束 ---
 
     echo -e "${CYAN}${progress_prefix}處理項目 (無標準化): $item_url (${choice_format})${RESET}";
     log_message "INFO" "${progress_prefix}處理項目 (無標準化): $item_url (格式: $choice_format)"
@@ -2662,97 +2723,173 @@ _process_single_other_site_no_normalize() {
     mkdir -p "$DOWNLOAD_PATH"; if [ ! -w "$DOWNLOAD_PATH" ]; then log_message "ERROR" "...無法寫入目錄..."; echo -e "${RED}錯誤：無法寫入目錄${RESET}"; result=1; rm -rf "$temp_dir"; return 1; fi
 
     # --- 下載 ---
-    # 移除 --write-thumbnail
-    local yt_dlp_extra_args=(--newline --progress --concurrent-fragments "$THREADS" --no-simulate --no-abort-on-error)
-    # <<< 移除固定的模板定義 >>>
     local download_success=false
+    local actual_yt_dlp_args=()
+    local chosen_output_template=""
 
     echo -e "${YELLOW}${progress_prefix}開始下載 (無標準化)...${RESET}"
-    # --- 嘗試模板1 (播放列表模板) ---
-    # <<< 使用傳入的參數 output_template_playlist >>>
-    local yt_dlp_cmd_args1=(yt-dlp -f "$yt_dlp_format_string" "${yt_dlp_extra_args[@]}" -o "$output_template_playlist" "$item_url")
-    log_message "INFO" "${progress_prefix}執行下載 (無標準化，模板1): ${yt_dlp_cmd_args1[*]}"
-    if "${yt_dlp_cmd_args1[@]}" 2> "$temp_dir/yt-dlp-other-nonorm1.log"; then
-        download_success=true
-        final_output_template_used="$output_template_playlist" # 記錄成功的模板
+
+### MODIFIED BLOCK START ###
+    # 判斷是否為 Bilibili URL 以使用特定參數
+    if [[ "$item_url" == *"bilibili.com"* ]]; then
+        log_message "INFO" "檢測到 Bilibili URL，將使用 aria2c 及優化參數。"
+        echo -e "${CYAN}${progress_prefix}檢測到 Bilibili 網站，啟用 aria2c 加速下載。${RESET}"
+        
+        local bili_format_select=""
+        if [ "$choice_format" = "mp4" ]; then
+            # 優先選擇 AVC(H.264) 編碼的MP4，因其兼容性較好，最高1440p。
+            # B站現在很多高畫質是HEVC(H.265)，如果需要HEVC，格式串要調整。
+            # 此處格式串嘗試獲取 B站中常見的高清 MP4 (DASH分離的視訊和音訊)
+            bili_format_select="bestvideo[height<=1440][vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080][vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/bestvideo[vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+        else # mp3
+            bili_format_select="bestaudio[ext=m4a]/bestaudio/best" # 優先m4a，yt-dlp會轉換
+        fi
+
+        actual_yt_dlp_args=(
+            yt-dlp
+            --no-warnings
+            --no-simulate
+            # --progress # aria2c 會自行顯示進度，yt-dlp 的 progress 可能與 aria2c 衝突或不準確
+            --newline
+            --downloader aria2c
+            --downloader-args "aria2c:-x4 -s4 -k1M --retry-wait=5 --max-tries=0 --lowest-speed-limit=10K"
+            --retries infinite
+            --fragment-retries infinite # 對 HLS/DASH 片段重試
+            --add-metadata
+            --embed-thumbnail # 嘗試嵌入封面
+            -f "$bili_format_select"
+        )
+        if [ "$choice_format" = "mp4" ]; then
+            actual_yt_dlp_args+=(--merge-output-format mp4)
+        elif [ "$choice_format" = "mp3" ]; then
+            actual_yt_dlp_args+=(--extract-audio --audio-format mp3 --audio-quality 0)
+        fi
     else
-        echo -e "${YELLOW}${progress_prefix}模板1下載失敗，嘗試模板2...${RESET}"
-        # --- 嘗試模板2 (單一項目模板) ---
-        # <<< 使用傳入的參數 output_template_single_item >>>
-        local yt_dlp_cmd_args2=(yt-dlp -f "$yt_dlp_format_string" "${yt_dlp_extra_args[@]}" -o "$output_template_single_item" "$item_url")
-        log_message "INFO" "${progress_prefix}執行下載 (無標準化，模板2): ${yt_dlp_cmd_args2[*]}"
-        if "${yt_dlp_cmd_args2[@]}" 2> "$temp_dir/yt-dlp-other-nonorm2.log"; then
-            download_success=true
-            final_output_template_used="$output_template_single_item" # 記錄成功的模板
-        else
-            log_message "ERROR" "...下載失敗 (兩個模板都失敗)..."; echo -e "${RED}錯誤：下載失敗！${RESET}";
-            [ -f "$temp_dir/yt-dlp-other-nonorm2.log" ] && cat "$temp_dir/yt-dlp-other-nonorm2.log" || cat "$temp_dir/yt-dlp-other-nonorm1.log"
-            result=1
+        # 非 Bilibili 網站，使用通用參數
+        local generic_format_select=""
+        if [ "$choice_format" = "mp4" ]; then
+            generic_format_select="bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best"
+        else # mp3
+            generic_format_select="bestaudio/best"
+        fi
+
+        actual_yt_dlp_args=(
+            yt-dlp
+            -f "$generic_format_select"
+            --newline 
+            --progress 
+            --concurrent-fragments "$THREADS" 
+            --no-simulate 
+            --no-abort-on-error
+            # --embed-thumbnail # 通用網站嵌入封面可能不穩定，可選
+            # --add-metadata    # 通用網站元數據可能不佳，可選
+        )
+        if [ "$choice_format" = "mp4" ]; then
+             actual_yt_dlp_args+=(--merge-output-format mp4) # 確保通用MP4合併
+        elif [ "$choice_format" = "mp3" ]; then
+            actual_yt_dlp_args+=(--extract-audio --audio-format mp3 --audio-quality 0)
         fi
     fi
 
-    # --- 定位檔案 (僅在下載成功時) ---
-    # <<< 使用 --print filename 和記錄的 final_output_template_used >>>
+    # 選擇輸出模板 (播放列表模式用 playlist 模板，單項用 single 模板)
+    if $is_playlist; then
+        chosen_output_template="$output_template_playlist"
+    else
+        chosen_output_template="$output_template_single_item"
+    fi
+    
+    # 將選擇的輸出模板加入參數
+    actual_yt_dlp_args+=(-o "$chosen_output_template")
+    actual_yt_dlp_args+=("$item_url")
+
+    log_message "INFO" "${progress_prefix}執行下載 (無標準化): ${actual_yt_dlp_args[*]}"
+    if "${actual_yt_dlp_args[@]}" 2> "$temp_dir/yt-dlp-other-nonorm.log"; then
+        download_success=true
+        final_output_template_used="$chosen_output_template" 
+    else
+        log_message "ERROR" "...下載失敗 (無標準化)..."; echo -e "${RED}錯誤：下載失敗！${RESET}";
+        cat "$temp_dir/yt-dlp-other-nonorm.log"
+        result=1
+    fi
+### MODIFIED BLOCK END ###
+
     if $download_success; then
         echo -e "${YELLOW}${progress_prefix}定位下載的檔案...${RESET}"
-        local yt_dlp_getfn_args=(yt-dlp --no-warnings --print filename -f "$yt_dlp_format_string" -o "$final_output_template_used" "$item_url")
-        log_message "DEBUG" "執行命令獲取檔名: ${yt_dlp_getfn_args[*]}"
-        local actual_download_path=$( "${yt_dlp_getfn_args[@]}" | tr -d '\n' )
-        local getfn_exit_code=$?
-        log_message "DEBUG" "獲取檔名命令退出碼: $getfn_exit_code, 獲取的路徑: '$actual_download_path'"
+        # 使用 --print filename 和記錄的 final_output_template_used 來獲取實際檔名
+        # 格式參數需要與下載時一致
+        local format_for_getfn=""
+        if [[ "$item_url" == *"bilibili.com"* ]]; then
+             if [ "$choice_format" = "mp4" ]; then format_for_getfn="bestvideo[height<=1440][vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080][vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/bestvideo[vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best";
+             else format_for_getfn="bestaudio[ext=m4a]/bestaudio/best"; fi
+        else
+             if [ "$choice_format" = "mp4" ]; then format_for_getfn="bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best";
+             else format_for_getfn="bestaudio/best"; fi
+        fi
+
+        local yt_dlp_getfn_args=(yt-dlp --no-warnings --print filename -f "$format_for_getfn" -o "$final_output_template_used")
+        # 如果是 MP3，yt-dlp 在 --extract-audio 後，--print filename 可能仍會打印原始下載的音訊檔名（如.m4a）而不是最終的.mp3
+        # 所以這裡的 -f 參數主要用於確保 yt-dlp 能解析 URL 並應用模板，對於 MP3，最終檔名需要額外處理。
+
+        # 對於 MP3 格式，由於 --extract-audio --audio-format mp3 的存在，
+        # --print filename 可能不會直接給出 .mp3 的最終名稱，而是轉換前的。
+        # 所以我們需要根據模板和選擇的 mp3 格式來推斷最終檔名。
+        if [ "$choice_format" = "mp3" ]; then
+            # 替換模板中的 %(ext)s 為 mp3
+            # First, simulate what yt-dlp's template expansion would do for the base name part
+            # This is tricky without actually running yt-dlp's template engine
+            # A simpler approach: assume final_output_template_used gives the base, then change ext
+            # Assuming final_output_template_used already has the download path and base filename (like /path/to/id.%(ext)s)
+            # We need to get the part before .%(ext)s and append .mp3
+            # This is still a heuristic. The most reliable way is often to list files after download.
+            
+            # Heuristic to get the filename that yt-dlp *would* create if it just used the template
+            # and then change its extension to mp3 if needed.
+            # yt-dlp --get-filename is safer for non-mp3. For mp3, it's complex.
+            local temp_name_for_mp3_base
+            temp_name_for_mp3_base=$(yt-dlp --no-warnings --get-filename -f "$format_for_getfn" -o "$final_output_template_used" "$item_url" | sed 's/\.[^.]*$//')
+             if [ -n "$temp_name_for_mp3_base" ]; then
+                actual_download_path="${temp_name_for_mp3_base}.mp3"
+             else # Fallback if get-filename failed
+                # Try to construct from template, highly heuristic
+                # Example: output_template_single_item = $DOWNLOAD_PATH/%(id)s.%(ext)s
+                # Replace %(id)s with actual id, and %(ext)s with mp3
+                local base_template_no_ext=$(echo "$final_output_template_used" | sed 's/\.\%\(ext\)s$//')
+                local populated_template_no_ext=$(echo "$base_template_no_ext" | sed "s/\%\(id\)s/$video_id/g" | sed "s/\%\(title\)s/$sanitized_title/g" ) # crude replacement
+                actual_download_path="${populated_template_no_ext}.mp3"
+             fi
+             getfn_exit_code=0 # Assume success for this path
+        else # For MP4
+            # For MP4, --print filename with the format string used for download should be more reliable
+             actual_download_path=$( "${yt_dlp_getfn_args[@]}" -o "$final_output_template_used" "$item_url" | tr -d '\n' )
+             getfn_exit_code=$?
+        fi
+
+        log_message "DEBUG" "獲取檔名(格式: $choice_format)命令退出碼: $getfn_exit_code, 推斷/獲取的路徑: '$actual_download_path'"
 
         if [ $getfn_exit_code -eq 0 ] && [ -n "$actual_download_path" ] && [ -f "$actual_download_path" ]; then
             main_media_file="$actual_download_path"
             log_message "INFO" "${progress_prefix}成功定位到下載檔案: $main_media_file"
-            base_name="${main_media_file%.*}" # 更新 base_name
-            result=0 # 確保成功
+            # base_name_from_template is not used anymore, main_media_file is the final one
+            result=0
         else
-            log_message "ERROR" "...無法通過 --print filename 獲取或驗證實際檔案路徑。退出碼: $getfn_exit_code, 路徑: '$actual_download_path'"
+            log_message "ERROR" "...無法通過 --print filename / 推斷 獲取或驗證實際檔案路徑。退出碼: $getfn_exit_code, 路徑: '$actual_download_path'"
             echo -e "${RED}錯誤：下載後無法定位主要檔案！檢查日誌。${RESET}";
             result=1
         fi
     else
         log_message "DEBUG" "下載標記為失敗，跳過檔案定位。"
     fi
-    # --- 檔案定位結束 ---
 
-    # --- 下載並處理縮圖（如果下載成功）---
+    # --- 無需處理縮圖和後續標準化，因為這是 no_normalize 版本 ---
     if [ $result -eq 0 ]; then
-        echo -e "${YELLOW}${progress_prefix}嘗試下載縮圖...${RESET}"
-        if [ -n "$base_name" ]; then
-            local media_dir=$(dirname "$main_media_file") # 獲取目錄
-            local thumb_dl_template="${media_dir}/${base_name}.%(ext)s" # 使用 base_name 構造模板
-            log_message "DEBUG" "嘗試使用縮圖模板: $thumb_dl_template"
-            if ! yt-dlp --no-warnings --skip-download --write-thumbnail -o "$thumb_dl_template" "$item_url" 2> "$temp_dir/yt-dlp-thumb.log"; then
-                log_message "WARNING" "...下載縮圖指令失敗或無縮圖，詳見 $temp_dir/yt-dlp-thumb.log"
-            fi
-            # 查找縮圖 (邏輯不變)
-            thumbnail_file=$(find "$media_dir" -maxdepth 1 -type f -iname "${base_name}.*" \
-                             \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.webp" \) \
-                             -print -quit)
-            if [ -n "$thumbnail_file" ]; then log_message "INFO" "...找到縮圖: $thumbnail_file";
-            else log_message "WARNING" "...在下載目錄中未找到縮圖檔案 (jpg/jpeg/png/webp)。"; fi
-        else
-             log_message "WARNING" "無法確定 base_name，跳過縮圖下載和查找。"
-        fi
-    fi
-    # --- 縮圖處理結束 ---
-
-    # --- 跳過處理 (無標準化) ---
-    if [ $result -eq 0 ]; then
-        log_message "INFO" "${progress_prefix}跳過音量標準化與後處理。"
+        log_message "INFO" "${progress_prefix}跳過音量標準化與後處理 (無標準化版本)。"
         echo -e "${GREEN}${progress_prefix}下載完成 (無標準化)。${RESET}"
-        # result 保持 0
     fi
 
     # --- 清理 ---
     log_message "INFO" "${progress_prefix}清理臨時檔案 (無標準化)..."
-    safe_remove "$temp_dir/yt-dlp-other-nonorm1.log" "$temp_dir/yt-dlp-other-nonorm2.log" "$temp_dir/yt-dlp-estimate.log" "$temp_dir/yt-dlp-thumb.log"
-    # 這裡不刪除 main_media_file，因為它是最終產物
-    # 根據需求決定是否刪除縮圖
-    # if [ -n "$thumbnail_file" ] && [ -f "$thumbnail_file" ]; then safe_remove "$thumbnail_file"; fi
+    safe_remove "$temp_dir/yt-dlp-other-nonorm.log" "$temp_dir/yt-dlp-estimate.log"
     [ -d "$temp_dir" ] && rm -rf "$temp_dir"
-    # --- 清理結束 ---
 
     # --- 控制台最終報告 ---
     if [ $result -eq 0 ]; then
