@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.3-beta.14" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.3-beta.15" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -3841,7 +3841,7 @@ view_log() {
 }
 
 ############################################
-# <<< 修改：關於訊息 (顯示 Git 版本、環境狀態、yt-dlp版本) >>>
+# <<< 修改：關於訊息 (顯示 Git 版本、環境狀態、yt-dlp版本，修正對齊) >>>
 ############################################
 show_about_enhanced() {
     clear
@@ -3849,6 +3849,7 @@ show_about_enhanced() {
     echo -e "---------------------------------------------"
 
     # --- 嘗試從 Git 獲取版本信息 ---
+    # ... (此部分不變) ...
     local git_version_info=""
     local git_commit_hash=""
     local git_tag=""
@@ -3877,44 +3878,46 @@ show_about_enhanced() {
     echo -e "${BOLD}主腳本 SHA256:${RESET} ${YELLOW}${current_script_checksum}${RESET}"
     echo -e "---------------------------------------------"
 
-    # --- 新增：腳本環境狀態 ---
     echo -e "${CYAN}--- 腳本環境狀態 ---${RESET}"
 
-    # 輔助函數顯示狀態
+    # 輔助函數顯示狀態 (使用 printf 進行對齊)
     display_status() {
         local item_name="$1"
-        local is_ok="$2" # true or false
-        local detail="$3"  # e.g., version or path
+        local is_ok="$2"    # true or false
+        local detail="$3"   # e.g., version or path
+        local item_name_display="${item_name}:" # 加上冒號
+        
+        # 設定一個足夠的寬度給項目名稱欄位，例如 20 或 22 個字元
+        # 包含中文時，字元寬度計算可能需要調整，但 printf %-22s 通常能處理大部分情況
+        # 如果名稱本身就超過這個寬度，printf 仍會完整打印，但後續對齊可能受影響
+        local name_field_width=22 
 
         if [ "$is_ok" = true ]; then
-            echo -e "${BOLD}${item_name}:${RESET}\t${GREEN}已安裝 / 已獲取${RESET} ${GREEN}${detail}${RESET}"
+            printf "%-${name_field_width}s ${GREEN}%s${RESET} %s\n" "$item_name_display" "已安裝 / 已獲取" "${GREEN}${detail}${RESET}"
         else
-            echo -e "${BOLD}${item_name}:${RESET}\t${RED}未安裝 / 未獲取${RESET} ${RED}${detail}${RESET}"
+            printf "%-${name_field_width}s ${RED}%s${RESET} %s\n" "$item_name_display" "未安裝 / 未獲取" "${RED}${detail}${RESET}"
         fi
     }
 
     local tool_status py_status ytdlp_status aria2c_status
     local py_exe py_version ytdlp_version
 
-    # 檢查核心工具 (不含 python, yt-dlp, aria2c，它們單獨處理)
     echo -e "${YELLOW}核心工具:${RESET}"
     for tool in ffmpeg ffprobe jq curl; do
         tool_status=false; command -v "$tool" &> /dev/null && tool_status=true
-        display_status "  $tool" "$tool_status" ""
+        display_status "  $tool" "$tool_status" "" # 傳遞不帶冒號的名稱給 display_status
     done
 
-    # 檢查 Python
     py_status=false; py_exe=""
     if command -v python3 &> /dev/null; then py_exe="python3"; py_status=true;
     elif command -v python &> /dev/null; then py_exe="python"; py_status=true; fi
     if $py_status; then
-        py_version=$($py_exe --version 2>&1 | sed 's/Python //') # 獲取並清理版本號
+        py_version=$($py_exe --version 2>&1 | sed 's/Python //')
         display_status "  Python" true "(版本: $py_version)"
     else
         display_status "  Python" false ""
     fi
 
-    # 檢查 yt-dlp
     ytdlp_status=false; ytdlp_version="N/A"
     if command -v yt-dlp &> /dev/null; then
         ytdlp_status=true
@@ -3922,18 +3925,16 @@ show_about_enhanced() {
     fi
     display_status "  yt-dlp" "$ytdlp_status" "(版本: $ytdlp_version)"
     
-    # 檢查 aria2c (Bilibili 加速下載)
     aria2c_status=false
     command -v aria2c &> /dev/null && aria2c_status=true
     display_status "  aria2c" "$aria2c_status" "(用於 Bilibili 加速)"
 
-    # 檢查權限
     echo -e "\n${YELLOW}權限與路徑:${RESET}"
     if [[ "$OS_TYPE" == "termux" ]]; then
         local termux_storage_ok=false
         if [ -d "/sdcard" ] && touch "/sdcard/.termux-test-write-about" 2>/dev/null; then
             termux_storage_ok=true
-            rm -f "/sdcard/.termux-test-write-about" # 清理測試檔案
+            rm -f "/sdcard/.termux-test-write-about"
         fi
         display_status "  Termux 儲存權限" "$termux_storage_ok" ""
     fi
@@ -3954,6 +3955,7 @@ show_about_enhanced() {
 
 
     echo -e "\n${GREEN}主要功能特色：${RESET}"
+    # ... (此部分不變) ...
     echo -e "- YouTube 影音下載 (MP3/MP4/MKV)"
     echo -e "- 通用網站媒體下載 (MP3/MP4, 實驗性, Bilibili 使用 aria2c 加速)"
     echo -e "- 音量標準化 (EBU R128) / 無標準化選項"
@@ -3968,6 +3970,7 @@ show_about_enhanced() {
     echo -e "- ${BOLD}MP3/MP4/通用 下載支援條件式完成通知${RESET} (批量處理或檔案>閾值)(v2.4.13+)"
 
     echo -e "\n${YELLOW}使用須知：${RESET}"
+    # ... (此部分不變) ...
     echo -e "本工具僅供個人學習與合法使用，請尊重版權並遵守當地法律。"
     echo -e "下載受版權保護的內容而導致違法，請自行承擔責任。"
 
@@ -3976,6 +3979,7 @@ show_about_enhanced() {
     echo ""
     read -p "按 Enter 返回主選單..."
 }
+
 ############################################
 
 ############################################
