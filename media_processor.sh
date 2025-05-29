@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.3-beta.15" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.3-beta.16" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -3841,7 +3841,7 @@ view_log() {
 }
 
 ############################################
-# <<< 修改：關於訊息 (顯示 Git 版本、環境狀態、yt-dlp版本，修正對齊) >>>
+# <<< 修改：關於訊息 (顯示 Git 版本、環境狀態、yt-dlp版本，修正顏色和對齊) >>>
 ############################################
 show_about_enhanced() {
     clear
@@ -3849,7 +3849,6 @@ show_about_enhanced() {
     echo -e "---------------------------------------------"
 
     # --- 嘗試從 Git 獲取版本信息 ---
-    # ... (此部分不變) ...
     local git_version_info=""
     local git_commit_hash=""
     local git_tag=""
@@ -3862,40 +3861,52 @@ show_about_enhanced() {
                  local commit_for_tag=$(git -C "$SCRIPT_DIR" rev-list -n 1 "$git_tag" 2>/dev/null)
                  local current_head=$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null)
                  if [[ "$commit_for_tag" != "$current_head" ]]; then
-                      git_version_info+=" (+${git_commit_hash})"
+                      git_version_info+=" (+${git_commit_hash})" # 標記非 tag 的最新 commit
                  fi
             fi
         elif [ -n "$git_commit_hash" ]; then
-             git_version_info="commit ${git_commit_hash}"
+             git_version_info="commit ${git_commit_hash}" # 如果沒有 tag，顯示 commit hash
         fi
     fi
+    # 如果無法從 Git 獲取，則使用腳本內定義的版本
     local display_version="${git_version_info:-$SCRIPT_VERSION}"
 
     echo -e "${BOLD}版本:${RESET}        ${GREEN}${display_version}${RESET}"
     if [ -n "$SCRIPT_UPDATE_DATE" ]; then echo -e "${BOLD}更新日期:${RESET}    ${GREEN}${SCRIPT_UPDATE_DATE}${RESET}"; fi
+
+    # --- 腳本 SHA256 (可以保留作為參考，但 Git hash 更可靠) ---
     local current_script_checksum="無法計算"
     if command -v sha256sum &> /dev/null && [ -f "$SCRIPT_INSTALL_PATH" ]; then current_script_checksum=$(sha256sum "$SCRIPT_INSTALL_PATH" | awk '{print $1}'); fi
     echo -e "${BOLD}主腳本 SHA256:${RESET} ${YELLOW}${current_script_checksum}${RESET}"
     echo -e "---------------------------------------------"
 
+    # --- 新增：腳本環境狀態 ---
     echo -e "${CYAN}--- 腳本環境狀態 ---${RESET}"
 
-    # 輔助函數顯示狀態 (使用 printf 進行對齊)
+    # 輔助函數顯示狀態 (使用 printf 進行對齊，修正顏色處理)
     display_status() {
         local item_name="$1"
         local is_ok="$2"    # true or false
         local detail="$3"   # e.g., version or path
-        local item_name_display="${item_name}:" # 加上冒號
+        local item_name_display="${item_name}:" 
         
-        # 設定一個足夠的寬度給項目名稱欄位，例如 20 或 22 個字元
-        # 包含中文時，字元寬度計算可能需要調整，但 printf %-22s 通常能處理大部分情況
-        # 如果名稱本身就超過這個寬度，printf 仍會完整打印，但後續對齊可能受影響
-        local name_field_width=22 
+        # 調整欄位寬度，您可以根據實際效果修改此值
+        # 20 是一個比較折衷的值，可以根據您的終端和字型調整
+        local name_field_width=20 
 
         if [ "$is_ok" = true ]; then
-            printf "%-${name_field_width}s ${GREEN}%s${RESET} %s\n" "$item_name_display" "已安裝 / 已獲取" "${GREEN}${detail}${RESET}"
-        else
-            printf "%-${name_field_width}s ${RED}%s${RESET} %s\n" "$item_name_display" "未安裝 / 未獲取" "${RED}${detail}${RESET}"
+            # 將顏色代碼直接放入 printf 的格式字串
+            if [ -n "$detail" ]; then # 如果有詳細資訊
+                printf "%-${name_field_width}s \033[0;32m%s\033[0m \033[0;32m%s\033[0m\n" "$item_name_display" "已安裝 / 已獲取" "$detail"
+            else # 如果沒有詳細資訊
+                printf "%-${name_field_width}s \033[0;32m%s\033[0m\n" "$item_name_display" "已安裝 / 已獲取"
+            fi
+        else # is_ok is false
+            if [ -n "$detail" ]; then # 如果有詳細資訊
+                printf "%-${name_field_width}s \033[0;31m%s\033[0m \033[0;31m%s\033[0m\n" "$item_name_display" "未安裝 / 未獲取" "$detail"
+            else # 如果沒有詳細資訊
+                printf "%-${name_field_width}s \033[0;31m%s\033[0m\n" "$item_name_display" "未安裝 / 未獲取"
+            fi
         fi
     }
 
@@ -3903,16 +3914,17 @@ show_about_enhanced() {
     local py_exe py_version ytdlp_version
 
     echo -e "${YELLOW}核心工具:${RESET}"
+    # 為核心工具名稱添加兩個前導空格，以便在視覺上與分類標題區分
     for tool in ffmpeg ffprobe jq curl; do
         tool_status=false; command -v "$tool" &> /dev/null && tool_status=true
-        display_status "  $tool" "$tool_status" "" # 傳遞不帶冒號的名稱給 display_status
+        display_status "  $tool" "$tool_status" ""
     done
 
     py_status=false; py_exe=""
     if command -v python3 &> /dev/null; then py_exe="python3"; py_status=true;
     elif command -v python &> /dev/null; then py_exe="python"; py_status=true; fi
     if $py_status; then
-        py_version=$($py_exe --version 2>&1 | sed 's/Python //')
+        py_version=$($py_exe --version 2>&1 | sed 's/Python //') # 獲取並清理版本號
         display_status "  Python" true "(版本: $py_version)"
     else
         display_status "  Python" false ""
@@ -3934,7 +3946,7 @@ show_about_enhanced() {
         local termux_storage_ok=false
         if [ -d "/sdcard" ] && touch "/sdcard/.termux-test-write-about" 2>/dev/null; then
             termux_storage_ok=true
-            rm -f "/sdcard/.termux-test-write-about"
+            rm -f "/sdcard/.termux-test-write-about" # 清理測試檔案
         fi
         display_status "  Termux 儲存權限" "$termux_storage_ok" ""
     fi
@@ -3955,7 +3967,6 @@ show_about_enhanced() {
 
 
     echo -e "\n${GREEN}主要功能特色：${RESET}"
-    # ... (此部分不變) ...
     echo -e "- YouTube 影音下載 (MP3/MP4/MKV)"
     echo -e "- 通用網站媒體下載 (MP3/MP4, 實驗性, Bilibili 使用 aria2c 加速)"
     echo -e "- 音量標準化 (EBU R128) / 無標準化選項"
@@ -3970,7 +3981,6 @@ show_about_enhanced() {
     echo -e "- ${BOLD}MP3/MP4/通用 下載支援條件式完成通知${RESET} (批量處理或檔案>閾值)(v2.4.13+)"
 
     echo -e "\n${YELLOW}使用須知：${RESET}"
-    # ... (此部分不變) ...
     echo -e "本工具僅供個人學習與合法使用，請尊重版權並遵守當地法律。"
     echo -e "下載受版權保護的內容而導致違法，請自行承擔責任。"
 
