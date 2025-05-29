@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.3-beta.16" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.3-beta.17" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -2131,6 +2131,7 @@ process_single_mp4_no_normalize_sections() {
 ############################################
 # 處理單一 YouTube 影片（MKV）下載與處理 (修正版)(1.8.4+)
 # <<< 修改 vNext：加入條件式通知 (基於 Python 估計大小) >>>
+# <<< 再次修正：確保使用正確的 Python 估計腳本路徑 >>>
 ############################################
 process_single_mkv() {
     local video_url="$1"
@@ -2140,31 +2141,22 @@ process_single_mkv() {
     local subtitle_files=()
     local temp_dir=$(mktemp -d)
     local result=0
-    # <<< 新增：通知標記 >>>
     local should_notify=false
-    # <<< 新增：最終輸出路徑變數 >>>
     local output_mkv=""
 
     echo -e "${YELLOW}處理 YouTube 影片 (輸出 MKV)：$video_url${RESET}"
     log_message "INFO" "處理 YouTube MKV: $video_url"; log_message "INFO" "將嘗試請求以下字幕 (格式: $subtitle_format_pref): $target_sub_langs"
     echo -e "${YELLOW}將嘗試下載繁/簡/通用中文字幕 (保留樣式)...${RESET}"
 
-    # --- 獲取基本資訊 ---
     local video_title video_id sanitized_title sanitized_title_id output_base_name
     video_title=$(yt-dlp --get-title "$video_url" 2>/dev/null) || video_title="video"
     video_id=$(yt-dlp --get-id "$video_url" 2>/dev/null) || video_id=$(date +%s)
-    sanitized_title=$(echo "${video_title}" | sed 's@[/\\:*?"<>|]@_@g') # 用於通知訊息
+    sanitized_title=$(echo "${video_title}" | sed 's@[/\\:*?"<>|]@_@g') 
     sanitized_title_id=$(echo "${video_title}_${video_id}" | sed 's@[/\\:*?"<>|]@_@g')
     output_base_name="$DOWNLOAD_PATH/$sanitized_title_id"
-    output_mkv="${output_base_name}_normalized.mkv" # 預先定義最終檔名
+    output_mkv="${output_base_name}_normalized.mkv" 
 
-    # --- <<< 新增：使用 Python 估計大小並決定是否通知 >>> ---
-    # ... 調用 Python 腳本 ...
-#    python_estimate_output=$($python_exec ... 2> "$temp_dir/py_estimator_mkv_stderr.log")
-#    local py_exit_code=$?
-#    echo -e "${PURPLE}Python 除錯日誌目錄: $temp_dir${RESET}" # <<< 打印目錄路徑
-    # ... 後續處理 ...
-    # 定義用於估計的格式字符串 (包含主要目標和一些回退)
+    # --- 使用 Python 估計大小並決定是否通知 ---
     local yt_dlp_format_string_estimate="bestvideo[ext=mp4][height<=1440]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio/best[ext=mp4]/best"
 
     echo -e "${YELLOW}正在預估檔案大小 (使用 Python 腳本)...${RESET}"
@@ -2173,30 +2165,30 @@ process_single_mkv() {
     local python_exec=""
     if command -v python3 &> /dev/null; then python_exec="python3"; elif command -v python &> /dev/null; then python_exec="python"; fi
 
-    if [ -n "$python_exec" ] && [ -f "$PYTHON_CONVERTER_INSTALL_PATH" ]; then
- #       log_message "DEBUG" "Calling Python estimator (MKV): $python_exec $PYTHON_CONVERTER_INSTALL_PATH \"$video_url\" \"$yt_dlp_format_string_estimate\""
-        python_estimate_output=$($python_exec "$PYTHON_CONVERTER_INSTALL_PATH" "$video_url" "$yt_dlp_format_string_estimate" 2> "$temp_dir/py_estimator_mkv_stderr.log")
+    # --------------------- MODIFIED BLOCK START ---------------------
+    # 使用正確的 PYTHON_ESTIMATOR_SCRIPT_PATH 變數
+    if [ -n "$python_exec" ] && [ -f "$PYTHON_ESTIMATOR_SCRIPT_PATH" ]; then
+        log_message "DEBUG" "Calling Python estimator (MKV): $python_exec \"$PYTHON_ESTIMATOR_SCRIPT_PATH\" \"$video_url\" \"$yt_dlp_format_string_estimate\""
+        python_estimate_output=$($python_exec "$PYTHON_ESTIMATOR_SCRIPT_PATH" "$video_url" "$yt_dlp_format_string_estimate" 2> "$temp_dir/py_estimator_mkv_stderr.log")
         local py_exit_code=$?
 
         if [ $py_exit_code -eq 0 ] && [[ "$python_estimate_output" =~ ^[0-9]+$ ]]; then
             estimated_size_bytes="$python_estimate_output"
             log_message "INFO" "Python 腳本估計大小 (MKV): $estimated_size_bytes bytes"
+            # 清理空的 stderr 日誌
             [ ! -s "$temp_dir/py_estimator_mkv_stderr.log" ] && rm -f "$temp_dir/py_estimator_mkv_stderr.log"
-
-    # ... 後續處理 ...
         else
             log_message "WARNING" "Python 估計腳本執行失敗 (MKV Code: $py_exit_code) 或輸出無效 ('$python_estimate_output')。詳見 $temp_dir/py_estimator_mkv_stderr.log"
             echo -e "${YELLOW}警告：使用 Python 估計大小失敗，將跳過大小檢查。${RESET}"
-            estimated_size_bytes=0 # 失敗時設為 0
-            # 保留 stderr 日誌供除錯
+            estimated_size_bytes=0 
         fi
     else
-        log_message "WARNING" "找不到 Python 或估計腳本 '$PYTHON_CONVERTER_INSTALL_PATH' (MKV)，無法估計大小。"
+        log_message "WARNING" "找不到 Python ('$python_exec') 或估計腳本 '$PYTHON_ESTIMATOR_SCRIPT_PATH' (MKV)，無法估計大小。"
         echo -e "${YELLOW}警告：找不到 Python 或估計腳本，無法估計大小。${RESET}"
         estimated_size_bytes=0
     fi
+    # --------------------- MODIFIED BLOCK END ---------------------
 
-    # 設定 MKV 的大小閾值 (例如 0.5 GB，可以調整)
     local size_threshold_gb_mkv=0.5
     local size_threshold_bytes_mkv=$(awk "BEGIN {printf \"%d\", $size_threshold_gb_mkv * 1024 * 1024 * 1024}")
     log_message "INFO" "檔案大小預估 (MKV): $estimated_size_bytes bytes, 閾值: $size_threshold_bytes_mkv bytes."
@@ -2209,7 +2201,6 @@ process_single_mkv() {
     fi
     # --- 預估大小結束 ---
 
-    # 確保下載目錄存在且可寫 (重複檢查增加健壯性)
     mkdir -p "$DOWNLOAD_PATH"; if [ ! -w "$DOWNLOAD_PATH" ]; then log_message "ERROR" "無法寫入下載目錄 (MKV): $DOWNLOAD_PATH"; echo -e "${RED}錯誤：無法寫入目錄${RESET}"; result=1; goto cleanup_and_notify; fi
 
     local video_temp_file="${temp_dir}/video_stream.mp4"
@@ -2217,6 +2208,7 @@ process_single_mkv() {
     local sub_temp_template="${temp_dir}/sub_stream.%(ext)s"
 
     echo -e "${YELLOW}開始下載最佳視訊流...${RESET}"
+    # ... (後續的下載、標準化、混流、清理和通知邏輯保持不變) ...
     # --- 下載視訊流 (保持不變) ---
     if ! yt-dlp -f 'bv[ext=mp4][height<=1440]' --no-warnings -o "$video_temp_file" "$video_url" 2> "$temp_dir/yt-dlp-video.log"; then
         echo -e "${YELLOW}警告：未找到 <=1440p 的 MP4 視訊流，嘗試下載最佳 MP4 視訊流...${RESET}"
@@ -2225,7 +2217,7 @@ process_single_mkv() {
             log_message "ERROR" "視訊流下載失敗（包括備選方案）..."; echo -e "${RED}錯誤：視訊流下載失敗！${RESET}"; cat "$temp_dir/yt-dlp-video.log"; result=1; goto cleanup_and_notify;
         fi
     fi
-    if [ ! -f "$video_temp_file" ]; then # 增加下載後檢查
+    if [ ! -f "$video_temp_file" ]; then 
          log_message "ERROR" "視訊流下載後未找到檔案！"; echo -e "${RED}錯誤：視訊流下載失敗！${RESET}"; result=1; goto cleanup_and_notify;
     fi
     log_message "INFO" "視訊流下載完成: $video_temp_file"
@@ -2235,7 +2227,7 @@ process_single_mkv() {
     if ! yt-dlp -f 'ba[ext=m4a]' --no-warnings -o "$audio_temp_file" "$video_url" 2> "$temp_dir/yt-dlp-audio.log"; then
              log_message "ERROR" "音訊流下載失敗..."; echo -e "${RED}錯誤：音訊流下載失敗！${RESET}"; cat "$temp_dir/yt-dlp-audio.log"; result=1; goto cleanup_and_notify;
     fi
-    if [ ! -f "$audio_temp_file" ]; then # 增加下載後檢查
+    if [ ! -f "$audio_temp_file" ]; then 
          log_message "ERROR" "音訊流下載後未找到檔案！"; echo -e "${RED}錯誤：音訊流下載失敗！${RESET}"; result=1; goto cleanup_and_notify;
     fi
     log_message "INFO" "音訊流下載完成: $audio_temp_file"
@@ -2243,20 +2235,17 @@ process_single_mkv() {
     echo -e "${YELLOW}開始下載字幕 (格式: ${subtitle_format_pref})...${RESET}"
     # --- 下載字幕和查找 (保持不變) ---
     yt-dlp --write-subs --sub-format "$subtitle_format_pref" --sub-lang "$target_sub_langs" --skip-download -o "$sub_temp_template" "$video_url" > "$temp_dir/yt-dlp-subs.log" 2>&1
-    local found_sub=false; subtitle_files=() # 重置
+    local found_sub=false; subtitle_files=() 
     for lang_code in "zh-Hant" "zh-TW" "zh-Hans" "zh-CN" "zh"; do
         for sub_ext in ass vtt; do
              potential_sub_file="${temp_dir}/sub_stream.${lang_code}.${sub_ext}"
              if [ -f "$potential_sub_file" ]; then
                  subtitle_files+=("$potential_sub_file")
                  log_message "INFO" "找到字幕: $potential_sub_file"; echo -e "${GREEN}找到字幕: $(basename "$potential_sub_file")${RESET}";
-                 found_sub=true; # 找到一個就行，不再找同語言的其他格式
-                 break # 退出內層 format 循環
+                 found_sub=true; 
+                 break 
              fi;
         done
-        # 如果在內層找到了，外層也退出 (避免重複添加例如 zh-Hant.ass 和 zh-Hant.vtt)
-        # 如果需要所有找到的字幕，可以移除這個 break
-        # if $found_sub; then break; fi
     done
     if [ ${#subtitle_files[@]} -eq 0 ]; then log_message "INFO" "未找到符合條件的中文字幕。"; echo -e "${YELLOW}未找到 ASS/VTT 格式的中文字幕。${RESET}"; fi
 
@@ -2275,15 +2264,13 @@ process_single_mkv() {
             ffmpeg_mux_args+=("-c:s" "copy")
             for ((i=0; i<${#subtitle_files[@]}; i++)); do
                 ffmpeg_mux_args+=("-map" "$sub_input_index:s:0")
-                # --- 改進：設置字幕語言元數據 ---
                 local sub_lang_code=$(basename "${subtitle_files[$i]}" | rev | cut -d'.' -f2 | rev)
                 local ffmpeg_lang=""; case "$sub_lang_code" in zh-Hant|zh-TW) ffmpeg_lang="zht" ;; zh-Hans|zh-CN) ffmpeg_lang="zhs" ;; zh) ffmpeg_lang="chi" ;; *) ffmpeg_lang=$(echo "$sub_lang_code" | cut -c1-3) ;; esac
                 ffmpeg_mux_args+=("-metadata:s:s:$i" "language=$ffmpeg_lang")
-                # --- 結束字幕語言設置 ---
                 ((sub_input_index++))
             done
         fi
-        ffmpeg_mux_args+=("$output_mkv") # 使用之前定義的輸出路徑
+        ffmpeg_mux_args+=("$output_mkv") 
 
         log_message "INFO" "MKV 混流命令: ${ffmpeg_mux_args[*]}"
         local ffmpeg_stderr_log="$temp_dir/ffmpeg_mkv_mux_stderr.log"
@@ -2302,36 +2289,30 @@ process_single_mkv() {
         result=1;
     fi
 
-# 使用 goto 跳轉標籤，集中處理清理和通知
-: cleanup_and_notify
+: cleanup_and_notify # 雖然 bash 沒有 goto，但標籤本身無害，清理邏輯通常會被執行
 
     log_message "INFO" "清理臨時檔案 (MKV)..."
-    # --- 清理 (加入 Python 估計的 stderr 日誌) ---
     safe_remove "$video_temp_file" "$audio_temp_file" "$normalized_audio_m4a"
     for sub_file in "${subtitle_files[@]}"; do safe_remove "$sub_file"; done
     safe_remove "$temp_dir/yt-dlp-video.log" "$temp_dir/yt-dlp-audio.log" "$temp_dir/yt-dlp-subs.log"
-    safe_remove "$temp_dir/ffmpeg_mkv_mux_stderr.log" # 清理 ffmpeg 日誌 (如果存在)
-    safe_remove "$temp_dir/py_estimator_mkv_stderr.log" # 清理 Python 估計器日誌 (如果存在)
+    safe_remove "$temp_dir/ffmpeg_mkv_mux_stderr.log" 
+    safe_remove "$temp_dir/py_estimator_mkv_stderr.log" 
     [ -d "$temp_dir" ] && rm -rf "$temp_dir"
 
-    # --- 控制台最終報告 ---
     if [ $result -eq 0 ]; then
-        # 再次檢查最終檔案是否存在
         if [ -f "$output_mkv" ]; then
              echo -e "${GREEN}處理完成！MKV 影片已儲存至：$output_mkv${RESET}";
              log_message "SUCCESS" "MKV 處理完成！影片已儲存至：$output_mkv";
         else
              echo -e "${RED}處理似乎已完成，但最終檔案 '$output_mkv' 未找到！${RESET}";
              log_message "ERROR" "處理完成但最終檔案未找到 (MKV)";
-             result=1 # 標記失敗
+             result=1 
         fi
     else
         echo -e "${RED}處理失敗 (MKV)！${RESET}";
         log_message "ERROR" "MKV 處理失敗：$video_url";
-        # 如果失敗，原始的音視頻流可能還在 $temp_dir (如果清理失敗)，但通常意義不大
     fi
 
-    # --- <<< 新增：條件式通知 >>> ---
     if $should_notify; then
         local notification_title="媒體處理器：MKV 處理"
         local base_msg_notify="處理 MKV '$sanitized_title'"
@@ -2341,7 +2322,6 @@ process_single_mkv() {
         fi
         _send_termux_notification "$result" "$notification_title" "$base_msg_notify" "$final_path_notify"
     fi
-    # --- 通知結束 ---
 
     return $result
 }
