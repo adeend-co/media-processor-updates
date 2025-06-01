@@ -14,3 +14,5 @@
 3.請先轉移到media-processor-updates資料夾裡面，運行：cd media-processor-updates
 
 4.給該腳本運行權限，運行：chmod +x media_processor.sh 以及 chmod +x estimate_size.py
+
+5.最後，運行：./media_processor.sh
