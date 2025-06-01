@@ -1,11 +1,11 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.3-beta.19" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.3-beta.20" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
-SCRIPT_UPDATE_DATE="2025-05-31" # 請根據實際情況修改此日期
+SCRIPT_UPDATE_DATE="2025-06-01" # 請根據實際情況修改此日期
 ############################################
 
 # ... 其他設定 ...
@@ -3775,7 +3775,7 @@ general_download_menu() {
 ############################################
 
 ############################################
-# <<< 新增：腳本設定與工具選單 >>>
+# <<< 新增：腳本設定與工具選單 (增加 Termux 完整更新選項) >>>
 ############################################
 utilities_menu() {
     while true; do
@@ -3784,52 +3784,101 @@ utilities_menu() {
         echo -e "${YELLOW}請選擇操作：${RESET}"
         echo -e " 1. 參數設定 (執行緒, 下載路徑, 顏色)"
         echo -e " 2. 檢視操作日誌"
-        echo -e " 3. ${BOLD}檢查並更新依賴套件${RESET}"
+        echo -e " 3. ${BOLD}檢查並更新依賴套件${RESET} (腳本自身依賴)"
         echo -e " 4. ${BOLD}檢查腳本更新${RESET}"
-        # 根據 OS_TYPE 動態顯示 Termux 選項
+
+        local termux_options_start_index=5 # Termux 特定選項的起始編號
         if [[ "$OS_TYPE" == "termux" ]]; then
-            echo -e " 5. ${BOLD}設定 Termux 啟動時詢問${RESET}"
+            echo -e " ${termux_options_start_index}. ${BOLD}設定 Termux 啟動時詢問${RESET}"
+            echo -e " $((termux_options_start_index + 1)). ${BOLD}完整更新 Termux 環境${RESET} (pkg update && upgrade)" # <<< 新增選項
         fi
         echo -e "---------------------------------------------"
         echo -e " 0. ${YELLOW}返回主選單${RESET}"
         echo -e "---------------------------------------------"
 
-        read -t 0.1 -N 10000 discard
-        local choice_range="0-4"
-        [[ "$OS_TYPE" == "termux" ]] && choice_range="0-5" # 如果是 Termux，範圍是 0-5
+        read -t 0.1 -N 10000 discard # 清除緩衝區
+
+        local current_max_option=4 # 非 Termux 時的最大選項號 (不計0)
+        if [[ "$OS_TYPE" == "termux" ]]; then
+            current_max_option=$((termux_options_start_index + 1)) # Termux 時的最大選項號
+        fi
+        local choice_prompt="輸入選項 (0-${current_max_option}): "
         local choice
-        read -rp "輸入選項 (${choice_range}): " choice
+
+        read -rp "$choice_prompt" choice
 
         case $choice in
             1)
-                config_menu # 調用原有的設定選單函數
-                # config_menu 內部處理返回，這裡不需要額外操作
+                config_menu
                 ;;
             2)
-                view_log # 調用原有的檢視日誌函數
-                # view_log 使用 less，退出後自動返回
+                view_log
                 ;;
             3)
-                update_dependencies # 調用原有的依賴更新函數
+                update_dependencies # 更新腳本的依賴 (yt-dlp, ffmpeg 等)
                 # update_dependencies 內部有 "按 Enter 返回"
                 ;;
             4)
-                auto_update_script # 調用原有的腳本更新函數
-                echo ""; read -p "按 Enter 返回工具選單..." # 確保更新後能返回
+                auto_update_script
+                # auto_update_script 內部有 "按 Enter 返回"
                 ;;
             5)
                 if [[ "$OS_TYPE" == "termux" ]]; then
-                    setup_termux_autostart # 調用原有的 Termux 設定函數
-                    echo ""; read -p "按 Enter 返回工具選單..." # 確保設定後能返回
+                    setup_termux_autostart
+                    echo ""; read -p "按 Enter 返回工具選單..."
                 else
-                    echo -e "${RED}無效選項 '$choice'${RESET}"; sleep 1
+                    # 如果不是 Termux，但用戶輸入了 5 (可能通過記憶而非看選單)
+                    echo -e "${RED}無效選項 '$choice' (非 Termux 環境)${RESET}"; sleep 1
+                fi
+                ;;
+            6) # <<< 新增的 Case，處理 Termux 環境完整更新 >>>
+                if [[ "$OS_TYPE" == "termux" ]]; then
+                    clear
+                    echo -e "${CYAN}--- 完整更新 Termux 環境 ---${RESET}"
+                    echo -e "${YELLOW}此操作將執行 'pkg update -y && pkg upgrade -y'。${RESET}"
+                    echo -e "${YELLOW}這會更新您 Termux 環境中所有已安裝的套件，可能需要一些時間。${RESET}"
+                    echo -e "${RED}${BOLD}請確保您的網路連線穩定。${RESET}"
+                    echo ""
+                    local confirm_full_update
+                    read -p "您確定要繼續嗎？ (y/n): " confirm_full_update
+
+                    if [[ "$confirm_full_update" =~ ^[Yy]$ ]]; then
+                        log_message "INFO" "使用者觸發 Termux 環境完整更新。"
+                        echo -e "\n${CYAN}正在開始更新 Termux 環境... 這可能需要幾分鐘或更長時間。${RESET}"
+                        echo -e "${CYAN}請耐心等待，不要中斷此過程。${RESET}"
+                        
+                        # 執行 Termux 完整更新命令
+                        # 使用 -y 自動確認 pkg update 和 pkg upgrade 的提示
+                        if pkg update -y && pkg upgrade -y; then
+                            log_message "SUCCESS" "Termux 環境已成功更新。"
+                            echo -e "\n${GREEN}Termux 環境已成功更新完畢！${RESET}"
+                        else
+                            log_message "ERROR" "Termux 環境更新過程中發生錯誤。"
+                            echo -e "\n${RED}Termux 環境更新過程中發生錯誤。${RESET}"
+                            echo -e "${RED}請檢查上面的輸出訊息以了解詳情。${RESET}"
+                            echo -e "${YELLOW}您可能需要手動執行 'pkg update' 和 'pkg upgrade' 來解決問題。${RESET}"
+                        fi
+                    else
+                        log_message "INFO" "使用者取消了 Termux 環境完整更新。"
+                        echo -e "\n${YELLOW}已取消 Termux 環境更新。${RESET}"
+                    fi
+                    echo ""; read -p "按 Enter 返回工具選單..."
+                else
+                    # 如果不是 Termux 但輸入了 6
+                    echo -e "${RED}無效選項 '$choice' (非 Termux 環境)${RESET}"; sleep 1
                 fi
                 ;;
             0)
-                return # 返回到調用它的 main_menu
+                return # 返回到主選單
                 ;;
             *)
-                if [[ -z "$choice" ]]; then continue; else echo -e "${RED}無效選項 '$choice'${RESET}"; log_message "WARNING" "工具選單輸入無效選項: $choice"; sleep 1; fi
+                if [[ -z "$choice" ]]; then
+                    continue # 如果是空輸入，重新顯示選單
+                else
+                    echo -e "${RED}無效選項 '$choice'${RESET}"
+                    log_message "WARNING" "工具選單輸入無效選項: $choice"
+                    sleep 1
+                fi
                 ;;
         esac
     done
