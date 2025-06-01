@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.3-beta.20" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.3-beta.21" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -4350,7 +4350,7 @@ if ! mkdir -p "$TEMP_DIR" 2>/dev/null; then
 fi
 
 ############################################
-# <<< 修改：主程式 (處理環境檢查失敗情況) >>>
+# <<< 修改：主程式 (環境檢查失敗時，延後 clear 以便查看錯誤訊息) >>>
 ############################################
 main() {
     # --- 設定預設值 (假設這些已在腳本頂部完成) ---
@@ -4368,42 +4368,65 @@ main() {
 
     # --- 環境檢查 ---
     # <<< 修改：調用 check_environment 並檢查返回值 >>>
-    if ! check_environment; then
-        # <<< 環境檢查失敗後的處理流程 >>>
-        clear # 清屏以顯示重要提示
-        echo -e "${RED}##############################################${RESET}"
-        echo -e "${RED}# ${BOLD}環境檢查失敗！腳本無法正常運行。${RESET}${RED} #${RESET}"
+    if ! check_environment; then # 第一次檢查，非靜默模式
+        # <<< 修改：移除這裡的 clear，並在標題前加換行以便與 check_environment 的輸出分隔 >>>
+        echo -e "\n${RED}##############################################${RESET}"
+        echo -e "${RED}# ${BOLD}環境檢查發現問題！腳本可能無法正常運行。${RESET}${RED} #${RESET}"
         echo -e "${RED}##############################################${RESET}"
         echo -e "${YELLOW}檢測到缺少必要的工具、權限或設定。${RESET}"
-        echo -e "${YELLOW}請查看上面的具體錯誤訊息。${RESET}"
-        echo -e "\n${CYAN}您可以嘗試運行「依賴更新」功能來自動安裝缺失的軟體包。${RESET}"
-        echo -e "${YELLOW}注意：Termux 儲存權限問題需要手動執行 'termux-setup-storage'。${RESET}"
-        echo ""
+        # <<< 修改：提示語更明確指向 "上方" 的訊息 >>>
+        echo -e "${YELLOW}${BOLD}請查看檢查過程中（上方）列出的具體錯誤訊息。${RESET}"
 
-        # 詢問使用者是否運行依賴更新
+        if [[ "$OS_TYPE" == "termux" ]]; then
+            # 特別檢查並提示 Termux 儲存權限問題
+            # 這裡的測試檔案使用不同的後綴以避免與 check_environment 中的衝突
+            if [ ! -d "/sdcard" ] || ! touch "/sdcard/.termux-test-write-main-prompt" 2>/dev/null; then
+                echo -e "\n${RED}${BOLD}*** Termux 儲存權限問題 ***${RESET}"
+                echo -e "${YELLOW}腳本無法存取或寫入外部存儲 (/sdcard)。${RESET}"
+                echo -e "${CYAN}請先在 Termux 中手動執行以下命令授予權限：${RESET}"
+                echo -e "    ${GREEN}termux-setup-storage${RESET}"
+                echo -e "${CYAN}然後完全關閉並重新啟動 Termux 和此腳本。${RESET}"
+                echo -e "${YELLOW}依賴更新功能無法解決此權限問題。${RESET}"
+            fi
+            rm -f "/sdcard/.termux-test-write-main-prompt" # 清理測試檔案
+        fi
+
+        echo -e "\n${CYAN}您可以選擇讓腳本嘗試自動安裝/更新缺失的依賴套件。${RESET}"
+        echo -e "${YELLOW}注意：此操作無法修復 Termux 儲存權限問題。${RESET}"
+        echo ""
+        # <<< 新增：讓使用者有時間查看由 check_environment 打印的錯誤訊息 >>>
+        read -p "按 Enter 鍵以顯示後續選項..."
+        # <<< 新增：在顯示後續選項前清屏，使界面整潔 >>>
+        clear
+
         local run_dep_update=""
         read -rp "是否立即嘗試運行依賴更新？ (y/n): " run_dep_update
 
         if [[ "$run_dep_update" =~ ^[Yy]$ ]]; then
             log_message "INFO" "使用者選擇在環境檢查失敗後運行依賴更新。"
             # <<< 調用依賴更新函數 >>>
-            update_dependencies
+            update_dependencies # update_dependencies 內部有其自身的輸出和 "按 Enter 返回" 的提示
 
             # <<< 依賴更新後再次檢查環境 >>>
+            # 這裡的 clear 是為了清掉 update_dependencies 的輸出，準備顯示重新檢查的提示
+            clear
             echo -e "\n${CYAN}---------------------------------------------${RESET}"
             echo -e "${CYAN}依賴更新流程已執行完畢。${RESET}"
             echo -e "${CYAN}正在重新檢查環境以確認問題是否解決...${RESET}"
             echo -e "${CYAN}---------------------------------------------${RESET}"
-            sleep 2 # 給使用者一點時間看提示
+            sleep 1 # 給使用者一點時間看提示
 
-            if ! check_environment; then
-                # <<< 如果再次檢查仍然失敗 >>>
+            if ! check_environment "--silent"; then # 第二次檢查，使用靜默模式
+                # check_environment 在靜默模式失敗時，其自身會打印出仍然存在的問題
                 log_message "ERROR" "依賴更新後環境再次檢查失敗，腳本退出。"
                 echo -e "\n${RED}##############################################${RESET}"
                 echo -e "${RED}# ${BOLD}環境重新檢查仍然失敗！${RESET}${RED}           #${RESET}"
                 echo -e "${RED}# ${BOLD}腳本無法繼續執行。${RESET}${RED}                 #${RESET}"
-                echo -e "${RED}# ${BOLD}請仔細檢查上面的錯誤訊息，${RESET}${RED}         #${RESET}"
-                echo -e "${RED}# ${BOLD}或嘗試手動安裝缺失的依賴。${RESET}${RED}       #${RESET}"
+                echo -e "${RED}# ${BOLD}請仔細檢查上面列出的問題，${RESET}${RED}         #${RESET}"
+                echo -e "${RED}# ${BOLD}或嘗試手動解決。${RESET}${RED}                   #${RESET}"
+                if [[ "$OS_TYPE" == "termux" ]]; then
+                     echo -e "${RED}# ${BOLD}對於 Termux 儲存權限，請務必執行 ${GREEN}termux-setup-storage${RESET}${RED}。 #${RESET}"
+                fi
                 echo -e "${RED}##############################################${RESET}"
                 exit 1 # 退出腳本
             else
@@ -4413,7 +4436,6 @@ main() {
                 echo -e "${GREEN}# ${BOLD}環境重新檢查通過！準備進入主選單...${RESET}${GREEN} #${RESET}"
                 echo -e "${GREEN}##############################################${RESET}"
                 sleep 2 # 顯示成功信息
-                # 不需要 exit，腳本會繼續往下執行
             fi
         else
             # <<< 如果使用者選擇不運行依賴更新 >>>
@@ -4432,7 +4454,7 @@ main() {
 
     # --- 自動調整執行緒 ---
     adjust_threads
-    sleep 0 # 短暫暫停
+    # sleep 0 # 短暫暫停 (這一行在您的原始 main 函數中是存在的，我予以保留)
 
     # --- 進入主選單 ---
     main_menu
