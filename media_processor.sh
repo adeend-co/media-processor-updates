@@ -1,11 +1,11 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.3-beta.21" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.3-beta.22" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
-SCRIPT_UPDATE_DATE="2025-06-01" # 請根據實際情況修改此日期
+SCRIPT_UPDATE_DATE="2025-06-02" # 請根據實際情況修改此日期
 ############################################
 
 # ... 其他設定 ...
@@ -19,7 +19,16 @@ COLOR_ENABLED=true
 # --- Configuration File ---
 # <<< 新增：設定檔路徑 >>>
 CONFIG_FILE="$HOME/.media_processor_rc"
-
+# --- 日誌級別終端顯示設定 (預設值) ---
+# 這些變數將控制對應級別的訊息是否默認顯示在終端
+# true = 顯示在終端, false = 不顯示在終端 (但仍寫入日誌)
+TERMINAL_LOG_SHOW_INFO="true"
+TERMINAL_LOG_SHOW_WARNING="true"
+TERMINAL_LOG_SHOW_ERROR="true"
+TERMINAL_LOG_SHOW_SUCCESS="true"
+TERMINAL_LOG_SHOW_DEBUG="false"  # DEBUG 預設不在終端顯示
+TERMINAL_LOG_SHOW_SECURITY="true"
+# 您可以根據需要添加更多級別
 # --- 【重要】路徑設定 (根據您的實際情況修改) ---
 # 假設您將 GitHub 倉庫 clone 到 $HOME/media-processor-updates
 # 並且所有腳本 (bash + python) 都在倉庫根目錄下
@@ -73,49 +82,91 @@ if [ ! -d "$SCRIPT_DIR" ]; then
 # 如果目錄一開始就存在，則不執行上面 if 區塊內的任何操作，保持安靜
 fi
 
+############################################
+# log_message (根據全局開關控制各級別終端輸出)
+############################################
 log_message() {
     local level="$1"
     local message="$2"
     local timestamp
     timestamp=$(date "+%Y-%m-%d %H:%M:%S")
-    local colored_message=""
+    local plain_log_message="[$timestamp] [$level] $message"
+    local colored_display_message=""
+    local show_on_terminal=false # 預設不顯示，由開關決定
 
-    # 避免顏色代碼問題的簡化版本
+    # 根據級別和對應的開關變數決定是否在終端顯示
+    case "$level" in
+        "INFO")    [[ "${TERMINAL_LOG_SHOW_INFO:-true}" == "true" ]] && show_on_terminal=true ;;
+        "WARNING") [[ "${TERMINAL_LOG_SHOW_WARNING:-true}" == "true" ]] && show_on_terminal=true ;;
+        "ERROR")   [[ "${TERMINAL_LOG_SHOW_ERROR:-true}" == "true" ]] && show_on_terminal=true ;;
+        "SUCCESS") [[ "${TERMINAL_LOG_SHOW_SUCCESS:-true}" == "true" ]] && show_on_terminal=true ;;
+        "DEBUG")   [[ "${TERMINAL_LOG_SHOW_DEBUG:-false}" == "true" ]] && show_on_terminal=true ;; # 注意預設值
+        "SECURITY")[[ "${TERMINAL_LOG_SHOW_SECURITY:-true}" == "true" ]] && show_on_terminal=true ;;
+        *)         show_on_terminal=true ;; # 未明確配置的級別，預設顯示
+    esac
+
+    # 構建螢幕顯示的彩色訊息 (如果需要顯示)
+    if $show_on_terminal; then
+        case "$level" in
+            "INFO")    colored_display_message="${BLUE}${BOLD}[$timestamp] [$level]${RESET}${BLUE} $message${RESET}" ;;
+            "WARNING") colored_display_message="${YELLOW}${BOLD}[$timestamp] [$level]${RESET}${YELLOW} $message${RESET}" ;;
+            "ERROR")   colored_display_message="${RED}${BOLD}[$timestamp] [$level]${RESET}${RED} $message${RESET}" ;;
+            "SUCCESS") colored_display_message="${GREEN}${BOLD}[$timestamp] [$level]${RESET}${GREEN} $message${RESET}" ;;
+            "DEBUG")   colored_display_message="${PURPLE}${BOLD}[$timestamp] [$level]${RESET}${PURPLE} $message${RESET}" ;;
+            "SECURITY") colored_display_message="${WHITE}${BOLD}[$timestamp] [${RED_BG}$level${RESET}${WHITE}] $message${RESET}" ;;
+            *)         colored_display_message="$plain_log_message" ;;
+        esac
+    fi
+
+    # 寫入日誌檔案 (總是執行)
     if [ -n "$LOG_FILE" ]; then
-        # 寫入日誌時使用純文本
-        echo "[$timestamp] [$level] $message" >> "$LOG_FILE"
-        
-        # 螢幕顯示時可以使用顏色
-        case "$level" in
-            "INFO") colored_message="${BLUE}[$timestamp] [${BOLD}$level${RESET}${BLUE}] $message${RESET}" ;;
-            "WARNING") colored_message="${YELLOW}[$timestamp] [${BOLD}$level${RESET}${YELLOW}] $message${RESET}" ;;
-            "ERROR") colored_message="${RED}[$timestamp] [${BOLD}$level${RESET}${RED}] $message${RESET}" ;;
-            "SUCCESS") colored_message="${GREEN}[$timestamp] [${BOLD}$level${RESET}${GREEN}] $message${RESET}" ;;
-            *) colored_message="[$timestamp] [$level] $message" ;;
-        esac
-        echo -e "$colored_message"
-    else
-        # 與原代碼相同
-        case "$level" in
-            "INFO") colored_message="${BLUE}[$timestamp] [${BOLD}$level${RESET}${BLUE}] $message${RESET}" ;;
-            "WARNING") colored_message="${YELLOW}[$timestamp] [${BOLD}$level${RESET}${YELLOW}] $message${RESET}" ;;
-            "ERROR") colored_message="${RED}[$timestamp] [${BOLD}$level${RESET}${RED}] $message${RESET}" ;;
-            "SUCCESS") colored_message="${GREEN}[$timestamp] [${BOLD}$level${RESET}${GREEN}] $message${RESET}" ;;
-            *) colored_message="[$timestamp] [$level] $message" ;;
-        esac
-        echo -e "$colored_message"
+        # ... (日誌寫入邏輯，與之前的版本相同，包含目錄檢查等) ...
+        if ! mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null; then
+            local log_dir_fail_ts=$(date "+%Y-%m-%d %H:%M:%S")
+            if $show_on_terminal; then
+                 echo -e "${RED}${BOLD}[$log_dir_fail_ts] [ERROR]${RESET}${RED} Failed to create directory for LOG_FILE: $(dirname "$LOG_FILE")${RESET}" >&2
+            else
+                 echo "[$log_dir_fail_ts] [ERROR] Failed to create directory for LOG_FILE: $(dirname "$LOG_FILE")" >> "$LOG_FILE" 2>/dev/null
+            fi
+        elif [ ! -w "$(dirname "$LOG_FILE")" ]; then
+            local log_write_fail_ts=$(date "+%Y-%m-%d %H:%M:%S")
+            if $show_on_terminal; then
+                echo -e "${RED}${BOLD}[$log_write_fail_ts] [ERROR]${RESET}${RED} Directory for LOG_FILE is not writable: $(dirname "$LOG_FILE")${RESET}" >&2
+            else
+                echo "[$log_write_fail_ts] [ERROR] Directory for LOG_FILE is not writable: $(dirname "$LOG_FILE")" >> "$LOG_FILE" 2>/dev/null
+            fi
+        else
+            echo "$plain_log_message" >> "$LOG_FILE"
+        fi
+    fi
+
+    # 螢幕顯示 (如果 $show_on_terminal 為 true)
+    if $show_on_terminal; then
+        echo -e "$colored_display_message"
     fi
 }
 
 ############################################
-# <<< 修改：儲存設定檔 (加入 Python 版本) >>>
+# <<< 修改：儲存設定檔 (加入日誌級別顯示開關) >>>
 ############################################
 save_config() {
     log_message "INFO" "正在儲存目前設定到 $CONFIG_FILE ..."
-    if echo "THREADS=\"$THREADS\"" > "$CONFIG_FILE" && \
+    # 先寫入一行註解，說明這些開關的作用
+    if echo "# --- Configuration File for Media Processor ---" > "$CONFIG_FILE" && \
+       echo "# Script settings" >> "$CONFIG_FILE" && \
+       echo "THREADS=\"$THREADS\"" >> "$CONFIG_FILE" && \
        echo "DOWNLOAD_PATH=\"$DOWNLOAD_PATH\"" >> "$CONFIG_FILE" && \
        echo "COLOR_ENABLED=\"$COLOR_ENABLED\"" >> "$CONFIG_FILE" && \
-       echo "PYTHON_CONVERTER_VERSION=\"$PYTHON_CONVERTER_VERSION\"" >> "$CONFIG_FILE"; then # <<< 新增
+       echo "PYTHON_CONVERTER_VERSION=\"$PYTHON_CONVERTER_VERSION\"" >> "$CONFIG_FILE" && \
+       echo "" >> "$CONFIG_FILE" && \
+       echo "# --- Terminal Log Level Display Settings ---" >> "$CONFIG_FILE" && \
+       echo "# Set to 'true' to show on terminal, 'false' to hide (still logs to file)." >> "$CONFIG_FILE" && \
+       echo "TERMINAL_LOG_SHOW_INFO=\"${TERMINAL_LOG_SHOW_INFO:-true}\"" >> "$CONFIG_FILE" && \
+       echo "TERMINAL_LOG_SHOW_WARNING=\"${TERMINAL_LOG_SHOW_WARNING:-true}\"" >> "$CONFIG_FILE" && \
+       echo "TERMINAL_LOG_SHOW_ERROR=\"${TERMINAL_LOG_SHOW_ERROR:-true}\"" >> "$CONFIG_FILE" && \
+       echo "TERMINAL_LOG_SHOW_SUCCESS=\"${TERMINAL_LOG_SHOW_SUCCESS:-true}\"" >> "$CONFIG_FILE" && \
+       echo "TERMINAL_LOG_SHOW_DEBUG=\"${TERMINAL_LOG_SHOW_DEBUG:-false}\"" >> "$CONFIG_FILE" && \
+       echo "TERMINAL_LOG_SHOW_SECURITY=\"${TERMINAL_LOG_SHOW_SECURITY:-true}\"" >> "$CONFIG_FILE"; then
         log_message "INFO" "設定已成功儲存到 $CONFIG_FILE"
     else
         log_message "ERROR" "無法寫入設定檔 $CONFIG_FILE！請檢查權限。"
@@ -192,132 +243,150 @@ _send_termux_notification() {
 }
 
 ############################################
-# <<< 修改：載入設定檔 (安全解析版，取代 source) >>>(2.3.9+)
+# <<< 修改：載入設定檔 (加入日誌級別顯示開關) >>>
 ############################################
 load_config() {
     # 設定預設值 (這些值在設定檔未找到或無效時使用)
-    # 注意：THREADS, DOWNLOAD_PATH 等的初始預設值應在腳本頂部設定好
-    #       這裡主要是確保 Python 版本有預設值
-    PYTHON_CONVERTER_VERSION="0.0.0"
+    # 原有的 THREADS, DOWNLOAD_PATH 等預設值在腳本頂部設定
+    # Python 版本預設值
+    PYTHON_CONVERTER_VERSION="0.0.0" # 原始預設
+    # 日誌級別顯示預設值 (與腳本頂部定義一致)
+    TERMINAL_LOG_SHOW_INFO="${TERMINAL_LOG_SHOW_INFO:-true}"
+    TERMINAL_LOG_SHOW_WARNING="${TERMINAL_LOG_SHOW_WARNING:-true}"
+    TERMINAL_LOG_SHOW_ERROR="${TERMINAL_LOG_SHOW_ERROR:-true}"
+    TERMINAL_LOG_SHOW_SUCCESS="${TERMINAL_LOG_SHOW_SUCCESS:-true}"
+    TERMINAL_LOG_SHOW_DEBUG="${TERMINAL_LOG_SHOW_DEBUG:-false}"
+    TERMINAL_LOG_SHOW_SECURITY="${TERMINAL_LOG_SHOW_SECURITY:-true}"
+
     # 記錄一下初始預設值 (如果設定檔不存在，這些值會被使用)
     local initial_threads="$THREADS"
     local initial_dl_path="$DOWNLOAD_PATH"
     local initial_color="$COLOR_ENABLED"
     local initial_py_ver="$PYTHON_CONVERTER_VERSION"
+    local initial_show_info="$TERMINAL_LOG_SHOW_INFO"
+    local initial_show_warning="$TERMINAL_LOG_SHOW_WARNING"
+    local initial_show_error="$TERMINAL_LOG_SHOW_ERROR"
+    local initial_show_success="$TERMINAL_LOG_SHOW_SUCCESS"
+    local initial_show_debug="$TERMINAL_LOG_SHOW_DEBUG"
+    local initial_show_security="$TERMINAL_LOG_SHOW_SECURITY"
+
 
     if [ -f "$CONFIG_FILE" ] && [ -r "$CONFIG_FILE" ]; then
         log_message "INFO" "正在從 $CONFIG_FILE 安全地載入設定..."
-        echo -e "${BLUE}正在從 $CONFIG_FILE 載入設定...${RESET}" # 給使用者提示
+        echo -e "${BLUE}正在從 $CONFIG_FILE 載入設定...${RESET}"
 
         local line_num=0
-        # 使用 IFS= 和 -r read 來正確處理行
         while IFS= read -r line || [[ -n "$line" ]]; do
             ((line_num++))
-            # 移除行首行尾的空白字符 (可選，但更健壯)
             line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-
-            # 跳過空行和註解行 (以 # 開頭，前面可能有空白)
             if [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]]; then
                 continue
             fi
 
-            # 使用正則表達式匹配 VAR="VALUE" 格式
-            # ^[[:space:]]* : 行首可能有空白
-            # ([A-Za-z_][A-Za-z0-9_]+) : 捕獲合法的變數名 (字母/數字/底線，不能以數字開頭)
-            # [[:space:]]*=[[:space:]]* : 等號，前後可能有空白
-            # \"(.*)\" : 捕獲雙引號內的內容 (值)
-            # [[:space:]]*$ : 行尾可能有空白
             if [[ "$line" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]+)[[:space:]]*=[[:space:]]*\"(.*)\"[[:space:]]*$ ]]; then
                 local var_name="${BASH_REMATCH[1]}"
                 local var_value="${BASH_REMATCH[2]}"
 
-                # --- 安全核心：只處理已知的變數 ---
                 case "$var_name" in
-                    "THREADS")
-                        # 驗證 THREADS
+                    "THREADS") # ... (原有處理不變) ...
                         if [[ "$var_value" =~ ^[0-9]+$ ]] && [ "$var_value" -ge "$MIN_THREADS" ] && [ "$var_value" -le "$MAX_THREADS" ]; then
                             THREADS="$var_value"
                             log_message "INFO" "從設定檔載入: THREADS=$THREADS"
                         else
-                            log_message "WARNING" "設定檔中的 THREADS ('$var_value') 無效或超出範圍 ($MIN_THREADS-$MAX_THREADS)，將使用預設值或自動調整。"
-                            # 保留之前的預設值或讓後續 adjust_threads 處理
-                            THREADS="$initial_threads" # 或設置為 MIN_THREADS
+                            log_message "WARNING" "設定檔中的 THREADS ('$var_value') 無效，使用預設 '$initial_threads'。"
+                            THREADS="$initial_threads"
                         fi
                         ;;
-                    "DOWNLOAD_PATH")
-                        # 這裡只賦值，路徑的有效性檢查在函數末尾統一進行
+                    "DOWNLOAD_PATH") # ... (原有處理不變) ...
                         DOWNLOAD_PATH="$var_value"
                         log_message "INFO" "從設定檔載入: DOWNLOAD_PATH=$DOWNLOAD_PATH"
                         ;;
-                    "COLOR_ENABLED")
+                    "COLOR_ENABLED") # ... (原有處理不變) ...
                         if [[ "$var_value" == "true" || "$var_value" == "false" ]]; then
                             COLOR_ENABLED="$var_value"
                             log_message "INFO" "從設定檔載入: COLOR_ENABLED=$COLOR_ENABLED"
                         else
-                            log_message "WARNING" "設定檔中的 COLOR_ENABLED ('$var_value') 無效，將使用預設值 '$initial_color'。"
+                            log_message "WARNING" "設定檔中的 COLOR_ENABLED ('$var_value') 無效，使用預設 '$initial_color'。"
                             COLOR_ENABLED="$initial_color"
                         fi
                         ;;
-                    "PYTHON_CONVERTER_VERSION")
-                        # 基礎檢查 (非空)
+                    "PYTHON_CONVERTER_VERSION") # ... (原有處理不變) ...
                         if [ -n "$var_value" ]; then
                              PYTHON_CONVERTER_VERSION="$var_value"
                              log_message "INFO" "從設定檔載入: PYTHON_CONVERTER_VERSION=$PYTHON_CONVERTER_VERSION"
                         else
-                             log_message "WARNING" "設定檔中的 PYTHON_CONVERTER_VERSION 為空，將使用預設值 '$initial_py_ver'。"
+                             log_message "WARNING" "設定檔中的 PYTHON_CONVERTER_VERSION 為空，使用預設 '$initial_py_ver'。"
                              PYTHON_CONVERTER_VERSION="$initial_py_ver"
                         fi
                         ;;
+                    # <<< 新增：處理日誌級別顯示開關 >>>
+                    "TERMINAL_LOG_SHOW_INFO")
+                        if [[ "$var_value" == "true" || "$var_value" == "false" ]]; then TERMINAL_LOG_SHOW_INFO="$var_value"; else TERMINAL_LOG_SHOW_INFO="$initial_show_info"; fi
+                        log_message "INFO" "從設定檔載入: TERMINAL_LOG_SHOW_INFO=$TERMINAL_LOG_SHOW_INFO"
+                        ;;
+                    "TERMINAL_LOG_SHOW_WARNING")
+                        if [[ "$var_value" == "true" || "$var_value" == "false" ]]; then TERMINAL_LOG_SHOW_WARNING="$var_value"; else TERMINAL_LOG_SHOW_WARNING="$initial_show_warning"; fi
+                        log_message "INFO" "從設定檔載入: TERMINAL_LOG_SHOW_WARNING=$TERMINAL_LOG_SHOW_WARNING"
+                        ;;
+                    "TERMINAL_LOG_SHOW_ERROR")
+                        if [[ "$var_value" == "true" || "$var_value" == "false" ]]; then TERMINAL_LOG_SHOW_ERROR="$var_value"; else TERMINAL_LOG_SHOW_ERROR="$initial_show_error"; fi
+                        log_message "INFO" "從設定檔載入: TERMINAL_LOG_SHOW_ERROR=$TERMINAL_LOG_SHOW_ERROR"
+                        ;;
+                    "TERMINAL_LOG_SHOW_SUCCESS")
+                        if [[ "$var_value" == "true" || "$var_value" == "false" ]]; then TERMINAL_LOG_SHOW_SUCCESS="$var_value"; else TERMINAL_LOG_SHOW_SUCCESS="$initial_show_success"; fi
+                        log_message "INFO" "從設定檔載入: TERMINAL_LOG_SHOW_SUCCESS=$TERMINAL_LOG_SHOW_SUCCESS"
+                        ;;
+                    "TERMINAL_LOG_SHOW_DEBUG")
+                        if [[ "$var_value" == "true" || "$var_value" == "false" ]]; then TERMINAL_LOG_SHOW_DEBUG="$var_value"; else TERMINAL_LOG_SHOW_DEBUG="$initial_show_debug"; fi
+                        log_message "INFO" "從設定檔載入: TERMINAL_LOG_SHOW_DEBUG=$TERMINAL_LOG_SHOW_DEBUG"
+                        ;;
+                    "TERMINAL_LOG_SHOW_SECURITY")
+                        if [[ "$var_value" == "true" || "$var_value" == "false" ]]; then TERMINAL_LOG_SHOW_SECURITY="$var_value"; else TERMINAL_LOG_SHOW_SECURITY="$initial_show_security"; fi
+                        log_message "INFO" "從設定檔載入: TERMINAL_LOG_SHOW_SECURITY=$TERMINAL_LOG_SHOW_SECURITY"
+                        ;;
                     *)
-                        # 忽略未知的變數
                         log_message "WARNING" "在設定檔第 $line_num 行發現未知或不處理的變數 '$var_name'，已忽略。"
                         ;;
                 esac
             else
-                # 記錄格式不符的行
                 log_message "WARNING" "設定檔第 $line_num 行格式不符 '$line'，已忽略。"
             fi
         done < "$CONFIG_FILE"
 
-        log_message "INFO" "設定檔載入完成。最終值: THREADS=$THREADS, DOWNLOAD_PATH=$DOWNLOAD_PATH, COLOR_ENABLED=$COLOR_ENABLED, PYTHON_CONVERTER_VERSION=$PYTHON_CONVERTER_VERSION"
+        log_message "INFO" "設定檔載入完成。" # 可以在這裡加上更多變數的最終值
         echo -e "${GREEN}已從 $CONFIG_FILE 載入使用者設定。${RESET}"
         sleep 1
-
     else
         log_message "INFO" "設定檔 $CONFIG_FILE 未找到或不可讀，將使用預設設定。"
-        # 如果設定檔不存在，確保所有變數保持其初始預設值
+        # 確保所有變數（包括新的日誌開關）都使用其初始預設值
         THREADS="$initial_threads"
         DOWNLOAD_PATH="$initial_dl_path"
         COLOR_ENABLED="$initial_color"
         PYTHON_CONVERTER_VERSION="$initial_py_ver"
-         echo -e "${YELLOW}設定檔 $CONFIG_FILE 未找到，使用預設值。${RESET}"
-         sleep 1
+        TERMINAL_LOG_SHOW_INFO="$initial_show_info"
+        TERMINAL_LOG_SHOW_WARNING="$initial_show_warning"
+        TERMINAL_LOG_SHOW_ERROR="$initial_show_error"
+        TERMINAL_LOG_SHOW_SUCCESS="$initial_show_success"
+        TERMINAL_LOG_SHOW_DEBUG="$initial_show_debug"
+        TERMINAL_LOG_SHOW_SECURITY="$initial_show_security"
+        echo -e "${YELLOW}設定檔 $CONFIG_FILE 未找到，使用預設值。${RESET}"
+        sleep 1
     fi
 
-    # <<< 重要：在處理完設定檔後，執行路徑和日誌的最終設定與檢查 >>>
-    # 無論是從設定檔載入還是使用預設值，都要確保 LOG_FILE 路徑基於最終的 DOWNLOAD_PATH
-    # 同時進行下載路徑的有效性檢查和目錄創建
-
-    # 1. 清理並驗證下載路徑 (來自設定檔或預設值)
+    # ... (後續的路徑和日誌最終設定與檢查不變) ...
     local sanitized_path=""
-    # 使用 realpath 處理相對路徑、多餘斜線等，並移除危險字符
     sanitized_path=$(realpath -m "$DOWNLOAD_PATH" 2>/dev/null | sed 's/[;|&<>()$`{}]//g')
-
     if [ -z "$sanitized_path" ]; then
          log_message "ERROR" "最終下載路徑 '$DOWNLOAD_PATH' 無效或解析失敗！腳本無法啟動。"
          echo -e "${RED}錯誤：最終下載路徑 '$DOWNLOAD_PATH' 無效！腳本無法啟動。${RESET}" >&2
          exit 1
     fi
-    DOWNLOAD_PATH="$sanitized_path" # 使用清理後的路徑
-
-    # 2. 檢查路徑是否在允許範圍內 (保持原有的安全檢查)
+    DOWNLOAD_PATH="$sanitized_path"
     if ! [[ "$DOWNLOAD_PATH" =~ ^(/storage/emulated/0|$HOME|/data/data/com.termux/files/home) ]]; then
          log_message "SECURITY" "最終下載路徑 '$DOWNLOAD_PATH' 不在允許的安全範圍內！腳本無法啟動。"
          echo -e "${RED}安全性錯誤：最終下載路徑 '$DOWNLOAD_PATH' 不在允許範圍內！腳本無法啟動。${RESET}" >&2
          exit 1
     fi
-
-    # 3. 嘗試創建最終確定的下載目錄並檢查寫入權限
     if ! mkdir -p "$DOWNLOAD_PATH" 2>/dev/null; then
         log_message "ERROR" "無法創建最終確定的下載目錄 '$DOWNLOAD_PATH'！腳本無法啟動。"
         echo -e "${RED}錯誤：無法創建最終下載目錄 '$DOWNLOAD_PATH'！腳本無法啟動。${RESET}" >&2
@@ -327,10 +396,7 @@ load_config() {
          echo -e "${RED}錯誤：最終下載目錄 '$DOWNLOAD_PATH' 不可寫！腳本無法啟動。${RESET}" >&2
          exit 1
     fi
-
-    # 4. 設定最終的 LOG_FILE 路徑
     LOG_FILE="$DOWNLOAD_PATH/script_log.txt"
-
     log_message "INFO" "最終下載路徑確認: $DOWNLOAD_PATH, 日誌檔案: $LOG_FILE"
 }
 
@@ -3775,7 +3841,7 @@ general_download_menu() {
 ############################################
 
 ############################################
-# <<< 新增：腳本設定與工具選單 (增加 Termux 完整更新選項) >>>
+# <<< 修正並補全：腳本設定與工具選單 >>>
 ############################################
 utilities_menu() {
     while true; do
@@ -3786,22 +3852,21 @@ utilities_menu() {
         echo -e " 2. 檢視操作日誌"
         echo -e " 3. ${BOLD}檢查並更新依賴套件${RESET} (腳本自身依賴)"
         echo -e " 4. ${BOLD}檢查腳本更新${RESET}"
+        echo -e " 5. ${BOLD}設定日誌終端顯示級別${RESET}"
 
-        local termux_options_start_index=5 # Termux 特定選項的起始編號
+        local termux_options_start_index=6
+        local current_max_option=5 # 非 Termux 時的最大選項號 (不計0)
+
         if [[ "$OS_TYPE" == "termux" ]]; then
             echo -e " ${termux_options_start_index}. ${BOLD}設定 Termux 啟動時詢問${RESET}"
-            echo -e " $((termux_options_start_index + 1)). ${BOLD}完整更新 Termux 環境${RESET} (pkg update && upgrade)" # <<< 新增選項
+            echo -e " $((termux_options_start_index + 1)). ${BOLD}完整更新 Termux 環境${RESET} (pkg update && upgrade)"
+            current_max_option=$((termux_options_start_index + 1))
         fi
         echo -e "---------------------------------------------"
         echo -e " 0. ${YELLOW}返回主選單${RESET}"
         echo -e "---------------------------------------------"
 
-        read -t 0.1 -N 10000 discard # 清除緩衝區
-
-        local current_max_option=4 # 非 Termux 時的最大選項號 (不計0)
-        if [[ "$OS_TYPE" == "termux" ]]; then
-            current_max_option=$((termux_options_start_index + 1)) # Termux 時的最大選項號
-        fi
+        read -t 0.1 -N 10000 discard
         local choice_prompt="輸入選項 (0-${current_max_option}): "
         local choice
 
@@ -3809,29 +3874,30 @@ utilities_menu() {
 
         case $choice in
             1)
-                config_menu
+                config_menu # 已提供完整
                 ;;
             2)
-                view_log
+                view_log # 已提供完整
                 ;;
             3)
-                update_dependencies # 更新腳本的依賴 (yt-dlp, ffmpeg 等)
-                # update_dependencies 內部有 "按 Enter 返回"
+                update_dependencies # 已提供完整 (內部有 "按 Enter 返回")
                 ;;
             4)
-                auto_update_script
-                # auto_update_script 內部有 "按 Enter 返回"
+                auto_update_script # 已提供完整 (內部有 "按 Enter 返回")
                 ;;
             5)
+                configure_terminal_log_display_menu # 已提供完整
+                ;;
+            6) # Termux 啟動詢問
                 if [[ "$OS_TYPE" == "termux" ]]; then
-                    setup_termux_autostart
+                    setup_termux_autostart # 假設此函數已完整提供
                     echo ""; read -p "按 Enter 返回工具選單..."
                 else
-                    # 如果不是 Termux，但用戶輸入了 5 (可能通過記憶而非看選單)
-                    echo -e "${RED}無效選項 '$choice' (非 Termux 環境)${RESET}"; sleep 1
+                    # 如果不是 Termux，但用戶可能通過記憶輸入了 6
+                    echo -e "${RED}無效選項 '$choice' (此選項僅適用於 Termux 環境)${RESET}"; sleep 1
                 fi
                 ;;
-            6) # <<< 新增的 Case，處理 Termux 環境完整更新 >>>
+            7) # Termux 完整更新
                 if [[ "$OS_TYPE" == "termux" ]]; then
                     clear
                     echo -e "${CYAN}--- 完整更新 Termux 環境 ---${RESET}"
@@ -3839,16 +3905,14 @@ utilities_menu() {
                     echo -e "${YELLOW}這會更新您 Termux 環境中所有已安裝的套件，可能需要一些時間。${RESET}"
                     echo -e "${RED}${BOLD}請確保您的網路連線穩定。${RESET}"
                     echo ""
-                    local confirm_full_update
-                    read -p "您確定要繼續嗎？ (y/n): " confirm_full_update
+                    local confirm_full_update_termux # 使用不同變數名以示區分
+                    read -p "您確定要繼續嗎？ (y/n): " confirm_full_update_termux
 
-                    if [[ "$confirm_full_update" =~ ^[Yy]$ ]]; then
+                    if [[ "$confirm_full_update_termux" =~ ^[Yy]$ ]]; then
                         log_message "INFO" "使用者觸發 Termux 環境完整更新。"
                         echo -e "\n${CYAN}正在開始更新 Termux 環境... 這可能需要幾分鐘或更長時間。${RESET}"
                         echo -e "${CYAN}請耐心等待，不要中斷此過程。${RESET}"
                         
-                        # 執行 Termux 完整更新命令
-                        # 使用 -y 自動確認 pkg update 和 pkg upgrade 的提示
                         if pkg update -y && pkg upgrade -y; then
                             log_message "SUCCESS" "Termux 環境已成功更新。"
                             echo -e "\n${GREEN}Termux 環境已成功更新完畢！${RESET}"
@@ -3864,8 +3928,7 @@ utilities_menu() {
                     fi
                     echo ""; read -p "按 Enter 返回工具選單..."
                 else
-                    # 如果不是 Termux 但輸入了 6
-                    echo -e "${RED}無效選項 '$choice' (非 Termux 環境)${RESET}"; sleep 1
+                    echo -e "${RED}無效選項 '$choice' (此選項僅適用於 Termux 環境)${RESET}"; sleep 1
                 fi
                 ;;
             0)
@@ -3998,7 +4061,109 @@ toggle_color() {
     # sleep 1
 }
 
+############################################
+# 新增：設定日誌終端顯示級別選單
+############################################
+configure_terminal_log_display_menu() {
+    while true; do
+        clear
+        echo -e "${CYAN}--- 設定日誌終端顯示級別 ---${RESET}"
+        echo -e "${YELLOW}選擇要切換顯示狀態的日誌級別：${RESET}"
+        # 輔助函數來獲取當前狀態的顯示文字
+        get_display_status() {
+            if [[ "$1" == "true" ]]; then echo -e "${GREEN}顯示${RESET}"; else echo -e "${RED}隱藏${RESET}"; fi
+        }
+
+        echo -e " 1. INFO    級別終端顯示: $(get_display_status "$TERMINAL_LOG_SHOW_INFO")"
+        echo -e " 2. WARNING 級別終端顯示: $(get_display_status "$TERMINAL_LOG_SHOW_WARNING")"
+        echo -e " 3. ERROR   級別終端顯示: $(get_display_status "$TERMINAL_LOG_SHOW_ERROR")"
+        echo -e " 4. SUCCESS 級別終端顯示: $(get_display_status "$TERMINAL_LOG_SHOW_SUCCESS")"
+        echo -e " 5. DEBUG   級別終端顯示: $(get_display_status "$TERMINAL_LOG_SHOW_DEBUG")"
+        echo -e " 6. SECURITY級別終端顯示: $(get_display_status "$TERMINAL_LOG_SHOW_SECURITY")"
+        echo -e "---------------------------------------------"
+        echo -e " 7. ${GREEN}全部設定為顯示${RESET}"
+        echo -e " 8. ${YELLOW}全部設定為隱藏 (除 ERROR 和 SECURITY 外)${RESET}"
+        echo -e " 9. ${BLUE}恢復預設設定${RESET}"
+        echo -e "---------------------------------------------"
+        echo -e " 0. ${YELLOW}返回上一層選單${RESET}"
+        echo -e "---------------------------------------------"
+
+        read -t 0.1 -N 10000 discard
+        local choice
+        read -rp "輸入選項 (0-9): " choice
+
+        case $choice in
+            1) toggle_terminal_log_level "INFO" ;;
+            2) toggle_terminal_log_level "WARNING" ;;
+            3) toggle_terminal_log_level "ERROR" ;;
+            4) toggle_terminal_log_level "SUCCESS" ;;
+            5) toggle_terminal_log_level "DEBUG" ;;
+            6) toggle_terminal_log_level "SECURITY" ;;
+            7) # 全部顯示
+                TERMINAL_LOG_SHOW_INFO="true"
+                TERMINAL_LOG_SHOW_WARNING="true"
+                TERMINAL_LOG_SHOW_ERROR="true"
+                TERMINAL_LOG_SHOW_SUCCESS="true"
+                TERMINAL_LOG_SHOW_DEBUG="true"
+                TERMINAL_LOG_SHOW_SECURITY="true"
+                log_message "INFO" "所有日誌級別的終端顯示已設為：顯示"
+                save_config
+                echo -e "${GREEN}所有日誌級別的終端顯示已設為：顯示${RESET}"; sleep 1
+                ;;
+            8) # 全部隱藏 (除關鍵外)
+                TERMINAL_LOG_SHOW_INFO="false"
+                TERMINAL_LOG_SHOW_WARNING="false"
+                TERMINAL_LOG_SHOW_ERROR="true"   # 保留 ERROR
+                TERMINAL_LOG_SHOW_SUCCESS="false"
+                TERMINAL_LOG_SHOW_DEBUG="false"
+                TERMINAL_LOG_SHOW_SECURITY="true" # 保留 SECURITY
+                log_message "INFO" "大部分日誌級別的終端顯示已設為：隱藏 (ERROR, SECURITY 除外)"
+                save_config
+                echo -e "${YELLOW}大部分日誌級別的終端顯示已設為：隱藏 (ERROR, SECURITY 除外)${RESET}"; sleep 1
+                ;;
+            9) # 恢復預設
+                TERMINAL_LOG_SHOW_INFO="true"    # 預設 INFO 顯示
+                TERMINAL_LOG_SHOW_WARNING="true" # 預設 WARNING 顯示
+                TERMINAL_LOG_SHOW_ERROR="true"   # 預設 ERROR 顯示
+                TERMINAL_LOG_SHOW_SUCCESS="true" # 預設 SUCCESS 顯示
+                TERMINAL_LOG_SHOW_DEBUG="false"  # 預設 DEBUG 隱藏
+                TERMINAL_LOG_SHOW_SECURITY="true" # 預設 SECURITY 顯示
+                log_message "INFO" "日誌終端顯示已恢復預設設定。"
+                save_config
+                echo -e "${BLUE}日誌終端顯示已恢復預設設定。${RESET}"; sleep 1
+                ;;
+            0) return ;;
+            *)
+                if [[ -z "$choice" ]]; then continue; else echo -e "${RED}無效選項 '$choice'${RESET}"; log_message "WARNING" "日誌顯示設定選單輸入無效: $choice"; sleep 1; fi
+                ;;
+        esac
+    done
+}
+
+############################################
+# 輔助函數：切換指定日誌級別的終端顯示狀態
+############################################
+toggle_terminal_log_level() {
+    local level_name="$1" # 例如 "INFO", "DEBUG"
+    local var_name="TERMINAL_LOG_SHOW_${level_name}"
+    local current_status
+    eval "current_status=\"\$$var_name\"" # 獲取變數的當前值
+
+    if [[ "$current_status" == "true" ]]; then
+        eval "$var_name=\"false\""
+        echo -e "${level_name} 級別日誌終端顯示已切換為：${RED}隱藏${RESET}"
+    else
+        eval "$var_name=\"true\""
+        echo -e "${level_name} 級別日誌終端顯示已切換為：${GREEN}顯示${RESET}"
+    fi
+    log_message "INFO" "${level_name} 級別日誌終端顯示切換為: \$$var_name" # \$$var_name 輸出變數名
+    save_config # 保存更改
+    sleep 1
+}
+
+############################################
 # 檢視日誌
+############################################
 view_log() {
     # --- 函數邏輯不變 ---
     if [ -f "$LOG_FILE" ]; then less -R "$LOG_FILE"; else echo -e "${RED}日誌不存在: $LOG_FILE ${RESET}"; log_message "WARNING" "日誌不存在: $LOG_FILE"; sleep 2; fi
