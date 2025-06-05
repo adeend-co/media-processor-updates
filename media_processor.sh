@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.3-beta.23" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.3-beta.24" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -663,6 +663,7 @@ auto_update_script() {
     if [ -f "$SCRIPT_INSTALL_PATH" ]; then if ! chmod +x "$SCRIPT_INSTALL_PATH"; then chmod_success=false; fi; else chmod_success=false; log_message "WARNING" "主腳本 '$SCRIPT_INSTALL_PATH' 不存在。"; fi
     if [ -f "$PYTHON_ENRICHER_SCRIPT_PATH" ]; then if ! chmod +x "$PYTHON_ENRICHER_SCRIPT_PATH"; then chmod_success=false; fi; fi
     if [ -f "$PYTHON_ESTIMATOR_SCRIPT_PATH" ]; then if ! chmod +x "$PYTHON_ESTIMATOR_SCRIPT_PATH"; then chmod_success=false; fi; fi
+    if [ -f "$PYTHON_SYNC_HELPER_SCRIPT_PATH" ]; then if ! chmod +x "$PYTHON_SYNC_HELPER_SCRIPT_PATH"; then chmod_success=false; fi; fi # <<< 新增
     if [ "$chmod_success" = true ]; then echo -e "${GREEN}腳本執行權限已設定。${RESET}"; else echo -e "${RED}錯誤：設定部分或全部腳本權限失敗！${RESET}"; fi
 
     # --- 顯示最終結果 ---
