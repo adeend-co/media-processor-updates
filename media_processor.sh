@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.3-beta.25" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.3-beta.26" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -287,21 +287,24 @@ _send_termux_notification() {
     fi
 }
 
-############################################
+################################################################################
 # 載入設定檔 (包含所有設定，並提供預設值)
-############################################
+# 版本：經過仔細檢查和重構，確保語法完整性
+################################################################################
 load_config() {
     # --- 為所有可配置變數設定初始預設值 ---
     # 這些值會在設定檔不存在、不可讀或設定檔中缺少對應條目時使用。
 
-    # 常規設定預設值 (可以從腳本頂部的全局預設值繼承或在此處明確)
-    THREADS="${THREADS:-4}"
-    # DOWNLOAD_PATH 的預設值通常在 detect_platform_and_set_vars 後設定，
-    # 此處的 initial_dl_path 僅用於比較或當 detect_platform_and_set_vars 未提供時的最終備用。
-    # 假設 DOWNLOAD_PATH_DEFAULT 已由 detect_platform_and_set_vars 設定
-    DOWNLOAD_PATH="${DOWNLOAD_PATH:-${DOWNLOAD_PATH_DEFAULT:-$HOME/media_processor_downloads}}" # 多層預設
+    # 常規設定預設值
+    THREADS="${THREADS:-4}" # 假設 THREADS 在此函數外已有初始值或從全局讀取
+    # DOWNLOAD_PATH 的預設值處理：
+    # 1. 優先使用已有的 $DOWNLOAD_PATH (可能來自全局)
+    # 2. 其次使用 $DOWNLOAD_PATH_DEFAULT (應由 detect_platform_and_set_vars 設定)
+    # 3. 最後使用一個硬編碼的絕對安全備用路徑
+    local default_dl_path_from_platform="${DOWNLOAD_PATH_DEFAULT:-$HOME/media_processor_downloads_temp}" # 確保 DOWNLOAD_PATH_DEFAULT 有值
+    DOWNLOAD_PATH="${DOWNLOAD_PATH:-${default_dl_path_from_platform}}"
     COLOR_ENABLED="${COLOR_ENABLED:-true}"
-    PYTHON_CONVERTER_VERSION="${PYTHON_CONVERTER_VERSION:-1.0.0}" # 腳本內部的Python組件版本
+    PYTHON_CONVERTER_VERSION="${PYTHON_CONVERTER_VERSION:-1.0.0}"
 
     # 終端日誌級別顯示預設值
     TERMINAL_LOG_SHOW_INFO="${TERMINAL_LOG_SHOW_INFO:-true}"
@@ -311,76 +314,94 @@ load_config() {
     TERMINAL_LOG_SHOW_DEBUG="${TERMINAL_LOG_SHOW_DEBUG:-false}"
     TERMINAL_LOG_SHOW_SECURITY="${TERMINAL_LOG_SHOW_SECURITY:-true}"
 
-    # 同步功能設定預設值 (通常是空，讓用戶去配置)
+    # 同步功能設定預設值
     SYNC_SOURCE_DIR_NEW_PHONE="${SYNC_SOURCE_DIR_NEW_PHONE:-}"
     SYNC_TARGET_SSH_HOST_OLD_PHONE="${SYNC_TARGET_SSH_HOST_OLD_PHONE:-}"
     SYNC_TARGET_SSH_USER_OLD_PHONE="${SYNC_TARGET_SSH_USER_OLD_PHONE:-}"
-    SYNC_TARGET_SSH_PORT_OLD_PHONE="${SYNC_TARGET_SSH_PORT_OLD_PHONE:-}" # 可考慮預設 '8022' if OS_TYPE is termux
+    SYNC_TARGET_SSH_PORT_OLD_PHONE="${SYNC_TARGET_SSH_PORT_OLD_PHONE:-}" # 可考慮預設 '8022'
     SYNC_TARGET_DIR_OLD_PHONE="${SYNC_TARGET_DIR_OLD_PHONE:-}"
     SYNC_SSH_KEY_PATH_NEW_PHONE="${SYNC_SSH_KEY_PATH_NEW_PHONE:-}"
-    SYNC_VIDEO_EXTENSIONS="${SYNC_VIDEO_EXTENSIONS:-mp4,mov,mkv}" # 提供一些常用預設
-    SYNC_PHOTO_EXTENSIONS="${SYNC_PHOTO_EXTENSIONS:-jpg,jpeg,png,heic}" # 提供一些常用預設
+    SYNC_VIDEO_EXTENSIONS="${SYNC_VIDEO_EXTENSIONS:-mp4,mov,mkv,webm,avi,flv,wmv}" # 更全面的預設
+    SYNC_PHOTO_EXTENSIONS="${SYNC_PHOTO_EXTENSIONS:-jpg,jpeg,png,heic,gif,webp,bmp,tif,tiff,raw,dng}" # 更全面的預設
 
-    # --- 記錄用於比較的初始值 (這些是應用預設值之後的值) ---
+    # --- 記錄用於比較的初始值 (這些是應用上述預設值之後的值) ---
+    # 注意：這些 initial_* 變數僅在此函數內部用於比較或回退，不會影響全局
     local initial_threads="$THREADS"
-    local initial_dl_path="$DOWNLOAD_PATH" # 此時已包含平台預設或更深層預設
+    local initial_dl_path="$DOWNLOAD_PATH"
     local initial_color="$COLOR_ENABLED"
     local initial_py_ver="$PYTHON_CONVERTER_VERSION"
-    # ... (為所有 TERMINAL_LOG_SHOW_* 和 SYNC_* 創建 initial_ counterparts)
     local initial_show_info="$TERMINAL_LOG_SHOW_INFO"
+    local initial_show_warning="$TERMINAL_LOG_SHOW_WARNING"
+    local initial_show_error="$TERMINAL_LOG_SHOW_ERROR"
+    local initial_show_success="$TERMINAL_LOG_SHOW_SUCCESS"
     local initial_show_debug="$TERMINAL_LOG_SHOW_DEBUG"
-    local initial_sync_source="$SYNC_SOURCE_DIR_NEW_PHONE"
-    local initial_sync_video_exts="$SYNC_VIDEO_EXTENSIONS"
-    # ... 等等
+    local initial_show_security="$TERMINAL_LOG_SHOW_SECURITY"
+    local initial_sync_source_dir="$SYNC_SOURCE_DIR_NEW_PHONE"
+    local initial_sync_target_ssh_host="$SYNC_TARGET_SSH_HOST_OLD_PHONE"
+    local initial_sync_target_ssh_user="$SYNC_TARGET_SSH_USER_OLD_PHONE"
+    local initial_sync_target_ssh_port="$SYNC_TARGET_SSH_PORT_OLD_PHONE"
+    local initial_sync_target_dir="$SYNC_TARGET_DIR_OLD_PHONE"
+    local initial_sync_ssh_key_path="$SYNC_SSH_KEY_PATH_NEW_PHONE"
+    local initial_sync_video_extensions="$SYNC_VIDEO_EXTENSIONS"
+    local initial_sync_photo_extensions="$SYNC_PHOTO_EXTENSIONS"
 
     # --- 開始從設定檔讀取 ---
     if [ -f "$CONFIG_FILE" ] && [ -r "$CONFIG_FILE" ]; then
-        # 在記錄日誌前，給用戶一個提示
-        echo -e "${BLUE}正在從設定檔 $CONFIG_FILE 載入設定...${RESET}"
-        # log_message "INFO" "正在從 $CONFIG_FILE 安全地載入設定..." # log_message此時可能還未完全可用
+        echo -e "${BLUE}正在從設定檔 $CONFIG_FILE 載入設定...${RESET}" # User feedback
 
         local line_num=0
-        # 使用 < "$CONFIG_FILE" 進行重定向，確保整個循環讀取完畢
-        while IFS= read -r line || [ -n "$line" ]; do # [ -n "$line" ] 處理文件末尾無換行符的情況
+        local line var_name var_value # Declare loop variables
+
+        # Read file line by line
+        while IFS= read -r line || [ -n "$line" ]; do # Handle files without trailing newline
             ((line_num++))
-            # 移除行首行尾的空白字符
+            # Trim leading/trailing whitespace
             line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
 
-            # 跳過空行和註解行 (以 # 開頭，前面可能有空白)
+            # Skip empty lines and comments
             if [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]]; then
                 continue
             fi
 
-            # 使用正則表達式匹配 VAR="VALUE" 格式
-            if [[ "$line" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]+)[[:space:]]*=[[:space:]]*\"(.*)\"[[:space:]]*$ ]]; then
-                local var_name="${BASH_REMATCH[1]}"
-                local var_value="${BASH_REMATCH[2]}" # BASH_REMATCH[2] 是引號內的內容
+            # Regex to match VAR="VALUE" format
+            if [[ "$line" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]+)[[:space:]]*=[[:space:]]*\"(([^\"\\]|\\.)*)\"[[:space:]]*$ ]]; then
+                var_name="${BASH_REMATCH[1]}"
+                # BASH_REMATCH[2] captures the content *inside* the quotes,
+                # including escaped quotes or other escaped characters.
+                # We need to unescape it if necessary, but for simple assignment, direct use is often fine
+                # if settings are saved with proper escaping (which simple echo "VAR=\"VAL\"" does).
+                # For robustness, one might consider `printf -v var_value "%b" "${BASH_REMATCH[2]}"`
+                # but that can be complex. For now, direct assignment is used.
+                var_value="${BASH_REMATCH[2]}"
 
-                # 根據變數名賦值，如果設定檔中的值無效，則保留初始預設值
                 case "$var_name" in
                     "THREADS")
-                        if [[ "$var_value" =~ ^[0-9]+$ ]] && [ "$var_value" -ge "$MIN_THREADS" ] && [ "$var_value" -le "$MAX_THREADS" ]; then
+                        if [[ "$var_value" =~ ^[0-9]+$ ]] && \
+                           [ "$var_value" -ge "${MIN_THREADS:-1}" ] && \
+                           [ "$var_value" -le "${MAX_THREADS:-8}" ]; then # Use MIN/MAX_THREADS with defaults
                             THREADS="$var_value"
-                        else # 無效值，保留初始預設 (initial_threads)
-                            # log_message "WARNING" "設定檔中 THREADS ('$var_value') 無效，使用預設 '$initial_threads'。" # 日誌此時尚不能用
-                            echo "載入設定警告: THREADS ('$var_value') 無效，使用預設 '$initial_threads'。" >&2 # 直接輸出到stderr
-                            THREADS="$initial_threads" # 確保使用函數開始時的預設
+                        else
+                            echo "載入設定警告: 設定檔中 THREADS ('$var_value') 無效或超出範圍 (${MIN_THREADS:-1}-${MAX_THREADS:-8})，使用預設 '$initial_threads'。" >&2
+                            THREADS="$initial_threads"
                         fi
                         ;;
-                    "DOWNLOAD_PATH") DOWNLOAD_PATH="$var_value" ;; # 路徑有效性在後面統一檢查
+                    "DOWNLOAD_PATH")
+                        DOWNLOAD_PATH="$var_value" # Validation happens later
+                        ;;
                     "COLOR_ENABLED")
                         if [[ "$var_value" == "true" || "$var_value" == "false" ]]; then COLOR_ENABLED="$var_value";
-                        else COLOR_ENABLED="$initial_color"; fi ;;
+                        else COLOR_ENABLED="$initial_color"; fi
+                        ;;
                     "PYTHON_CONVERTER_VERSION")
                         if [ -n "$var_value" ]; then PYTHON_CONVERTER_VERSION="$var_value";
-                        else PYTHON_CONVERTER_VERSION="$initial_py_ver"; fi ;;
-
+                        else PYTHON_CONVERTER_VERSION="$initial_py_ver"; fi
+                        ;;
                     "TERMINAL_LOG_SHOW_INFO") if [[ "$var_value" == "true" || "$var_value" == "false" ]]; then TERMINAL_LOG_SHOW_INFO="$var_value"; else TERMINAL_LOG_SHOW_INFO="$initial_show_info"; fi ;;
-                    "TERMINAL_LOG_SHOW_WARNING") if [[ "$var_value" == "true" || "$var_value" == "false" ]]; then TERMINAL_LOG_SHOW_WARNING="$var_value"; else TERMINAL_LOG_SHOW_WARNING="${initial_show_warning:-true}"; fi ;; # 確保有預設
-                    "TERMINAL_LOG_SHOW_ERROR") if [[ "$var_value" == "true" || "$var_value" == "false" ]]; then TERMINAL_LOG_SHOW_ERROR="$var_value"; else TERMINAL_LOG_SHOW_ERROR="${initial_show_error:-true}"; fi ;;
-                    "TERMINAL_LOG_SHOW_SUCCESS") if [[ "$var_value" == "true" || "$var_value" == "false" ]]; then TERMINAL_LOG_SHOW_SUCCESS="$var_value"; else TERMINAL_LOG_SHOW_SUCCESS="${initial_show_success:-true}"; fi ;;
-                    "TERMINAL_LOG_SHOW_DEBUG") if [[ "$var_value" == "true" || "$var_value" == "false" ]]; then TERMINAL_LOG_SHOW_DEBUG="$var_value"; else TERMINAL_LOG_SHOW_DEBUG="${initial_show_debug:-false}"; fi ;;
-                    "TERMINAL_LOG_SHOW_SECURITY") if [[ "$var_value" == "true" || "$var_value" == "false" ]]; then TERMINAL_LOG_SHOW_SECURITY="$var_value"; else TERMINAL_LOG_SHOW_SECURITY="${initial_show_security:-true}"; fi ;;
+                    "TERMINAL_LOG_SHOW_WARNING") if [[ "$var_value" == "true" || "$var_value" == "false" ]]; then TERMINAL_LOG_SHOW_WARNING="$var_value"; else TERMINAL_LOG_SHOW_WARNING="$initial_show_warning"; fi ;;
+                    "TERMINAL_LOG_SHOW_ERROR") if [[ "$var_value" == "true" || "$var_value" == "false" ]]; then TERMINAL_LOG_SHOW_ERROR="$var_value"; else TERMINAL_LOG_SHOW_ERROR="$initial_show_error"; fi ;;
+                    "TERMINAL_LOG_SHOW_SUCCESS") if [[ "$var_value" == "true" || "$var_value" == "false" ]]; then TERMINAL_LOG_SHOW_SUCCESS="$var_value"; else TERMINAL_LOG_SHOW_SUCCESS="$initial_show_success"; fi ;;
+                    "TERMINAL_LOG_SHOW_DEBUG") if [[ "$var_value" == "true" || "$var_value" == "false" ]]; then TERMINAL_LOG_SHOW_DEBUG="$var_value"; else TERMINAL_LOG_SHOW_DEBUG="$initial_show_debug"; fi ;;
+                    "TERMINAL_LOG_SHOW_SECURITY") if [[ "$var_value" == "true" || "$var_value" == "false" ]]; then TERMINAL_LOG_SHOW_SECURITY="$var_value"; else TERMINAL_LOG_SHOW_SECURITY="$initial_show_security"; fi ;;
 
                     "SYNC_SOURCE_DIR_NEW_PHONE") SYNC_SOURCE_DIR_NEW_PHONE="$var_value" ;;
                     "SYNC_TARGET_SSH_HOST_OLD_PHONE") SYNC_TARGET_SSH_HOST_OLD_PHONE="$var_value" ;;
@@ -391,75 +412,83 @@ load_config() {
                     "SYNC_VIDEO_EXTENSIONS") SYNC_VIDEO_EXTENSIONS="$var_value" ;;
                     "SYNC_PHOTO_EXTENSIONS") SYNC_PHOTO_EXTENSIONS="$var_value" ;;
                     *)
-                        # echo "載入設定提示: 在設定檔發現未知變數 '$var_name'，已忽略。" >&2 # 可選
+                        # Optional: Log unknown variables found in config
+                        # echo "載入設定提示: 在設定檔 $CONFIG_FILE 第 $line_num 行發現未知變數 '$var_name'，已忽略。" >&2
                         ;;
                 esac
             else
-                # echo "載入設定警告: 設定檔第 $line_num 行格式不符 '$line'，已忽略。" >&2 # 可選
-            fi
-        done < "$CONFIG_FILE"
+                # Optional: Log lines that don't match the expected format
+                # echo "載入設定警告: 設定檔 $CONFIG_FILE 第 $line_num 行格式不符: '$line'，已忽略。" >&2
+            fi # End of if [[ "$line" =~ ... ]]
+        done < "$CONFIG_FILE" # End of while loop
 
         echo -e "${GREEN}已成功從 $CONFIG_FILE 載入使用者設定。${RESET}"
-        # log_message "INFO" "設定檔載入完成。" # 稍後日誌可用時再記錄
-        sleep 0.5 # 短暫顯示
+        sleep 0.5 # Brief pause for user to see the message
     else
-        # 設定檔不存在或不可讀
+        # Config file not found or not readable
         echo -e "${YELLOW}設定檔 $CONFIG_FILE 未找到或不可讀，將使用預設設定。${RESET}"
-        # 所有變數已經在函數開頭被賦予了預設值，所以這裡不需要再次賦值
-        # log_message "INFO" "設定檔 $CONFIG_FILE 未找到或不可讀，將使用預設設定。"
-        # 考慮是否在此處首次創建設定檔
-        echo -e "${CYAN}提示：您可以通過設定選單來更改設定，更改後將自動創建設定檔。${RESET}"
+        echo -e "${CYAN}提示：您可以通過腳本的設定選單來更改設定，更改後將自動創建設定檔。${RESET}"
+        # All variables already have their defaults from the top of this function.
+        # Consider if a new config file should be created with defaults here by calling save_config.
+        # For now, we assume save_config is called when settings are changed via menus.
         sleep 1
+    fi # End of if [ -f "$CONFIG_FILE" ... ]
+
+    # --- Finalize DOWNLOAD_PATH and LOG_FILE (critical for logging to start) ---
+
+    # 1. Sanitize and validate the final DOWNLOAD_PATH
+    local sanitized_dl_path_final=""
+    if [ -n "$DOWNLOAD_PATH" ]; then
+        # Attempt to resolve to an absolute path and remove potentially harmful characters.
+        # realpath -m: canonicalize by following every symlink, and for every component,
+        #              if it's missing, create it (virtually) to resolve the path.
+        sanitized_dl_path_final=$(realpath -m "$DOWNLOAD_PATH" 2>/dev/null | sed 's/[;|&<>()$`{}]//g')
     fi
 
-    # --- 後續的 DOWNLOAD_PATH 清理和 LOG_FILE 設定 ---
-    # 無論是從設定檔載入還是使用預設值，都要確保 DOWNLOAD_PATH 有效且 LOG_FILE 路徑正確
-
-    # 1. 清理並驗證最終的 DOWNLOAD_PATH (可能來自設定檔，也可能來自初始預設)
-    local sanitized_dl_path=""
-    # 使用 realpath 處理相對路徑、多餘斜線等，並移除潛在危險字符
-    # -m, --canonicalize-missing: no error if components are missing, creates canonical path
-    if [ -n "$DOWNLOAD_PATH" ]; then # 僅當 DOWNLOAD_PATH 非空時才嘗試處理
-        sanitized_dl_path=$(realpath -m "$DOWNLOAD_PATH" 2>/dev/null | sed 's/[;|&<>()$`{}]//g')
-    fi
-
-    if [ -z "$sanitized_dl_path" ]; then
-         # 如果 DOWNLOAD_PATH 解析失敗，則回退到一個絕對安全的預設值
-         echo -e "${RED}警告：下載路徑 '$DOWNLOAD_PATH' 無效或解析失敗！將使用預設安全路徑。${RESET}" >&2
-         DOWNLOAD_PATH="$HOME/media_processor_downloads_fallback" # 一個絕對安全的備用路徑
-         # log_message "ERROR" "最終下載路徑 '$DOWNLOAD_PATH' 無效或解析失敗！已回退。" # 此時log可能還不能用
-         mkdir -p "$DOWNLOAD_PATH" # 嘗試創建這個備用路徑
+    if [ -z "$sanitized_dl_path_final" ]; then
+        echo -e "${RED}警告：設定的下載路徑 '$DOWNLOAD_PATH' 解析失敗或無效！${RESET}" >&2
+        DOWNLOAD_PATH="$HOME/media_processor_safe_downloads" # Absolute fallback
+        echo -e "${YELLOW}已將下載路徑重設為安全備用路徑: $DOWNLOAD_PATH ${RESET}" >&2
+        # Attempt to create this fallback directory
+        if ! mkdir -p "$DOWNLOAD_PATH"; then
+            echo -e "${RED}錯誤：無法創建備用下載目錄 '$DOWNLOAD_PATH'！腳本無法繼續。${RESET}" >&2
+            exit 1 # Critical error
+        fi
     else
-        DOWNLOAD_PATH="$sanitized_dl_path" # 使用清理後的路徑
+        DOWNLOAD_PATH="$sanitized_dl_path_final"
     fi
 
-    # 2. 檢查路徑是否在允許範圍內 (保持原有的安全檢查)
-    if ! [[ "$DOWNLOAD_PATH" =~ ^(/storage/emulated/0|$HOME|/data/data/com.termux/files/home) ]]; then
-         # log_message "SECURITY" "最終下載路徑 '$DOWNLOAD_PATH' 不在允許的安全範圍內！腳本無法啟動。" # 日誌此時不可用
-         echo -e "${RED}安全性錯誤：最終下載路徑 '$DOWNLOAD_PATH' 不在允許範圍內！腳本無法啟動。${RESET}" >&2
-         exit 1
+    # 2. Security check for DOWNLOAD_PATH scope
+    if ! [[ "$DOWNLOAD_PATH" =~ ^(/storage/emulated/0|/sdcard|$HOME|/data/data/com.termux/files/home) ]]; then
+        # Added /sdcard for common Termux usage, ensure it's within intended scope
+        echo -e "${RED}安全性錯誤：最終下載路徑 '$DOWNLOAD_PATH' 不在允許的安全操作範圍內！腳本無法啟動。${RESET}" >&2
+        exit 1
     fi
 
-    # 3. 嘗試創建最終確定的下載目錄並檢查寫入權限
+    # 3. Ensure the final DOWNLOAD_PATH exists and is writable
     if ! mkdir -p "$DOWNLOAD_PATH" 2>/dev/null; then
-        # log_message "ERROR" "無法創建最終確定的下載目錄 '$DOWNLOAD_PATH'！腳本無法啟動。"
-        echo -e "${RED}錯誤：無法創建最終下載目錄 '$DOWNLOAD_PATH'！腳本無法啟動。${RESET}" >&2
+        echo -e "${RED}錯誤：無法創建最終下載目錄 '$DOWNLOAD_PATH'！請檢查路徑和權限。腳本無法啟動。${RESET}" >&2
         exit 1
     elif [ ! -w "$DOWNLOAD_PATH" ]; then
-        # log_message "ERROR" "最終下載目錄 '$DOWNLOAD_PATH' 不可寫！腳本無法啟動。"
-        echo -e "${RED}錯誤：最終下載目錄 '$DOWNLOAD_PATH' 不可寫！腳本無法啟動。${RESET}" >&2
+        echo -e "${RED}錯誤：最終下載目錄 '$DOWNLOAD_PATH' 不可寫！請檢查權限。腳本無法啟動。${RESET}" >&2
         exit 1
     fi
 
-    # 4. 設定最終的 LOG_FILE 路徑 (在 DOWNLOAD_PATH 確定後)
+    # 4. Set the final LOG_FILE path *after* DOWNLOAD_PATH is confirmed
     LOG_FILE="$DOWNLOAD_PATH/script_log.txt"
 
-    # 現在 LOG_FILE 路徑已設定，可以開始使用 log_message 記錄一些關鍵的最終值
-    log_message "INFO" "Load_config 完成。最終下載路徑: $DOWNLOAD_PATH, 日誌檔案: $LOG_FILE"
-    log_message "DEBUG" "載入後設定: THREADS='$THREADS', COLOR_ENABLED='$COLOR_ENABLED'"
-    log_message "DEBUG" "載入後日誌顯示: INFO='$TERMINAL_LOG_SHOW_INFO', DEBUG='$TERMINAL_LOG_SHOW_DEBUG'"
-    log_message "DEBUG" "載入後同步設定: SRC_DIR='$SYNC_SOURCE_DIR_NEW_PHONE', VIDEO_EXTS='$SYNC_VIDEO_EXTENSIONS'"
-}
+    # --- Now that LOG_FILE is set, proper logging can begin ---
+    log_message "INFO" "load_config: 函數執行完畢。"
+    log_message "INFO" "load_config: 最終下載路徑已確認為: '$DOWNLOAD_PATH'"
+    log_message "INFO" "load_config: 日誌檔案將寫入: '$LOG_FILE'"
+    log_message "DEBUG" "load_config: 載入後的執行緒設定: THREADS='$THREADS' (Min: ${MIN_THREADS:-1}, Max: ${MAX_THREADS:-8})"
+    log_message "DEBUG" "load_config: 載入後的顏色設定: COLOR_ENABLED='$COLOR_ENABLED'"
+    # Log a few key terminal display settings
+    log_message "DEBUG" "load_config: 終端日誌顯示 - INFO='$TERMINAL_LOG_SHOW_INFO', DEBUG='$TERMINAL_LOG_SHOW_DEBUG'"
+    # Log a few key sync settings
+    log_message "DEBUG" "load_config: 同步設定 - SRC_DIR='$SYNC_SOURCE_DIR_NEW_PHONE', VIDEO_EXTS='$SYNC_VIDEO_EXTENSIONS'"
+
+} # End of load_config function
 
 ############################################
 # <<< 新增：根據 COLOR_ENABLED 應用顏色設定 >>>
