@@ -1,11 +1,11 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.3-beta.22" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.3-beta.23" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
-SCRIPT_UPDATE_DATE="2025-06-02" # 請根據實際情況修改此日期
+SCRIPT_UPDATE_DATE="2025-06-05" # 請根據實際情況修改此日期
 ############################################
 
 # ... 其他設定 ...
@@ -36,8 +36,11 @@ TERMINAL_LOG_SHOW_SECURITY="true"
 # 主 Bash 腳本的完整路徑
 SCRIPT_INSTALL_PATH="$HOME/media-processor-updates/media_processor.sh"
 
-# Python 輔助腳本的完整路徑 (也在根目錄)
+# Python 輔助腳本的完整路徑 (也在根目錄)（偵測檔案大小）
 PYTHON_ESTIMATOR_SCRIPT_PATH="$HOME/media-processor-updates/estimate_size.py" # <<< 修改路徑
+
+# Python 輔助腳本的完整路徑 (也在根目錄)（備份功能）
+PYTHON_SYNC_HELPER_SCRIPT_PATH="$HOME/media-processor-updates/sync_helper.py" # <<< 新增
 
 # Python 版本變數保留 (現在由設定檔管理，不再需要遠程檢查)
 PYTHON_CONVERTER_VERSION="1.0.0" # 可以設定一個基礎版本或從設定檔讀取
@@ -888,6 +891,115 @@ update_dependencies() {
     # 等待使用者按 Enter 返回
     echo ""
     read -p "按 Enter 返回主選單..."
+}
+
+############################################
+# 新增：傳輸同步功能 (調用 Python 輔助腳本)
+############################################
+perform_sync_to_old_phone() {
+    clear
+    echo -e "${CYAN}--- 開始同步檔案到舊手機 (使用 Python 輔助腳本) ---${RESET}"
+    log_message "INFO" "使用者觸發同步到舊手機功能 (Python Helper)。"
+
+    # --- 檢查必要設定 (與之前類似，但可以簡化，因為Python會做更詳細的檢查) ---
+    local missing_configs_bash=false
+    if [ -z "$SYNC_SOURCE_DIR_NEW_PHONE" ]; then echo -e "${RED}錯誤：未設定來源目錄！${RESET}"; missing_configs_bash=true; fi
+    if [ -z "$SYNC_TARGET_SSH_HOST_OLD_PHONE" ]; then echo -e "${RED}錯誤：未設定目標 SSH 主機！${RESET}"; missing_configs_bash=true; fi
+    if [ -z "$SYNC_TARGET_SSH_USER_OLD_PHONE" ]; then echo -e "${RED}錯誤：未設定目標 SSH 用戶名！${RESET}"; missing_configs_bash=true; fi
+    if [ -z "$SYNC_TARGET_DIR_OLD_PHONE" ]; then echo -e "${RED}錯誤：未設定目標目錄！${RESET}"; missing_configs_bash=true; fi
+    if [ -z "$SYNC_VIDEO_EXTENSIONS" ] && [ -z "$SYNC_PHOTO_EXTENSIONS" ]; then
+        echo -e "${RED}錯誤：未設定任何影片或照片擴展名！${RESET}"; missing_configs_bash=true;
+    fi
+
+    if $missing_configs_bash; then
+        log_message "ERROR" "同步功能缺少必要的 Bash 設定。"
+        echo -e "${YELLOW}請先在「腳本設定與工具」->「同步功能設定」中完成設定。${RESET}"
+        read -p "按 Enter 返回..."
+        return 1
+    fi
+
+    # --- 檢查 Python 和輔助腳本 ---
+    local python_executable=""
+    if command -v python3 &> /dev/null; then python_executable="python3";
+    elif command -v python &> /dev/null; then python_executable="python";
+    else
+        log_message "ERROR" "同步失敗：找不到 python 或 python3 命令。"
+        echo -e "${RED}錯誤：找不到 Python 解釋器 (python/python3)！${RESET}"
+        read -p "按 Enter 返回..."
+        return 1
+    fi
+    if [ ! -f "$PYTHON_SYNC_HELPER_SCRIPT_PATH" ]; then
+        log_message "ERROR" "同步失敗：找不到 Python 同步輔助腳本 '$PYTHON_SYNC_HELPER_SCRIPT_PATH'。"
+        echo -e "${RED}錯誤：找不到同步輔助腳本！路徑: $PYTHON_SYNC_HELPER_SCRIPT_PATH${RESET}"
+        read -p "按 Enter 返回..."
+        return 1
+    fi
+    if [ ! -x "$PYTHON_SYNC_HELPER_SCRIPT_PATH" ]; then # 確保可執行
+         chmod +x "$PYTHON_SYNC_HELPER_SCRIPT_PATH"
+    fi
+
+
+    # --- 構建 Python 腳本調用命令 ---
+    local python_sync_cmd_array=("$python_executable" "$PYTHON_SYNC_HELPER_SCRIPT_PATH")
+    python_sync_cmd_array+=("$SYNC_SOURCE_DIR_NEW_PHONE")
+    python_sync_cmd_array+=("$SYNC_TARGET_SSH_HOST_OLD_PHONE")
+    python_sync_cmd_array+=("$SYNC_TARGET_SSH_USER_OLD_PHONE")
+    python_sync_cmd_array+=("$SYNC_TARGET_DIR_OLD_PHONE")
+
+    if [ -n "$SYNC_TARGET_SSH_PORT_OLD_PHONE" ]; then
+        python_sync_cmd_array+=("--target-ssh-port" "$SYNC_TARGET_SSH_PORT_OLD_PHONE")
+    fi
+    if [ -n "$SYNC_SSH_KEY_PATH_NEW_PHONE" ]; then
+        python_sync_cmd_array+=("--ssh-key-path" "$SYNC_SSH_KEY_PATH_NEW_PHONE")
+    fi
+    if [ -n "$SYNC_VIDEO_EXTENSIONS" ]; then
+        python_sync_cmd_array+=("--video-exts" "$SYNC_VIDEO_EXTENSIONS")
+    fi
+    if [ -n "$SYNC_PHOTO_EXTENSIONS" ]; then
+        python_sync_cmd_array+=("--photo-exts" "$SYNC_PHOTO_EXTENSIONS")
+    fi
+    
+    # 可以添加一個 dry-run 選項從 Bash 傳遞
+    # local dry_run_sync=false # 或 true
+    # if $dry_run_sync; then python_sync_cmd_array+=("--dry-run"); fi
+
+    echo -e "\n${YELLOW}將調用 Python 輔助腳本執行同步...${RESET}"
+    echo -e "  來源: ${GREEN}${SYNC_SOURCE_DIR_NEW_PHONE}${RESET}"
+    echo -e "  目標: ${GREEN}${SYNC_TARGET_SSH_USER_OLD_PHONE}@${SYNC_TARGET_SSH_HOST_OLD_PHONE}:${SYNC_TARGET_DIR_OLD_PHONE}${RESET}"
+    echo -e "  (詳細參數將傳遞給 Python 腳本)"
+    echo -e "---------------------------------------------"
+
+    local confirm_py_sync
+    read -p "確定開始同步嗎？ (y/n): " confirm_py_sync
+    if [[ ! "$confirm_py_sync" =~ ^[Yy]$ ]]; then
+        log_message "INFO" "使用者取消了 Python 同步操作。"
+        echo -e "${YELLOW}同步操作已取消。${RESET}"
+        read -p "按 Enter 返回..."
+        return 1
+    fi
+
+    # --- 執行 Python 腳本 ---
+    echo -e "\n${CYAN}Python 輔助腳本執行中，請參考其輸出...${RESET}"
+    log_message "INFO" "執行 Python 同步腳本: ${python_sync_cmd_array[*]}"
+
+    # 執行 Python 腳本，Python 腳本自己會處理 rsync 的終端輸出
+    if "${python_sync_cmd_array[@]}"; then
+        log_message "SUCCESS" "Python 同步輔助腳本報告成功。"
+        echo -e "\n${GREEN}同步過程已完成 (由 Python 腳本處理)。請查看上方輸出以了解詳情。${RESET}"
+        # Python 腳本內部可以調用 _send_termux_notification, 或者Bash在這裡調用
+        _send_termux_notification 0 "媒體同步" "檔案同步到舊手機成功 (Python輔助)。" ""
+    else
+        local py_exit_code=$?
+        log_message "ERROR" "Python 同步輔助腳本報告失敗！退出碼: $py_exit_code"
+        echo -e "\n${RED}同步過程失敗 (由 Python 腳本處理)！退出碼: $py_exit_code${RESET}"
+        echo -e "${YELLOW}請檢查 Python 腳本的輸出以了解錯誤原因。${RESET}"
+        _send_termux_notification 1 "媒體同步" "檔案同步到舊手機失敗 (Python輔助，代碼: $py_exit_code)。" ""
+        read -p "按 Enter 返回..."
+        return 1
+    fi
+
+    read -p "按 Enter 返回..."
+    return 0
 }
 
 ############################################
@@ -3841,7 +3953,7 @@ general_download_menu() {
 ############################################
 
 ############################################
-# <<< 修正並補全：腳本設定與工具選單 >>>
+# <<< 修改：腳本設定與工具選單 (加入同步設定和Termux完整更新選項) >>>
 ############################################
 utilities_menu() {
     while true; do
@@ -3853,20 +3965,23 @@ utilities_menu() {
         echo -e " 3. ${BOLD}檢查並更新依賴套件${RESET} (腳本自身依賴)"
         echo -e " 4. ${BOLD}檢查腳本更新${RESET}"
         echo -e " 5. ${BOLD}設定日誌終端顯示級別${RESET}"
+        # <<< 新增同步功能設定選項 >>>
+        echo -e " 6. ${BOLD}同步功能設定${RESET} (新手機 -> 舊手機)"
 
-        local termux_options_start_index=6
-        local current_max_option=5 # 非 Termux 時的最大選項號 (不計0)
+        local termux_options_start_index=7 # Termux 特定選項的起始編號 (因為前面加了同步設定)
+        local current_max_option=6 # 非 Termux 時的最大選項號 (不計0)
 
         if [[ "$OS_TYPE" == "termux" ]]; then
             echo -e " ${termux_options_start_index}. ${BOLD}設定 Termux 啟動時詢問${RESET}"
             echo -e " $((termux_options_start_index + 1)). ${BOLD}完整更新 Termux 環境${RESET} (pkg update && upgrade)"
-            current_max_option=$((termux_options_start_index + 1))
+            current_max_option=$((termux_options_start_index + 1)) # Termux 時的最大選項號
         fi
         echo -e "---------------------------------------------"
         echo -e " 0. ${YELLOW}返回主選單${RESET}"
         echo -e "---------------------------------------------"
 
-        read -t 0.1 -N 10000 discard
+        read -t 0.1 -N 10000 discard # 清除緩衝區
+
         local choice_prompt="輸入選項 (0-${current_max_option}): "
         local choice
 
@@ -3874,30 +3989,39 @@ utilities_menu() {
 
         case $choice in
             1)
-                config_menu # 已提供完整
+                config_menu
+                # config_menu 內部處理返回
                 ;;
             2)
-                view_log # 已提供完整
+                view_log
+                # view_log 使用 less，退出後自動返回
                 ;;
             3)
-                update_dependencies # 已提供完整 (內部有 "按 Enter 返回")
+                update_dependencies # 更新腳本的依賴 (yt-dlp, ffmpeg 等)
+                # update_dependencies 內部有 "按 Enter 返回"
                 ;;
             4)
-                auto_update_script # 已提供完整 (內部有 "按 Enter 返回")
+                auto_update_script # 腳本自我更新
+                # auto_update_script 內部有 "按 Enter 返回"
                 ;;
             5)
-                configure_terminal_log_display_menu # 已提供完整
+                configure_terminal_log_display_menu # 跳轉到日誌級別設定子選單
+                # configure_terminal_log_display_menu 內部處理返回
                 ;;
-            6) # Termux 啟動詢問
+            6) # <<< 新增 Case，處理同步功能設定 >>>
+                configure_sync_settings_menu # 跳轉到同步功能設定子選單
+                # configure_sync_settings_menu 內部處理返回
+                ;;
+            7) # Termux 啟動詢問 (如果存在)
                 if [[ "$OS_TYPE" == "termux" ]]; then
-                    setup_termux_autostart # 假設此函數已完整提供
+                    setup_termux_autostart
                     echo ""; read -p "按 Enter 返回工具選單..."
                 else
-                    # 如果不是 Termux，但用戶可能通過記憶輸入了 6
-                    echo -e "${RED}無效選項 '$choice' (此選項僅適用於 Termux 環境)${RESET}"; sleep 1
+                    # 如果不是 Termux，但用戶可能錯誤輸入了這個數字
+                    echo -e "${RED}無效選項 '$choice' (非 Termux 環境或選項不存在)${RESET}"; sleep 1
                 fi
                 ;;
-            7) # Termux 完整更新
+            8) # Termux 完整更新 (如果存在)
                 if [[ "$OS_TYPE" == "termux" ]]; then
                     clear
                     echo -e "${CYAN}--- 完整更新 Termux 環境 ---${RESET}"
@@ -3905,10 +4029,10 @@ utilities_menu() {
                     echo -e "${YELLOW}這會更新您 Termux 環境中所有已安裝的套件，可能需要一些時間。${RESET}"
                     echo -e "${RED}${BOLD}請確保您的網路連線穩定。${RESET}"
                     echo ""
-                    local confirm_full_update_termux # 使用不同變數名以示區分
-                    read -p "您確定要繼續嗎？ (y/n): " confirm_full_update_termux
+                    local confirm_full_termux_update # 使用不同變數名以示區分
+                    read -p "您確定要繼續嗎？ (y/n): " confirm_full_termux_update
 
-                    if [[ "$confirm_full_update_termux" =~ ^[Yy]$ ]]; then
+                    if [[ "$confirm_full_termux_update" =~ ^[Yy]$ ]]; then
                         log_message "INFO" "使用者觸發 Termux 環境完整更新。"
                         echo -e "\n${CYAN}正在開始更新 Termux 環境... 這可能需要幾分鐘或更長時間。${RESET}"
                         echo -e "${CYAN}請耐心等待，不要中斷此過程。${RESET}"
@@ -3928,7 +4052,7 @@ utilities_menu() {
                     fi
                     echo ""; read -p "按 Enter 返回工具選單..."
                 else
-                    echo -e "${RED}無效選項 '$choice' (此選項僅適用於 Termux 環境)${RESET}"; sleep 1
+                    echo -e "${RED}無效選項 '$choice' (非 Termux 環境或選項不存在)${RESET}"; sleep 1
                 fi
                 ;;
             0)
@@ -3979,6 +4103,122 @@ configure_threads() {
         log_message "WARNING" "使用者嘗試設定無效執行緒: $tt"
     fi
     # sleep 1 # 在 config_menu 循環中已有 sleep
+}
+
+############################################
+# 新增：設定同步功能參數選單
+# (此函數用於設定 Bash 變數，這些變數將傳遞給 Python 輔助腳本)
+############################################
+configure_sync_settings_menu() {
+    while true; do
+        clear
+        echo -e "${CYAN}--- 同步功能設定 (新手機 -> 舊手機) ---${RESET}"
+        echo -e "${YELLOW}這些設定將用於配置 Rsync + SSH 同步。${RESET}"
+        echo -e "${YELLOW}當前設定：${RESET}"
+        echo -e " 1. 新手機來源目錄: ${GREEN}${SYNC_SOURCE_DIR_NEW_PHONE:-未設定}${RESET}"
+        echo -e " 2. 舊手機 SSH IP  : ${GREEN}${SYNC_TARGET_SSH_HOST_OLD_PHONE:-未設定}${RESET}"
+        echo -e " 3. 舊手機 SSH 用戶: ${GREEN}${SYNC_TARGET_SSH_USER_OLD_PHONE:-未設定}${RESET}"
+        echo -e " 4. 舊手機 SSH 端口: ${GREEN}${SYNC_TARGET_SSH_PORT_OLD_PHONE:-預設22 (Termux 常為 8022)}${RESET}"
+        echo -e " 5. 舊手機目標目錄: ${GREEN}${SYNC_TARGET_DIR_OLD_PHONE:-未設定}${RESET}"
+        echo -e " 6. 新手機 SSH 私鑰: ${GREEN}${SYNC_SSH_KEY_PATH_NEW_PHONE:-未使用/將提示密碼}${RESET}"
+        echo -e " 7. 同步影片擴展名: ${GREEN}${SYNC_VIDEO_EXTENSIONS:-未設定}${RESET} (例: mp4,mov,mkv)"
+        echo -e " 8. 同步照片擴展名: ${GREEN}${SYNC_PHOTO_EXTENSIONS:-未設定}${RESET} (例: jpg,jpeg,png,heic)"
+        echo -e "---------------------------------------------"
+        echo -e " 9. ${BOLD}測試 SSH 連線到舊手機${RESET}"
+        echo -e "---------------------------------------------"
+        echo -e " 0. ${YELLOW}返回上一層選單 (並儲存設定)${RESET}"
+        echo -e "---------------------------------------------"
+        echo -e "${CYAN}輸入選項編號以修改，或輸入 0 返回。${RESET}"
+
+        read -t 0.1 -N 10000 discard # 清除緩衝區
+        local choice
+        read -rp "輸入選項 (0-9): " choice
+
+        case $choice in
+            1)
+                read -e -p "輸入新手機的來源目錄 (例如 /sdcard/DCIM/Camera 或 ~/storage/shared/DCIM/Camera): " SYNC_SOURCE_DIR_NEW_PHONE
+                # 可以在此處加入對輸入路徑的基礎驗證，例如是否為空
+                ;;
+            2)
+                read -e -p "輸入舊手機的 SSH IP 地址: " SYNC_TARGET_SSH_HOST_OLD_PHONE
+                ;;
+            3)
+                read -e -p "輸入登錄舊手機的 SSH 用戶名 (通常與 Termux 用戶名相同): " SYNC_TARGET_SSH_USER_OLD_PHONE
+                ;;
+            4)
+                read -e -p "輸入舊手機的 SSH 端口號 (預設 22, Termux 常為 8022): " SYNC_TARGET_SSH_PORT_OLD_PHONE
+                ;;
+            5)
+                read -e -p "輸入舊手機上接收檔案的【完整】目錄路徑: " SYNC_TARGET_DIR_OLD_PHONE
+                ;;
+            6)
+                read -e -p "輸入新手機上 SSH 私鑰的【完整】路徑 (可選, 留空則提示密碼): " SYNC_SSH_KEY_PATH_NEW_PHONE
+                if [ -n "$SYNC_SSH_KEY_PATH_NEW_PHONE" ] && [ ! -f "$SYNC_SSH_KEY_PATH_NEW_PHONE" ]; then
+                    echo -e "${RED}警告：指定的 SSH 私鑰路徑檔案不存在！${RESET}"; sleep 2
+                fi
+                ;;
+            7)
+                read -e -p "輸入要同步的影片擴展名 (逗號分隔, 無點, 例如 mp4,mov,mkv): " SYNC_VIDEO_EXTENSIONS
+                # 清理可能的空格並轉換為小寫 (可選，但建議)
+                SYNC_VIDEO_EXTENSIONS=$(echo "$SYNC_VIDEO_EXTENSIONS" | tr '[:upper:]' '[:lower:]' | sed 's/[[:space:]]//g')
+                ;;
+            8)
+                read -e -p "輸入要同步的照片擴展名 (逗號分隔, 無點, 例如 jpg,jpeg,png): " SYNC_PHOTO_EXTENSIONS
+                SYNC_PHOTO_EXTENSIONS=$(echo "$SYNC_PHOTO_EXTENSIONS" | tr '[:upper:]' '[:lower:]' | sed 's/[[:space:]]//g')
+                ;;
+            9) # 測試 SSH 連線
+                if [ -n "$SYNC_TARGET_SSH_HOST_OLD_PHONE" ] && [ -n "$SYNC_TARGET_SSH_USER_OLD_PHONE" ]; then
+                    local test_ssh_port_val="${SYNC_TARGET_SSH_PORT_OLD_PHONE:-8022}" # Termux 預設 8022，標準 SSH 22
+                    local test_ssh_key_opt_val=""
+                    if [ -n "$SYNC_SSH_KEY_PATH_NEW_PHONE" ] && [ -f "$SYNC_SSH_KEY_PATH_NEW_PHONE" ]; then
+                        # 確保引用私鑰路徑，以防路徑中包含空格 (雖然不常見於私鑰路徑)
+                        test_ssh_key_opt_val="-i \"$SYNC_SSH_KEY_PATH_NEW_PHONE\""
+                    fi
+                    echo -e "\n${YELLOW}正在嘗試連接到 ${SYNC_TARGET_SSH_USER_OLD_PHONE}@${SYNC_TARGET_SSH_HOST_OLD_PHONE} 端口 ${test_ssh_port_val}...${RESET}"
+                    echo -e "${CYAN}將執行 'ssh -o ConnectTimeout=10 ${test_ssh_key_opt_val} -p \"${test_ssh_port_val}\" \"${SYNC_TARGET_SSH_USER_OLD_PHONE}@${SYNC_TARGET_SSH_HOST_OLD_PHONE}\" exit'${RESET}"
+                    echo -e "${YELLOW}如果需要密碼，系統會提示您輸入。${RESET}"
+                    
+                    # 使用 eval 來正確處理帶有引號的 $test_ssh_key_opt_val
+                    # 或者不使用 eval，但確保 $test_ssh_key_opt_val 中的引號被 ssh 命令正確解析
+                    # 更安全的方式是構建數組：
+                    local ssh_test_cmd_array=("ssh" "-o" "ConnectTimeout=10")
+                    if [ -n "$SYNC_SSH_KEY_PATH_NEW_PHONE" ] && [ -f "$SYNC_SSH_KEY_PATH_NEW_PHONE" ]; then
+                        ssh_test_cmd_array+=("-i" "$SYNC_SSH_KEY_PATH_NEW_PHONE")
+                    fi
+                    ssh_test_cmd_array+=("-p" "$test_ssh_port_val" "${SYNC_TARGET_SSH_USER_OLD_PHONE}@${SYNC_TARGET_SSH_HOST_OLD_PHONE}" "exit")
+
+                    if "${ssh_test_cmd_array[@]}"; then
+                        echo -e "${GREEN}SSH 連線測試成功！${RESET}"
+                    else
+                        echo -e "${RED}SSH 連線測試失敗！請檢查設定、網路、舊手機SSHD服務是否運行以及防火牆設定。${RESET}"
+                    fi
+                else
+                    echo -e "${RED}請先設定舊手機的 SSH 主機 IP 和 SSH 用戶名才能進行測試。${RESET}"
+                fi
+                read -p "按 Enter 繼續..."
+                ;;
+            0)
+                save_config # 退出前保存所有更改
+                log_message "INFO" "同步設定已儲存。"
+                return 0 # 返回到 utilities_menu
+                ;;
+            *)
+                if [[ -z "$choice" ]]; then
+                    continue # 如果是空輸入，重新顯示選單
+                else
+                    echo -e "${RED}無效選項 '$choice'${RESET}"
+                    log_message "WARNING" "同步設定選單輸入無效: $choice"
+                    sleep 1
+                fi
+                ;;
+        esac
+        # 每次有效修改後（選項1-8）都保存一次
+        if [[ "$choice" -ge 1 && "$choice" -le 8 ]]; then
+             save_config
+             log_message "INFO" "同步設定已更新 (選項: $choice)。"
+             # sleep 0.5 # 短暫停頓讓用戶看到更改，或在循環開始時清屏已足夠
+        fi
+    done
 }
 
 ############################################
@@ -4438,7 +4678,7 @@ check_environment() {
 }
 
 ############################################
-# <<< 替換：新的主選單 (多層級) >>>
+# <<< 修改：新的主選單 (多層級，加入執行同步選項) >>>
 ############################################
 main_menu() {
     while true; do
@@ -4449,24 +4689,30 @@ main_menu() {
         echo -e " 1. ${BOLD}MP3 相關處理${RESET} (YouTube/本機)"
         echo -e " 2. ${BOLD}MP4 / MKV 相關處理${RESET} (YouTube/本機)"
         echo -e " 3. ${BOLD}通用媒體下載${RESET} (其他網站 / ${YELLOW}實驗性${RESET})"
+        # <<< 新增的同步執行選項 >>>
+        echo -e " 4. ${BOLD}執行同步 (新手機 -> 舊手機)${RESET}"
         echo -e "---------------------------------------------"
-        echo -e " 4. ${BOLD}腳本設定與工具${RESET}"
-        echo -e " 5. ${BOLD}關於此工具${RESET}"
+        # 後續選項編號順延
+        echo -e " 5. ${BOLD}腳本設定與工具${RESET}"
+        echo -e " 6. ${BOLD}關於此工具${RESET}"
         echo -e " 0. ${RED}退出腳本${RESET}"
         echo -e "---------------------------------------------"
 
-        # 清除可能的緩衝輸入
-        read -t 0.1 -N 10000 discard
+        read -t 0.1 -N 10000 discard # 清除可能的緩衝輸入
 
         local choice
-        read -rp "輸入選項 (0-5): " choice
+        read -rp "輸入選項 (0-6): " choice # <<< 修改選項範圍提示
 
         case $choice in
-            1) mp3_menu ;;           # 跳轉到 MP3 子選單
-            2) mp4_mkv_menu ;;       # 跳轉到 MP4/MKV 子選單
-            3) general_download_menu ;; # 跳轉到通用下載子選單
-            4) utilities_menu ;;     # 跳轉到設定與工具子選單
-            5) show_about_enhanced ;; # 顯示增強的關於訊息
+            1) mp3_menu ;;
+            2) mp4_mkv_menu ;;
+            3) general_download_menu ;;
+            4) # <<< 新增 Case，執行同步功能 >>>
+                perform_sync_to_old_phone # 這個函數內部現在會調用 Python 輔助腳本
+                # perform_sync_to_old_phone 內部應包含 "按 Enter 返回"
+                ;;
+            5) utilities_menu ;;       # 原來的選項 4
+            6) show_about_enhanced ;; # 原來的選項 5
             0)
                 echo -e "${GREEN}感謝使用，正在退出...${RESET}"
                 log_message "INFO" "使用者選擇退出。"
@@ -4474,9 +4720,8 @@ main_menu() {
                 exit 0
                 ;;
             *)
-                # 處理無效輸入或空輸入
                 if [[ -z "$choice" ]]; then
-                    continue # 如果是空輸入，重新顯示選單
+                    continue
                 else
                     echo -e "${RED}無效選項 '$choice'${RESET}"
                     log_message "WARNING" "主選單輸入無效選項: $choice"
