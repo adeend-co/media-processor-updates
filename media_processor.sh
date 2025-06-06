@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.3-beta.31" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.3-beta.32" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -4537,14 +4537,14 @@ view_log() {
 }
 
 ############################################
-# 關於訊息 (v3 - 移除 SHA256, 新增輔助腳本狀態)
+# 關於訊息 (v3.1 - 修正 printf 顏色輸出)
 ############################################
 show_about_enhanced() {
     clear
     echo -e "${CYAN}=== 整合式影音處理平台 ===${RESET}"
     echo -e "---------------------------------------------"
 
-    # --- Git 版本信息 (邏輯不變) ---
+    # --- Git 版本信息 ---
     local git_version_info=""
     if command -v git &> /dev/null && [ -d "$SCRIPT_DIR/.git" ]; then
         local git_tag=$(git -C "$SCRIPT_DIR" describe --tags --abbrev=0 2>/dev/null)
@@ -4565,8 +4565,7 @@ show_about_enhanced() {
     local display_version="${git_version_info:-$SCRIPT_VERSION}"
     echo -e "${BOLD}主腳本版本:${RESET}  ${GREEN}${display_version}${RESET}"
     if [ -n "$SCRIPT_UPDATE_DATE" ]; then echo -e "${BOLD}更新日期:${RESET}    ${GREEN}${SCRIPT_UPDATE_DATE}${RESET}"; fi
-    # --- 【移除】SHA256 顯示 ---
-
+    
     echo -e "---------------------------------------------"
 
     # --- 腳本環境與組件狀態 ---
@@ -4577,17 +4576,19 @@ show_about_enhanced() {
         local item_name="$1"
         local status_ok="$2"    # true 或 false
         local detail="$3"
-        # 使用 printf 進行對齊，寬度可調整
-        local name_field_width=22
+        local name_field_width=28 # 稍微加寬以容納更長的名稱
 
+        # 【關鍵修正】將顏色代碼直接放入 printf 的格式化字串中
         if [ "$status_ok" = true ]; then
-            printf "%-${name_field_width}s \033[0;32m%s\033[0m %s\n" "${item_name}:" "[✓] 正常 / 已安裝" "${GREEN}${detail}${RESET}"
+            # 對於成功狀態，狀態文字是綠色，詳細資訊也是綠色
+            printf "%-${name_field_width}s ${GREEN}[✓] 正常 / 已安裝${RESET} ${GREEN}%s${RESET}\n" "${item_name}:" "$detail"
         else
-            printf "%-${name_field_width}s \033[0;31m%s\033[0m %s\n" "${item_name}:" "[✗] 異常 / 未找到" "${RED}${detail}${RESET}"
+            # 對於失敗狀態，狀態文字是紅色，詳細資訊也是紅色
+            printf "%-${name_field_width}s ${RED}[✗] 異常 / 未找到${RESET} ${RED}%s${RESET}\n" "${item_name}:" "$detail"
         fi
     }
 
-    # --- 【新增】輔助腳本狀態檢查 ---
+    # --- 輔助腳本狀態檢查 ---
     echo -e "${YELLOW}核心輔助腳本:${RESET}"
     local python_exec=""
     if command -v python3 &> /dev/null; then python_exec="python3"; elif command -v python &> /dev/null; then python_exec="python"; fi
@@ -4597,9 +4598,8 @@ show_about_enhanced() {
     local estimator_version="N/A"
     if [ -n "$python_exec" ] && [ -f "$PYTHON_ESTIMATOR_SCRIPT_PATH" ]; then
         estimator_status=true
-        # 執行 python script.py --version 來獲取版本
         estimator_version=$($python_exec "$PYTHON_ESTIMATOR_SCRIPT_PATH" --version 2>/dev/null | awk '{print $2}')
-        if [ -z "$estimator_version" ]; then estimator_version="版本未標識"; fi
+        if [ -z "$estimator_version" ]; then estimator_version="(版本未標識)"; fi
     fi
     display_status "  大小預估 (estimate_size.py)" "$estimator_status" "$estimator_version"
 
@@ -4609,11 +4609,11 @@ show_about_enhanced() {
     if [ -n "$python_exec" ] && [ -f "$PYTHON_SYNC_HELPER_SCRIPT_PATH" ]; then
         sync_helper_status=true
         sync_helper_version=$($python_exec "$PYTHON_SYNC_HELPER_SCRIPT_PATH" --version 2>/dev/null | awk '{print $2}')
-        if [ -z "$sync_helper_version" ]; then sync_helper_version="版本未標識"; fi
+        if [ -z "$sync_helper_version" ]; then sync_helper_version="(版本未標識)"; fi
     fi
     display_status "  檔案同步 (sync_helper.py)" "$sync_helper_status" "$sync_helper_version"
 
-    # --- 核心工具與環境檢查 (保持原樣，但標題調整) ---
+    # --- 外部核心工具與環境檢查 ---
     echo -e "\n${YELLOW}外部核心工具:${RESET}"
     for tool in ffmpeg ffprobe jq curl; do
         local tool_status=false; command -v "$tool" &> /dev/null && tool_status=true
@@ -4662,7 +4662,6 @@ show_about_enhanced() {
     echo -e "---------------------------------------------"
     read -p "按 Enter 返回主選單..."
 }
-
 ############################################
 
 ############################################
