@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # sync_helper.py
-# 版本: v2.0.0 - 支援多來源目錄、進度條切換、遠端依賴檢查、錯誤碼解析
+# 版本: v2.0.1 - 優化 run_command 以解決進度條緩衝問題
+# 保持與 v2.0.0 的功能一致，僅修改命令執行方式
 
 import argparse
 import os
@@ -9,10 +10,15 @@ import shlex
 import subprocess
 import sys
 
-# --- 全域變數 ---
-SCRIPT_VERSION = "v2.0.0"
+# 【優化】導入 pty 和 select 模組
+import pty
+import select
 
-# --- 日誌輔助函數 ---
+
+# --- 全域變數 ---
+SCRIPT_VERSION = "v2.0.1"
+
+# --- 日誌輔助函數 (保持不變) ---
 def print_info(message):
     print(f"INFO: {message}", file=sys.stdout)
 
@@ -26,7 +32,7 @@ def print_debug(message, debug_mode=False):
     if debug_mode:
         print(f"DEBUG: {message}", file=sys.stderr)
 
-# --- rsync 錯誤碼解析 ---
+# --- rsync 錯誤碼解析 (保持不變) ---
 def parse_rsync_exit_code(code):
     """解析 rsync 的退出碼並返回人類可讀的訊息。"""
     error_map = {
@@ -52,45 +58,52 @@ def parse_rsync_exit_code(code):
     }
     return error_map.get(code, f"未知的 rsync 錯誤 (Unknown rsync error code: {code})")
 
-# --- 執行外部命令 ---
+
+# --- 【優化替換】執行外部命令 (使用 pty 解決緩衝問題) ---
 def run_command(command, debug_mode=False):
-    """執行外部命令並即時串流其輸出。"""
-    print_debug(f"Executing command: {' '.join(map(shlex.quote, command))}", debug_mode)
+    """執行外部命令並使用 pty 解決緩衝問題，即時串流其輸出。"""
+    print_debug(f"Executing command with pty: {' '.join(map(shlex.quote, command))}", debug_mode)
     try:
+        # 創建主從偽終端
+        master_fd, slave_fd = pty.openpty()
+
         proc = subprocess.Popen(
             command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding='utf-8',
-            errors='replace'
+            stdout=slave_fd,
+            stderr=slave_fd, # 將 stdout 和 stderr 都定向到偽終端
+            text=False, # 在 pty 模式下，我們手動解碼，所以 text=False
+            # encoding 和 errors 在此模式下不需要
+            preexec_fn=os.setsid # 確保程序在新的會話中運行
         )
 
-        # 即時讀取 stdout 和 stderr
-        while True:
-            # 讀取 stdout
-            stdout_line = proc.stdout.readline()
-            if stdout_line:
-                # \r 用於覆蓋同一行，實現進度條效果
-                # \n 用於換行
-                # end='' 防止 print 額外添加換行
-                if '\r' in stdout_line:
-                    sys.stdout.write(stdout_line)
-                    sys.stdout.flush()
-                else:
-                    print(stdout_line, end='')
-
-            # 讀取 stderr
-            stderr_line = proc.stderr.readline()
-            if stderr_line:
-                print(stderr_line, end='', file=sys.stderr)
-
-            # 檢查程序是否已結束
-            if proc.poll() is not None and not stdout_line and not stderr_line:
-                break
+        # 關閉子進程中的從偽終端文件描述符
+        os.close(slave_fd)
         
-        # 獲取最終的退出碼
-        exit_code = proc.returncode
+        # 從主偽終端讀取輸出
+        while proc.poll() is None:
+            # 使用 select 來等待文件描述符變為可讀，避免忙碌等待
+            r, _, _ = select.select([master_fd], [], [], 0.1) # 0.1秒超時
+            if r:
+                try:
+                    # 讀取二進制數據並手動解碼
+                    data_bytes = os.read(master_fd, 1024)
+                    if data_bytes:
+                        data_str = data_bytes.decode('utf-8', errors='replace')
+                        sys.stdout.write(data_str)
+                        sys.stdout.flush()
+                    else:
+                        # 如果 os.read 返回空，表示子進程已關閉其偽終端
+                        break
+                except OSError:
+                    # 當子進程結束時，讀取可能會引發 OSError
+                    break
+        
+        # 關閉主偽終端
+        os.close(master_fd)
+
+        # 等待子進程完全結束並獲取退出碼
+        exit_code = proc.wait()
+        
         return exit_code
 
     except FileNotFoundError:
@@ -98,15 +111,16 @@ def run_command(command, debug_mode=False):
         return 127
     except Exception as e:
         print_error(f"執行命令時發生未知錯誤: {e}")
+        import traceback
+        traceback.print_exc(file=sys.stderr)
         return 1
 
-# --- 主函數 ---
+# --- 主函數 (保持不變) ---
 def main():
     parser = argparse.ArgumentParser(
         description="使用 rsync 和 SSH 在兩台設備之間安全地同步媒體檔案。",
         epilog="範例: python sync_helper.py /path/to/source1;/path/to/source2 user@host /path/to/target --video-exts mp4,mov --photo-exts jpg,jpeg"
     )
-    # --- 【優化】支援多個來源目錄，以分號分隔 ---
     parser.add_argument("source_dirs", help="要同步的來源目錄，多個目錄請用分號(;)分隔。")
     parser.add_argument("target_ssh_host", help="目標 SSH 主機 (例如: user@192.168.1.100)")
     parser.add_argument("target_dir", help="目標主機上的接收目錄。")
@@ -118,10 +132,7 @@ def main():
     parser.add_argument("--video-exts", help="要同步的影片副檔名列表 (逗號分隔)。")
     parser.add_argument("--photo-exts", help="要同步的照片副檔名列表 (逗號分隔)。")
 
-    # --- 【優化】進度條樣式 ---
     parser.add_argument("--progress-style", choices=['default', 'total'], default='default', help="進度顯示樣式: 'default' (每個檔案) 或 'total' (總進度)。")
-
-    # --- 【優化】頻寬限制 ---
     parser.add_argument("--bwlimit", type=int, default=0, help="限制頻寬 (單位 KB/s)，0 為不限制。")
 
     parser.add_argument("--dry-run", action="store_true", help="執行模擬運行，顯示將要執行的操作而不實際傳輸。")
@@ -132,8 +143,6 @@ def main():
     
     args = parser.parse_args()
 
-    # --- 參數驗證 ---
-    # 【優化】將來源目錄字串分割為列表
     source_dirs = [d.strip() for d in args.source_dirs.split(';') if d.strip()]
     if not source_dirs:
         print_error("錯誤：必須提供至少一個有效的來源目錄。")
@@ -150,7 +159,6 @@ def main():
         
     ssh_host = args.target_ssh_host
     ssh_user = args.target_ssh_user
-    # 如果 user@host 格式，解析出來
     if not ssh_user and '@' in ssh_host:
         try:
             ssh_user, ssh_host = ssh_host.split('@', 1)
@@ -162,11 +170,11 @@ def main():
         print_error("錯誤：必須提供目標 SSH 用戶名和主機地址。")
         sys.exit(1)
         
-    # --- 【優化】遠端依賴檢查 ---
     print_info(f"正在檢查遠端主機 '{ssh_host}' 上的 'rsync' 依賴...")
     check_ssh_cmd = [args.ssh_path, '-p', args.target_ssh_port, f'{ssh_user}@{ssh_host}', 'command -v rsync']
     if args.ssh_key_path:
-        check_ssh_cmd[1:1] = ['-i', args.ssh_key_path]
+        check_ssh_cmd.insert(1, '-i')
+        check_ssh_cmd.insert(2, args.ssh_key_path)
 
     try:
         proc_check = subprocess.run(check_ssh_cmd, capture_output=True, text=True, timeout=15)
@@ -183,61 +191,44 @@ def main():
         print_error(f"依賴檢查時發生未知錯誤：{e}")
         sys.exit(1)
 
-
-    # --- 構建 rsync 命令 ---
-    rsync_command = [args.rsync_path, "-a"] # -a 包含了 -rlptgoD
-
-    # --- 【優化】進度條樣式 ---
+    rsync_command = [args.rsync_path, "-a"] 
     if args.progress_style == 'total':
         rsync_command.append("--info=progress2")
-    else: # default
+    else:
         rsync_command.append("--progress")
 
     if args.dry_run:
         rsync_command.append("--dry-run")
         print_warning("--- 正在以乾跑 (Dry Run) 模式執行 ---")
 
-    # --- 【優化】頻寬限制 ---
     if args.bwlimit > 0:
         rsync_command.extend(["--bwlimit", str(args.bwlimit)])
         print_info(f"頻寬限制已設定為 {args.bwlimit} KB/s。")
 
-    # SSH 選項
     ssh_options = f"{args.ssh_path} -p {args.target_ssh_port}"
     if args.ssh_key_path:
         ssh_options += f" -i {shlex.quote(args.ssh_key_path)}"
     rsync_command.extend(["-e", ssh_options])
 
-    # 檔案過濾規則
-    include_rules = []
-    # 始終包含所有目錄以便遍歷
-    include_rules.append("--include=*/")
-    
+    include_rules = ["--include=*/"]
     all_extensions = []
     if args.video_exts:
         all_extensions.extend(args.video_exts.lower().split(','))
     if args.photo_exts:
         all_extensions.extend(args.photo_exts.lower().split(','))
 
-    for ext in set(all_extensions): # 使用 set 去重
+    for ext in set(all_extensions):
         if ext:
-            # 包含大小寫
             include_rules.append(f"--include=*.{ext}")
             include_rules.append(f"--include=*.{ext.upper()}")
     
-    # 添加規則到命令中
     rsync_command.extend(include_rules)
-    # 排除所有其他檔案
     rsync_command.append("--exclude=*")
-
-    # --- 【優化】加入來源和目標目錄 ---
     rsync_command.extend(source_dirs)
     
-    # 確保目標目錄以斜線結尾
     target_dir_rsync = args.target_dir.rstrip('/') + '/'
     rsync_command.append(f"{ssh_user}@{ssh_host}:{shlex.quote(target_dir_rsync)}")
 
-    # --- 執行同步 ---
     print_info("---------------------------------------------")
     print_info("開始同步...")
     for i, src in enumerate(source_dirs):
@@ -251,7 +242,6 @@ def main():
     if exit_code == 0:
         print_info("同步過程成功完成。")
     else:
-        # --- 【優化】錯誤碼解析 ---
         error_message = parse_rsync_exit_code(exit_code)
         print_error(f"同步過程失敗，退出碼: {exit_code} ({error_message})")
 
