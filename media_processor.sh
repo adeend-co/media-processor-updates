@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.3-beta.32" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.3-beta.33" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -4537,7 +4537,7 @@ view_log() {
 }
 
 ############################################
-# 關於訊息 (v3.1 - 修正 printf 顏色輸出)
+# 關於訊息 (v3.2 - 修正顏色, 補全 aria2c 和 rsync 檢查)
 ############################################
 show_about_enhanced() {
     clear
@@ -4574,26 +4574,22 @@ show_about_enhanced() {
     # 輔助函數，用於格式化顯示狀態
     display_status() {
         local item_name="$1"
-        local status_ok="$2"    # true 或 false
+        local status_ok="$2"
         local detail="$3"
-        local name_field_width=28 # 稍微加寬以容納更長的名稱
+        local name_field_width=28
 
-        # 【關鍵修正】將顏色代碼直接放入 printf 的格式化字串中
         if [ "$status_ok" = true ]; then
-            # 對於成功狀態，狀態文字是綠色，詳細資訊也是綠色
             printf "%-${name_field_width}s ${GREEN}[✓] 正常 / 已安裝${RESET} ${GREEN}%s${RESET}\n" "${item_name}:" "$detail"
         else
-            # 對於失敗狀態，狀態文字是紅色，詳細資訊也是紅色
             printf "%-${name_field_width}s ${RED}[✗] 異常 / 未找到${RESET} ${RED}%s${RESET}\n" "${item_name}:" "$detail"
         fi
     }
 
-    # --- 輔助腳本狀態檢查 ---
+    # --- 核心輔助腳本狀態檢查 ---
     echo -e "${YELLOW}核心輔助腳本:${RESET}"
     local python_exec=""
     if command -v python3 &> /dev/null; then python_exec="python3"; elif command -v python &> /dev/null; then python_exec="python"; fi
 
-    # 檢查 estimate_size.py
     local estimator_status=false
     local estimator_version="N/A"
     if [ -n "$python_exec" ] && [ -f "$PYTHON_ESTIMATOR_SCRIPT_PATH" ]; then
@@ -4603,7 +4599,6 @@ show_about_enhanced() {
     fi
     display_status "  大小預估 (estimate_size.py)" "$estimator_status" "$estimator_version"
 
-    # 檢查 sync_helper.py
     local sync_helper_status=false
     local sync_helper_version="N/A"
     if [ -n "$python_exec" ] && [ -f "$PYTHON_SYNC_HELPER_SCRIPT_PATH" ]; then
@@ -4615,10 +4610,20 @@ show_about_enhanced() {
 
     # --- 外部核心工具與環境檢查 ---
     echo -e "\n${YELLOW}外部核心工具:${RESET}"
-    for tool in ffmpeg ffprobe jq curl; do
-        local tool_status=false; command -v "$tool" &> /dev/null && tool_status=true
-        display_status "  $tool" "$tool_status" ""
+    # --- 【新增】將 rsync 和 aria2c 加入檢查列表 ---
+    for tool in ffmpeg ffprobe jq curl rsync aria2c; do
+        local tool_status=false
+        local detail_text=""
+        command -v "$tool" &> /dev/null && tool_status=true
+        
+        # 為特定工具添加說明文字
+        case "$tool" in
+            "rsync") detail_text="(用於檔案同步)" ;;
+            "aria2c") detail_text="(用於 Bilibili 加速)" ;;
+        esac
+        display_status "  $tool" "$tool_status" "$detail_text"
     done
+
     local py_status=false
     if [ -n "$python_exec" ]; then py_status=true; fi
     display_status "  Python ($python_exec)" "$py_status" "$($python_exec --version 2>&1 | head -n 1)"
@@ -4629,6 +4634,7 @@ show_about_enhanced() {
     fi
     display_status "  yt-dlp" "$ytdlp_status" "$ytdlp_version"
 
+    # --- 權限與路徑檢查 ---
     echo -e "\n${YELLOW}權限與路徑:${RESET}"
     if [[ "$OS_TYPE" == "termux" ]]; then
         local termux_storage_ok=false
@@ -4644,7 +4650,7 @@ show_about_enhanced() {
     
     echo -e "---------------------------------------------"
 
-    # --- 功能特色與使用須知 (保持不變) ---
+    # --- 功能特色與使用須知 ---
     echo -e "\n${GREEN}主要功能特色：${RESET}"
     echo -e "- YouTube 影音下載 (MP3/MP4/MKV)"
     echo -e "- 通用網站媒體下載 (實驗性)"
