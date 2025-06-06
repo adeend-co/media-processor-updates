@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.3-beta.33" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.3-beta.34" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -1393,7 +1393,7 @@ process_local_mp4() {
 
 ############################################
 # 處理單一 YouTube 音訊（MP3）下載與處理
-# (已修正 goto, 恢復時長判斷通知)
+# (已修正 goto, 恢復時長判斷通知, 修正檔名定位邏輯)
 ############################################
 process_single_mp3() {
     local media_url="$1"
@@ -1421,11 +1421,10 @@ process_single_mp3() {
         sanitized_title=$(echo "${video_title}" | sed 's@[/\\:*?"<>|]@_@g')
     fi
 
-    # --- <<< 恢復：基於時長判斷是否通知 (僅單獨模式) >>> ---
+    # --- 基於時長判斷是否通知 (僅單獨模式) ---
     if [ $result -eq 0 ] && [[ "$mode" != "playlist_mode" ]]; then
         echo -e "${YELLOW}正在獲取媒體時長以決定是否通知...${RESET}"
         local duration_secs_str duration_exit_code
-        # 使用 yt-dlp 獲取時長
         duration_secs_str=$(yt-dlp --no-warnings --print '%(duration)s' "$media_url" 2>"$temp_dir/yt-dlp-duration-mp3-std.log")
         duration_exit_code=$?
         log_message "DEBUG" "yt-dlp duration print (MP3 std): code=$duration_exit_code, output=[$duration_secs_str]"
@@ -1436,7 +1435,6 @@ process_single_mp3() {
         else
             log_message "WARNING" "無法從 yt-dlp 獲取有效的時長資訊 (MP3 std) for $media_url."
         fi
-        # 原始閾值: > 0.5 小時 (1800 秒)
         local duration_threshold_secs=1800
         log_message "INFO" "MP3 標準化：媒體時長 = $duration_secs 秒, 通知閾值 = $duration_threshold_secs 秒 (0.5小時)."
         if [[ "$duration_secs" -gt "$duration_threshold_secs" ]]; then
@@ -1452,9 +1450,6 @@ process_single_mp3() {
     fi
     # --- 時長判斷結束 ---
 
-    # ... (函數的其餘部分與我上次提供的 process_single_mp3 修正版相同) ...
-    # (下載、元數據、標準化、清理、報告、通知邏輯)
-
     if [ $result -eq 0 ]; then
         mkdir -p "$DOWNLOAD_PATH"
         if [ ! -w "$DOWNLOAD_PATH" ]; then
@@ -1469,20 +1464,29 @@ process_single_mp3() {
         log_message "INFO" "處理 YouTube 媒體 (MP3 標準化)：$media_url (通知: $should_notify)"
 
         echo -e "${YELLOW}開始下載：$video_title${RESET}"
-        local output_template="$DOWNLOAD_PATH/${sanitized_title} [${video_id}].%(ext)s"
+        # ★★★ 修正核心：不再預測副檔名，而是準備好基礎檔名用於後續查找 ★★★
+        local base_filename_pattern="${sanitized_title} [${video_id}]"
+        local output_template="${DOWNLOAD_PATH}/${base_filename_pattern}.%(ext)s"
+        
         local yt_dlp_dl_args=(yt-dlp -f bestaudio -o "$output_template" "$media_url" --newline --progress --concurrent-fragments "$THREADS")
+        
         if ! "${yt_dlp_dl_args[@]}" 2> "$temp_dir/yt-dlp-mp3-std.log"; then
             log_message "ERROR" "音訊下載失敗 (標準化)，詳見 $temp_dir/yt-dlp-mp3-std.log"
             echo -e "${RED}錯誤：音訊下載失敗${RESET}"; cat "$temp_dir/yt-dlp-mp3-std.log";
             result=1
         else
-            local yt_dlp_fn_args=(yt-dlp --get-filename -f bestaudio -o "$output_template" "$media_url")
-            audio_file=$("${yt_dlp_fn_args[@]}")
-            if [ ! -f "$audio_file" ]; then
-                log_message "ERROR" "音訊下載失敗！找不到檔案 '$audio_file'"
-                echo -e "${RED}錯誤：找不到下載的檔案${RESET}";
+            # ★★★ 修正核心：下載後，使用 find 查找實際生成的檔案，無論副檔名是什麼 ★★★
+            log_message "INFO" "下載指令執行完畢，正在查找實際生成的檔案..."
+            # 使用 find 查找檔案，並用 head -n 1 確保只取一個結果，避免意外情況
+            audio_file=$(find "$DOWNLOAD_PATH" -maxdepth 1 -type f -name "${base_filename_pattern}.*" | head -n 1)
+
+            if [ -z "$audio_file" ] || [ ! -f "$audio_file" ]; then
+                log_message "ERROR" "音訊下載失敗！在下載目錄中找不到符合 '$base_filename_pattern' 模式的檔案。"
+                echo -e "${RED}錯誤：找不到下載的檔案！可能是下載核心錯誤或檔名包含特殊字元。${RESET}";
                 result=1
             else
+                log_message "SUCCESS" "成功定位到下載的檔案：$audio_file"
+                # 從找到的真實檔名中獲取不含副檔名的部分
                 base_name=$(basename "$audio_file" | sed 's/\.[^.]*$//')
             fi
         fi
@@ -1516,6 +1520,8 @@ process_single_mp3() {
             output_audio="$DOWNLOAD_PATH/${base_name}_normalized.mp3"
             local normalized_temp="$temp_dir/temp_normalized.mp3"
             echo -e "${YELLOW}開始音量標準化...${RESET}"
+            
+            # 將找到的真實檔案（無論是.mp4還是.webm）傳遞給 normalize_audio
             if normalize_audio "$audio_file" "$normalized_temp" "$temp_dir" false; then
                 echo -e "${YELLOW}正在加入封面和元數據...${RESET}"
                 local ffmpeg_embed_args=(ffmpeg -y -i "$normalized_temp")
@@ -1544,13 +1550,15 @@ process_single_mp3() {
     fi
 
     log_message "INFO" "清理臨時檔案 (MP3 標準化)..."
+    # 處理成功後，原始下載檔案 audio_file 就應該被刪除
     if [ $result -eq 0 ] && [ -f "$audio_file" ]; then
         safe_remove "$audio_file"
+    # 如果處理失敗，但原始檔存在，則保留它以供除錯
     elif [ $result -ne 0 ] && [ -f "$audio_file" ]; then
         log_message "INFO" "MP3標準化處理失敗，保留原始下載檔案: $audio_file"
     fi
     [ -n "$cover_image" ] && [ -f "$cover_image" ] && safe_remove "$cover_image"
-    safe_remove "$temp_dir/yt-dlp-mp3-std.log" "$temp_dir/yt-dlp-duration-mp3-std.log" # 修正日誌檔名
+    safe_remove "$temp_dir/yt-dlp-mp3-std.log" "$temp_dir/yt-dlp-duration-mp3-std.log"
     [ -d "$temp_dir" ] && rm -rf "$temp_dir"
 
     if [ $result -eq 0 ]; then
