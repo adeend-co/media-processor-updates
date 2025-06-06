@@ -1,11 +1,11 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.3-beta.28" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.3-beta.29" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
-SCRIPT_UPDATE_DATE="2025-06-05" # 請根據實際情況修改此日期
+SCRIPT_UPDATE_DATE="2025-06-06" # 請根據實際情況修改此日期
 ############################################
 
 # ... 其他設定 ...
@@ -198,7 +198,10 @@ save_config() {
     echo "SYNC_TARGET_DIR_OLD_PHONE=\"${SYNC_TARGET_DIR_OLD_PHONE:-}\"" >> "$CONFIG_FILE" && \
     echo "SYNC_SSH_KEY_PATH_NEW_PHONE=\"${SYNC_SSH_KEY_PATH_NEW_PHONE:-}\"" >> "$CONFIG_FILE" && \
     echo "SYNC_VIDEO_EXTENSIONS=\"${SYNC_VIDEO_EXTENSIONS:-}\"" >> "$CONFIG_FILE" && \
-    echo "SYNC_PHOTO_EXTENSIONS=\"${SYNC_PHOTO_EXTENSIONS:-}\"" >> "$CONFIG_FILE"
+    echo "SYNC_PHOTO_EXTENSIONS=\"${SYNC_PHOTO_EXTENSIONS:-}\"" >> "$CONFIG_FILE" && \
+    # --- 新增 ---
+    echo "SYNC_PROGRESS_STYLE=\"${SYNC_PROGRESS_STYLE:-default}\"" >> "$CONFIG_FILE" && \
+    echo "SYNC_BWLIMIT=\"${SYNC_BWLIMIT:-0}\"" >> "$CONFIG_FILE"
     # 注意：最後一個 echo 後面不需要 && 或 ;
 
     # 檢查上一個 echo 命令（即寫入 SYNC_PHOTO_EXTENSIONS）是否成功
@@ -289,38 +292,39 @@ _send_termux_notification() {
 
 ################################################################################
 # 載入設定檔 (包含所有設定，並提供預設值)
-# 版本：V3.1 - 優化 THREADS 驗證邏輯，全面審查
+# 版本：V3.2 - 新增同步功能選項 (進度條樣式, 頻寬限制)
 ################################################################################
 load_config() {
     # --- 為所有可配置變數設定初始預設值 ---
     # 這些值會在設定檔不存在、不可讀或設定檔中缺少對應條目時使用。
 
     # 常規設定預設值
-    THREADS="${THREADS:-4}" # 預設執行緒數
-    # DOWNLOAD_PATH 的預設值處理
-    # 優先使用環境變數 DOWNLOAD_PATH_DEFAULT，否則使用 $HOME 下的特定預設路徑
+    THREADS="${THREADS:-4}"
     local default_dl_path_platform_base="${DOWNLOAD_PATH_DEFAULT:-$HOME/media_processor_downloads_default}"
-    DOWNLOAD_PATH="${DOWNLOAD_PATH:-${default_dl_path_platform_base}}" # 若 DOWNLOAD_PATH 未設定，則使用上述預設
-    COLOR_ENABLED="${COLOR_ENABLED:-true}" # 預設啟用顏色輸出
-    PYTHON_CONVERTER_VERSION="${PYTHON_CONVERTER_VERSION:-1.0.0}" # Python 轉換器腳本的預期版本
+    DOWNLOAD_PATH="${DOWNLOAD_PATH:-${default_dl_path_platform_base}}"
+    COLOR_ENABLED="${COLOR_ENABLED:-true}"
+    PYTHON_CONVERTER_VERSION="${PYTHON_CONVERTER_VERSION:-1.0.0}"
 
     # 終端日誌級別顯示預設值
     TERMINAL_LOG_SHOW_INFO="${TERMINAL_LOG_SHOW_INFO:-true}"
     TERMINAL_LOG_SHOW_WARNING="${TERMINAL_LOG_SHOW_WARNING:-true}"
     TERMINAL_LOG_SHOW_ERROR="${TERMINAL_LOG_SHOW_ERROR:-true}"
     TERMINAL_LOG_SHOW_SUCCESS="${TERMINAL_LOG_SHOW_SUCCESS:-true}"
-    TERMINAL_LOG_SHOW_DEBUG="${TERMINAL_LOG_SHOW_DEBUG:-false}" # Debug 資訊預設不顯示
+    TERMINAL_LOG_SHOW_DEBUG="${TERMINAL_LOG_SHOW_DEBUG:-false}"
     TERMINAL_LOG_SHOW_SECURITY="${TERMINAL_LOG_SHOW_SECURITY:-true}"
 
-    # 同步功能設定預設值 (若未設定則為空字串，表示功能可能未配置或禁用)
+    # 同步功能設定預設值
     SYNC_SOURCE_DIR_NEW_PHONE="${SYNC_SOURCE_DIR_NEW_PHONE:-}"
     SYNC_TARGET_SSH_HOST_OLD_PHONE="${SYNC_TARGET_SSH_HOST_OLD_PHONE:-}"
     SYNC_TARGET_SSH_USER_OLD_PHONE="${SYNC_TARGET_SSH_USER_OLD_PHONE:-}"
-    SYNC_TARGET_SSH_PORT_OLD_PHONE="${SYNC_TARGET_SSH_PORT_OLD_PHONE:-}" # SSH 端口，若為空，ssh 客戶端通常使用預設 22
+    SYNC_TARGET_SSH_PORT_OLD_PHONE="${SYNC_TARGET_SSH_PORT_OLD_PHONE:-}"
     SYNC_TARGET_DIR_OLD_PHONE="${SYNC_TARGET_DIR_OLD_PHONE:-}"
-    SYNC_SSH_KEY_PATH_NEW_PHONE="${SYNC_SSH_KEY_PATH_NEW_PHONE:-}" # SSH 私鑰路徑
-    SYNC_VIDEO_EXTENSIONS="${SYNC_VIDEO_EXTENSIONS:-mp4,mov,mkv,webm,avi,flv,wmv}" # 預設同步的影片副檔名列表
-    SYNC_PHOTO_EXTENSIONS="${SYNC_PHOTO_EXTENSIONS:-jpg,jpeg,png,heic,gif,webp,bmp,tif,tiff,raw,dng}" # 預設同步的相片副檔名列表
+    SYNC_SSH_KEY_PATH_NEW_PHONE="${SYNC_SSH_KEY_PATH_NEW_PHONE:-}"
+    SYNC_VIDEO_EXTENSIONS="${SYNC_VIDEO_EXTENSIONS:-mp4,mov,mkv,webm,avi,flv,wmv}"
+    SYNC_PHOTO_EXTENSIONS="${SYNC_PHOTO_EXTENSIONS:-jpg,jpeg,png,heic,gif,webp,bmp,tif,tiff,raw,dng}"
+    # --- 【優化】新增同步選項的預設值 ---
+    SYNC_PROGRESS_STYLE="${SYNC_PROGRESS_STYLE:-default}" # 'default' 或 'total'
+    SYNC_BWLIMIT="${SYNC_BWLIMIT:-0}" # 0 為不限制
 
     # --- 記錄用於比較的初始值 (僅在此函數內使用，用於設定檔值無效時的回退) ---
     local initial_threads="$THREADS"
@@ -341,76 +345,61 @@ load_config() {
     local initial_sync_ssh_key_path="$SYNC_SSH_KEY_PATH_NEW_PHONE"
     local initial_sync_video_extensions="$SYNC_VIDEO_EXTENSIONS"
     local initial_sync_photo_extensions="$SYNC_PHOTO_EXTENSIONS"
+    # --- 【優化】記錄新增選項的初始值 ---
+    local initial_sync_progress_style="$SYNC_PROGRESS_STYLE"
+    local initial_sync_bwlimit="$SYNC_BWLIMIT"
+
 
     # --- 開始從設定檔讀取 ---
     if [ -f "$CONFIG_FILE" ] && [ -r "$CONFIG_FILE" ]; then
-        # 假設顏色變數 BLUE, GREEN, RESET 已在外部定義
         echo -e "${BLUE:-}正在從設定檔 $CONFIG_FILE 載入設定...${RESET:-}"
 
         local line_num=0
-        local line var_name var_value # 宣告迴圈內使用的變數
+        local line var_name var_value
 
-        # 使用 IFS= 和 -r 選項來安全地讀取每一行，包括可能包含反斜線的行
-        # || [ -n "$line" ] 確保處理檔案最後一行沒有換行符的情況
         while IFS= read -r line || [ -n "$line" ]; do
             ((line_num++))
-            # 修剪行首尾的空白字符 (包括空格和製表符)
             line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
 
-            # 跳過空行和以 '#' 開頭的註解行 (允許註解前有空白)
             if [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]]; then
                 continue
             fi
-
-            # 正則表達式匹配 VAR="VALUE" 或 VAR='VALUE'
-            # ([A-Za-z_][A-Za-z0-9_]+) : 變數名
-            # [[:space:]]*=[[:space:]]* : 等號前後的空白
-            # (\"(([^\"\\]|\\.)*)\"|'(([^'\\]|\\.)*)') : 匹配雙引號或單引號括起來的值
-            #   \"(([^\"\\]|\\.)*)\" : 處理雙引號，允許內部有轉義的雙引號 \" 或其他轉義字符 \\.
-            #   '(([^'\\]|\\.)*)' : 處理單引號，允許內部有轉義的單引號 \' 或其他轉義字符 \\. (雖然單引號內通常不進行太多轉義)
-            # 這裡我們專注於處理雙引號，因為您的原始正則表達式是針對雙引號的。
-            # 如果要同時支持單引號，正則表達式會更複雜。目前保持與您原始版本一致的雙引號處理。
-            # BASH_REMATCH[1] 是變數名，BASH_REMATCH[2] 是引號內的原始值。
+            
+            # 正則表達式匹配 VAR="VALUE"，能處理值中包含轉義引號 \" 的情況
             if [[ "$line" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]+)[[:space:]]*=[[:space:]]*\"(([^\"\\]|\\.)*)\"[[:space:]]*$ ]]; then
                 var_name="${BASH_REMATCH[1]}"
-                var_value="${BASH_REMATCH[2]}" # 這是引號內的原始值，可能包含轉義序列
+                var_value="${BASH_REMATCH[2]}"
 
-                # 根據變數名賦值，並進行必要的驗證
                 case "$var_name" in
                     "THREADS")
-                        if [[ "$var_value" =~ ^[0-9]+$ ]]; then # 檢查是否為純數字
-                            # 使用算術上下文 (( )) 進行數值比較
+                        if [[ "$var_value" =~ ^[0-9]+$ ]]; then
                             if (( var_value >= ${MIN_THREADS:-1} && var_value <= ${MAX_THREADS:-8} )); then
                                 THREADS="$var_value"
                             else
-                                echo "載入設定警告: 設定檔中 THREADS ('$var_value') 無效或超出範圍 (${MIN_THREADS:-1}-${MAX_THREADS:-8})，使用預設 '$initial_threads'。" >&2
-                                THREADS="$initial_threads" # 回退到此函數開始時的預設值
+                                echo "載入設定警告: THREADS ('$var_value') 無效或超出範圍，使用預設 '$initial_threads'。" >&2
+                                THREADS="$initial_threads"
                             fi
                         else
-                            echo "載入設定警告: 設定檔中 THREADS ('$var_value') 非有效數字，使用預設 '$initial_threads'。" >&2
-                            THREADS="$initial_threads" # 回退
+                            echo "載入設定警告: THREADS ('$var_value') 非有效數字，使用預設 '$initial_threads'。" >&2
+                            THREADS="$initial_threads"
                         fi
                         ;;
                     "DOWNLOAD_PATH")
-                        # 對路徑的進一步處理和驗證在設定檔讀取完畢後進行
                         DOWNLOAD_PATH="$var_value"
                         ;;
                     "COLOR_ENABLED")
                         if [[ "$var_value" == "true" || "$var_value" == "false" ]]; then
                             COLOR_ENABLED="$var_value"
                         else
-                            # 如果值不是 "true" 或 "false"，則保留初始預設值
                             COLOR_ENABLED="$initial_color"
                             echo "載入設定警告: COLOR_ENABLED ('$var_value') 無效，使用預設 '$initial_color'。" >&2
                         fi
                         ;;
                     "PYTHON_CONVERTER_VERSION")
-                        # 允許設定為空字串嗎？目前的邏輯是如果設定檔中為空，則用預設值。
-                        # 如果希望 "" 被視為有效設定，則應直接賦值。
-                        if [ -n "$var_value" ]; then # -n 檢查字串長度是否非零
+                        if [ -n "$var_value" ]; then
                             PYTHON_CONVERTER_VERSION="$var_value"
                         else
-                            PYTHON_CONVERTER_VERSION="$initial_py_ver" # 若設定檔提供的是空值，則回退
+                            PYTHON_CONVERTER_VERSION="$initial_py_ver"
                             echo "載入設定提示: PYTHON_CONVERTER_VERSION 為空，使用預設 '$initial_py_ver'。" >&2
                         fi
                         ;;
@@ -421,7 +410,6 @@ load_config() {
                     "TERMINAL_LOG_SHOW_DEBUG") if [[ "$var_value" == "true" || "$var_value" == "false" ]]; then TERMINAL_LOG_SHOW_DEBUG="$var_value"; else TERMINAL_LOG_SHOW_DEBUG="$initial_show_debug"; fi ;;
                     "TERMINAL_LOG_SHOW_SECURITY") if [[ "$var_value" == "true" || "$var_value" == "false" ]]; then TERMINAL_LOG_SHOW_SECURITY="$var_value"; else TERMINAL_LOG_SHOW_SECURITY="$initial_show_security"; fi ;;
 
-                    # 同步相關設定直接賦值，假設其內容的有效性由使用這些變數的功能來處理
                     "SYNC_SOURCE_DIR_NEW_PHONE") SYNC_SOURCE_DIR_NEW_PHONE="$var_value" ;;
                     "SYNC_TARGET_SSH_HOST_OLD_PHONE") SYNC_TARGET_SSH_HOST_OLD_PHONE="$var_value" ;;
                     "SYNC_TARGET_SSH_USER_OLD_PHONE") SYNC_TARGET_SSH_USER_OLD_PHONE="$var_value" ;;
@@ -430,84 +418,97 @@ load_config() {
                     "SYNC_SSH_KEY_PATH_NEW_PHONE") SYNC_SSH_KEY_PATH_NEW_PHONE="$var_value" ;;
                     "SYNC_VIDEO_EXTENSIONS") SYNC_VIDEO_EXTENSIONS="$var_value" ;;
                     "SYNC_PHOTO_EXTENSIONS") SYNC_PHOTO_EXTENSIONS="$var_value" ;;
+                    
+                    # --- 【優化】新增同步選項的處理 ---
+                    "SYNC_PROGRESS_STYLE")
+                        if [[ "$var_value" == "default" || "$var_value" == "total" ]]; then
+                            SYNC_PROGRESS_STYLE="$var_value"
+                        else
+                            # 如果值無效，回退到此函數開始時的預設值
+                            SYNC_PROGRESS_STYLE="$initial_sync_progress_style"
+                            echo "載入設定警告: SYNC_PROGRESS_STYLE ('$var_value') 無效，使用預設 '$initial_sync_progress_style'。" >&2
+                        fi
+                        ;;
+                    "SYNC_BWLIMIT")
+                        if [[ "$var_value" =~ ^[0-9]+$ ]]; then
+                            SYNC_BWLIMIT="$var_value"
+                        else
+                            # 如果值無效，回退到此函數開始時的預設值
+                            SYNC_BWLIMIT="$initial_sync_bwlimit"
+                            echo "載入設定警告: SYNC_BWLIMIT ('$var_value') 非有效數字，使用預設 '$initial_sync_bwlimit'。" >&2
+                        fi
+                        ;;
+                        
                     *)
-                        # 忽略設定檔中未知的變數，可以選擇性地發出提示
+                        # 忽略未知的變數，可以選擇性地發出提示
                         # echo "載入設定提示: 未知變數 '$var_name' 在設定檔中第 $line_num 行，已忽略。" >&2
                         ;;
-                esac # 結束 case "$var_name"
-            else # 如果行不匹配 VAR="VALUE" 格式
-                if [ -n "$line" ]; then # 僅對非空的不匹配行發出警告
+                esac
+            else
+                if [ -n "$line" ]; then
                     echo "載入設定警告: 第 $line_num 行格式不符: '$line'，已忽略。" >&2
                 fi
-            fi # 結束 if [[ "$line" =~ ... ]]
-        done < "$CONFIG_FILE" # 結束 while 迴圈
+            fi
+        done < "$CONFIG_FILE"
 
         echo -e "${GREEN:-}已成功從 $CONFIG_FILE 載入使用者設定。${RESET:-}"
         sleep 0.5
     else
-        # 設定檔不存在或不可讀
         echo -e "${YELLOW:-}設定檔 $CONFIG_FILE 未找到或不可讀，將使用預設設定。${RESET:-}"
         echo -e "${CYAN:-}提示：您可以通過腳本的設定選單來更改設定，更改後將自動創建設定檔。${RESET:-}"
         sleep 1
-    fi # 結束 if [ -f "$CONFIG_FILE" ... ]
+    fi
 
-    # --- 完成 DOWNLOAD_PATH 的處理與驗證 (此步驟至關重要，因為 LOG_FILE 路徑依賴它) ---
+    # --- 完成 DOWNLOAD_PATH 的處理與驗證 ---
     local sanitized_dl_path_final=""
     if [ -n "$DOWNLOAD_PATH" ]; then
-        # 嘗試將路徑轉換為絕對路徑，-m 選項允許路徑的組成部分不存在
-        # 然後使用 sed 移除潛在的 shell 特殊字元，作為額外的安全措施。
-        # 這主要防止路徑字串本身被惡意利用，而不是驗證路徑的合法性。
         sanitized_dl_path_final=$(realpath -m "$DOWNLOAD_PATH" 2>/dev/null | sed 's/[;|&<>()$`{}]//g')
     fi
 
     if [ -z "$sanitized_dl_path_final" ]; then
-        echo -e "${RED:-}警告：設定的下載路徑 '$DOWNLOAD_PATH' 解析失敗或包含不允許的字元，或為空！${RESET:-}" >&2
-        # 使用一個絕對安全的備用路徑
+        echo -e "${RED:-}警告：設定的下載路徑 '$DOWNLOAD_PATH' 解析失敗或無效！${RESET:-}" >&2
         DOWNLOAD_PATH="$HOME/media_processor_safe_downloads"
         echo -e "${YELLOW:-}已將下載路徑重設為安全備用路徑: $DOWNLOAD_PATH ${RESET:-}" >&2
         if ! mkdir -p "$DOWNLOAD_PATH"; then
             echo -e "${RED:-}嚴重錯誤：無法創建備用下載目錄 '$DOWNLOAD_PATH'！腳本無法繼續。${RESET:-}" >&2
-            exit 1 # 嚴重錯誤，退出
+            exit 1
         fi
     else
         DOWNLOAD_PATH="$sanitized_dl_path_final"
     fi
 
-    # 安全性檢查：確保最終的 DOWNLOAD_PATH 在允許的操作範圍內 (白名單機制)
-    # 這是為了防止腳本在系統任意位置創建目錄或文件
+    # 安全性檢查：確保最終的 DOWNLOAD_PATH 在允許的操作範圍內
     if ! [[ "$DOWNLOAD_PATH" =~ ^(/storage/emulated/0|/sdcard|$HOME|/data/data/com.termux/files/home) ]]; then
         echo -e "${RED:-}安全性錯誤：最終下載路徑 '$DOWNLOAD_PATH' 不在允許的安全操作範圍內！腳本無法啟動。${RESET:-}" >&2
-        exit 1 # 安全性違規，退出
+        exit 1
     fi
 
     # 確保最終的下載目錄存在且可寫
-    if ! mkdir -p "$DOWNLOAD_PATH" 2>/dev/null; then # 嘗試創建目錄，抑制錯誤輸出以便自訂訊息
-        echo -e "${RED:-}錯誤：無法創建最終下載目錄 '$DOWNLOAD_PATH'！請檢查路徑和權限。腳本無法啟動。${RESET:-}" >&2
-        exit 1 # 目錄創建失敗，退出
+    if ! mkdir -p "$DOWNLOAD_PATH" 2>/dev/null; then
+        echo -e "${RED:-}錯誤：無法創建最終下載目錄 '$DOWNLOAD_PATH'！請檢查權限。腳本無法啟動。${RESET:-}" >&2
+        exit 1
     elif [ ! -w "$DOWNLOAD_PATH" ]; then
         echo -e "${RED:-}錯誤：最終下載目錄 '$DOWNLOAD_PATH' 不可寫！請檢查權限。腳本無法啟動。${RESET:-}" >&2
-        exit 1 # 目錄不可寫，退出
+        exit 1
     fi
 
-    # --- 設定最終的 LOG_FILE 路徑 (在 DOWNLOAD_PATH 完全確定後) ---
+    # --- 設定最終的 LOG_FILE 路徑 ---
     LOG_FILE="$DOWNLOAD_PATH/script_log.txt"
 
-    # --- 日誌記錄已載入的設定 (假設 log_message 函數已定義並可用) ---
-    # 確保 log_message 函數在記錄前是可用的
+    # --- 日誌記錄已載入的設定 ---
     if command -v log_message >/dev/null 2>&1; then
         log_message "INFO" "load_config: 函數執行完畢。"
         log_message "INFO" "load_config: 最終下載路徑已確認為: '$DOWNLOAD_PATH'"
         log_message "INFO" "load_config: 日誌檔案將寫入: '$LOG_FILE'"
-        # 記錄一些關鍵的載入後設定以供調試
-        log_message "DEBUG" "load_config: THREADS='$THREADS' (Min: ${MIN_THREADS:-1}, Max: ${MAX_THREADS:-8})"
+        log_message "DEBUG" "load_config: THREADS='$THREADS'"
         log_message "DEBUG" "load_config: COLOR_ENABLED='$COLOR_ENABLED'"
-        log_message "DEBUG" "load_config: TERM_LOG_INFO='$TERMINAL_LOG_SHOW_INFO', TERM_LOG_DEBUG='$TERMINAL_LOG_SHOW_DEBUG'"
-        log_message "DEBUG" "load_config: SYNC_SRC_DIR='$SYNC_SOURCE_DIR_NEW_PHONE', SYNC_VIDEO_EXTS='$SYNC_VIDEO_EXTENSIONS'"
+        # --- 【優化】記錄新增選項的載入後值 ---
+        log_message "DEBUG" "load_config: SYNC_PROGRESS_STYLE='$SYNC_PROGRESS_STYLE'"
+        log_message "DEBUG" "load_config: SYNC_BWLIMIT='$SYNC_BWLIMIT' KB/s"
     else
         echo "提示: log_message 函數未定義，部分設定載入訊息將不會寫入日誌。" >&2
     fi
-
-} # 務必確保函數以 '}' 正確結束
+}
 
 ############################################
 # <<< 新增：根據 COLOR_ENABLED 應用顏色設定 >>>
@@ -1001,19 +1002,19 @@ update_dependencies() {
 }
 
 ############################################
-# 新增：傳輸同步功能 (調用 Python 輔助腳本)
+# 傳輸同步功能 (v2 - 調用優化後的 Python 腳本)
 ############################################
 perform_sync_to_old_phone() {
     clear
     echo -e "${CYAN}--- 開始同步檔案到舊手機 (使用 Python 輔助腳本) ---${RESET}"
-    log_message "INFO" "使用者觸發同步到舊手機功能 (Python Helper)。"
+    log_message "INFO" "使用者觸發同步到舊手機功能。"
 
-    # --- 檢查必要設定 (與之前類似，但可以簡化，因為Python會做更詳細的檢查) ---
+    # --- 檢查必要設定 ---
     local missing_configs_bash=false
+    # --- 【優化】現在檢查 SYNC_SOURCE_DIR_NEW_PHONE 是否為空 ---
     if [ -z "$SYNC_SOURCE_DIR_NEW_PHONE" ]; then echo -e "${RED}錯誤：未設定來源目錄！${RESET}"; missing_configs_bash=true; fi
     if [ -z "$SYNC_TARGET_SSH_HOST_OLD_PHONE" ]; then echo -e "${RED}錯誤：未設定目標 SSH 主機！${RESET}"; missing_configs_bash=true; fi
-    if [ -z "$SYNC_TARGET_SSH_USER_OLD_PHONE" ]; then echo -e "${RED}錯誤：未設定目標 SSH 用戶名！${RESET}"; missing_configs_bash=true; fi
-    if [ -z "$SYNC_TARGET_DIR_OLD_PHONE" ]; then echo -e "${RED}錯誤：未設定目標目錄！${RESET}"; missing_configs_bash=true; fi
+    if [ -z "$SYNC_TARGET_SSH_USER_OLD_PHONE" ]; then echo -e "${RED}錯誤：未設定目標目錄！${RESET}"; missing_configs_bash=true; fi
     if [ -z "$SYNC_VIDEO_EXTENSIONS" ] && [ -z "$SYNC_PHOTO_EXTENSIONS" ]; then
         echo -e "${RED}錯誤：未設定任何影片或照片擴展名！${RESET}"; missing_configs_bash=true;
     fi
@@ -1025,33 +1026,27 @@ perform_sync_to_old_phone() {
         return 1
     fi
 
-    # --- 檢查 Python 和輔助腳本 ---
+    # --- 檢查 Python 和輔助腳本 (邏輯不變) ---
     local python_executable=""
     if command -v python3 &> /dev/null; then python_executable="python3";
     elif command -v python &> /dev/null; then python_executable="python";
     else
-        log_message "ERROR" "同步失敗：找不到 python 或 python3 命令。"
-        echo -e "${RED}錯誤：找不到 Python 解釋器 (python/python3)！${RESET}"
-        read -p "按 Enter 返回..."
-        return 1
+        log_message "ERROR" "同步失敗：找不到 python 或 python3 命令。"; echo -e "${RED}錯誤：找不到 Python！${RESET}"; read -p "按 Enter 返回..."; return 1
     fi
     if [ ! -f "$PYTHON_SYNC_HELPER_SCRIPT_PATH" ]; then
-        log_message "ERROR" "同步失敗：找不到 Python 同步輔助腳本 '$PYTHON_SYNC_HELPER_SCRIPT_PATH'。"
-        echo -e "${RED}錯誤：找不到同步輔助腳本！路徑: $PYTHON_SYNC_HELPER_SCRIPT_PATH${RESET}"
-        read -p "按 Enter 返回..."
-        return 1
+        log_message "ERROR" "同步失敗：找不到 Python 同步輔助腳本 '$PYTHON_SYNC_HELPER_SCRIPT_PATH'。"; echo -e "${RED}錯誤：找不到同步輔助腳本！${RESET}"; read -p "按 Enter 返回..."; return 1
     fi
-    if [ ! -x "$PYTHON_SYNC_HELPER_SCRIPT_PATH" ]; then # 確保可執行
-         chmod +x "$PYTHON_SYNC_HELPER_SCRIPT_PATH"
-    fi
-
+    if [ ! -x "$PYTHON_SYNC_HELPER_SCRIPT_PATH" ]; then chmod +x "$PYTHON_SYNC_HELPER_SCRIPT_PATH"; fi
 
     # --- 構建 Python 腳本調用命令 ---
-    local python_sync_cmd_array=("$python_executable" "$PYTHON_SYNC_HELPER_SCRIPT_PATH")
-    python_sync_cmd_array+=("$SYNC_SOURCE_DIR_NEW_PHONE")
-    python_sync_cmd_array+=("$SYNC_TARGET_SSH_HOST_OLD_PHONE")
-    python_sync_cmd_array+=("$SYNC_TARGET_SSH_USER_OLD_PHONE")
-    python_sync_cmd_array+=("$SYNC_TARGET_DIR_OLD_PHONE")
+    # 【優化】第一個參數現在是包含所有來源目錄的字串
+    local python_sync_cmd_array=(
+        "$python_executable"
+        "$PYTHON_SYNC_HELPER_SCRIPT_PATH"
+        "$SYNC_SOURCE_DIR_NEW_PHONE"
+        "${SYNC_TARGET_SSH_USER_OLD_PHONE}@${SYNC_TARGET_SSH_HOST_OLD_PHONE}"
+        "$SYNC_TARGET_DIR_OLD_PHONE"
+    )
 
     if [ -n "$SYNC_TARGET_SSH_PORT_OLD_PHONE" ]; then
         python_sync_cmd_array+=("--target-ssh-port" "$SYNC_TARGET_SSH_PORT_OLD_PHONE")
@@ -1065,44 +1060,59 @@ perform_sync_to_old_phone() {
     if [ -n "$SYNC_PHOTO_EXTENSIONS" ]; then
         python_sync_cmd_array+=("--photo-exts" "$SYNC_PHOTO_EXTENSIONS")
     fi
+    # --- 【優化】加入新參數 ---
+    if [ -n "${SYNC_PROGRESS_STYLE}" ]; then
+        python_sync_cmd_array+=("--progress-style" "${SYNC_PROGRESS_STYLE}")
+    fi
+    if [ -n "${SYNC_BWLIMIT}" ] && [[ "${SYNC_BWLIMIT}" -gt 0 ]]; then
+        python_sync_cmd_array+=("--bwlimit" "${SYNC_BWLIMIT}")
+    fi
     
-    # 可以添加一個 dry-run 選項從 Bash 傳遞
-    # local dry_run_sync=false # 或 true
-    # if $dry_run_sync; then python_sync_cmd_array+=("--dry-run"); fi
-
+    # --- 【優化】顯示多個來源目錄 ---
     echo -e "\n${YELLOW}將調用 Python 輔助腳本執行同步...${RESET}"
-    echo -e "  來源: ${GREEN}${SYNC_SOURCE_DIR_NEW_PHONE}${RESET}"
+    echo -e "  來源目錄 (將逐一處理):"
+    # 使用 IFS 分割字串並逐行打印
+    IFS=';' read -ra source_dirs_array <<< "$SYNC_SOURCE_DIR_NEW_PHONE"
+    for dir in "${source_dirs_array[@]}"; do
+        echo -e "    - ${GREEN}${dir}${RESET}"
+    done
+    unset IFS # 重設 IFS
+
     echo -e "  目標: ${GREEN}${SYNC_TARGET_SSH_USER_OLD_PHONE}@${SYNC_TARGET_SSH_HOST_OLD_PHONE}:${SYNC_TARGET_DIR_OLD_PHONE}${RESET}"
-    echo -e "  (詳細參數將傳遞給 Python 腳本)"
     echo -e "---------------------------------------------"
 
     local confirm_py_sync
     read -p "確定開始同步嗎？ (y/n): " confirm_py_sync
     if [[ ! "$confirm_py_sync" =~ ^[Yy]$ ]]; then
-        log_message "INFO" "使用者取消了 Python 同步操作。"
-        echo -e "${YELLOW}同步操作已取消。${RESET}"
-        read -p "按 Enter 返回..."
-        return 1
+        log_message "INFO" "使用者取消了同步操作。"; echo -e "${YELLOW}同步操作已取消。${RESET}"; read -p "按 Enter 返回..."; return 1
     fi
 
     # --- 執行 Python 腳本 ---
     echo -e "\n${CYAN}Python 輔助腳本執行中，請參考其輸出...${RESET}"
     log_message "INFO" "執行 Python 同步腳本: ${python_sync_cmd_array[*]}"
 
-    # 執行 Python 腳本，Python 腳本自己會處理 rsync 的終端輸出
     if "${python_sync_cmd_array[@]}"; then
         log_message "SUCCESS" "Python 同步輔助腳本報告成功。"
-        echo -e "\n${GREEN}同步過程已完成 (由 Python 腳本處理)。請查看上方輸出以了解詳情。${RESET}"
-        # Python 腳本內部可以調用 _send_termux_notification, 或者Bash在這裡調用
-        _send_termux_notification 0 "媒體同步" "檔案同步到舊手機成功 (Python輔助)。" ""
+        echo -e "\n${GREEN}同步過程已完成 (由 Python 腳本處理)。${RESET}"
+        _send_termux_notification 0 "媒體同步" "檔案同步到舊手機成功。" ""
     else
         local py_exit_code=$?
         log_message "ERROR" "Python 同步輔助腳本報告失敗！退出碼: $py_exit_code"
         echo -e "\n${RED}同步過程失敗 (由 Python 腳本處理)！退出碼: $py_exit_code${RESET}"
-        echo -e "${YELLOW}請檢查 Python 腳本的輸出以了解錯誤原因。${RESET}"
-        _send_termux_notification 1 "媒體同步" "檔案同步到舊手機失敗 (Python輔助，代碼: $py_exit_code)。" ""
-        read -p "按 Enter 返回..."
-        return 1
+        
+        # --- 【優化】斷點續傳提示 ---
+        # 根據 rsync 的常見可恢復錯誤碼來提示
+        case $py_exit_code in
+            11|12|13|14|22|30|35) # I/O 錯誤, 協定錯誤, 超時等
+                echo -e "${YELLOW}提示：同步可能因網路不穩定或磁碟空間問題而中斷。${RESET}"
+                echo -e "${YELLOW}您可以直接重新運行此同步功能，rsync 會嘗試從中斷處繼續。${RESET}"
+                ;;
+            *)
+                echo -e "${YELLOW}請檢查 Python 腳本的輸出以了解錯誤原因。${RESET}"
+                ;;
+        esac
+
+        _send_termux_notification 1 "媒體同步" "檔案同步到舊手機失敗 (代碼: $py_exit_code)。" ""
     fi
 
     read -p "按 Enter 返回..."
@@ -4213,117 +4223,127 @@ configure_threads() {
 }
 
 ############################################
-# 新增：設定同步功能參數選單
-# (此函數用於設定 Bash 變數，這些變數將傳遞給 Python 輔助腳本)
+# 設定同步功能參數選單 (v2 - 支援多來源和新選項)
 ############################################
 configure_sync_settings_menu() {
+    # 輔助變數，用於儲存臨時設定
+    local temp_sync_source_dirs="$SYNC_SOURCE_DIR_NEW_PHONE"
+    local temp_progress_style="${SYNC_PROGRESS_STYLE:-default}"
+    local temp_bwlimit="${SYNC_BWLIMIT:-0}"
+
     while true; do
         clear
         echo -e "${CYAN}--- 同步功能設定 (新手機 -> 舊手機) ---${RESET}"
         echo -e "${YELLOW}這些設定將用於配置 Rsync + SSH 同步。${RESET}"
         echo -e "${YELLOW}當前設定：${RESET}"
-        echo -e " 1. 新手機來源目錄: ${GREEN}${SYNC_SOURCE_DIR_NEW_PHONE:-未設定}${RESET}"
+        echo -e " 1. 新手機來源目錄: ${GREEN}${temp_sync_source_dirs:-未設定}${RESET}"
+        echo -e "    ${CYAN}(多個目錄請用分號 ';' 分隔)${RESET}"
         echo -e " 2. 舊手機 SSH IP  : ${GREEN}${SYNC_TARGET_SSH_HOST_OLD_PHONE:-未設定}${RESET}"
         echo -e " 3. 舊手機 SSH 用戶: ${GREEN}${SYNC_TARGET_SSH_USER_OLD_PHONE:-未設定}${RESET}"
         echo -e " 4. 舊手機 SSH 端口: ${GREEN}${SYNC_TARGET_SSH_PORT_OLD_PHONE:-預設22 (Termux 常為 8022)}${RESET}"
         echo -e " 5. 舊手機目標目錄: ${GREEN}${SYNC_TARGET_DIR_OLD_PHONE:-未設定}${RESET}"
         echo -e " 6. 新手機 SSH 私鑰: ${GREEN}${SYNC_SSH_KEY_PATH_NEW_PHONE:-未使用/將提示密碼}${RESET}"
-        echo -e " 7. 同步影片擴展名: ${GREEN}${SYNC_VIDEO_EXTENSIONS:-未設定}${RESET} (例: mp4,mov,mkv)"
-        echo -e " 8. 同步照片擴展名: ${GREEN}${SYNC_PHOTO_EXTENSIONS:-未設定}${RESET} (例: jpg,jpeg,png,heic)"
+        echo -e " 7. 同步影片擴展名: ${GREEN}${SYNC_VIDEO_EXTENSIONS:-未設定}${RESET} (例: mp4,mov)"
+        echo -e " 8. 同步照片擴展名: ${GREEN}${SYNC_PHOTO_EXTENSIONS:-未設定}${RESET} (例: jpg,jpeg)"
         echo -e "---------------------------------------------"
-        echo -e " 9. ${BOLD}測試 SSH 連線到舊手機${RESET}"
+        # --- 【優化】新增選項 ---
+        echo -e " 9. 進度條樣式: ${GREEN}${temp_progress_style}${RESET} (default/total)"
+        echo -e " 10. 頻寬限制 (KB/s): ${GREEN}${temp_bwlimit}${RESET} (0為不限制)"
+        echo -e " 11. ${BOLD}測試 SSH 連線到舊手機${RESET}"
         echo -e "---------------------------------------------"
         echo -e " 0. ${YELLOW}返回上一層選單 (並儲存設定)${RESET}"
         echo -e "---------------------------------------------"
-        echo -e "${CYAN}輸入選項編號以修改，或輸入 0 返回。${RESET}"
-
-        read -t 0.1 -N 10000 discard # 清除緩衝區
+        
+        read -t 0.1 -N 10000 discard
         local choice
-        read -rp "輸入選項 (0-9): " choice
+        read -rp "輸入選項 (0-11): " choice
 
         case $choice in
             1)
-                read -e -p "輸入新手機的來源目錄 (例如 /sdcard/DCIM/Camera 或 ~/storage/shared/DCIM/Camera): " SYNC_SOURCE_DIR_NEW_PHONE
-                # 可以在此處加入對輸入路徑的基礎驗證，例如是否為空
+                read -e -p "輸入來源目錄 (多個用';'分隔): " temp_sync_source_dirs
                 ;;
             2)
                 read -e -p "輸入舊手機的 SSH IP 地址: " SYNC_TARGET_SSH_HOST_OLD_PHONE
                 ;;
             3)
-                read -e -p "輸入登錄舊手機的 SSH 用戶名 (通常與 Termux 用戶名相同): " SYNC_TARGET_SSH_USER_OLD_PHONE
+                read -e -p "輸入登錄舊手機的 SSH 用戶名: " SYNC_TARGET_SSH_USER_OLD_PHONE
                 ;;
             4)
-                read -e -p "輸入舊手機的 SSH 端口號 (預設 22, Termux 常為 8022): " SYNC_TARGET_SSH_PORT_OLD_PHONE
+                read -e -p "輸入舊手機的 SSH 端口號: " SYNC_TARGET_SSH_PORT_OLD_PHONE
                 ;;
             5)
                 read -e -p "輸入舊手機上接收檔案的【完整】目錄路徑: " SYNC_TARGET_DIR_OLD_PHONE
                 ;;
             6)
-                read -e -p "輸入新手機上 SSH 私鑰的【完整】路徑 (可選, 留空則提示密碼): " SYNC_SSH_KEY_PATH_NEW_PHONE
+                read -e -p "輸入新手機上 SSH 私鑰的【完整】路徑 (可選): " SYNC_SSH_KEY_PATH_NEW_PHONE
                 if [ -n "$SYNC_SSH_KEY_PATH_NEW_PHONE" ] && [ ! -f "$SYNC_SSH_KEY_PATH_NEW_PHONE" ]; then
                     echo -e "${RED}警告：指定的 SSH 私鑰路徑檔案不存在！${RESET}"; sleep 2
                 fi
                 ;;
             7)
-                read -e -p "輸入要同步的影片擴展名 (逗號分隔, 無點, 例如 mp4,mov,mkv): " SYNC_VIDEO_EXTENSIONS
-                # 清理可能的空格並轉換為小寫 (可選，但建議)
+                read -e -p "輸入要同步的影片擴展名 (逗號分隔): " SYNC_VIDEO_EXTENSIONS
                 SYNC_VIDEO_EXTENSIONS=$(echo "$SYNC_VIDEO_EXTENSIONS" | tr '[:upper:]' '[:lower:]' | sed 's/[[:space:]]//g')
                 ;;
             8)
-                read -e -p "輸入要同步的照片擴展名 (逗號分隔, 無點, 例如 jpg,jpeg,png): " SYNC_PHOTO_EXTENSIONS
+                read -e -p "輸入要同步的照片擴展名 (逗號分隔): " SYNC_PHOTO_EXTENSIONS
                 SYNC_PHOTO_EXTENSIONS=$(echo "$SYNC_PHOTO_EXTENSIONS" | tr '[:upper:]' '[:lower:]' | sed 's/[[:space:]]//g')
                 ;;
-            9) # 測試 SSH 連線
+            # --- 【優化】新增選項的處理 ---
+            9)
+                read -p "選擇進度條樣式 (default/total) [當前: $temp_progress_style]: " style_choice
+                if [[ "$style_choice" == "total" || "$style_choice" == "default" ]]; then
+                    temp_progress_style="$style_choice"
+                elif [ -n "$style_choice" ]; then
+                    echo -e "${RED}無效選項，請輸入 'default' 或 'total'。${RESET}"; sleep 1
+                fi
+                ;;
+            10)
+                read -p "輸入頻寬限制 (KB/s, 0為不限制) [當前: $temp_bwlimit]: " bwlimit_choice
+                if [[ "$bwlimit_choice" =~ ^[0-9]+$ ]]; then
+                    temp_bwlimit="$bwlimit_choice"
+                elif [ -n "$bwlimit_choice" ]; then
+                    echo -e "${RED}無效輸入，請輸入數字。${RESET}"; sleep 1
+                fi
+                ;;
+            11) # 測試 SSH
+                # (測試邏輯不變，但選項編號改變)
                 if [ -n "$SYNC_TARGET_SSH_HOST_OLD_PHONE" ] && [ -n "$SYNC_TARGET_SSH_USER_OLD_PHONE" ]; then
-                    local test_ssh_port_val="${SYNC_TARGET_SSH_PORT_OLD_PHONE:-8022}" # Termux 預設 8022，標準 SSH 22
-                    local test_ssh_key_opt_val=""
-                    if [ -n "$SYNC_SSH_KEY_PATH_NEW_PHONE" ] && [ -f "$SYNC_SSH_KEY_PATH_NEW_PHONE" ]; then
-                        # 確保引用私鑰路徑，以防路徑中包含空格 (雖然不常見於私鑰路徑)
-                        test_ssh_key_opt_val="-i \"$SYNC_SSH_KEY_PATH_NEW_PHONE\""
-                    fi
-                    echo -e "\n${YELLOW}正在嘗試連接到 ${SYNC_TARGET_SSH_USER_OLD_PHONE}@${SYNC_TARGET_SSH_HOST_OLD_PHONE} 端口 ${test_ssh_port_val}...${RESET}"
-                    echo -e "${CYAN}將執行 'ssh -o ConnectTimeout=10 ${test_ssh_key_opt_val} -p \"${test_ssh_port_val}\" \"${SYNC_TARGET_SSH_USER_OLD_PHONE}@${SYNC_TARGET_SSH_HOST_OLD_PHONE}\" exit'${RESET}"
-                    echo -e "${YELLOW}如果需要密碼，系統會提示您輸入。${RESET}"
-                    
-                    # 使用 eval 來正確處理帶有引號的 $test_ssh_key_opt_val
-                    # 或者不使用 eval，但確保 $test_ssh_key_opt_val 中的引號被 ssh 命令正確解析
-                    # 更安全的方式是構建數組：
+                    local test_ssh_port_val="${SYNC_TARGET_SSH_PORT_OLD_PHONE:-8022}"
                     local ssh_test_cmd_array=("ssh" "-o" "ConnectTimeout=10")
                     if [ -n "$SYNC_SSH_KEY_PATH_NEW_PHONE" ] && [ -f "$SYNC_SSH_KEY_PATH_NEW_PHONE" ]; then
                         ssh_test_cmd_array+=("-i" "$SYNC_SSH_KEY_PATH_NEW_PHONE")
                     fi
                     ssh_test_cmd_array+=("-p" "$test_ssh_port_val" "${SYNC_TARGET_SSH_USER_OLD_PHONE}@${SYNC_TARGET_SSH_HOST_OLD_PHONE}" "exit")
-
+                    
+                    echo -e "\n${YELLOW}正在嘗試連接到 ${SYNC_TARGET_SSH_USER_OLD_PHONE}@${SYNC_TARGET_SSH_HOST_OLD_PHONE}...${RESET}"
                     if "${ssh_test_cmd_array[@]}"; then
                         echo -e "${GREEN}SSH 連線測試成功！${RESET}"
                     else
-                        echo -e "${RED}SSH 連線測試失敗！請檢查設定、網路、舊手機SSHD服務是否運行以及防火牆設定。${RESET}"
+                        echo -e "${RED}SSH 連線測試失敗！${RESET}"
                     fi
                 else
-                    echo -e "${RED}請先設定舊手機的 SSH 主機 IP 和 SSH 用戶名才能進行測試。${RESET}"
+                    echo -e "${RED}請先設定 SSH 主機 IP 和用戶名。${RESET}"
                 fi
                 read -p "按 Enter 繼續..."
                 ;;
             0)
+                # --- 【優化】在退出時，將臨時變數賦值給全局變數 ---
+                SYNC_SOURCE_DIR_NEW_PHONE="$temp_sync_source_dirs"
+                SYNC_PROGRESS_STYLE="$temp_progress_style"
+                SYNC_BWLIMIT="$temp_bwlimit"
+
                 save_config # 退出前保存所有更改
                 log_message "INFO" "同步設定已儲存。"
-                return 0 # 返回到 utilities_menu
+                return 0
                 ;;
             *)
-                if [[ -z "$choice" ]]; then
-                    continue # 如果是空輸入，重新顯示選單
-                else
-                    echo -e "${RED}無效選項 '$choice'${RESET}"
-                    log_message "WARNING" "同步設定選單輸入無效: $choice"
-                    sleep 1
-                fi
+                if [[ -z "$choice" ]]; then continue; else echo -e "${RED}無效選項 '$choice'${RESET}"; sleep 1; fi
                 ;;
         esac
-        # 每次有效修改後（選項1-8）都保存一次
-        if [[ "$choice" -ge 1 && "$choice" -le 8 ]]; then
+        # 每次有效修改後（選項2-8）都保存一次，1,9,10 的修改在退出時統一保存
+        if [[ "$choice" -ge 2 && "$choice" -le 8 ]]; then
              save_config
              log_message "INFO" "同步設定已更新 (選項: $choice)。"
-             # sleep 0.5 # 短暫停頓讓用戶看到更改，或在循環開始時清屏已足夠
         fi
     done
 }
