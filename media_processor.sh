@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.3-beta.29" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.3-beta.31" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -4537,152 +4537,129 @@ view_log() {
 }
 
 ############################################
-# <<< 修改：關於訊息 (顯示 Git 版本、環境狀態、yt-dlp版本，修正顏色和對齊) >>>
+# 關於訊息 (v3 - 移除 SHA256, 新增輔助腳本狀態)
 ############################################
 show_about_enhanced() {
     clear
     echo -e "${CYAN}=== 整合式影音處理平台 ===${RESET}"
     echo -e "---------------------------------------------"
 
-    # --- 嘗試從 Git 獲取版本信息 ---
+    # --- Git 版本信息 (邏輯不變) ---
     local git_version_info=""
-    local git_commit_hash=""
-    local git_tag=""
     if command -v git &> /dev/null && [ -d "$SCRIPT_DIR/.git" ]; then
-        git_tag=$(git -C "$SCRIPT_DIR" describe --tags --abbrev=0 2>/dev/null)
-        git_commit_hash=$(git -C "$SCRIPT_DIR" log -1 --pretty=%h 2>/dev/null)
+        local git_tag=$(git -C "$SCRIPT_DIR" describe --tags --abbrev=0 2>/dev/null)
+        local git_commit_hash=$(git -C "$SCRIPT_DIR" log -1 --pretty=%h 2>/dev/null)
         if [ -n "$git_tag" ]; then
             git_version_info="$git_tag"
             if [ -n "$git_commit_hash" ]; then
                  local commit_for_tag=$(git -C "$SCRIPT_DIR" rev-list -n 1 "$git_tag" 2>/dev/null)
                  local current_head=$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null)
                  if [[ "$commit_for_tag" != "$current_head" ]]; then
-                      git_version_info+=" (+${git_commit_hash})" # 標記非 tag 的最新 commit
+                      git_version_info+=" (+${git_commit_hash})"
                  fi
             fi
         elif [ -n "$git_commit_hash" ]; then
-             git_version_info="commit ${git_commit_hash}" # 如果沒有 tag，顯示 commit hash
+             git_version_info="commit ${git_commit_hash}"
         fi
     fi
-    # 如果無法從 Git 獲取，則使用腳本內定義的版本
     local display_version="${git_version_info:-$SCRIPT_VERSION}"
-
-    echo -e "${BOLD}版本:${RESET}        ${GREEN}${display_version}${RESET}"
+    echo -e "${BOLD}主腳本版本:${RESET}  ${GREEN}${display_version}${RESET}"
     if [ -n "$SCRIPT_UPDATE_DATE" ]; then echo -e "${BOLD}更新日期:${RESET}    ${GREEN}${SCRIPT_UPDATE_DATE}${RESET}"; fi
+    # --- 【移除】SHA256 顯示 ---
 
-    # --- 腳本 SHA256 (可以保留作為參考，但 Git hash 更可靠) ---
-    local current_script_checksum="無法計算"
-    if command -v sha256sum &> /dev/null && [ -f "$SCRIPT_INSTALL_PATH" ]; then current_script_checksum=$(sha256sum "$SCRIPT_INSTALL_PATH" | awk '{print $1}'); fi
-    echo -e "${BOLD}主腳本 SHA256:${RESET} ${YELLOW}${current_script_checksum}${RESET}"
     echo -e "---------------------------------------------"
 
-    # --- 新增：腳本環境狀態 ---
-    echo -e "${CYAN}--- 腳本環境狀態 ---${RESET}"
+    # --- 腳本環境與組件狀態 ---
+    echo -e "${CYAN}--- 腳本組件與環境狀態 ---${RESET}"
 
-    # 輔助函數顯示狀態 (使用 printf 進行對齊，修正顏色處理)
+    # 輔助函數，用於格式化顯示狀態
     display_status() {
         local item_name="$1"
-        local is_ok="$2"    # true or false
-        local detail="$3"   # e.g., version or path
-        local item_name_display="${item_name}:" 
-        
-        # 調整欄位寬度，您可以根據實際效果修改此值
-        # 20 是一個比較折衷的值，可以根據您的終端和字型調整
-        local name_field_width=20 
+        local status_ok="$2"    # true 或 false
+        local detail="$3"
+        # 使用 printf 進行對齊，寬度可調整
+        local name_field_width=22
 
-        if [ "$is_ok" = true ]; then
-            # 將顏色代碼直接放入 printf 的格式字串
-            if [ -n "$detail" ]; then # 如果有詳細資訊
-                printf "%-${name_field_width}s \033[0;32m%s\033[0m \033[0;32m%s\033[0m\n" "$item_name_display" "已安裝 / 已獲取" "$detail"
-            else # 如果沒有詳細資訊
-                printf "%-${name_field_width}s \033[0;32m%s\033[0m\n" "$item_name_display" "已安裝 / 已獲取"
-            fi
-        else # is_ok is false
-            if [ -n "$detail" ]; then # 如果有詳細資訊
-                printf "%-${name_field_width}s \033[0;31m%s\033[0m \033[0;31m%s\033[0m\n" "$item_name_display" "未安裝 / 未獲取" "$detail"
-            else # 如果沒有詳細資訊
-                printf "%-${name_field_width}s \033[0;31m%s\033[0m\n" "$item_name_display" "未安裝 / 未獲取"
-            fi
+        if [ "$status_ok" = true ]; then
+            printf "%-${name_field_width}s \033[0;32m%s\033[0m %s\n" "${item_name}:" "[✓] 正常 / 已安裝" "${GREEN}${detail}${RESET}"
+        else
+            printf "%-${name_field_width}s \033[0;31m%s\033[0m %s\n" "${item_name}:" "[✗] 異常 / 未找到" "${RED}${detail}${RESET}"
         fi
     }
 
-    local tool_status py_status ytdlp_status aria2c_status
-    local py_exe py_version ytdlp_version
+    # --- 【新增】輔助腳本狀態檢查 ---
+    echo -e "${YELLOW}核心輔助腳本:${RESET}"
+    local python_exec=""
+    if command -v python3 &> /dev/null; then python_exec="python3"; elif command -v python &> /dev/null; then python_exec="python"; fi
 
-    echo -e "${YELLOW}核心工具:${RESET}"
-    # 為核心工具名稱添加兩個前導空格，以便在視覺上與分類標題區分
+    # 檢查 estimate_size.py
+    local estimator_status=false
+    local estimator_version="N/A"
+    if [ -n "$python_exec" ] && [ -f "$PYTHON_ESTIMATOR_SCRIPT_PATH" ]; then
+        estimator_status=true
+        # 執行 python script.py --version 來獲取版本
+        estimator_version=$($python_exec "$PYTHON_ESTIMATOR_SCRIPT_PATH" --version 2>/dev/null | awk '{print $2}')
+        if [ -z "$estimator_version" ]; then estimator_version="版本未標識"; fi
+    fi
+    display_status "  大小預估 (estimate_size.py)" "$estimator_status" "$estimator_version"
+
+    # 檢查 sync_helper.py
+    local sync_helper_status=false
+    local sync_helper_version="N/A"
+    if [ -n "$python_exec" ] && [ -f "$PYTHON_SYNC_HELPER_SCRIPT_PATH" ]; then
+        sync_helper_status=true
+        sync_helper_version=$($python_exec "$PYTHON_SYNC_HELPER_SCRIPT_PATH" --version 2>/dev/null | awk '{print $2}')
+        if [ -z "$sync_helper_version" ]; then sync_helper_version="版本未標識"; fi
+    fi
+    display_status "  檔案同步 (sync_helper.py)" "$sync_helper_status" "$sync_helper_version"
+
+    # --- 核心工具與環境檢查 (保持原樣，但標題調整) ---
+    echo -e "\n${YELLOW}外部核心工具:${RESET}"
     for tool in ffmpeg ffprobe jq curl; do
-        tool_status=false; command -v "$tool" &> /dev/null && tool_status=true
+        local tool_status=false; command -v "$tool" &> /dev/null && tool_status=true
         display_status "  $tool" "$tool_status" ""
     done
-
-    py_status=false; py_exe=""
-    if command -v python3 &> /dev/null; then py_exe="python3"; py_status=true;
-    elif command -v python &> /dev/null; then py_exe="python"; py_status=true; fi
-    if $py_status; then
-        py_version=$($py_exe --version 2>&1 | sed 's/Python //') # 獲取並清理版本號
-        display_status "  Python" true "(版本: $py_version)"
-    else
-        display_status "  Python" false ""
-    fi
-
-    ytdlp_status=false; ytdlp_version="N/A"
-    if command -v yt-dlp &> /dev/null; then
-        ytdlp_status=true
-        ytdlp_version=$(yt-dlp --version 2>/dev/null || echo "無法獲取")
-    fi
-    display_status "  yt-dlp" "$ytdlp_status" "(版本: $ytdlp_version)"
+    local py_status=false
+    if [ -n "$python_exec" ]; then py_status=true; fi
+    display_status "  Python ($python_exec)" "$py_status" "$($python_exec --version 2>&1 | head -n 1)"
     
-    aria2c_status=false
-    command -v aria2c &> /dev/null && aria2c_status=true
-    display_status "  aria2c" "$aria2c_status" "(用於 Bilibili 加速)"
+    local ytdlp_status=false; local ytdlp_version="N/A"
+    if command -v yt-dlp &> /dev/null; then
+        ytdlp_status=true; ytdlp_version=$(yt-dlp --version 2>/dev/null || echo "無法獲取")
+    fi
+    display_status "  yt-dlp" "$ytdlp_status" "$ytdlp_version"
 
     echo -e "\n${YELLOW}權限與路徑:${RESET}"
     if [[ "$OS_TYPE" == "termux" ]]; then
         local termux_storage_ok=false
         if [ -d "/sdcard" ] && touch "/sdcard/.termux-test-write-about" 2>/dev/null; then
             termux_storage_ok=true
-            rm -f "/sdcard/.termux-test-write-about" # 清理測試檔案
+            rm -f "/sdcard/.termux-test-write-about"
         fi
         display_status "  Termux 儲存權限" "$termux_storage_ok" ""
     fi
-
     local dl_path_ok=false
-    local dl_path_display="$DOWNLOAD_PATH"
-    if [ -z "$dl_path_display" ]; then dl_path_display="(未設定)"; fi
     if [ -n "$DOWNLOAD_PATH" ] && [ -d "$DOWNLOAD_PATH" ] && [ -w "$DOWNLOAD_PATH" ]; then dl_path_ok=true; fi
-    display_status "  下載目錄可寫" "$dl_path_ok" "$dl_path_display"
-
-    local temp_dir_ok=false
-    local temp_dir_display="$TEMP_DIR"
-    if [ -z "$temp_dir_display" ]; then temp_dir_display="(未設定)"; fi
-    if [ -n "$TEMP_DIR" ] && [ -d "$TEMP_DIR" ] && [ -w "$TEMP_DIR" ]; then temp_dir_ok=true; fi
-    display_status "  臨時目錄可寫" "$temp_dir_ok" "$temp_dir_display"
+    display_status "  下載目錄可寫" "$dl_path_ok" "$DOWNLOAD_PATH"
+    
     echo -e "---------------------------------------------"
-    # --- 環境狀態結束 ---
 
-
+    # --- 功能特色與使用須知 (保持不變) ---
     echo -e "\n${GREEN}主要功能特色：${RESET}"
     echo -e "- YouTube 影音下載 (MP3/MP4/MKV)"
-    echo -e "- 通用網站媒體下載 (MP3/MP4, 實驗性, Bilibili 使用 aria2c 加速)"
-    echo -e "- 音量標準化 (EBU R128) / 無標準化選項"
-    echo -e "- YouTube 字幕處理 (下載/轉換/嵌入)"
-    echo -e "- 播放清單批次處理 (YouTube/通用實驗性)"
-    echo -e "- 本機 MP3/MP4 音量標準化"
-    echo -e "- 依賴管理與腳本自我更新 (含校驗和)"
+    echo -e "- 通用網站媒體下載 (實驗性)"
+    echo -e "- 音量標準化 (EBU R128) 與無標準化選項"
+    echo -e "- 字幕處理、播放清單批次處理、本機檔案處理"
+    echo -e "- 檔案同步 (新手機 -> 舊手機)"
+    echo -e "- 依賴管理與腳本自我更新 (Git)"
     echo -e "- 跨平台適應 (Termux/WSL/Linux)"
-    echo -e "- 設定持久化與互動式選單"
-    echo -e "- 主選單重構（v2.2.0+)"
-    echo -e "-「MP4片段下載」支援完成通知 (僅限Termux環境，且需加裝額外插件)(v2.3.12+)"
-    echo -e "- ${BOLD}MP3/MP4/通用 下載支援條件式完成通知${RESET} (批量處理或檔案>閾值)(v2.4.13+)"
+    echo -e "- 設定持久化、條件式通知與互動式選單"
 
     echo -e "\n${YELLOW}使用須知：${RESET}"
     echo -e "本工具僅供個人學習與合法使用，請尊重版權並遵守當地法律。"
-    echo -e "下載受版權保護的內容而導致違法，請自行承擔責任。"
 
     echo -e "\n${CYAN}日誌檔案位於: ${LOG_FILE}${RESET}"
     echo -e "---------------------------------------------"
-    echo ""
     read -p "按 Enter 返回主選單..."
 }
 
