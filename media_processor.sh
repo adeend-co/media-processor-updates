@@ -3520,7 +3520,7 @@ process_mkv() {
 }
 
 ############################################
-# 動態調整執行緒數量 
+# 動態調整執行緒數量
 ############################################
 adjust_threads() {
     local cpu_cores current_threads=$THREADS # 保存調整前的值
@@ -3529,8 +3529,9 @@ adjust_threads() {
     if ! [[ "$cpu_cores" =~ ^[0-9]+$ ]] || [ "$cpu_cores" -lt 1 ]; then log_message "WARNING" "檢測到的 CPU 核心數 '$cpu_cores' 無效，預設計算基於 4 核心。"; cpu_cores=4; fi
 
     local magic_seed=2006092711211412914
-    local adjustment_factor=$(( magic_seed % 13 ))
-    local recommended_threads=$(( (cpu_cores + adjustment_factor) * 3 / 4 ))
+    local adjustment_factor=$(( magic_seed % 4 ))
+    local adjusted_cores=$(( cpu_cores ^ adjustment_factor ))
+    local recommended_threads=$(( adjusted_cores * 3 / 4 ))
 
     # 確保計算結果在預設的最大和最小執行緒數之間，這讓整個邏輯更完整、更合理。
     if [ "$recommended_threads" -lt "$MIN_THREADS" ]; then
@@ -4531,11 +4532,28 @@ check_environment() {
 }
 
 ############################################
-# 主選單 (v5.3 - 修正)
+# 主選單
 ############################################
 main_menu() {
-    
-    local easter_egg_payload="CiAgICA9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09CiAgICAgICDmlbTlkIjlvI/lvbHpn7PomZXnkIblubPlj7AgKElBVlBQKQogICAgICAgQ29weXJpZ2h0IMKpIDIwMjUgYWRlZW5kLWNvLiBBbGwgcmlnaHRzIHJlc2VydmVkLgogICAgICAgTGljZW5zZWQgdW5kZXIgQ0MgQlktTkMtU0EgNC4wIEludGVybmF0aW9uYWwuCiAgICA9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09Cgo="
+    local secret_data="j5Odn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnQoGGiAgICAzDRkSCQseFxUEAhIFBw8fDAsCAwweCAgDBQkDCBAMCR4LCh4fAQUKCQoGDiAgICAzDRkSAQsdFwQDBAUbHgwHHR4EBAQGCAweCAgDBQkDCBAMCR4LCh4fAQUKCQoGDiAgICAzDRkSDRkSDRkSDRkSDQQCBA8PBAsCAwsIBw4eAg0LHRcDEAsMAAsHHR4EBAQGCAweCAgDBQkDCBAMCR4LCh4fAQUKCQoGDiAgICAyHw0dDBgXDgQDBAUbHgwHHR4EBAQGCAweCAgDBQkDCBAMCR4LCh4fAQUKCQoGDiAgICAyHw0dDBgXDgQDBAUbHgwHHR4EBAQGCAweCAgDBQkDCBAMCR4LCh4fAQUKCQoGOCAgICMxDR4MBx4IBw8fAg0PCgQeHR8OBw4eHR8DAg4eHR8DBQkDCBAMCR4LCh4fAQUKCQoGDjgjICAgMyAcHhwHHR8BDAsDCgUDAgIeAgwPCgIeCAcPHwINBAsbAQUKCQoGDjgjICAgMyAcHhwHHR8BDAsDCgUDAgIeAgwPCgIeCAcPHwINBAsbAQUKCQoGDjgjICAgMyAcHhwHHR8BDAsDCgUDAgIeAgwPCgIeCAcPHwINBAsbAQUKCQoGDiAgICAyHw0dDBgXDgQDBAUbHgwHHR4EBAQGCAweCAgDBQkDCBAMCR4LCh4fAQUKCQoGDiAgICAyHw0dDBgXDgQDBAUbHgwHHR4EBAQGCAweCAgDBQkDCBAMCR4LCh4fAQUKCQoGDiAgICAyHw0dDBgXDgQDBAUbHgwHHR4EBAQGCAweCAgDBQkDCBAMCR4LCh4fAQUKCQoGDiAgICAyHw0dDBgXDgQDBAUbHgwHHR4EBAQGCAweCAgDBQkDCBAMCR4LCh4fAQUKCQoGj5Odn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnQo="
+
+    _reveal_secret() {
+        local data_b64="$1"
+        local key="$2"
+        if [ -z "$data_b64" ] || [ -z "$key" ] || ! command -v base64 &>/dev/null; then return 1; fi
+        local encrypted_bytes
+        encrypted_bytes=$(echo "$data_b64" | base64 -d)
+        if [ -z "$encrypted_bytes" ]; then return 1; fi
+        local key_len=${#key}
+        local i=0
+        while [ "$i" -lt "${#encrypted_bytes}" ]; do
+            local char_ord=$(printf '%d' "'${encrypted_bytes:$i:1}")
+            local key_ord=$(printf '%d' "'${key:$((i % key_len)):1}")
+            local decrypted_ord=$(( char_ord ^ key_ord ))
+            printf "\\$(printf '%03o' "$decrypted_ord")"
+            i=$((i+1))
+        done
+    }
 
     while true; do
         clear
@@ -4551,30 +4569,23 @@ main_menu() {
         echo -e " 6. ${BOLD}關於此工具${RESET}"
         echo -e " 0. ${RED}退出腳本${RESET}"
         echo -e "---------------------------------------------"
-
         read -t 0.1 -N 10000 discard
-
         local choice
         read -rp "輸入選項 (0-6): " choice
+        local lower_choice
+        lower_choice=$(echo "$choice" | tr '[:upper:]' '[:lower:]')
 
-        
-        if [[ "$choice" == "$SCRIPT_VERSION" ]]; then
+        if [[ "$lower_choice" == "iavpp" ]]; then
             clear
-            
-            if command -v base64 &> /dev/null; then
-               
-                decoded_message=$(echo "$easter_egg_payload" | base64 -d)
-                echo -e "${CYAN}${decoded_message}${RESET}"
-            else
-                # 備用方案不變
-                echo "Copyright © 2025 adeend-co. All rights reserved."
+            local revealed_message
+            revealed_message=$(_reveal_secret "$secret_data" "iavpp")
+            if [ -n "$revealed_message" ]; then
+                echo -e "${CYAN}${revealed_message}${RESET}"
+                log_message "SECURITY" "金鑰式解密彩蛋被觸發 (輸入: $choice)"
             fi
-            
-            log_message "SECURITY" "彩蛋被觸發 (輸入版本號: $choice)"
             sleep 5
             continue
         fi
-        
 
         case $choice in
             1) mp3_menu ;;
