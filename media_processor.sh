@@ -4535,16 +4535,13 @@ check_environment() {
 # 主選單
 ############################################
 main_menu() {
-    local internal_seed="2006092711211412914"
-    local data_blob="hNahvYVd2WctrXwfn5nl6DveWGNLBv0zcWjK2VLxXbfGP90As7LsUVCdfsvbginAfUCmBvoqqHe+mD/UhFYsxTJtgVRCSKjAz3yh8CNXa6izMlIR9J71fr5dDIqt9LczSorC8e2RV8F/skMwCcTnVYMZtwjb87Q26JNFuy2S5vJ6FRWSGFvbBAW5WOsCXKNctk+8WHYEwCMkIOu7/JWxS2EaNQvTq3soujZqDN+mKQ0dsD+Z8DGY5TMDB0r6NKgxmjwqnTW6Vc33ep8+KOo80ftk8hk2fcmwUJgNzIcvdOTzcab7oil/P5bvWImCzUQzP0u6OM4Q2WRNEydgCVvEuBZFqv04XZLgKdHkYZuKH6c="
+    local secret_data="b2bAW5ZFpQMCOvGpYflvXskCUTJSt5DKAJF3sXl5NXV9nARo2d3jDgvLqxtpLUVEvXyUAdp0v9ewb2Ifc5zPFbIuK3hXLWLU98F+grytxQaDG6eRd/3ZgxFqzLUBDWWbROwZ1lYgXFFJKGQLG+IhF+xJ20F723gN8qol+8Y+i4sfutX2gkHHAH5mdB6FFJk14YZrKCvSDznE96maG8Xh/EHJe9r9UPkJhUJXD9uT1ZCLjFsgtJM25x4lZayLKXX6ZfnwTGg8kAmoBtfX+dW27BySIUaldtWGyUZBlGz4oQgrOgXPWZW4HBh9fD1XLguog2tel8zycrnQsGultBS+8LPHCHi51GvEqFn+WmGoK00="
 
-    _process_meta_request() {
+    _reveal_secret() {
         local payload="$1"
-        local seed="$2"
-        if ! command -v openssl &>/dev/null || ! command -v sha256sum &>/dev/null; then return 1; fi
-        local dynamic_key
-        dynamic_key=$(echo -n "$seed" | sha256sum | head -c 64)
-        echo "$payload" | openssl enc -aes-256-cbc -d -a -nosalt -K "$dynamic_key" -iv 0 2>/dev/null
+        local key_phrase="$2"
+        if [ -z "$payload" ] || [ -z "$key_phrase" ] || ! command -v openssl &>/dev/null; then return 1; fi
+        echo "$payload" | openssl enc -aes-256-cbc -d -a -nosalt -pbkdf2 -iter 1000 -pass "pass:$key_phrase" 2>/dev/null
     }
 
     while true; do
@@ -4564,13 +4561,14 @@ main_menu() {
         read -t 0.1 -N 10000 discard
         local choice
         read -rp "輸入選項 (0-6): " choice
-        local lower_choice
-        lower_choice=$(echo "$choice" | tr '[:upper:]' '[:lower:]')
 
-        if [[ "$lower_choice" == "iavpp" ]]; then
+        local input_hash
+        input_hash=$(echo -n "$choice" | tr '[:upper:]' '[:lower:]' | sha256sum | head -c 8)
+
+        if [[ "$input_hash" == "76ddfe7b" ]]; then
             clear
             echo -e "${CYAN}"
-            _process_meta_request "$data_blob" "$internal_seed"
+            _reveal_secret "$secret_data" "$(echo "$choice" | tr '[:upper:]' '[:lower:]')"
             echo -e "${RESET}"
             sleep 5
             continue
