@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.4-beta.6" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.4-beta.7" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -88,7 +88,7 @@ fi
 ############################################
 # log_message (根據全局開關控制各級別終端輸出)
 ############################################
-og_message() {
+log_message() {
     local level="$1"
     local message="$2"
     local timestamp
@@ -643,7 +643,29 @@ detect_platform_and_set_vars() {
 }
 
 ###########################################################
-# 腳本自我更新函數 (v3 - 安全更新版)
+# 輔助函數：顯示旋轉等待游標
+# $1: 要監控的背景工作的 PID
+###########################################################
+spinner() {
+    local pid=$1
+    local delay=0.1
+    local spin_chars="⠏⠋⠙⠹⠸⠼⠴⠦⠧⠇" # 使用更美觀的 Braille spinner
+    
+    # 只要指定的 PID 還在運行
+    while ps -p $pid > /dev/null; do
+        for (( i=0; i<${#spin_chars}; i++ )); do
+            # -ne: 不換行, \r: 回到行首
+            echo -ne "${CYAN}${spin_chars:$i:1}${RESET} "
+            sleep $delay
+            echo -ne "\r"
+        done
+    done
+    # 清理最後的 spinner 字元
+    echo -ne " \r"
+}
+
+###########################################################
+# 腳本自我更新函數 (v3.1 - 增加測試進度提示)
 # 在更新後增加自我測試與自動還原功能
 ###########################################################
 auto_update_script() {
@@ -719,30 +741,40 @@ auto_update_script() {
     log_message "SUCCESS" "Git pull 成功，準備測試新版本。"
     echo -e "${GREEN}更新檔案下載完成。${RESET}"
     
-    # --- 【新增】更新後的自我測試與還原邏輯 ---
-    echo -e "${CYAN}正在測試新版本腳本是否能正常啟動...${RESET}"
-    # 測試1：檢查 Bash 語法錯誤
-    if ! bash -n "$SCRIPT_INSTALL_PATH"; then
-        log_message "ERROR" "新版本語法檢查失敗！正在自動還原。"
-        echo -e "${RED}測試失敗：新版本存在語法錯誤！${RESET}"
-    # 測試2：執行健康檢查模式
-    elif ! bash "$SCRIPT_INSTALL_PATH" --health-check &>/dev/null; then
-        log_message "ERROR" "新版本健康檢查失敗！正在自動還原。"
-        echo -e "${RED}測試失敗：新版本無法通過健康檢查！${RESET}"
-    else
+    # --- 【新增】更新後的自我測試與還原邏輯 (含進度提示) ---
+    # 顯示提示文字
+    echo -ne "${CYAN}正在測試新版本腳本是否能正常啟動... ${RESET}"
+    
+    # 將測試命令放到背景執行
+    (bash -n "$SCRIPT_INSTALL_PATH" && bash "$SCRIPT_INSTALL_PATH" --health-check) &>/dev/null &
+    local test_pid=$! # 獲取背景工作的 PID
+    
+    # 在前景執行 spinner，直到背景工作完成
+    spinner $test_pid
+    
+    # 等待背景工作結束，並獲取其退出狀態碼
+    local test_status
+    wait $test_pid
+    test_status=$?
+
+    if [ $test_status -eq 0 ]; then
         # 所有測試都通過
+        echo -e "${GREEN}✓ 測試通過！${RESET}"
         log_message "SUCCESS" "新版本測試通過，更新完成。"
-        echo -e "${GREEN}新版本測試通過！更新成功！${RESET}"
+        echo -e "${GREEN}更新成功！${RESET}"
         echo -e "${CYAN}正在重新設定腳本權限...${RESET}"
         chmod +x "$SCRIPT_INSTALL_PATH" "$PYTHON_ESTIMATOR_SCRIPT_PATH" "$PYTHON_SYNC_HELPER_SCRIPT_PATH" 2>/dev/null
         echo -e "${CYAN}建議重新啟動腳本以應用所有更改。${RESET}"
         cd "$original_dir"; read -p "按 Enter 返回..."
         return 0
+    else
+        # 任何測試失敗
+        echo -e "${RED}✗ 測試失敗！${RESET}"
+        log_message "ERROR" "新版本健康檢查失敗 (狀態碼: $test_status)！正在自動還原。"
     fi
     
-    # --- 如果任何測試失敗，執行還原 ---
+    # --- 如果測試失敗，執行還原 ---
     echo -e "${YELLOW}正在自動還原到更新前的穩定版本...${RESET}"
-    # ORIG_HEAD 是 Git 在 pull/merge/reset 等危險操作前記錄的 HEAD 位置
     if git reset --hard ORIG_HEAD --quiet; then
         log_message "SUCCESS" "成功還原到舊版本 (commit: $(git rev-parse --short ORIG_HEAD))"
         echo -e "${GREEN}還原成功！您目前仍在使用更新前的穩定版本。${RESET}"
