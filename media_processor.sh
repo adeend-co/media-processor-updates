@@ -1453,8 +1453,8 @@ process_local_mp4() {
 }
 
 ######################################################################
-# 處理單一 YouTube 音訊（MP3）下載與處理 (完整優化版 v4.2)
-# 新增檔名長度限制，解決 "File name too long" 錯誤
+# 處理單一 YouTube 音訊（MP3）下載與處理 (最終確定版 v4.5)
+# 手動構建檔名以確保確定性，徹底解決檔名問題
 ######################################################################
 process_single_mp3() {
     local media_url="$1"
@@ -1463,119 +1463,89 @@ process_single_mp3() {
     temp_dir=$(mktemp -d)
     local result=0
     local should_notify=false
-    local audio_file=""
-    local output_audio=""
-    
+
     echo -e "${YELLOW}正在獲取媒體完整資訊 (優化流程)...${RESET}"
     local media_json
     media_json=$(yt-dlp --no-warnings --dump-json "$media_url" 2>"$temp_dir/yt-dlp-json-dump.log")
     if [ -z "$media_json" ]; then
         log_message "ERROR" "無法獲取媒體的 JSON 資訊。URL: $media_url"
         echo -e "${RED}錯誤：無法獲取媒體資訊，請檢查網址或網路。${RESET}"
-        cat "$temp_dir/yt-dlp-json-dump.log"
-        rm -rf "$temp_dir"
-        return 1
+        cat "$temp_dir/yt-dlp-json-dump.log"; rm -rf "$temp_dir"; return 1
     fi
 
-    local video_title video_id artist_name album_artist_name
-    local duration_secs=0
+    local video_title video_id artist_name album_artist_name duration_secs
     video_title=$(echo "$media_json" | jq -r '.title // "audio_$(date +%s_default)"')
     video_id=$(echo "$media_json" | jq -r '.id // "id_$(date +%s_default)"')
     duration_secs=$(echo "$media_json" | jq -r '.duration // 0')
     artist_name=$(echo "$media_json" | jq -r '.artist // .uploader // "[不明]"')
     album_artist_name=$(echo "$media_json" | jq -r '.uploader // "[不明]"')
-    # 這裡的 sanitized_title 僅用於日誌和通知，不再直接用於檔名模板
-    local sanitized_title=$(echo "${video_title}" | sed 's@[/\\:*?"<>|]@_@g')
 
     if [[ "$mode" != "playlist_mode" ]]; then
         local duration_threshold_secs=1800 # 30分鐘
-        log_message "INFO" "MP3 標準化：媒體時長 = ${duration_secs}s, 通知閾值 = ${duration_threshold_secs}s."
         if (( $(echo "$duration_secs > $duration_threshold_secs" | bc -l) )); then
-            should_notify=true
-            log_message "INFO" "時長超過閾值，已啟用完成後通知。"
-        else
-            log_message "INFO" "時長未超過閾值，將不啟用完成後通知。"
+            should_notify=true;
         fi
     fi
 
-    mkdir -p "$DOWNLOAD_PATH"
-    if [ ! -w "$DOWNLOAD_PATH" ]; then
-        log_message "ERROR" "無法寫入下載目錄：$DOWNLOAD_PATH"; echo -e "${RED}錯誤：無法寫入下載目錄${RESET}"; rm -rf "$temp_dir"; return 1;
-    fi
+    mkdir -p "$DOWNLOAD_PATH"; if [ ! -w "$DOWNLOAD_PATH" ]; then log_message "ERROR" "無法寫入目錄"; rm -rf "$temp_dir"; return 1; fi
 
     echo -e "${YELLOW}處理媒體 (MP3 標準化)：$video_title${RESET}"
-    log_message "INFO" "處理媒體 (MP3 標準化)：$media_url (通知: $should_notify)"
+    
+    # ★★★ 核心修正：手動構建確定的檔名 ★★★
+    local sanitized_title=$(echo "${video_title}" | sed 's@[/\\:*?"<>|]@_@g')
+    local base_name=$(echo "${sanitized_title} [${video_id}]" | cut -c 1-150)
+    
+    # 預測所有將要生成的檔案路徑
+    # 我們先下載最佳音訊(通常是m4a)，再處理
+    local temp_audio_file="${temp_dir}/${base_name}.m4a" 
+    local output_audio="${DOWNLOAD_PATH}/${base_name}_normalized.mp3"
 
-    echo -e "${YELLOW}開始下載...${RESET}"
-    local final_filepath_report="$temp_dir/final_filepath.txt"
-    
-    # ★★★ 關鍵修正：在輸出模板中限制標題長度 ★★★
-    # 将 %(title)s 修改为 %(title:.100)s，将標題截斷為最多 100 位元組
-    local output_template="${DOWNLOAD_PATH}/%(title:.100)s [%(id)s].%(ext)s"
-    
-    local yt_dlp_dl_args=(yt-dlp -f bestaudio -o "$output_template" "$media_url" --newline --progress --concurrent-fragments "$THREADS" --print-to-file "after_move:filepath" "$final_filepath_report")
-    
-    if ! "${yt_dlp_dl_args[@]}" 2> "$temp_dir/yt-dlp-mp3-std.log"; then
+    log_message "INFO" "將使用確定的基礎檔名: ${base_name}"
+
+    echo -e "${YELLOW}開始下載音訊...${RESET}"
+    # 將下載的音訊直接命名為我們確定的檔名
+    if ! yt-dlp -f bestaudio -o "$temp_audio_file" "$media_url" --newline --progress --concurrent-fragments "$THREADS" 2> "$temp_dir/yt-dlp-mp3-std.log"; then
         log_message "ERROR" "音訊下載失敗(標準化)，詳見日誌"; cat "$temp_dir/yt-dlp-mp3-std.log"; result=1
+    elif [ ! -f "$temp_audio_file" ]; then
+        log_message "ERROR" "下載後找不到預期的音訊檔案: '$temp_audio_file'"; result=1
     else
-        if [ -s "$final_filepath_report" ]; then
-            read -r audio_file < "$final_filepath_report"
-            if [ -z "$audio_file" ] || [ ! -f "$audio_file" ]; then
-                log_message "ERROR" "下載報告存在但檔案驗證失敗！報告路徑: '$audio_file'"; result=1
-            else
-                log_message "SUCCESS" "成功定位到下載的檔案：$audio_file"
-            fi
-        else
-            log_message "ERROR" "下載後找不到路徑報告檔案！"; result=1
-        fi
+        log_message "SUCCESS" "成功下載原始音訊檔案：$temp_audio_file"
     fi
 
     if [ $result -eq 0 ]; then
-        local base_name=$(basename "$audio_file" | sed 's/\.[^.]*$//')
-        local cover_image="$temp_dir/cover.png"
+        local cover_image="$temp_dir/cover.jpg"
         
         echo -e "${YELLOW}下載封面圖片...${RESET}"
         if ! download_high_res_thumbnail "$video_id" "$cover_image"; then
             cover_image=""
         fi
 
-        output_audio="$DOWNLOAD_PATH/${base_name}_normalized.mp3"
         local normalized_temp="$temp_dir/temp_normalized.mp3"
         echo -e "${YELLOW}開始音量標準化...${RESET}"
         
-        if normalize_audio "$audio_file" "$normalized_temp" "$temp_dir" false; then
+        if normalize_audio "$temp_audio_file" "$normalized_temp" "$temp_dir" false; then
             echo -e "${YELLOW}正在加入封面和元數據...${RESET}"
             local ffmpeg_embed_args=(ffmpeg -y -i "$normalized_temp")
             if [ -n "$cover_image" ] && [ -f "$cover_image" ]; then
-                ffmpeg_embed_args+=(-i "$cover_image" -map 0:a -map 1:v -c copy -id3v2_version 3 -metadata "artist=$artist_name" -metadata "album_artist=$album_artist_name" -metadata:s:v title="Album cover" -metadata:s:v comment="Cover (front)" -disposition:v attached_pic)
+                ffmpeg_embed_args+=(-i "$cover_image" -map 0:a -map 1:v -c copy -id3v2_version 3 -metadata "title=$video_title" -metadata "artist=$artist_name" -metadata "album_artist=$album_artist_name" -metadata:s:v title="Album cover" -metadata:s:v comment="Cover (front)" -disposition:v attached_pic)
             else
-                ffmpeg_embed_args+=(-c copy -id3v2_version 3 -metadata "artist=$artist_name" -metadata "album_artist=$album_artist_name")
+                ffmpeg_embed_args+=(-c copy -id3v2_version 3 -metadata "title=$video_title" -metadata "artist=$artist_name" -metadata "album_artist=$album_artist_name")
             fi
             ffmpeg_embed_args+=("$output_audio")
             
             if ! "${ffmpeg_embed_args[@]}" > /dev/null 2>&1; then
                 log_message "ERROR" "加入封面和元數據失敗！"; result=1
-            else
-                safe_remove "$normalized_temp"
             fi
         else
             log_message "ERROR" "音量標準化失敗！"; result=1
         fi
     fi
 
-    log_message "INFO" "清理臨時檔案 (MP3 標準化)..."
-    if [ $result -eq 0 ]; then
-        safe_remove "$audio_file"
-    elif [ -f "$audio_file" ]; then
-        log_message "INFO" "MP3標準化處理失敗，保留原始下載檔案: $audio_file"
-    fi
-    [ -n "$cover_image" ] && safe_remove "$cover_image"
     rm -rf "$temp_dir"
 
     if [ $result -eq 0 ]; then
         if [ -f "$output_audio" ]; then
             echo -e "${GREEN}處理完成！音量標準化後的高品質音訊已儲存至：$output_audio${RESET}"
-            log_message "SUCCESS" "處理完成 (MP3 標準化)！音訊已儲存至：$output_audio"
         else
             echo -e "${RED}處理似乎已完成，但最終檔案 '$output_audio' 未找到！${RESET}"; result=1
         fi
@@ -1585,9 +1555,7 @@ process_single_mp3() {
 
     if [[ "$mode" != "playlist_mode" ]] && $should_notify; then
         local notification_title="媒體處理器：MP3 標準化"
-        # 使用未截斷的 sanitized_title 進行通知，以顯示完整標題
-        local msg_content="處理音訊 '$sanitized_title'"
-        _send_termux_notification "$result" "$notification_title" "$msg_content" "$output_audio"
+        _send_termux_notification "$result" "$notification_title" "處理音訊 '$sanitized_title'" "$output_audio"
     fi
 
     return $result
