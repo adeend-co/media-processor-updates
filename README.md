@@ -1,5 +1,5 @@
 # media-processor-updates
-影片下載自動更新伺服器
+整合式影音處理平台（IAVPP）
 
 腳本下載流程：
 -
