@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.4-beta.12" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.4-beta.13" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -4840,26 +4840,42 @@ main_menu() {
 ############################################
 
 ####################################################################
-# 主程式 (v4 - 最終結構優化版)
-# 將所有啟動邏輯封裝到 main 內部，確保健康檢查瞬間完成
+# 主程式 (v4.1 - 最終結構優化版)
+# 修正了因移除 TEMP_DIR 初始化導致的錯誤
 ####################################################################
 main() {
     # --- 【第一步】處理特殊啟動模式 ---
     if [[ "$1" == "--health-check" ]]; then
         # 健康檢查模式下，直接成功退出。
-        # bash 在執行到這裡之前已經解析了整個腳本，語法正確性已得到保證。
         exit 0
     fi
 
-    # --- 【第二步】執行核心初始化 (僅在正常啟動時) ---
-    # 將原本在全局範圍執行的命令移到此處
+    # --- 【第二步】執行核心初始化 ---
+    # 1. 偵測平台，這會設定好 TEMP_DIR_DEFAULT 和 DOWNLOAD_PATH_DEFAULT
     detect_platform_and_set_vars
     
-    # 載入設定檔，它可能會覆蓋下面的預設值
+    # 2. ★★★ 關鍵修正：使用偵測到的預設值來初始化 TEMP_DIR ★★★
+    #    這樣即使設定檔不存在，TEMP_DIR 也有一個有效值。
+    TEMP_DIR="${TEMP_DIR_DEFAULT}"
+
+    # 3. 載入使用者設定檔，它可能會覆蓋 DOWNLOAD_PATH 和 TEMP_DIR
     load_config
     
-    # 應用顏色設定
+    # 4. ★★★ 關鍵修正：在所有路徑都確定後，設定最終的 LOG_FILE 路徑 ★★★
+    #    load_config 函數內部不再設定 LOG_FILE，而是由這裡統一設定。
+    LOG_FILE="$DOWNLOAD_PATH/script_log.txt"
+
+    # 5. 應用顏色設定
     apply_color_settings
+    
+    # 6. ★★★ 關鍵修正：執行目錄創建與權限檢查 ★★★
+    if ! mkdir -p "$DOWNLOAD_PATH" 2>/dev/null || ! mkdir -p "$TEMP_DIR" 2>/dev/null; then
+        echo -e "\033[0;31m嚴重錯誤：無法創建下載目錄或臨時目錄！請檢查權限。\033[0m" >&2
+        echo -e "下載目錄: $DOWNLOAD_PATH" >&2
+        echo -e "臨時目錄: $TEMP_DIR" >&2
+        exit 1
+    fi
+
 
     # --- 【第三步】記錄日誌並檢查環境 ---
     log_message "INFO" "腳本啟動 (版本: $SCRIPT_VERSION, OS: $OS_TYPE, Config: $CONFIG_FILE)"
