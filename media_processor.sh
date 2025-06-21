@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.4-beta.1" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.4-beta.2" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -3491,16 +3491,15 @@ _get_playlist_video_count() {
     return 1
 }
 
-############################################
-# 輔助函數 - 處理 YouTube 播放清單通用流程 (優化版 v2.5)
-# 使用管線處理，降低記憶體消耗，並整合數量獲取
-############################################
+###########################################################
+# 輔助函數 - 處理 YouTube 播放清單通用流程 (修正版 v2.5.1)
+# 修正了構建 URL 時變數名錯誤的問題
+###########################################################
 _process_youtube_playlist() {
     local playlist_url="$1"
     local single_item_processor_func_name="$2"
     log_message "INFO" "處理 YouTube 播放列表: $playlist_url (處理器: $single_item_processor_func_name)"
 
-    # --- 檢查 jq 是否存在 ---
     if ! command -v jq &> /dev/null; then
         log_message "ERROR" "缺少 'jq' 工具，無法處理播放清單。請先安裝。"
         echo -e "${RED}錯誤：缺少 'jq' 工具，無法處理播放清單。${RESET}"
@@ -3510,16 +3509,20 @@ _process_youtube_playlist() {
 
     echo -e "${YELLOW}正在獲取播放清單資訊並準備處理...${RESET}"
 
-    # --- 使用管線和 process substitution 來同時獲取總數和處理列表 ---
     local total_videos=0
     local count=0
     local success_count=0
     local fail_count=0
     
-    # 使用 'tee' 和 'wc -l' 在處理前非阻塞地計算總數
-    # yt-dlp 輸出 JSON lines (每個影片一行)
     local video_json_stream
-    video_json_stream=$(yt-dlp --flat-playlist -j "$playlist_url" 2> >(log_message "DEBUG" "yt-dlp stderr: " >&2))
+    # 使用 -i 忽略大小寫，使 PLAYLIST 和 playlist 都能匹配
+    if [[ "$playlist_url" =~ [?&]list=([^&]+) ]]; then
+        # 如果是標準的播放列表 URL，使用 --flat-playlist 以獲取所有條目
+        video_json_stream=$(yt-dlp --flat-playlist -j "$playlist_url" 2> >(log_message "DEBUG" "yt-dlp stderr: " >&2))
+    else
+        # 如果是單一影片 URL，-j 只會輸出該影片的 JSON
+        video_json_stream=$(yt-dlp -j "$playlist_url" 2> >(log_message "DEBUG" "yt-dlp stderr: " >&2))
+    fi
     
     if [ -z "$video_json_stream" ]; then
         log_message "ERROR" "無法從 yt-dlp 獲取播放清單的影片列表 (輸出為空)。"
@@ -3528,7 +3531,11 @@ _process_youtube_playlist() {
     fi
 
     total_videos=$(echo "$video_json_stream" | jq -s 'length')
-    echo -e "${CYAN}播放清單共有 $total_videos 個影片。開始處理...${RESET}"
+    if [[ "$total_videos" -gt 1 ]]; then
+        echo -e "${CYAN}播放清單共有 $total_videos 個影片。開始處理...${RESET}"
+    else
+        echo -e "${CYAN}檢測到單一影片，開始處理...${RESET}"
+    fi
 
     # 使用 while read 迴圈逐行處理 JSON
     while IFS= read -r video_json; do
@@ -3539,12 +3546,17 @@ _process_youtube_playlist() {
         if [ -z "$video_id" ]; then
             log_message "WARNING" "[$count/$total_videos] 無法解析影片 ID，跳過此項。"
             echo -e "${YELLOW}[$count/$total_videos] 警告：無法解析影片 ID，跳過此項。${RESET}"
+            fail_count=$((fail_count + 1))
             continue
         fi
         
-        local video_url="https://www.youtube.com/watch?v=$id"
+        # ★★★ 關鍵修正：將 $id 改為 $video_id ★★★
+        local video_url="https://www.youtube.com/watch?v=$video_id"
+        
         log_message "INFO" "[$count/$total_videos] 處理影片: $video_url"
-        echo -e "${CYAN}--- 正在處理第 $count/$total_videos 個影片 ---${RESET}"
+        if [[ "$total_videos" -gt 1 ]]; then
+            echo -e "${CYAN}--- 正在處理第 $count/$total_videos 個影片 ---${RESET}"
+        fi
 
         # 調用單項處理函數，並傳入 'playlist_mode' 標記以禁用單項通知
         if "$single_item_processor_func_name" "$video_url" "playlist_mode"; then
@@ -3558,17 +3570,19 @@ _process_youtube_playlist() {
     done <<< "$video_json_stream"
 
 
-    # --- 完成後報告 (控制台) ---
-    echo -e "${GREEN}播放清單處理完成！共 $count 個影片，成功 $success_count 個，失敗 $fail_count 個${RESET}"
-    log_message "SUCCESS" "播放清單 $playlist_url 完成！共 $count 個，成功 $success_count 個，失敗 $fail_count 個"
+    # --- 僅在處理多個項目時顯示總結 ---
+    if [[ "$total_videos" -gt 1 ]]; then
+        echo -e "${GREEN}播放清單處理完成！共 $count 個影片，成功 $success_count 個，失敗 $fail_count 個${RESET}"
+        log_message "SUCCESS" "播放清單 $playlist_url 完成！共 $count 個，成功 $success_count 個，失敗 $fail_count 個"
 
-    # --- 發送總結通知 ---
-    local ovr=0
-    if [ "$fail_count" -gt 0 ]; then
-        ovr=1
+        # 發送總結通知
+        local ovr=0
+        if [ "$fail_count" -gt 0 ]; then
+            ovr=1
+        fi
+        _send_termux_notification "$ovr" "媒體處理器：播放清單完成" "播放清單處理完成 ($success_count/$count 成功)" ""
     fi
-    _send_termux_notification "$ovr" "媒體處理器：播放清單完成" "播放清單處理完成 ($success_count/$count 成功)" ""
-
+    
     return 0
 }
 
