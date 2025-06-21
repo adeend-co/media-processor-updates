@@ -662,11 +662,11 @@ spinner() {
 }
 
 ######################################################################
-# 腳本自我更新函數 (v3.1 - 最終安全更新版)
+# 腳本自我更新函數 (v3.2 - 最終安全更新與測試修正版)
 ######################################################################
 auto_update_script() {
     clear
-    echo -e "${CYAN}--- 使用 Git 檢查腳本更新 (安全模式 v3.1) ---${RESET}"
+    echo -e "${CYAN}--- 使用 Git 檢查腳本更新 (安全模式 v3.2) ---${RESET}"
     log_message "INFO" "使用者觸發 Git 腳本更新檢查。"
 
     if ! command -v git &> /dev/null; then
@@ -736,48 +736,37 @@ auto_update_script() {
     fi
     log_message "SUCCESS" "Git pull 成功，準備測試新版本。"
     echo -e "${GREEN}更新檔案下載完成。${RESET}"
-    
-    # --- 【關鍵修正】更新後的自我測試與還原邏輯 (v3.1) ---
-    
-    # 步驟 1: 【先】賦予所有相關腳本執行權限
+
+    # --- 更新後的自我測試與還原邏輯 ---
+
+    # 步驟 1: 設定新版本腳本的執行權限
     echo -e "${CYAN}正在設定新版本腳本的執行權限...${RESET}"
     local chmod_success=true
-    # 使用迴圈處理，更簡潔
     local scripts_to_chmod=("$SCRIPT_INSTALL_PATH" "$PYTHON_ESTIMATOR_SCRIPT_PATH" "$PYTHON_SYNC_HELPER_SCRIPT_PATH")
     for script_path in "${scripts_to_chmod[@]}"; do
         if [ -f "$script_path" ]; then
-            if ! chmod +x "$script_path"; then
-                chmod_success=false
-                log_message "ERROR" "設定 '$script_path' 權限失敗！"
-            fi
+            if ! chmod +x "$script_path"; then chmod_success=false; log_message "ERROR" "設定 '$script_path' 權限失敗！"; fi
+        elif [[ "$script_path" == "$SCRIPT_INSTALL_PATH" ]]; then
+            chmod_success=false; log_message "CRITICAL" "主腳本 '$script_path' 不存在！";
         else
-            # 如果 Python 輔助腳本不存在，只記錄警告，不視為致命錯誤
-            if [[ "$script_path" == "$SCRIPT_INSTALL_PATH" ]]; then
-                chmod_success=false
-                log_message "CRITICAL" "主腳本 '$script_path' 不存在，無法繼續！"
-            else
-                log_message "WARNING" "輔助腳本 '$script_path' 不存在，跳過權限設定。"
-            fi
+            log_message "WARNING" "輔助腳本 '$script_path' 不存在，跳過權限設定。"
         fi
     done
 
     if ! $chmod_success; then
-        echo -e "${RED}設定腳本權限失敗！特別是主腳本權限設定失敗，無法繼續測試。${RESET}"
-        # 權限設定失敗，直接觸發還原
-        # 在這裡跳轉到還原邏輯
+        echo -e "${RED}設定腳本權限失敗，無法繼續測試。${RESET}"
         goto_restore=true
     else
         echo -e "${GREEN}權限設定完成。${RESET}"
         goto_restore=false
     fi
 
-
-    # 步驟 2: 【後】開始測試
-    local health_check_error_output="" # 用於捕獲錯誤訊息
+    # 步驟 2: 開始測試
+    local health_check_error_output=""
     if ! $goto_restore; then
         echo -e "${CYAN}正在測試新版本腳本...${RESET}"
-        
-        # 測試 1: 檢查 Bash 語法錯誤
+
+        # 測試 1: 語法檢查
         echo -n "  - 測試1：語法檢查 (bash -n)... "
         if ! bash -n "$SCRIPT_INSTALL_PATH" 2> /dev/null; then
             log_message "ERROR" "新版本語法檢查失敗！正在自動還原。"
@@ -789,17 +778,26 @@ auto_update_script() {
         fi
     fi
 
-    # 測試 2: 執行健康檢查模式
+    # 測試 2: 執行健康檢查模式 (已修正)
     if ! $goto_restore; then
         echo -n "  - 測試2：啟動健康檢查 (--health-check)... "
-        # 將 stderr 導向一個變數，以便在失敗時顯示
-        health_check_error_output=$(bash "$SCRIPT_INSTALL_PATH" --health-check 2>&1)
+        # ★★★ 核心修正 ★★★
+        # 1. timeout 15s: 設定15秒的超時，防止無限期卡住。
+        # 2. < /dev/null: 將子腳本的標準輸入重定向到/dev/null，避免它等待使用者輸入。 [2, 6, 9]
+        health_check_error_output=$(timeout 15s bash "$SCRIPT_INSTALL_PATH" --health-check < /dev/null 2>&1)
         local health_check_status=$?
 
-        if [ $health_check_status -ne 0 ]; then
+        # 根據退出狀態碼判斷結果
+        # 124 是 timeout 命令在超時後發出的狀態碼
+        if [ $health_check_status -eq 124 ]; then
+            log_message "ERROR" "新版本健康檢查超時 (超過15秒)！正在自動還原。"
+            echo -e "${RED}失敗 (超時)！${RESET}"
+            health_check_error_output="健康檢查執行超時，腳本可能卡在某處。"
+            goto_restore=true
+        elif [ $health_check_status -ne 0 ]; then
             log_message "ERROR" "新版本健康檢查失敗 (狀態碼: $health_check_status)！正在自動還原。"
-            echo -e "${RED}失敗！${RESET}"
-            # 錯誤訊息已經在 health_check_error_output 中
+            echo -e "${RED}失敗 (錯誤碼: $health_check_status)！${RESET}"
+            # 錯誤訊息已在 health_check_error_output 中
             goto_restore=true
         else
             echo -e "${GREEN}通過。${RESET}"
@@ -808,18 +806,16 @@ auto_update_script() {
 
     # 根據測試結果決定流程
     if ! $goto_restore; then
-        # 所有測試都通過
         log_message "SUCCESS" "新版本測試通過，更新完成。"
         echo -e "${GREEN}新版本測試通過！更新成功！${RESET}"
         echo -e "${CYAN}建議重新啟動腳本以應用所有更改。${RESET}"
         cd "$original_dir"; read -p "按 Enter 返回..."
         return 0
     fi
-    
+
     # --- 如果任何測試失敗，執行還原 ---
     echo -e "\n${RED}----------------- 更新失敗 -----------------${RESET}"
     echo -e "${RED}新版本腳本未能通過自動化測試。${RESET}"
-    # 【關鍵修正】顯示捕獲到的錯誤訊息
     if [ -n "$health_check_error_output" ]; then
         echo -e "${YELLOW}偵測到的錯誤訊息如下：${RESET}"
         echo -e "${PURPLE}--------------------------------------------"
@@ -829,7 +825,6 @@ auto_update_script() {
 
     echo -e "\n${YELLOW}正在自動還原到更新前的穩定版本...${RESET}"
     if git reset --hard ORIG_HEAD --quiet; then
-        # 還原後，需要重新設定舊版本腳本的權限
         chmod +x "$SCRIPT_INSTALL_PATH" 2>/dev/null
         log_message "SUCCESS" "成功還原到舊版本 (commit: $(git rev-parse --short ORIG_HEAD))"
         echo -e "${GREEN}還原成功！您目前仍在使用更新前的穩定版本。${RESET}"
@@ -838,11 +833,10 @@ auto_update_script() {
         log_message "CRITICAL" "自動還原失敗！倉庫可能處於不穩定狀態！"
         echo -e "${RED}${BOLD}致命錯誤：自動還原失敗！請手動檢查 Git 倉庫狀態！${RESET}"
     fi
-    # --- 還原邏輯結束 ---
 
     cd "$original_dir"
     read -p "按 Enter 返回..."
-    return 1 # 返回失敗狀態，表示更新未成功完成
+    return 1
 }
 
 ############################################
