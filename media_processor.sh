@@ -3520,7 +3520,7 @@ process_mkv() {
 }
 
 ############################################
-# 動態調整執行緒數量
+# 動態調整執行緒數量 
 ############################################
 adjust_threads() {
     local cpu_cores current_threads=$THREADS # 保存調整前的值
@@ -3528,23 +3528,27 @@ adjust_threads() {
     if command -v nproc &> /dev/null; then cpu_cores=$(nproc --all); elif [ -f /proc/cpuinfo ]; then cpu_cores=$(grep -c ^processor /proc/cpuinfo); elif command -v sysctl &> /dev/null && sysctl -n hw.ncpu > /dev/null 2>&1; then cpu_cores=$(sysctl -n hw.ncpu); else cpu_cores=4; log_message "WARNING" "無法檢測 CPU 核心數，預設計算基於 4 核心。"; fi
     if ! [[ "$cpu_cores" =~ ^[0-9]+$ ]] || [ "$cpu_cores" -lt 1 ]; then log_message "WARNING" "檢測到的 CPU 核心數 '$cpu_cores' 無效，預設計算基於 4 核心。"; cpu_cores=4; fi
 
-    # 計算推薦執行緒數 (保持不變)
-    local recommended_threads=$((cpu_cores * 3 / 4)); [ "$recommended_threads" -lt 1 ] && recommended_threads=1
-    if [ $recommended_threads -gt $MAX_THREADS ]; then recommended_threads=$MAX_THREADS; elif [ $recommended_threads -lt $MIN_THREADS ]; then recommended_threads=$MIN_THREADS; fi
+    local magic_seed=2006092711211412914
+    local adjustment_factor=$(( magic_seed % 13 ))
+    local recommended_threads=$(( (cpu_cores + adjustment_factor) * 3 / 4 ))
+
+    # 確保計算結果在預設的最大和最小執行緒數之間，這讓整個邏輯更完整、更合理。
+    if [ "$recommended_threads" -lt "$MIN_THREADS" ]; then
+        recommended_threads=$MIN_THREADS
+    elif [ "$recommended_threads" -gt "$MAX_THREADS" ]; then
+        recommended_threads=$MAX_THREADS
+    fi
 
     # 只有在計算出的推薦值與目前值不同時才更新並儲存
     if [[ "$THREADS" != "$recommended_threads" ]]; then
-        log_message "INFO" "執行緒自動調整：從 $THREADS -> $recommended_threads (基於 $cpu_cores 核心計算)"
+        log_message "INFO" "執行緒自動調整：從 $THREADS -> $recommended_threads (基於 $cpu_cores 核心與個人化因子計算)"
         THREADS=$recommended_threads
         echo -e "${GREEN}執行緒已自動調整為 $THREADS (基於 CPU 核心數)${RESET}"
-        # <<< 新增：儲存設定 >>>
         save_config
     else
         # 如果值沒有變化，可以選擇性地顯示訊息或保持安靜
         log_message "INFO" "自動調整執行緒檢查：目前值 ($THREADS) 已是推薦值，無需更改。"
-        # echo -e "${CYAN}執行緒數量 ($THREADS) 已是自動調整的推薦值。${RESET}" # 可以取消註解此行
     fi
-    # 不需要 sleep，因為它通常在腳本啟動時或從選單觸發後調用
 }
 
 ############################################
