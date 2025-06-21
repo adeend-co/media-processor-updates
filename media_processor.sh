@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.4-beta.14" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.4-beta.15" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -491,9 +491,6 @@ load_config() {
         echo -e "${RED:-}錯誤：最終下載目錄 '$DOWNLOAD_PATH' 不可寫！請檢查權限。腳本無法啟動。${RESET:-}" >&2
         exit 1
     fi
-
-    # --- 設定最終的 LOG_FILE 路徑 ---
-    LOG_FILE="$DOWNLOAD_PATH/script_log.txt"
 
     # --- 日誌記錄已載入的設定 ---
     if command -v log_message >/dev/null 2>&1; then
@@ -4840,47 +4837,49 @@ main_menu() {
 ############################################
 
 ####################################################################
-# 主程式 (v4.1 - 最終結構優化版)
-# 修正了因移除 TEMP_DIR 初始化導致的錯誤
+# 主程式 (v5 - 標準化啟動引導模式)
+# 徹底重構啟動流程，確保變數初始化順序清晰、穩健
 ####################################################################
 main() {
-    # --- 【第一步】處理特殊啟動模式 ---
+    # --- 步驟 1：處理特殊啟動模式 ---
     if [[ "$1" == "--health-check" ]]; then
-        # 健康檢查模式下，直接成功退出。
+        # 健康檢查模式下，直接成功退出，不做任何實質操作。
         exit 0
     fi
 
-    # --- 【第二步】執行核心初始化 ---
-    # 1. 偵測平台，這會設定好 TEMP_DIR_DEFAULT 和 DOWNLOAD_PATH_DEFAULT
+    # --- 步驟 2：核心變數初始化 ---
+    # a. 執行平台偵測，獲取平台相關的預設路徑
     detect_platform_and_set_vars
-    
-    # 2. ★★★ 關鍵修正：使用偵測到的預設值來初始化 TEMP_DIR ★★★
-    #    這樣即使設定檔不存在，TEMP_DIR 也有一個有效值。
-    TEMP_DIR="${TEMP_DIR_DEFAULT}"
 
-    # 3. 載入使用者設定檔，它可能會覆蓋 DOWNLOAD_PATH 和 TEMP_DIR
+    # b. 為工作變數賦予初始值
+    #    此處 DOWNLOAD_PATH 和 TEMP_DIR 的值來自 detect_platform_and_set_vars
+    DOWNLOAD_PATH="$DOWNLOAD_PATH_DEFAULT"
+    TEMP_DIR="$TEMP_DIR_DEFAULT"
+
+    # c. 載入使用者設定檔。此函數現在只負責讀取設定檔並覆蓋上面的工作變數
     load_config
     
-    # 4. ★★★ 關鍵修正：在所有路徑都確定後，設定最終的 LOG_FILE 路徑 ★★★
-    #    load_config 函數內部不再設定 LOG_FILE，而是由這裡統一設定。
+    # d. 最終化變數。在所有路徑都確定後，設定 LOG_FILE
     LOG_FILE="$DOWNLOAD_PATH/script_log.txt"
-
-    # 5. 應用顏色設定
+    
+    # e. 應用顏色設定
     apply_color_settings
     
-    # 6. ★★★ 關鍵修正：執行目錄創建與權限檢查 ★★★
+    # f. 創建必要的目錄並檢查權限
     if ! mkdir -p "$DOWNLOAD_PATH" 2>/dev/null || ! mkdir -p "$TEMP_DIR" 2>/dev/null; then
+        # 在 log_message 可用前，使用原生 echo 輸出到 stderr
         echo -e "\033[0;31m嚴重錯誤：無法創建下載目錄或臨時目錄！請檢查權限。\033[0m" >&2
         echo -e "下載目錄: $DOWNLOAD_PATH" >&2
         echo -e "臨時目錄: $TEMP_DIR" >&2
         exit 1
     fi
 
-
-    # --- 【第三步】記錄日誌並檢查環境 ---
+    # --- 步驟 3：記錄日誌並進行環境驗證 ---
+    # 此時所有核心變數和日誌系統都已就緒
     log_message "INFO" "腳本啟動 (版本: $SCRIPT_VERSION, OS: $OS_TYPE, Config: $CONFIG_FILE)"
 
     if ! check_environment; then
+        # ... (環境檢查失敗後的處理邏輯，保持不變) ...
         echo -e "\n${RED}##############################################${RESET}"
         echo -e "${RED}# ${BOLD}環境檢查發現問題！腳本可能無法正常運行。${RESET}${RED} #${RESET}"
         echo -e "${RED}##############################################${RESET}"
@@ -4945,12 +4944,11 @@ main() {
         fi
     fi
 
+    # --- 步驟 4：執行次要啟動任務 ---
     log_message "INFO" "環境檢查通過，繼續執行腳本。"
-    
-    # --- 【第四步】執行次要的啟動任務 ---
     adjust_threads
     
-    # --- 【第五步】進入主選單 ---
+    # --- 步驟 5：進入主選單 ---
     main_menu
 }
 
