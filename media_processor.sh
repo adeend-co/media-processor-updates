@@ -4527,11 +4527,11 @@ check_environment() {
 }
 
 ############################################
-# 主選單 (v5.2 - 加入 Base64 加密彩蛋)
+# 主選單 (v5.3 - 修正並採用更穩健的加密彩蛋)
 ############################################
 main_menu() {
-    
-    local easter_egg_payload="CgogICAgPT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PQogICAgICAg整合式影音處理平台IChJQVZQUSkKICAgICAgIENvcHlyaWdodCDCqSAyMDI1IGFkZWVuZC1jby4gQWxsIHJpZ2h0cyByZXNlcnZlZC4KICAgICAgIExpY2Vuc2VkIHVuZGVyIENDIEJZLU5DLVNBIDQuMCBJbnRlcm5hdGlvbmFsLgogICAgPT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PQoK"
+    # 使用 -w 0 產生的單行、無換行的 Base64 字串，以確保在所有環境中都能被正確處理。
+    local easter_egg_payload="CgoKICAgID09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PQogICAgICAg5puy5ZCI5byg5b2x6Z2g6JmO55CG5bmz5Y+wIChJQVZQUSkKICAgICAgIENvcHlyaWdodCDCqSAyMDI1IGFkZWVuZC1jby4gQWxsIHJpZ2h0cyByZXNlcnZlZC4KICAgICAgIExpY2Vuc2VkIHVuZGVyIENDIEJZLU5DLVNBIDQuMCBJbnRlcm5hdGlvbmFsLgogICAgPT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PQoK"
 
     while true; do
         clear
@@ -4553,25 +4553,27 @@ main_menu() {
         local choice
         read -rp "輸入選項 (0-6): " choice
 
-        
+        # --- 加密彩蛋觸發點 ---
         if [[ "$choice" == "$SCRIPT_VERSION" ]]; then
             clear
             
-            # 檢查 base64 命令是否存在，以確保腳本不會因此出錯
             if command -v base64 &> /dev/null; then
-               
-                echo -e "${CYAN}$(echo "$easter_egg_payload" | base64 -d)${RESET}"
+                # 修正後的解碼方式：
+                # 將加密字串用 echo 輸出，並透過管道交給 base64 -d 解碼。
+                # 這次因為 payload 是乾淨的單行，所以流程非常可靠。
+                # 解碼後的文字本身就包含了換行符，所以不需要外層的 echo -e。
+                decoded_message=$(echo "$easter_egg_payload" | base64 -d)
+                echo -e "${CYAN}${decoded_message}${RESET}"
             else
-                
+                # 備用方案不變
                 echo "Copyright © 2025 adeend-co. All rights reserved."
             fi
             
-            log_message "SECURITY" "彩蛋被觸發 (輸入版本號: $choice)"
-            # 暫停幾秒讓資訊顯示
+            log_message "SECURITY" "加密彩蛋被觸發 (輸入版本號: $choice)"
             sleep 5
-            # 使用 continue 關鍵字跳過本次迴圈的剩餘部分，直接開始下一次迴圈（即重新顯示主選單）
             continue
         fi
+        # --- 彩蛋邏輯結束 ---
 
         case $choice in
             1) mp3_menu ;;
