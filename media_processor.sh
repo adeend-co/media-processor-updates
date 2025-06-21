@@ -1837,8 +1837,8 @@ process_single_mp4() {
 }
 
 ######################################################################
-# 處理單一 YouTube 影片（MP4）下載（無音量標準化）(最終確定版 v4.5)
-# 手動構建檔名，並使用 --embed-subs 讓 yt-dlp 一次性生成最終檔案
+# 處理單一 YouTube 影片（MP4）下載（無音量標準化）(最終保險版 v4.6)
+# 手動構建檔名，並在執行後強制清理所有殘餘字幕檔
 ######################################################################
 process_single_mp4_no_normalize() {
     local video_url="$1"
@@ -1879,10 +1879,9 @@ process_single_mp4_no_normalize() {
 
     echo -e "${YELLOW}處理影片 (無標準化)：$video_title${RESET}"
     
-    # ★★★ 核心修正：手動構建確定的檔名，不再使用模板 ★★★
+    # 手動構建確定的檔名
     local sanitized_title=$(echo "${video_title}" | sed 's@[/\\:*?"<>|]@_@g')
     local base_name=$(echo "${sanitized_title} [${video_id}]" | cut -c 1-150)
-    # 我們強制輸出 MP4，所以最終檔名一定是 .mp4
     local final_video_file="${DOWNLOAD_PATH}/${base_name}.mp4"
 
     log_message "INFO" "將使用確定的輸出檔名: ${final_video_file}"
@@ -1891,27 +1890,30 @@ process_single_mp4_no_normalize() {
     local target_sub_langs="zh-Hant,zh-TW,zh-Hans,zh-CN,zh"
     
     local yt_dlp_dl_args=(
-        yt-dlp
-        -f "$format_option"
-        # 直接指定確定的輸出檔案路徑
-        -o "$final_video_file"
-        --merge-output-format mp4
-        "$video_url"
-        --newline
-        --progress
-        --concurrent-fragments "$THREADS"
+        yt-dlp -f "$format_option" -o "$final_video_file" --merge-output-format mp4
+        "$video_url" --newline --progress --concurrent-fragments "$THREADS"
     )
     
     if $is_youtube_url; then
         echo -e "${YELLOW}將嘗試下載並嵌入繁/簡/通用中文字幕...${RESET}"
+        # 即使使用 --embed-subs，yt-dlp 仍可能先下載為獨立檔案
         yt_dlp_dl_args+=( --write-subs --embed-subs --sub-lang "$target_sub_langs" )
     fi
 
+    # 執行 yt-dlp
     if ! "${yt_dlp_dl_args[@]}" 2> "$temp_dir/yt-dlp-video-nonorm.log"; then
-        log_message "WARNING" "yt-dlp 執行時回報錯誤 (可能為字幕問題)，將繼續檢查主檔案。";
+        log_message "WARNING" "yt-dlp 執行時回報錯誤，將繼續後續檢查與清理。";
     fi
 
-    # ★★★ 核心修正：不再預測，直接檢查我們指定的檔案是否存在 ★★★
+    # ★★★ 核心修正：加入手動字幕清理保險 ★★★
+    log_message "INFO" "執行強制字幕檔案清理..."
+    # 查找所有與 base_name 匹配的 .srt 和 .vtt 檔案並刪除它們
+    find "$DOWNLOAD_PATH" -maxdepth 1 -type f \
+        \( -name "${base_name}.*.srt" -o -name "${base_name}.*.vtt" \) \
+        -print -exec rm -f {} \;
+    log_message "INFO" "強制字幕檔案清理完成。"
+
+    # 檢查最終影片檔案是否存在
     if [ ! -f "$final_video_file" ]; then
         log_message "ERROR" "下載失敗，最終影片檔案 '$final_video_file' 未找到。";
         cat "$temp_dir/yt-dlp-video-nonorm.log";
