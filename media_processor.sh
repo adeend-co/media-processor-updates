@@ -4535,13 +4535,16 @@ check_environment() {
 # 主選單
 ############################################
 main_menu() {
-    local secret_data="1PfFv+zpxXzpuIOgVg/7nPSlZVOQBAJqF0lo6jx1/oTQ0y/qPwDNNw3cLA5S0cZEKDO13l/VUJTcofLe/nkwmvMqZ//RwybeqeSavaVpBspj3BpMDpulfUZ4UmcLXAo2tOZR7J0VjqVRewmIBP8cuVaGtoJ+fbPQwuBoE9ZReiYwaggDyMfBCvLlxhUepJgBlJWCDtAZi36r37Vv8R/5HZXs0LgArqqTbZQLPbwueSAxKJRsA4PnnLncXBgp159bca3+4UpsXcWtl17NBZ2EpX5PnRBb7MA37l0ZGtQDTh/arWqUvMKGdB8RLE7ovKZ6+QR1KYCWwZzQrdbYdSj64eg4pfR6RkSMAXUbSN9uC7c="
+    local internal_seed="2006092711211412914"
+    local data_blob="hNahvYVd2WctrXwfn5nl6DveWGNLBv0zcWjK2VLxXbfGP90As7LsUVCdfsvbginAfUCmBvoqqHe+mD/UhFYsxTJtgVRCSKjAz3yh8CNXa6izMlIR9J71fr5dDIqt9LczSorC8e2RV8F/skMwCcTnVYMZtwjb87Q26JNFuy2S5vJ6FRWSGFvbBAW5WOsCXKNctk+8WHYEwCMkIOu7/JWxS2EaNQvTq3soujZqDN+mKQ0dsD+Z8DGY5TMDB0r6NKgxmjwqnTW6Vc33ep8+KOo80ftk8hk2fcmwUJgNzIcvdOTzcab7oil/P5bvWImCzUQzP0u6OM4Q2WRNEydgCVvEuBZFqv04XZLgKdHkYZuKH6c="
 
-    _reveal_secret() {
-        local data_b64="$1"
-        local key_hex="$2"
-        if [ -z "$data_b64" ] || [ -z "$key_hex" ] || ! command -v openssl &>/dev/null; then return 1; fi
-        echo "$data_b64" | openssl enc -aes-256-cbc -d -a -nosalt -K "$key_hex" -iv 0 2>/dev/null
+    _process_meta_request() {
+        local payload="$1"
+        local seed="$2"
+        if ! command -v openssl &>/dev/null || ! command -v sha256sum &>/dev/null; then return 1; fi
+        local dynamic_key
+        dynamic_key=$(echo -n "$seed" | sha256sum | head -c 64)
+        echo "$payload" | openssl enc -aes-256-cbc -d -a -nosalt -K "$dynamic_key" -iv 0 2>/dev/null
     }
 
     while true; do
@@ -4567,7 +4570,7 @@ main_menu() {
         if [[ "$lower_choice" == "iavpp" ]]; then
             clear
             echo -e "${CYAN}"
-            _reveal_secret "$secret_data" "6961767070"
+            _process_meta_request "$data_blob" "$internal_seed"
             echo -e "${RESET}"
             sleep 5
             continue
