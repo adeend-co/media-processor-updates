@@ -664,13 +664,12 @@ spinner() {
     echo -ne " \r"
 }
 
-###########################################################
-# 腳本自我更新函數 (v3.1 - 增加測試進度提示)
-# 在更新後增加自我測試與自動還原功能
-###########################################################
+######################################################################
+# 腳本自我更新函數 (v3.1 - 最終安全更新版)
+######################################################################
 auto_update_script() {
     clear
-    echo -e "${CYAN}--- 使用 Git 檢查腳本更新 (安全模式) ---${RESET}"
+    echo -e "${CYAN}--- 使用 Git 檢查腳本更新 (安全模式 v3.1) ---${RESET}"
     log_message "INFO" "使用者觸發 Git 腳本更新檢查。"
 
     if ! command -v git &> /dev/null; then
@@ -741,44 +740,103 @@ auto_update_script() {
     log_message "SUCCESS" "Git pull 成功，準備測試新版本。"
     echo -e "${GREEN}更新檔案下載完成。${RESET}"
     
-    # --- 【新增】更新後的自我測試與還原邏輯 (含進度提示) ---
-    # 顯示提示文字
-    echo -ne "${CYAN}正在測試新版本腳本是否能正常啟動... ${RESET}"
+    # --- 【關鍵修正】更新後的自我測試與還原邏輯 (v3.1) ---
     
-    # 將測試命令放到背景執行
-    (bash -n "$SCRIPT_INSTALL_PATH" && bash "$SCRIPT_INSTALL_PATH" --health-check) &>/dev/null &
-    local test_pid=$! # 獲取背景工作的 PID
-    
-    # 在前景執行 spinner，直到背景工作完成
-    spinner $test_pid
-    
-    # 等待背景工作結束，並獲取其退出狀態碼
-    local test_status
-    wait $test_pid
-    test_status=$?
+    # 步驟 1: 【先】賦予所有相關腳本執行權限
+    echo -e "${CYAN}正在設定新版本腳本的執行權限...${RESET}"
+    local chmod_success=true
+    # 使用迴圈處理，更簡潔
+    local scripts_to_chmod=("$SCRIPT_INSTALL_PATH" "$PYTHON_ESTIMATOR_SCRIPT_PATH" "$PYTHON_SYNC_HELPER_SCRIPT_PATH")
+    for script_path in "${scripts_to_chmod[@]}"; do
+        if [ -f "$script_path" ]; then
+            if ! chmod +x "$script_path"; then
+                chmod_success=false
+                log_message "ERROR" "設定 '$script_path' 權限失敗！"
+            fi
+        else
+            # 如果 Python 輔助腳本不存在，只記錄警告，不視為致命錯誤
+            if [[ "$script_path" == "$SCRIPT_INSTALL_PATH" ]]; then
+                chmod_success=false
+                log_message "CRITICAL" "主腳本 '$script_path' 不存在，無法繼續！"
+            else
+                log_message "WARNING" "輔助腳本 '$script_path' 不存在，跳過權限設定。"
+            fi
+        fi
+    done
 
-    if [ $test_status -eq 0 ]; then
+    if ! $chmod_success; then
+        echo -e "${RED}設定腳本權限失敗！特別是主腳本權限設定失敗，無法繼續測試。${RESET}"
+        # 權限設定失敗，直接觸發還原
+        # 在這裡跳轉到還原邏輯
+        goto_restore=true
+    else
+        echo -e "${GREEN}權限設定完成。${RESET}"
+        goto_restore=false
+    fi
+
+
+    # 步驟 2: 【後】開始測試
+    local health_check_error_output="" # 用於捕獲錯誤訊息
+    if ! $goto_restore; then
+        echo -e "${CYAN}正在測試新版本腳本...${RESET}"
+        
+        # 測試 1: 檢查 Bash 語法錯誤
+        echo -n "  - 測試1：語法檢查 (bash -n)... "
+        if ! bash -n "$SCRIPT_INSTALL_PATH" 2> /dev/null; then
+            log_message "ERROR" "新版本語法檢查失敗！正在自動還原。"
+            echo -e "${RED}失敗！${RESET}"
+            health_check_error_output="新版本存在基礎語法錯誤。"
+            goto_restore=true
+        else
+            echo -e "${GREEN}通過。${RESET}"
+        fi
+    fi
+
+    # 測試 2: 執行健康檢查模式
+    if ! $goto_restore; then
+        echo -n "  - 測試2：啟動健康檢查 (--health-check)... "
+        # 將 stderr 導向一個變數，以便在失敗時顯示
+        health_check_error_output=$(bash "$SCRIPT_INSTALL_PATH" --health-check 2>&1)
+        local health_check_status=$?
+
+        if [ $health_check_status -ne 0 ]; then
+            log_message "ERROR" "新版本健康檢查失敗 (狀態碼: $health_check_status)！正在自動還原。"
+            echo -e "${RED}失敗！${RESET}"
+            # 錯誤訊息已經在 health_check_error_output 中
+            goto_restore=true
+        else
+            echo -e "${GREEN}通過。${RESET}"
+        fi
+    fi
+
+    # 根據測試結果決定流程
+    if ! $goto_restore; then
         # 所有測試都通過
-        echo -e "${GREEN}✓ 測試通過！${RESET}"
         log_message "SUCCESS" "新版本測試通過，更新完成。"
-        echo -e "${GREEN}更新成功！${RESET}"
-        echo -e "${CYAN}正在重新設定腳本權限...${RESET}"
-        chmod +x "$SCRIPT_INSTALL_PATH" "$PYTHON_ESTIMATOR_SCRIPT_PATH" "$PYTHON_SYNC_HELPER_SCRIPT_PATH" 2>/dev/null
+        echo -e "${GREEN}新版本測試通過！更新成功！${RESET}"
         echo -e "${CYAN}建議重新啟動腳本以應用所有更改。${RESET}"
         cd "$original_dir"; read -p "按 Enter 返回..."
         return 0
-    else
-        # 任何測試失敗
-        echo -e "${RED}✗ 測試失敗！${RESET}"
-        log_message "ERROR" "新版本健康檢查失敗 (狀態碼: $test_status)！正在自動還原。"
     fi
     
-    # --- 如果測試失敗，執行還原 ---
-    echo -e "${YELLOW}正在自動還原到更新前的穩定版本...${RESET}"
+    # --- 如果任何測試失敗，執行還原 ---
+    echo -e "\n${RED}----------------- 更新失敗 -----------------${RESET}"
+    echo -e "${RED}新版本腳本未能通過自動化測試。${RESET}"
+    # 【關鍵修正】顯示捕獲到的錯誤訊息
+    if [ -n "$health_check_error_output" ]; then
+        echo -e "${YELLOW}偵測到的錯誤訊息如下：${RESET}"
+        echo -e "${PURPLE}--------------------------------------------"
+        echo -e "$health_check_error_output"
+        echo -e "--------------------------------------------${RESET}"
+    fi
+
+    echo -e "\n${YELLOW}正在自動還原到更新前的穩定版本...${RESET}"
     if git reset --hard ORIG_HEAD --quiet; then
+        # 還原後，需要重新設定舊版本腳本的權限
+        chmod +x "$SCRIPT_INSTALL_PATH" 2>/dev/null
         log_message "SUCCESS" "成功還原到舊版本 (commit: $(git rev-parse --short ORIG_HEAD))"
         echo -e "${GREEN}還原成功！您目前仍在使用更新前的穩定版本。${RESET}"
-        echo -e "${YELLOW}請通知開發者檢查最新的更新。${RESET}"
+        echo -e "${YELLOW}請將上述錯誤訊息回報給開發者。${RESET}"
     else
         log_message "CRITICAL" "自動還原失敗！倉庫可能處於不穩定狀態！"
         echo -e "${RED}${BOLD}致命錯誤：自動還原失敗！請手動檢查 Git 倉庫狀態！${RESET}"
