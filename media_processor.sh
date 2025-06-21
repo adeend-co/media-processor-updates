@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.4-beta.2" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.4-beta.3" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -3492,8 +3492,8 @@ _get_playlist_video_count() {
 }
 
 ###########################################################
-# 輔助函數 - 處理 YouTube 播放清單通用流程 (修正版 v2.5.1)
-# 修正了構建 URL 時變數名錯誤的問題
+# 輔助函數 - 處理 YouTube 播放清單通用流程 (修正版 v2.5.2)
+# 為正則表達式加上引號，解決語法錯誤
 ###########################################################
 _process_youtube_playlist() {
     local playlist_url="$1"
@@ -3515,8 +3515,9 @@ _process_youtube_playlist() {
     local fail_count=0
     
     local video_json_stream
-    # 使用 -i 忽略大小寫，使 PLAYLIST 和 playlist 都能匹配
-    if [[ "$playlist_url" =~ [?&]list=([^&]+) ]]; then
+    
+    # ★★★ 關鍵修正：將正則表達式用引號包圍起來 ★★★
+    if [[ "$playlist_url" =~ '[?&]list=([^&]+)' ]]; then
         # 如果是標準的播放列表 URL，使用 --flat-playlist 以獲取所有條目
         video_json_stream=$(yt-dlp --flat-playlist -j "$playlist_url" 2> >(log_message "DEBUG" "yt-dlp stderr: " >&2))
     else
@@ -3550,7 +3551,6 @@ _process_youtube_playlist() {
             continue
         fi
         
-        # ★★★ 關鍵修正：將 $id 改為 $video_id ★★★
         local video_url="https://www.youtube.com/watch?v=$video_id"
         
         log_message "INFO" "[$count/$total_videos] 處理影片: $video_url"
