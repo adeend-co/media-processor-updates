@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.4-beta.22" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.4-beta.24" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -531,7 +531,7 @@ apply_color_settings() {
 ############################################
 display_countdown() {
     # 檢查目標日期變數是否存在且不為空
-     [ -z "$TARGET_DATE" ]; then
+    if [ -z "$TARGET_DATE" ]; then
         # log_message "WARNING" "未設定目標日期 (TARGET_DATE)，無法顯示倒數計時。"
         # echo -e "${YELLOW}警告：未設定目標日期，無法顯示倒數計時。${RESET}" >&2
         return # 如果未設定，則不顯示任何內容
@@ -662,11 +662,11 @@ spinner() {
 }
 
 ######################################################################
-# 腳本自我更新函數 (v3.3 - 增強錯誤捕獲)
+# 腳本自我更新函數 (v3.4 - 修正輸出格式)
 ######################################################################
 auto_update_script() {
     clear
-    echo -e "${CYAN}--- 使用 Git 檢查腳本更新 (安全模式 v3.3) ---${RESET}"
+    echo -e "${CYAN}--- 使用 Git 檢查腳本更新 (安全模式 v3.4) ---${RESET}"
     log_message "INFO" "使用者觸發 Git 腳本更新檢查。"
 
     if ! command -v git &> /dev/null; then
@@ -766,17 +766,17 @@ auto_update_script() {
     if ! $goto_restore; then
         echo -e "${CYAN}正在測試新版本腳本...${RESET}"
 
-        # ★★★ 核心修正 (測試1) ★★★
-        # 移除了 2>/dev/null，並將錯誤輸出捕獲到變數中
+        # 測試1：語法檢查
         echo -n "  - 測試1：語法檢查 (bash -n)... "
         local syntax_check_output
         syntax_check_output=$(bash -n "$SCRIPT_INSTALL_PATH" 2>&1)
         local syntax_check_status=$?
 
         if [ $syntax_check_status -ne 0 ]; then
-            log_message "ERROR" "新版本語法檢查失敗！正在自動還原。"
+            # ★★★ 核心修正 ★★★
+            # 先輸出「失敗！」，完成當前行，然後再在新行輸出詳細日誌
             echo -e "${RED}失敗！${RESET}"
-            # 將捕獲到的真實錯誤訊息賦值給 health_check_error_output
+            log_message "ERROR" "新版本語法檢查失敗！正在自動還原。"
             health_check_error_output="$syntax_check_output"
             goto_restore=true
         else
@@ -784,7 +784,7 @@ auto_update_script() {
         fi
     fi
 
-    # 測試 2: 執行健康檢查模式 (已整合上次修正)
+    # 測試 2: 執行健康檢查模式
     if ! $goto_restore; then
         echo -n "  - 測試2：啟動健康檢查 (--health-check)... "
         local health_check_output
@@ -792,14 +792,15 @@ auto_update_script() {
         local health_check_status=$?
 
         if [ $health_check_status -eq 124 ]; then
-            log_message "ERROR" "新版本健康檢查超時 (超過15秒)！正在自動還原。"
+            # ★★★ 核心修正 ★★★
             echo -e "${RED}失敗 (超時)！${RESET}"
+            log_message "ERROR" "新版本健康檢查超時 (超過15秒)！正在自動還原。"
             health_check_error_output="健康檢查執行超時，腳本可能卡在某處。"
             goto_restore=true
         elif [ $health_check_status -ne 0 ]; then
-            log_message "ERROR" "新版本健康檢查失敗 (狀態碼: $health_check_status)！正在自動還原。"
+            # ★★★ 核心修正 ★★★
             echo -e "${RED}失敗 (錯誤碼: $health_check_status)！${RESET}"
-            # 將測試2的輸出也加入到報告中
+            log_message "ERROR" "新版本健康檢查失敗 (狀態碼: $health_check_status)！正在自動還原。"
             health_check_error_output+="\n$health_check_output"
             goto_restore=true
         else
@@ -822,7 +823,6 @@ auto_update_script() {
     if [ -n "$health_check_error_output" ]; then
         echo -e "${YELLOW}偵測到的錯誤訊息如下：${RESET}"
         echo -e "${PURPLE}--------------------------------------------"
-        # 使用 printf 以正確處理可能包含換行的錯誤訊息
         printf "%b\n" "$health_check_error_output"
         echo -e "--------------------------------------------${RESET}"
     fi
