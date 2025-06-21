@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.4-beta.4" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.4-beta.5" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -1393,10 +1393,10 @@ process_local_mp4() {
     return $result
 }
 
-###########################################################
-# 處理單一 YouTube 音訊（MP3）下載與處理 (完整優化版 v4.1)
-# 合併所有資訊獲取，並完整保留條件式通知功能
-###########################################################
+######################################################################
+# 處理單一 YouTube 音訊（MP3）下載與處理 (完整優化版 v4.2)
+# 新增檔名長度限制，解決 "File name too long" 錯誤
+######################################################################
 process_single_mp3() {
     local media_url="$1"
     local mode="$2"
@@ -1407,8 +1407,6 @@ process_single_mp3() {
     local audio_file=""
     local output_audio=""
     
-    ### 資訊獲取區 (優化核心) ###
-    # 一次性獲取所有媒體資訊到 media_json 變數，避免多次網路請求
     echo -e "${YELLOW}正在獲取媒體完整資訊 (優化流程)...${RESET}"
     local media_json
     media_json=$(yt-dlp --no-warnings --dump-json "$media_url" 2>"$temp_dir/yt-dlp-json-dump.log")
@@ -1420,32 +1418,26 @@ process_single_mp3() {
         return 1
     fi
 
-    ### 本地解析區 (使用 jq，速度極快) ###
-    # 從已獲取的 media_json 中解析出所有需要的變數
     local video_title video_id artist_name album_artist_name
     local duration_secs=0
     video_title=$(echo "$media_json" | jq -r '.title // "audio_$(date +%s_default)"')
     video_id=$(echo "$media_json" | jq -r '.id // "id_$(date +%s_default)"')
-    # 直接從 JSON 中獲取時長，無需新的網路請求
     duration_secs=$(echo "$media_json" | jq -r '.duration // 0')
     artist_name=$(echo "$media_json" | jq -r '.artist // .uploader // "[不明]"')
     album_artist_name=$(echo "$media_json" | jq -r '.uploader // "[不明]"')
+    # 這裡的 sanitized_title 僅用於日誌和通知，不再直接用於檔名模板
     local sanitized_title=$(echo "${video_title}" | sed 's@[/\\:*?"<>|]@_@g')
 
-    ### 時長與通知判斷區 (無網路請求) ###
-    # 僅在單獨處理模式下，根據時長判斷是否需要發送通知
     if [[ "$mode" != "playlist_mode" ]]; then
         local duration_threshold_secs=1800 # 30分鐘
         log_message "INFO" "MP3 標準化：媒體時長 = ${duration_secs}s, 通知閾值 = ${duration_threshold_secs}s."
-        # 使用 bc -l 進行浮點數比較，更精確
         if (( $(echo "$duration_secs > $duration_threshold_secs" | bc -l) )); then
             should_notify=true
             log_message "INFO" "時長超過閾值，已啟用完成後通知。"
         else
-            log_message "INFO" "時長未超過閾值，將不安裝完成後通知。"
+            log_message "INFO" "時長未超過閾值，將不啟用完成後通知。"
         fi
     fi
-    ### 通知判斷結束 ###
 
     mkdir -p "$DOWNLOAD_PATH"
     if [ ! -w "$DOWNLOAD_PATH" ]; then
@@ -1457,7 +1449,11 @@ process_single_mp3() {
 
     echo -e "${YELLOW}開始下載...${RESET}"
     local final_filepath_report="$temp_dir/final_filepath.txt"
-    local output_template="${DOWNLOAD_PATH}/${sanitized_title} [${video_id}].%(ext)s"
+    
+    # ★★★ 關鍵修正：在輸出模板中限制標題長度 ★★★
+    # 将 %(title)s 修改为 %(title:.100)s，将標題截斷為最多 100 位元組
+    local output_template="${DOWNLOAD_PATH}/%(title:.100)s [%(id)s].%(ext)s"
+    
     local yt_dlp_dl_args=(yt-dlp -f bestaudio -o "$output_template" "$media_url" --newline --progress --concurrent-fragments "$THREADS" --print-to-file "after_move:filepath" "$final_filepath_report")
     
     if ! "${yt_dlp_dl_args[@]}" 2> "$temp_dir/yt-dlp-mp3-std.log"; then
@@ -1480,7 +1476,6 @@ process_single_mp3() {
         local cover_image="$temp_dir/cover.png"
         
         echo -e "${YELLOW}下載封面圖片...${RESET}"
-        # 呼叫優化後的封面下載函數，直接傳遞已獲取的 video_id
         if ! download_high_res_thumbnail "$video_id" "$cover_image"; then
             cover_image=""
         fi
@@ -1529,14 +1524,12 @@ process_single_mp3() {
         echo -e "${RED}處理失敗 (MP3 標準化)！${RESET}"
     fi
 
-    ### 條件式通知發送區 ###
-    # 這裡的邏輯被完整保留，根據前面計算出的 should_notify 變數決定是否發送
     if [[ "$mode" != "playlist_mode" ]] && $should_notify; then
         local notification_title="媒體處理器：MP3 標準化"
+        # 使用未截斷的 sanitized_title 進行通知，以顯示完整標題
         local msg_content="處理音訊 '$sanitized_title'"
         _send_termux_notification "$result" "$notification_title" "$msg_content" "$output_audio"
     fi
-    ### 通知發送結束 ###
 
     return $result
 }
@@ -1716,10 +1709,10 @@ process_single_mp3_no_normalize() {
     return $result
 }
 
-#############################################################
-# 處理單一 YouTube 影片（MP4）下載與處理 (完整優化版 v4.1)
-# 合併所有資訊獲取，並完整保留條件式通知功能
-#############################################################
+###############################################################
+# 處理單一 YouTube 影片（MP4）下載與處理 (完整優化版 v4.2)
+# 新增檔名長度限制，解決 "File name too long" 錯誤
+###############################################################
 process_single_mp4() {
     local video_url="$1"
     local mode="$2"
@@ -1729,7 +1722,6 @@ process_single_mp4() {
     local video_file=""
     local output_video=""
 
-    ### 資訊獲取區 (優化核心) ###
     echo -e "${YELLOW}正在獲取媒體完整資訊 (優化流程)...${RESET}"
     local media_json
     media_json=$(yt-dlp --no-warnings --dump-json "$video_url" 2>"$temp_dir/yt-dlp-json-dump.log")
@@ -1741,13 +1733,12 @@ process_single_mp4() {
         return 1
     fi
 
-    ### 本地解析區 (使用 jq，速度極快) ###
     local video_title video_id
     local duration_secs=0
     video_title=$(echo "$media_json" | jq -r '.title // "video_$(date +%s_default)"')
     video_id=$(echo "$media_json" | jq -r '.id // "id_$(date +%s_default)"')
-    # 直接從 JSON 中獲取時長，無需新的網路請求
     duration_secs=$(echo "$media_json" | jq -r '.duration // 0')
+    # 這裡的 sanitized_title 僅用於日誌和通知，不再直接用於檔名模板
     local sanitized_title=$(echo "${video_title}" | sed 's@[/\\:*?"<>|]@_@g')
 
     local format_option="bestvideo[ext=mp4][height<=1440]+bestaudio[ext=m4a]/best[ext=mp4]"
@@ -1757,7 +1748,6 @@ process_single_mp4() {
         format_option="best"
     fi
 
-    ### 時長與通知判斷區 (無網路請求) ###
     if [[ "$mode" != "playlist_mode" ]]; then
         local duration_threshold_secs=1260 # 0.35 小時
         log_message "INFO" "MP4 標準化：媒體時長 = ${duration_secs}s, 通知閾值 = ${duration_threshold_secs}s."
@@ -1765,10 +1755,9 @@ process_single_mp4() {
             should_notify=true
             log_message "INFO" "時長超過閾值，已啟用完成後通知。"
         else
-            log_message "INFO" "時長未超過閾值，將不安裝完成後通知。"
+            log_message "INFO" "時長未超過閾值，將不啟用完成後通知。"
         fi
     fi
-    ### 通知判斷結束 ###
 
     mkdir -p "$DOWNLOAD_PATH"
     if [ ! -w "$DOWNLOAD_PATH" ]; then
@@ -1779,7 +1768,10 @@ process_single_mp4() {
     
     echo -e "${YELLOW}開始下載影片及字幕...${RESET}"
     local target_sub_langs="zh-Hant,zh-TW,zh-Hans,zh-CN,zh"
-    local output_template="$DOWNLOAD_PATH/${sanitized_title} [${video_id}].%(ext)s"
+    
+    # ★★★ 關鍵修正：在輸出模板中限制標題長度 ★★★
+    local output_template="${DOWNLOAD_PATH}/%(title:.100)s [%(id)s].%(ext)s"
+    
     local yt_dlp_dl_args=(yt-dlp -f "$format_option" -o "$output_template" "$video_url" --newline --progress --concurrent-fragments "$THREADS")
     
     if $is_youtube_url; then
@@ -1790,6 +1782,8 @@ process_single_mp4() {
     if ! "${yt_dlp_dl_args[@]}" 2> "$temp_dir/yt-dlp-video-std.log"; then
         log_message "ERROR" "影片下載失敗，詳見日誌"; cat "$temp_dir/yt-dlp-video-std.log"; result=1
     else
+        # 定位下載的檔案
+        # 這裡的 --get-filename 必須使用與下載時完全相同的 -o 模板才能找到檔案
         video_file=$(yt-dlp --no-warnings --get-filename -f "$format_option" -o "$output_template" "$video_url" 2>/dev/null)
         if [ ! -f "$video_file" ]; then
             log_message "ERROR" "找不到下載的影片檔案"; result=1
@@ -1869,14 +1863,12 @@ process_single_mp4() {
         echo -e "${RED}處理失敗 (MP4 標準化)！${RESET}"
     fi
 
-    ### 條件式通知發送區 ###
-    # 這裡的邏輯被完整保留，根據前面計算出的 should_notify 變數決定是否發送
     if [[ "$mode" != "playlist_mode" ]] && $should_notify; then
         local notification_title="媒體處理器：MP4 標準化"
+        # 使用未截斷的 sanitized_title 進行通知，以顯示完整標題
         local msg_content="處理影片 '$sanitized_title'"
         _send_termux_notification "$result" "$notification_title" "$msg_content" "$output_video"
     fi
-    ### 通知發送結束 ###
 
     return $result
 }
@@ -4809,37 +4801,50 @@ if ! mkdir -p "$TEMP_DIR" 2>/dev/null; then
      exit 1
 fi
 
-############################################
-# <<< 修改：主程式 (環境檢查失敗時，延後 clear 以便查看錯誤訊息) >>>
-############################################
+####################################################################
+# 主程式 (v2 - 增加 --health-check 模式，用於安全更新)
+####################################################################
 main() {
-    # --- 設定預設值 (假設這些已在腳本頂部完成) ---
-    # DEFAULT_URL="..."; THREADS=4; MAX_THREADS=8; MIN_THREADS=1; COLOR_ENABLED=true; etc.
-    # DOWNLOAD_PATH="$DOWNLOAD_PATH_DEFAULT"; TEMP_DIR="$TEMP_DIR_DEFAULT"; etc.
+    # --- 【新增】健康檢查模式 ---
+    if [[ "$1" == "--health-check" ]]; then
+        # 在健康檢查模式下，我們只執行最核心的初始化操作
+        # 並且不輸出任何不必要的訊息，只關心是否會出錯
+        # set -e 可以在出錯時立即退出
+        (
+            set -e
+            # 嘗試載入最關鍵的函數和設定
+            detect_platform_and_set_vars &>/dev/null
+            load_config &>/dev/null
+            apply_color_settings &>/dev/null
+            # 如果以上命令都沒有因為語法錯誤等原因失敗退出，
+            # 則說明腳本基本可以啟動。
+        )
+        local check_status=$?
+        if [ $check_status -eq 0 ]; then
+            # 成功時，可以選擇性地輸出一個標記
+            # echo "HEALTH_CHECK_OK" 
+            exit 0 # 成功退出
+        else
+            # 失敗時
+            # echo "HEALTH_CHECK_FAILED"
+            exit 1 # 失敗退出
+        fi
+    fi
+    # --- 健康檢查模式結束 ---
 
-    # --- 載入使用者設定檔 ---
+    # --- 正常的腳本啟動流程 ---
     load_config
-
-    # --- 應用載入後的顏色設定 ---
     apply_color_settings
-
-    # --- 在 load_config 之後記錄啟動訊息 ---
     log_message "INFO" "腳本啟動 (版本: $SCRIPT_VERSION, OS: $OS_TYPE, Config: $CONFIG_FILE)"
 
-    # --- 環境檢查 ---
-    # <<< 修改：調用 check_environment 並檢查返回值 >>>
-    if ! check_environment; then # 第一次檢查，非靜默模式
-        # <<< 修改：移除這裡的 clear，並在標題前加換行以便與 check_environment 的輸出分隔 >>>
+    if ! check_environment; then
         echo -e "\n${RED}##############################################${RESET}"
         echo -e "${RED}# ${BOLD}環境檢查發現問題！腳本可能無法正常運行。${RESET}${RED} #${RESET}"
         echo -e "${RED}##############################################${RESET}"
         echo -e "${YELLOW}檢測到缺少必要的工具、權限或設定。${RESET}"
-        # <<< 修改：提示語更明確指向 "上方" 的訊息 >>>
         echo -e "${YELLOW}${BOLD}請查看檢查過程中（上方）列出的具體錯誤訊息。${RESET}"
 
         if [[ "$OS_TYPE" == "termux" ]]; then
-            # 特別檢查並提示 Termux 儲存權限問題
-            # 這裡的測試檔案使用不同的後綴以避免與 check_environment 中的衝突
             if [ ! -d "/sdcard" ] || ! touch "/sdcard/.termux-test-write-main-prompt" 2>/dev/null; then
                 echo -e "\n${RED}${BOLD}*** Termux 儲存權限問題 ***${RESET}"
                 echo -e "${YELLOW}腳本無法存取或寫入外部存儲 (/sdcard)。${RESET}"
@@ -4848,15 +4853,13 @@ main() {
                 echo -e "${CYAN}然後完全關閉並重新啟動 Termux 和此腳本。${RESET}"
                 echo -e "${YELLOW}依賴更新功能無法解決此權限問題。${RESET}"
             fi
-            rm -f "/sdcard/.termux-test-write-main-prompt" # 清理測試檔案
+            rm -f "/sdcard/.termux-test-write-main-prompt"
         fi
 
         echo -e "\n${CYAN}您可以選擇讓腳本嘗試自動安裝/更新缺失的依賴套件。${RESET}"
         echo -e "${YELLOW}注意：此操作無法修復 Termux 儲存權限問題。${RESET}"
         echo ""
-        # <<< 新增：讓使用者有時間查看由 check_environment 打印的錯誤訊息 >>>
         read -p "按 Enter 鍵以顯示後續選項..."
-        # <<< 新增：在顯示後續選項前清屏，使界面整潔 >>>
         clear
 
         local run_dep_update=""
@@ -4864,59 +4867,43 @@ main() {
 
         if [[ "$run_dep_update" =~ ^[Yy]$ ]]; then
             log_message "INFO" "使用者選擇在環境檢查失敗後運行依賴更新。"
-            # <<< 調用依賴更新函數 >>>
-            update_dependencies # update_dependencies 內部有其自身的輸出和 "按 Enter 返回" 的提示
+            update_dependencies
 
-            # <<< 依賴更新後再次檢查環境 >>>
-            # 這裡的 clear 是為了清掉 update_dependencies 的輸出，準備顯示重新檢查的提示
             clear
             echo -e "\n${CYAN}---------------------------------------------${RESET}"
             echo -e "${CYAN}依賴更新流程已執行完畢。${RESET}"
             echo -e "${CYAN}正在重新檢查環境以確認問題是否解決...${RESET}"
             echo -e "${CYAN}---------------------------------------------${RESET}"
-            sleep 1 # 給使用者一點時間看提示
+            sleep 1
 
-            if ! check_environment "--silent"; then # 第二次檢查，使用靜默模式
-                # check_environment 在靜默模式失敗時，其自身會打印出仍然存在的問題
+            if ! check_environment "--silent"; then
                 log_message "ERROR" "依賴更新後環境再次檢查失敗，腳本退出。"
                 echo -e "\n${RED}##############################################${RESET}"
-                echo -e "${RED}# ${BOLD}環境重新檢查仍然失敗！${RESET}${RED}           #${RESET}"
-                echo -e "${RED}# ${BOLD}腳本無法繼續執行。${RESET}${RED}                 #${RESET}"
-                echo -e "${RED}# ${BOLD}請仔細檢查上面列出的問題，${RESET}${RED}         #${RESET}"
-                echo -e "${RED}# ${BOLD}或嘗試手動解決。${RESET}${RED}                   #${RESET}"
+                echo -e "${RED}# ${BOLD}環境重新檢查仍然失敗！腳本無法繼續執行。${RESET}${RED}#"
+                echo -e "${RED}# ${BOLD}請仔細檢查上面列出的問題，或嘗試手動解決。${RESET}${RED}#"
                 if [[ "$OS_TYPE" == "termux" ]]; then
                      echo -e "${RED}# ${BOLD}對於 Termux 儲存權限，請務必執行 ${GREEN}termux-setup-storage${RESET}${RED}。 #${RESET}"
                 fi
                 echo -e "${RED}##############################################${RESET}"
-                exit 1 # 退出腳本
+                exit 1
             else
-                # <<< 如果再次檢查成功 >>>
                 log_message "INFO" "依賴更新後環境重新檢查通過。"
                 echo -e "\n${GREEN}##############################################${RESET}"
                 echo -e "${GREEN}# ${BOLD}環境重新檢查通過！準備進入主選單...${RESET}${GREEN} #${RESET}"
                 echo -e "${GREEN}##############################################${RESET}"
-                sleep 2 # 顯示成功信息
+                sleep 2
             fi
         else
-            # <<< 如果使用者選擇不運行依賴更新 >>>
             log_message "INFO" "使用者拒絕在環境檢查失敗後運行依賴更新，腳本退出。"
             echo -e "\n${YELLOW}##############################################${RESET}"
-            echo -e "${YELLOW}# ${BOLD}已取消依賴更新。${RESET}${YELLOW}                 #${RESET}"
-            echo -e "${YELLOW}# ${BOLD}腳本無法在當前環境下運行，正在退出。${RESET}${YELLOW} #${RESET}"
+            echo -e "${YELLOW}# ${BOLD}已取消依賴更新。腳本無法運行，正在退出。${RESET}${YELLOW}#${RESET}"
             echo -e "${YELLOW}##############################################${RESET}"
-            exit 1 # 退出腳本
+            exit 1
         fi
-        # <<< 結束環境檢查失敗的處理 >>>
-    fi # 結束 if ! check_environment
+    fi
 
-    # --- 環境檢查通過（或修復後通過）後的正常流程 ---
     log_message "INFO" "環境檢查通過，繼續執行腳本。"
-
-    # --- 自動調整執行緒 ---
     adjust_threads
-    # sleep 0 # 短暫暫停 (這一行在您的原始 main 函數中是存在的，我予以保留)
-
-    # --- 進入主選單 ---
     main_menu
 }
 
