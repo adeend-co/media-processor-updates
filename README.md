@@ -7,8 +7,9 @@
 ```
 git clone https://github.com/adeend-co/media-processor-updates.git
 ```
+
+安裝流程:
 -
-安裝流程
 
 1. 請先確保 Termux 擁有手機儲存空間之位置權限，請先運行：
     ```
