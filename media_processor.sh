@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.4-beta.18" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.4-beta.19" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -4836,183 +4836,125 @@ main_menu() {
 }
 ############################################
 
-######################################################################
-# 腳本自我更新函數 (v3.2 - 最終安全更新與測試修正版)
-######################################################################
-auto_update_script() {
-    clear
-    echo -e "${CYAN}--- 使用 Git 檢查腳本更新 (安全模式 v3.2) ---${RESET}"
-    log_message "INFO" "使用者觸發 Git 腳本更新檢查。"
-
-    if ! command -v git &> /dev/null; then
-        log_message "ERROR" "未找到 'git' 命令。"; echo -e "${RED}錯誤：找不到 'git' 命令！${RESET}"; return 1
+####################################################################
+# 主程式 (v5 - 標準化啟動引導模式)
+# 徹底重構啟動流程，確保變數初始化順序清晰、穩健
+####################################################################
+main() {
+    # --- 步驟 1：處理特殊啟動模式 ---
+    # 如果第一個參數是 --health-check，則直接成功退出，不做任何操作
+    # 這是為了讓腳本自我更新時的測試能夠正常通過
+    if [[ "$1" == "--health-check" ]]; then
+        exit 0
     fi
 
-    local repo_dir="$SCRIPT_DIR"
-    local original_dir=$(pwd)
+    # --- 步驟 2：核心變數初始化 ---
+    # a. 執行平台偵測，獲取平台相關的預設路徑
+    detect_platform_and_set_vars
 
-    if [ ! -d "$repo_dir/.git" ]; then
-         log_message "ERROR" "目錄 '$repo_dir' 不是有效的 Git 倉庫。"; echo -e "${RED}錯誤：目錄 '$repo_dir' 非 Git 倉庫。${RESET}"; echo -e "${YELLOW}請通過 'git clone' 獲取。${RESET}"; return 1
+    # b. 為工作變數賦予初始值
+    #    此處 DOWNLOAD_PATH 和 TEMP_DIR 的值來自 detect_platform_and_set_vars
+    DOWNLOAD_PATH="$DOWNLOAD_PATH_DEFAULT"
+    TEMP_DIR="$TEMP_DIR_DEFAULT"
+
+    # c. 載入使用者設定檔。此函數會讀取設定檔並覆蓋上面的工作變數
+    load_config
+    
+    # d. 最終化變數。在所有路徑都確定後，設定 LOG_FILE
+    LOG_FILE="$DOWNLOAD_PATH/script_log.txt"
+    
+    # e. 根據設定啟用或禁用顏色
+    apply_color_settings
+    
+    # f. 創建必要的目錄並檢查權限
+    if ! mkdir -p "$DOWNLOAD_PATH" 2>/dev/null || ! mkdir -p "$TEMP_DIR" 2>/dev/null; then
+        # 在 log_message 可用前，使用原生 echo 輸出到 stderr
+        echo -e "\033[0;31m嚴重錯誤：無法創建下載目錄或臨時目錄！請檢查權限。\033[0m" >&2
+        echo -e "下載目錄: $DOWNLOAD_PATH" >&2
+        echo -e "臨時目錄: $TEMP_DIR" >&2
+        exit 1
     fi
 
-    log_message "INFO" "檢查 Git 倉庫: $repo_dir"
-    if ! cd "$repo_dir"; then
-        log_message "ERROR" "無法切換到倉庫目錄 '$repo_dir'"; echo -e "${RED}錯誤：無法進入倉庫目錄！${RESET}"; return 1;
-    fi
+    # --- 步驟 3：記錄日誌並進行環境驗證 ---
+    # 此時所有核心變數和日誌系統都已就緒
+    log_message "INFO" "腳本啟動 (版本: $SCRIPT_VERSION, OS: $OS_TYPE, Config: $CONFIG_FILE)"
 
-    echo -e "${YELLOW}檢查本地是否有未提交的更改...${RESET}"
-    if [ -n "$(git status --porcelain)" ]; then
-        log_message "WARNING" "檢測到本地有未提交的更改。"
-        echo -e "${RED}警告：檢測到本地有更改！強行更新會覆蓋這些修改。${RESET}"
-        read -r -p "是否要放棄本地修改並繼續？ (輸入 'yes' 確認，其他則取消): " confirm_force
-        if [[ "$confirm_force" != "yes" ]]; then
-            log_message "INFO" "使用者因本地更改取消操作。"
-            echo -e "${YELLOW}已取消。${RESET}"; cd "$original_dir"; return 1
+    if ! check_environment; then
+        # 如果環境檢查失敗，顯示詳細提示並引導用戶修復
+        echo -e "\n${RED}##############################################${RESET}"
+        echo -e "${RED}# ${BOLD}環境檢查發現問題！腳本可能無法正常運行。${RESET}${RED} #${RESET}"
+        echo -e "${RED}##############################################${RESET}"
+        echo -e "${YELLOW}檢測到缺少必要的工具、權限或設定。${RESET}"
+        echo -e "${YELLOW}${BOLD}請查看檢查過程中（上方）列出的具體錯誤訊息。${RESET}"
+
+        if [[ "$OS_TYPE" == "termux" ]]; then
+            if [ ! -d "/sdcard" ] || ! touch "/sdcard/.termux-test-write-main-prompt" 2>/dev/null; then
+                echo -e "\n${RED}${BOLD}*** Termux 儲存權限問題 ***${RESET}"
+                echo -e "${YELLOW}腳本無法存取或寫入外部存儲 (/sdcard)。${RESET}"
+                echo -e "${CYAN}請先在 Termux 中手動執行以下命令授予權限：${RESET}"
+                echo -e "    ${GREEN}termux-setup-storage${RESET}"
+                echo -e "${CYAN}然後完全關閉並重新啟動 Termux 和此腳本。${RESET}"
+                echo -e "${YELLOW}依賴更新功能無法解決此權限問題。${RESET}"
+            fi
+            rm -f "/sdcard/.termux-test-write-main-prompt"
         fi
-        echo -e "${YELLOW}正在放棄本地更改...${RESET}"
-        if ! git reset --hard HEAD --quiet || ! git clean -fd --quiet; then
-            log_message "ERROR" "放棄本地更改失敗！"; echo -e "${RED}錯誤：放棄本地更改失敗！${RESET}"; cd "$original_dir"; return 1
-        fi
-    else
-         echo -e "${GREEN}本地無未提交更改。${RESET}"
-    fi
 
-    echo -e "${YELLOW}正在從遠端倉庫獲取最新資訊...${RESET}"
-    if ! git fetch --quiet; then
-        log_message "ERROR" "'git fetch' 失敗。"; echo -e "${RED}錯誤：無法獲取遠端更新！${RESET}"; cd "$original_dir"; return 1
-    fi
+        echo -e "\n${CYAN}您可以選擇讓腳本嘗試自動安裝/更新缺失的依賴套件。${RESET}"
+        echo -e "${YELLOW}注意：此操作無法修復 Termux 儲存權限問題。${RESET}"
+        echo ""
+        read -p "按 Enter 鍵以顯示後續選項..."
+        clear
 
-    local local_commit=$(git rev-parse @)
-    local remote_commit=$(git rev-parse @{u})
-    local base_commit=$(git merge-base @ @{u})
+        local run_dep_update=""
+        read -rp "是否立即嘗試運行依賴更新？ (y/n): " run_dep_update
 
-    if [ "$local_commit" = "$remote_commit" ]; then
-        echo -e "${GREEN}腳本已是最新版本。無需更新。${RESET}"
-        cd "$original_dir"; read -p "按 Enter 返回..."
-        return 0
-    elif [ "$local_commit" != "$base_commit" ]; then
-        echo -e "${RED}錯誤：本地和遠端分支已分叉或本地領先！無法自動更新。${RESET}"
-        log_message "WARNING" "本地和遠端分支已分叉或本地領先，無法自動更新。"
-        cd "$original_dir"; read -p "按 Enter 返回..."
-        return 1
-    fi
+        if [[ "$run_dep_update" =~ ^[Yy]$ ]]; then
+            log_message "INFO" "使用者選擇在環境檢查失敗後運行依賴更新。"
+            update_dependencies
 
-    echo -e "${YELLOW}檢測到新版本！${RESET}"
-    read -r -p "是否立即拉取更新 (git pull)？ (y/n): " confirm_update
-    if [[ ! "$confirm_update" =~ ^[Yy]$ ]]; then
-        log_message "INFO" "使用者取消更新。"
-        echo -e "${YELLOW}已取消更新。${RESET}"; cd "$original_dir"; read -p "按 Enter 返回..."
-        return 0
-    fi
+            clear
+            echo -e "\n${CYAN}---------------------------------------------${RESET}"
+            echo -e "${CYAN}依賴更新流程已執行完畢。${RESET}"
+            echo -e "${CYAN}正在重新檢查環境以確認問題是否解決...${RESET}"
+            echo -e "${CYAN}---------------------------------------------${RESET}"
+            sleep 1
 
-    echo -e "${YELLOW}正在從遠端拉取更新 (git pull)...${RESET}"
-    if ! git pull --quiet; then
-        log_message "ERROR" "'git pull' 失敗。"; echo -e "${RED}錯誤：'git pull' 失敗！請手動檢查。${RESET}"; cd "$original_dir"; return 1
-    fi
-    log_message "SUCCESS" "Git pull 成功，準備測試新版本。"
-    echo -e "${GREEN}更新檔案下載完成。${RESET}"
-
-    # --- 更新後的自我測試與還原邏輯 ---
-
-    # 步驟 1: 設定新版本腳本的執行權限
-    echo -e "${CYAN}正在設定新版本腳本的執行權限...${RESET}"
-    local chmod_success=true
-    local scripts_to_chmod=("$SCRIPT_INSTALL_PATH" "$PYTHON_ESTIMATOR_SCRIPT_PATH" "$PYTHON_SYNC_HELPER_SCRIPT_PATH")
-    for script_path in "${scripts_to_chmod[@]}"; do
-        if [ -f "$script_path" ]; then
-            if ! chmod +x "$script_path"; then chmod_success=false; log_message "ERROR" "設定 '$script_path' 權限失敗！"; fi
-        elif [[ "$script_path" == "$SCRIPT_INSTALL_PATH" ]]; then
-            chmod_success=false; log_message "CRITICAL" "主腳本 '$script_path' 不存在！";
+            if ! check_environment "--silent"; then
+                log_message "ERROR" "依賴更新後環境再次檢查失敗，腳本退出。"
+                echo -e "\n${RED}##############################################${RESET}"
+                echo -e "${RED}# ${BOLD}環境重新檢查仍然失敗！腳本無法繼續執行。${RESET}${RED}#"
+                echo -e "${RED}# ${BOLD}請仔細檢查上面列出的問題，或嘗試手動解決。${RESET}${RED}#"
+                if [[ "$OS_TYPE" == "termux" ]]; then
+                     echo -e "${RED}# ${BOLD}對於 Termux 儲存權限，請務必執行 ${GREEN}termux-setup-storage${RESET}${RED}。 #${RESET}"
+                fi
+                echo -e "${RED}##############################################${RESET}"
+                exit 1
+            else
+                log_message "INFO" "依賴更新後環境重新檢查通過。"
+                echo -e "\n${GREEN}##############################################${RESET}"
+                echo -e "${GREEN}# ${BOLD}環境重新檢查通過！準備進入主選單...${RESET}${GREEN} #${RESET}"
+                echo -e "${GREEN}##############################################${RESET}"
+                sleep 2
+            fi
         else
-            log_message "WARNING" "輔助腳本 '$script_path' 不存在，跳過權限設定。"
-        fi
-    done
-
-    if ! $chmod_success; then
-        echo -e "${RED}設定腳本權限失敗，無法繼續測試。${RESET}"
-        goto_restore=true
-    else
-        echo -e "${GREEN}權限設定完成。${RESET}"
-        goto_restore=false
-    fi
-
-    # 步驟 2: 開始測試
-    local health_check_error_output=""
-    if ! $goto_restore; then
-        echo -e "${CYAN}正在測試新版本腳本...${RESET}"
-
-        # 測試 1: 語法檢查
-        echo -n "  - 測試1：語法檢查 (bash -n)... "
-        if ! bash -n "$SCRIPT_INSTALL_PATH" 2> /dev/null; then
-            log_message "ERROR" "新版本語法檢查失敗！正在自動還原。"
-            echo -e "${RED}失敗！${RESET}"
-            health_check_error_output="新版本存在基礎語法錯誤。"
-            goto_restore=true
-        else
-            echo -e "${GREEN}通過。${RESET}"
+            log_message "INFO" "使用者拒絕在環境檢查失敗後運行依賴更新，腳本退出。"
+            echo -e "\n${YELLOW}##############################################${RESET}"
+            echo -e "${YELLOW}# ${BOLD}已取消依賴更新。腳本無法運行，正在退出。${RESET}${YELLOW}#${RESET}"
+            echo -e "${YELLOW}##############################################${RESET}"
+            exit 1
         fi
     fi
 
-    # 測試 2: 執行健康檢查模式 (已修正)
-    if ! $goto_restore; then
-        echo -n "  - 測試2：啟動健康檢查 (--health-check)... "
-        # ★★★ 核心修正 ★★★
-        # 1. timeout 15s: 設定15秒的超時，防止無限期卡住。
-        # 2. < /dev/null: 將子腳本的標準輸入重定向到/dev/null，避免它等待使用者輸入。 [2, 6, 9]
-        health_check_error_output=$(timeout 15s bash "$SCRIPT_INSTALL_PATH" --health-check < /dev/null 2>&1)
-        local health_check_status=$?
-
-        # 根據退出狀態碼判斷結果
-        # 124 是 timeout 命令在超時後發出的狀態碼
-        if [ $health_check_status -eq 124 ]; then
-            log_message "ERROR" "新版本健康檢查超時 (超過15秒)！正在自動還原。"
-            echo -e "${RED}失敗 (超時)！${RESET}"
-            health_check_error_output="健康檢查執行超時，腳本可能卡在某處。"
-            goto_restore=true
-        elif [ $health_check_status -ne 0 ]; then
-            log_message "ERROR" "新版本健康檢查失敗 (狀態碼: $health_check_status)！正在自動還原。"
-            echo -e "${RED}失敗 (錯誤碼: $health_check_status)！${RESET}"
-            # 錯誤訊息已在 health_check_error_output 中
-            goto_restore=true
-        else
-            echo -e "${GREEN}通過。${RESET}"
-        fi
-    fi
-
-    # 根據測試結果決定流程
-    if ! $goto_restore; then
-        log_message "SUCCESS" "新版本測試通過，更新完成。"
-        echo -e "${GREEN}新版本測試通過！更新成功！${RESET}"
-        echo -e "${CYAN}建議重新啟動腳本以應用所有更改。${RESET}"
-        cd "$original_dir"; read -p "按 Enter 返回..."
-        return 0
-    fi
-
-    # --- 如果任何測試失敗，執行還原 ---
-    echo -e "\n${RED}----------------- 更新失敗 -----------------${RESET}"
-    echo -e "${RED}新版本腳本未能通過自動化測試。${RESET}"
-    if [ -n "$health_check_error_output" ]; then
-        echo -e "${YELLOW}偵測到的錯誤訊息如下：${RESET}"
-        echo -e "${PURPLE}--------------------------------------------"
-        echo -e "$health_check_error_output"
-        echo -e "--------------------------------------------${RESET}"
-    fi
-
-    echo -e "\n${YELLOW}正在自動還原到更新前的穩定版本...${RESET}"
-    if git reset --hard ORIG_HEAD --quiet; then
-        chmod +x "$SCRIPT_INSTALL_PATH" 2>/dev/null
-        log_message "SUCCESS" "成功還原到舊版本 (commit: $(git rev-parse --short ORIG_HEAD))"
-        echo -e "${GREEN}還原成功！您目前仍在使用更新前的穩定版本。${RESET}"
-        echo -e "${YELLOW}請將上述錯誤訊息回報給開發者。${RESET}"
-    else
-        log_message "CRITICAL" "自動還原失敗！倉庫可能處於不穩定狀態！"
-        echo -e "${RED}${BOLD}致命錯誤：自動還原失敗！請手動檢查 Git 倉庫狀態！${RESET}"
-    fi
-
-    cd "$original_dir"
-    read -p "按 Enter 返回..."
-    return 1
+    # --- 步驟 4：執行次要啟動任務 ---
+    log_message "INFO" "環境檢查通過，繼續執行腳本。"
+    adjust_threads
+    
+    # --- 步驟 5：進入主選單 ---
+    main_menu
 }
 
 # --- 執行主函數 ---
-main
+# 這是腳本的入口點。
+# 使用 "$@" 可以將所有傳遞給腳本的參數（例如 --health-check）原封不動地傳給 main 函數。
+# 這是確保健康檢查等功能正常的關鍵。
+main "$@"
