@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.4-beta.7" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.4-beta.8" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -534,7 +534,7 @@ apply_color_settings() {
 ############################################
 display_countdown() {
     # 檢查目標日期變數是否存在且不為空
-    if [ -z "$TARGET_DATE" ]; then
+     [ -z "$TARGET_DATE" ]; then
         # log_message "WARNING" "未設定目標日期 (TARGET_DATE)，無法顯示倒數計時。"
         # echo -e "${YELLOW}警告：未設定目標日期，無法顯示倒數計時。${RESET}" >&2
         return # 如果未設定，則不顯示任何內容
