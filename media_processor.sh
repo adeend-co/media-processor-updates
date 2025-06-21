@@ -4527,41 +4527,59 @@ check_environment() {
 }
 
 ############################################
-# <<< 修改：新的主選單 (多層級，加入執行同步選項) >>>
+# 主選單 (v5.2 - 加入 Base64 加密彩蛋)
 ############################################
 main_menu() {
+    
+    local easter_egg_payload="CgogICAgPT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PQogICAgICAg整合式影音處理平台IChJQVZQUSkKICAgICAgIENvcHlyaWdodCDCqSAyMDI1IGFkZWVuZC1jby4gQWxsIHJpZ2h0cyByZXNlcnZlZC4KICAgICAgIExpY2Vuc2VkIHVuZGVyIENDIEJZLU5DLVNBIDQuMCBJbnRlcm5hdGlvbmFsLgogICAgPT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PQoK"
+
     while true; do
         clear
         echo -e "${CYAN}=== 整合式影音處理平台(IAVPP) ${SCRIPT_VERSION} ===${RESET}"
-        display_countdown # 保留倒數計時顯示
+        display_countdown
         echo -e "${YELLOW}請選擇主要功能分類：${RESET}"
         echo -e " 1. ${BOLD}MP3 相關處理${RESET} (YouTube/本機)"
         echo -e " 2. ${BOLD}MP4 / MKV 相關處理${RESET} (YouTube/本機)"
         echo -e " 3. ${BOLD}通用媒體下載${RESET} (其他網站 / ${YELLOW}實驗性${RESET})"
-        # <<< 新增的同步執行選項 >>>
         echo -e " 4. ${BOLD}執行同步 (新手機 -> 舊手機)${RESET}"
         echo -e "---------------------------------------------"
-        # 後續選項編號順延
         echo -e " 5. ${BOLD}腳本設定與工具${RESET}"
         echo -e " 6. ${BOLD}關於此工具${RESET}"
         echo -e " 0. ${RED}退出腳本${RESET}"
         echo -e "---------------------------------------------"
 
-        read -t 0.1 -N 10000 discard # 清除可能的緩衝輸入
+        read -t 0.1 -N 10000 discard
 
         local choice
-        read -rp "輸入選項 (0-6): " choice # <<< 修改選項範圍提示
+        read -rp "輸入選項 (0-6): " choice
+
+        
+        if [[ "$choice" == "$SCRIPT_VERSION" ]]; then
+            clear
+            
+            # 檢查 base64 命令是否存在，以確保腳本不會因此出錯
+            if command -v base64 &> /dev/null; then
+               
+                echo -e "${CYAN}$(echo "$easter_egg_payload" | base64 -d)${RESET}"
+            else
+                
+                echo "Copyright © 2025 adeend-co. All rights reserved."
+            fi
+            
+            log_message "SECURITY" "彩蛋被觸發 (輸入版本號: $choice)"
+            # 暫停幾秒讓資訊顯示
+            sleep 5
+            # 使用 continue 關鍵字跳過本次迴圈的剩餘部分，直接開始下一次迴圈（即重新顯示主選單）
+            continue
+        fi
 
         case $choice in
             1) mp3_menu ;;
             2) mp4_mkv_menu ;;
             3) general_download_menu ;;
-            4) # <<< 新增 Case，執行同步功能 >>>
-                perform_sync_to_old_phone # 這個函數內部現在會調用 Python 輔助腳本
-                # perform_sync_to_old_phone 內部應包含 "按 Enter 返回"
-                ;;
-            5) utilities_menu ;;       # 原來的選項 4
-            6) show_about_enhanced ;; # 原來的選項 5
+            4) perform_sync_to_old_phone ;;
+            5) utilities_menu ;;
+            6) show_about_enhanced ;;
             0)
                 echo -e "${GREEN}感謝使用，正在退出...${RESET}"
                 log_message "INFO" "使用者選擇退出。"
