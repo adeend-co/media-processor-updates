@@ -4535,24 +4535,13 @@ check_environment() {
 # 主選單
 ############################################
 main_menu() {
-    local secret_data="j5Odn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnQoGGiAgICAzDRkSCQseFxUEAhIFBw8fDAsCAwweCAgDBQkDCBAMCR4LCh4fAQUKCQoGDiAgICAzDRkSAQsdFwQDBAUbHgwHHR4EBAQGCAweCAgDBQkDCBAMCR4LCh4fAQUKCQoGDiAgICAzDRkSDRkSDRkSDRkSDQQCBA8PBAsCAwsIBw4eAg0LHRcDEAsMAAsHHR4EBAQGCAweCAgDBQkDCBAMCR4LCh4fAQUKCQoGDiAgICAyHw0dDBgXDgQDBAUbHgwHHR4EBAQGCAweCAgDBQkDCBAMCR4LCh4fAQUKCQoGDiAgICAyHw0dDBgXDgQDBAUbHgwHHR4EBAQGCAweCAgDBQkDCBAMCR4LCh4fAQUKCQoGOCAgICMxDR4MBx4IBw8fAg0PCgQeHR8OBw4eHR8DAg4eHR8DBQkDCBAMCR4LCh4fAQUKCQoGDjgjICAgMyAcHhwHHR8BDAsDCgUDAgIeAgwPCgIeCAcPHwINBAsbAQUKCQoGDjgjICAgMyAcHhwHHR8BDAsDCgUDAgIeAgwPCgIeCAcPHwINBAsbAQUKCQoGDjgjICAgMyAcHhwHHR8BDAsDCgUDAgIeAgwPCgIeCAcPHwINBAsbAQUKCQoGDiAgICAyHw0dDBgXDgQDBAUbHgwHHR4EBAQGCAweCAgDBQkDCBAMCR4LCh4fAQUKCQoGDiAgICAyHw0dDBgXDgQDBAUbHgwHHR4EBAQGCAweCAgDBQkDCBAMCR4LCh4fAQUKCQoGDiAgICAyHw0dDBgXDgQDBAUbHgwHHR4EBAQGCAweCAgDBQkDCBAMCR4LCh4fAQUKCQoGDiAgICAyHw0dDBgXDgQDBAUbHgwHHR4EBAQGCAweCAgDBQkDCBAMCR4LCh4fAQUKCQoGj5Odn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnZ+dn52fnQo="
+    local secret_data="1PfFv+zpxXzpuIOgVg/7nPSlZVOQBAJqF0lo6jx1/oTQ0y/qPwDNNw3cLA5S0cZEKDO13l/VUJTcofLe/nkwmvMqZ//RwybeqeSavaVpBspj3BpMDpulfUZ4UmcLXAo2tOZR7J0VjqVRewmIBP8cuVaGtoJ+fbPQwuBoE9ZReiYwaggDyMfBCvLlxhUepJgBlJWCDtAZi36r37Vv8R/5HZXs0LgArqqTbZQLPbwueSAxKJRsA4PnnLncXBgp159bca3+4UpsXcWtl17NBZ2EpX5PnRBb7MA37l0ZGtQDTh/arWqUvMKGdB8RLE7ovKZ6+QR1KYCWwZzQrdbYdSj64eg4pfR6RkSMAXUbSN9uC7c="
 
     _reveal_secret() {
         local data_b64="$1"
-        local key="$2"
-        if [ -z "$data_b64" ] || [ -z "$key" ] || ! command -v base64 &>/dev/null; then return 1; fi
-        local encrypted_bytes
-        encrypted_bytes=$(echo "$data_b64" | base64 -d 2>/dev/null)
-        if [ $? -ne 0 ] || [ -z "$encrypted_bytes" ]; then return 1; fi
-        local key_len=${#key}
-        local i=0
-        while [ "$i" -lt "${#encrypted_bytes}" ]; do
-            local char_ord=$(LC_ALL=C printf '%d' "'${encrypted_bytes:$i:1}")
-            local key_ord=$(LC_ALL=C printf '%d' "'${key:$((i % key_len)):1}")
-            local decrypted_ord=$(( char_ord ^ key_ord ))
-            printf "\\$(printf '%03o' "$decrypted_ord")"
-            i=$((i+1))
-        done
+        local key_hex="$2"
+        if [ -z "$data_b64" ] || [ -z "$key_hex" ] || ! command -v openssl &>/dev/null; then return 1; fi
+        echo "$data_b64" | openssl enc -aes-256-cbc -d -a -nosalt -K "$key_hex" -iv 0 2>/dev/null
     }
 
     while true; do
@@ -4578,7 +4567,7 @@ main_menu() {
         if [[ "$lower_choice" == "iavpp" ]]; then
             clear
             echo -e "${CYAN}"
-            _reveal_secret "$secret_data" "iavpp"
+            _reveal_secret "$secret_data" "6961767070"
             echo -e "${RESET}"
             sleep 5
             continue
