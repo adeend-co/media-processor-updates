@@ -512,7 +512,7 @@ load_config() {
 ############################################
 apply_color_settings() {
     # 根據 COLOR_ENABLED 的當前值來設定實際的顏色變數
-    if [ "$COLOR_ENABLED" = true ]; then
+   # if [ "$COLOR_ENABLED" = true ]; then
         # 啟用顏色
         RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'
         BLUE='\033[0;34m'; PURPLE='\033[0;35m'; CYAN='\033[0;36m'
