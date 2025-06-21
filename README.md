@@ -3,7 +3,7 @@
 
 腳本下載流程：
 -
-運行：'''git clone https://github.com/adeend-co/media-processor-updates.git
+運行： ```git clone https://github.com/adeend-co/media-processor-updates.git
 
 安裝流程
 -
