@@ -1701,8 +1701,8 @@ process_single_mp3_no_normalize() {
 }
 
 ###############################################################
-# 處理單一 YouTube 影片（MP4）下載與處理 (最終確定版 v4.5)
-# 手動構建檔名以確保確定性，徹底解決檔名與字幕清理問題
+# 處理單一 YouTube 影片（MP4）下載與處理 (最終確定版 v4.6)
+# 修正 find 命令的模式匹配問題，確保字幕能被準確找到並清理
 ###############################################################
 process_single_mp4() {
     local video_url="$1"
@@ -1743,12 +1743,9 @@ process_single_mp4() {
 
     echo -e "${YELLOW}處理影片 (MP4 標準化)：$video_title${RESET}"
     
-    # ★★★ 核心修正：手動構建確定的檔名，不再依賴 yt-dlp 的二次解析 ★★★
     local sanitized_title=$(echo "${video_title}" | sed 's@[/\\:*?"<>|]@_@g')
-    # 為了安全，限制檔名基礎部分的最大長度 (例如 150 字元)
     local base_name=$(echo "${sanitized_title} [${video_id}]" | cut -c 1-150)
     
-    # 預測所有將要生成的檔案路徑
     local output_template="${DOWNLOAD_PATH}/${base_name}.%(ext)s"
     local video_file="${DOWNLOAD_PATH}/${base_name}.mp4"
     local output_video="${DOWNLOAD_PATH}/${base_name}_normalized.mp4"
@@ -1769,7 +1766,6 @@ process_single_mp4() {
         log_message "WARNING" "yt-dlp 執行時回報錯誤 (可能為字幕問題)，繼續檢查主檔案。";
     fi
 
-    # 檢查我們預測的影片檔是否存在
     if [ ! -f "$video_file" ]; then
         log_message "ERROR" "下載失敗，找不到預期的影片檔案: $video_file";
         cat "$temp_dir/yt-dlp-video-std.log"; result=1
@@ -1777,22 +1773,25 @@ process_single_mp4() {
         log_message "INFO" "影片下載完成：$video_file"
     fi
 
-    # --- 後續處理流程（現在基於絕對正確的檔名） ---
     if [ $result -eq 0 ]; then
         if $is_youtube_url; then
-            # ★★★ 核心修正：使用確定的 base_name 來查找字幕 ★★★
-            log_message "INFO" "檢查字幕 (基於: ${base_name}.*.srt)"
+            # ★★★ 核心修正：對 base_name 進行轉義，以應對 find 命令的模式匹配 ★★★
+            local find_safe_base_name
+            find_safe_base_name=$(echo "$base_name" | sed -e 's/\[/\\\[/g' -e 's/\]/\\\]/g' -e 's/\*/\\\*/g' -e 's/\?/\\\?/g')
+            log_message "INFO" "檢查字幕 (使用轉義後的基礎檔名: ${find_safe_base_name}.*.srt)"
+            
+            # 使用轉義後的 find_safe_base_name 進行查找
             while IFS= read -r srt_file; do
                 subtitle_files+=("$srt_file")
                 log_message "INFO" "找到字幕: $srt_file"
                 echo -e "${GREEN}找到字幕: $(basename "$srt_file")${RESET}"
-            done < <(find "$DOWNLOAD_PATH" -maxdepth 1 -type f -name "${base_name}.*.srt")
+            done < <(find "$DOWNLOAD_PATH" -maxdepth 1 -type f -name "${find_safe_base_name}.*.srt")
         fi
 
         local normalized_audio_temp="$temp_dir/audio_normalized.m4a"
         echo -e "${YELLOW}開始音量標準化...${RESET}"
         if normalize_audio "$video_file" "$normalized_audio_temp" "$temp_dir" true; then
-            # ... (混流邏輯保持不變，因為它現在接收的是正確的字幕檔列表) ...
+            # ... (混流邏輯不變) ...
             echo -e "${YELLOW}正在混流標準化音訊、影片與字幕...${RESET}"
             local ffmpeg_mux_args=(ffmpeg -y -i "$video_file" -i "$normalized_audio_temp")
             for sub_f in "${subtitle_files[@]}"; do ffmpeg_mux_args+=("-i" "$sub_f"); done
@@ -1818,17 +1817,14 @@ process_single_mp4() {
     fi
 
     log_message "INFO" "清理臨時檔案 (MP4 標準化)..."
-    # 清理原始下載的影片檔
     if [ -f "$video_file" ]; then safe_remove "$video_file"; fi
     
-    # ★★★ 核心修正：現在這個清理迴圈將能正確工作 ★★★
     for sub_f in "${subtitle_files[@]}"; do
         safe_remove "$sub_f"
     done
     
     rm -rf "$temp_dir"
 
-    # ... (最終報告和通知邏輯不變) ...
     if [ $result -eq 0 ]; then
         if [ -f "$output_video" ]; then echo -e "${GREEN}處理完成！影片已儲存至：$output_video${RESET}";
         else echo -e "${RED}處理似乎已完成，但最終檔案 '$output_video' 未找到！${RESET}"; result=1; fi
