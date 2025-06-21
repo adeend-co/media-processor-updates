@@ -4542,13 +4542,13 @@ main_menu() {
         local key="$2"
         if [ -z "$data_b64" ] || [ -z "$key" ] || ! command -v base64 &>/dev/null; then return 1; fi
         local encrypted_bytes
-        encrypted_bytes=$(echo "$data_b64" | base64 -d)
-        if [ -z "$encrypted_bytes" ]; then return 1; fi
+        encrypted_bytes=$(echo "$data_b64" | base64 -d 2>/dev/null)
+        if [ $? -ne 0 ] || [ -z "$encrypted_bytes" ]; then return 1; fi
         local key_len=${#key}
         local i=0
         while [ "$i" -lt "${#encrypted_bytes}" ]; do
-            local char_ord=$(printf '%d' "'${encrypted_bytes:$i:1}")
-            local key_ord=$(printf '%d' "'${key:$((i % key_len)):1}")
+            local char_ord=$(LC_ALL=C printf '%d' "'${encrypted_bytes:$i:1}")
+            local key_ord=$(LC_ALL=C printf '%d' "'${key:$((i % key_len)):1}")
             local decrypted_ord=$(( char_ord ^ key_ord ))
             printf "\\$(printf '%03o' "$decrypted_ord")"
             i=$((i+1))
@@ -4577,12 +4577,9 @@ main_menu() {
 
         if [[ "$lower_choice" == "iavpp" ]]; then
             clear
-            local revealed_message
-            revealed_message=$(_reveal_secret "$secret_data" "iavpp")
-            if [ -n "$revealed_message" ]; then
-                echo -e "${CYAN}${revealed_message}${RESET}"
-                log_message "SECURITY" "彩蛋被觸發 (輸入: $choice)"
-            fi
+            echo -e "${CYAN}"
+            _reveal_secret "$secret_data" "iavpp"
+            echo -e "${RESET}"
             sleep 5
             continue
         fi
