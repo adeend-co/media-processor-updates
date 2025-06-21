@@ -4271,14 +4271,14 @@ view_log() {
 }
 
 ############################################
-# 關於訊息 (v3.2 - 修正顏色, 補全 aria2c 和 rsync 檢查)
+# 關於訊息 (v3.4 - 保留全部檢查並更新法律聲明)
 ############################################
 show_about_enhanced() {
     clear
     echo -e "${CYAN}=== 整合式影音處理平台 ===${RESET}"
     echo -e "---------------------------------------------"
 
-    # --- Git 版本信息 ---
+    # --- Git 版本信息 (保留) ---
     local git_version_info=""
     if command -v git &> /dev/null && [ -d "$SCRIPT_DIR/.git" ]; then
         local git_tag=$(git -C "$SCRIPT_DIR" describe --tags --abbrev=0 2>/dev/null)
@@ -4302,7 +4302,7 @@ show_about_enhanced() {
     
     echo -e "---------------------------------------------"
 
-    # --- 腳本環境與組件狀態 ---
+    # --- 腳本組件與環境狀態 (保留並恢復) ---
     echo -e "${CYAN}--- 腳本組件與環境狀態 ---${RESET}"
 
     # 輔助函數，用於格式化顯示狀態
@@ -4344,13 +4344,11 @@ show_about_enhanced() {
 
     # --- 外部核心工具與環境檢查 ---
     echo -e "\n${YELLOW}外部核心工具:${RESET}"
-    # --- 【新增】將 rsync 和 aria2c 加入檢查列表 ---
     for tool in ffmpeg ffprobe jq curl rsync aria2c; do
         local tool_status=false
         local detail_text=""
         command -v "$tool" &> /dev/null && tool_status=true
         
-        # 為特定工具添加說明文字
         case "$tool" in
             "rsync") detail_text="(用於檔案同步)" ;;
             "aria2c") detail_text="(用於 Bilibili 加速)" ;;
@@ -4384,19 +4382,31 @@ show_about_enhanced() {
     
     echo -e "---------------------------------------------"
 
-    # --- 功能特色與使用須知 ---
-    echo -e "\n${GREEN}主要功能特色：${RESET}"
-    echo -e "- YouTube 影音下載 (MP3/MP4/MKV)"
-    echo -e "- 通用網站媒體下載 (實驗性)"
-    echo -e "- 音量標準化 (EBU R128) 與無標準化選項"
-    echo -e "- 字幕處理、播放清單批次處理、本機檔案處理"
-    echo -e "- 檔案同步 (新手機 -> 舊手機)"
-    echo -e "- 依賴管理與腳本自我更新 (Git)"
-    echo -e "- 跨平台適應 (Termux/WSL/Linux)"
-    echo -e "- 設定持久化、條件式通知與互動式選單"
+    # --- 授權資訊 (新增) ---
+    echo -e "${CYAN}--- 授權資訊 ---${RESET}"
+    echo -e "${BOLD}授權條款:${RESET}    CC BY-NC-SA 4.0 International"
+    echo -e "您可以自由分享與修改本軟體，惟須遵照以下核心條件："
+    echo -e "  - ${GREEN}姓名標示 (BY):${RESET} 必須標示原作者。"
+    echo -e "  - ${RED}非商業性 (NC):${RESET} 不得用於商業目的。"
+    echo -e "  - ${YELLOW}相同方式分享 (SA):${RESET} 修改後須以相同條款分享。"
+    echo -e "詳細授權條款請查閱專案根目錄之 ${WHITE}LICENSE${RESET} 檔案。"
 
-    echo -e "\n${YELLOW}使用須知：${RESET}"
-    echo -e "本工具僅供個人學習與合法使用，請尊重版權並遵守當地法律。"
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+    # ★★★   修 改 區 塊   ★★★
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+    echo -e "\n${YELLOW}--- 使用者義務與法律聲明 ---${RESET}"
+    echo -e "1. ${BOLD}合法性遵循：${RESET}使用者承諾，在使用本軟體之所有過程中，將嚴格遵"
+    echo -e "   守其行為所在地之所有適用法律，包含但不限於《著作權法》及相關"
+    echo -e "   智慧財產權法規。"
+    echo -e "2. ${BOLD}用途限制：${RESET}本軟體之設計目的僅為個人非商業性之學習、研究或備"
+    echo -e "   份已合法取得之內容。嚴禁將本軟體用於任何侵害第三方權利或從"
+    echo -e "   事非法活動之行為。"
+    echo -e "3. ${BOLD}責任歸屬：${RESET}本軟體係以「現況」提供。任何因使用本軟體而可能"
+    echo -e "   產生之版權爭議或法律責任，均由使用者本人全部承擔，與開發者"
+    echo -e "   無涉。"
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+    # ★★★        修 改 區 塊 結 束        ★★★
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 
     echo -e "\n${CYAN}日誌檔案位於: ${LOG_FILE}${RESET}"
     echo -e "---------------------------------------------"
