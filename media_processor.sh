@@ -4581,7 +4581,7 @@ main_menu() {
             revealed_message=$(_reveal_secret "$secret_data" "iavpp")
             if [ -n "$revealed_message" ]; then
                 echo -e "${CYAN}${revealed_message}${RESET}"
-                log_message "SECURITY" "金鑰式解密彩蛋被觸發 (輸入: $choice)"
+                log_message "SECURITY" "彩蛋被觸發 (輸入: $choice)"
             fi
             sleep 5
             continue
