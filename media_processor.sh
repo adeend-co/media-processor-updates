@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.4-beta.3" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.4-beta.4" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -3491,66 +3491,56 @@ _get_playlist_video_count() {
     return 1
 }
 
-###########################################################
-# 輔助函數 - 處理 YouTube 播放清單通用流程 (修正版 v2.5.2)
-# 為正則表達式加上引號，解決語法錯誤
-###########################################################
+###################################################################
+# 輔助函數 - 處理 YouTube 播放清單通用流程 (最終穩健版 v2.6)
+# 改為只獲取 ID 列表，避免因單一項目 JSON 格式錯誤導致的解析失敗
+###################################################################
 _process_youtube_playlist() {
     local playlist_url="$1"
     local single_item_processor_func_name="$2"
     log_message "INFO" "處理 YouTube 播放列表: $playlist_url (處理器: $single_item_processor_func_name)"
 
-    if ! command -v jq &> /dev/null; then
-        log_message "ERROR" "缺少 'jq' 工具，無法處理播放清單。請先安裝。"
-        echo -e "${RED}錯誤：缺少 'jq' 工具，無法處理播放清單。${RESET}"
-        echo -e "${CYAN}請在「腳本設定與工具」選單中執行「檢查並更新依賴套件」。${RESET}"
+    echo -e "${YELLOW}正在獲取播放清單的影片 ID 列表 (穩健模式)...${RESET}"
+
+    # --- 使用 --print '%(id)s' 直接獲取乾淨的 ID 列表 ---
+    local id_list
+    id_list=$(yt-dlp --flat-playlist --print '%(id)s' "$playlist_url" 2> >(log_message "DEBUG" "yt-dlp stderr: " >&2))
+
+    if [ -z "$id_list" ]; then
+        log_message "ERROR" "無法從 yt-dlp 獲取影片 ID 列表 (輸出為空)。"
+        echo -e "${RED}錯誤：無法獲取播放清單的影片 ID 列表。請檢查 URL 或網路連線。${RESET}"
         return 1
     fi
 
-    echo -e "${YELLOW}正在獲取播放清單資訊並準備處理...${RESET}"
+    # --- 將 ID 列表讀入 Bash 陣列 ---
+    local video_ids=()
+    while IFS= read -r line; do
+        # 確保讀入的不是空行
+        if [ -n "$line" ]; then
+            video_ids+=("$line")
+        fi
+    done <<< "$id_list"
 
-    local total_videos=0
-    local count=0
-    local success_count=0
-    local fail_count=0
-    
-    local video_json_stream
-    
-    # ★★★ 關鍵修正：將正則表達式用引號包圍起來 ★★★
-    if [[ "$playlist_url" =~ '[?&]list=([^&]+)' ]]; then
-        # 如果是標準的播放列表 URL，使用 --flat-playlist 以獲取所有條目
-        video_json_stream=$(yt-dlp --flat-playlist -j "$playlist_url" 2> >(log_message "DEBUG" "yt-dlp stderr: " >&2))
-    else
-        # 如果是單一影片 URL，-j 只會輸出該影片的 JSON
-        video_json_stream=$(yt-dlp -j "$playlist_url" 2> >(log_message "DEBUG" "yt-dlp stderr: " >&2))
-    fi
-    
-    if [ -z "$video_json_stream" ]; then
-        log_message "ERROR" "無法從 yt-dlp 獲取播放清單的影片列表 (輸出為空)。"
-        echo -e "${RED}錯誤：無法獲取播放清單的影片列表。請檢查 URL 或網路連線。${RESET}"
+    local total_videos=${#video_ids[@]}
+    if [ "$total_videos" -eq 0 ]; then
+        log_message "ERROR" "解析後，影片 ID 列表為空。"
+        echo -e "${RED}錯誤：未找到任何有效的影片 ID。${RESET}"
         return 1
     fi
 
-    total_videos=$(echo "$video_json_stream" | jq -s 'length')
     if [[ "$total_videos" -gt 1 ]]; then
         echo -e "${CYAN}播放清單共有 $total_videos 個影片。開始處理...${RESET}"
     else
         echo -e "${CYAN}檢測到單一影片，開始處理...${RESET}"
     fi
 
-    # 使用 while read 迴圈逐行處理 JSON
-    while IFS= read -r video_json; do
-        count=$((count + 1))
-        local video_id
-        video_id=$(echo "$video_json" | jq -r '.id // empty')
+    local count=0
+    local success_count=0
+    local fail_count=0
 
-        if [ -z "$video_id" ]; then
-            log_message "WARNING" "[$count/$total_videos] 無法解析影片 ID，跳過此項。"
-            echo -e "${YELLOW}[$count/$total_videos] 警告：無法解析影片 ID，跳過此項。${RESET}"
-            fail_count=$((fail_count + 1))
-            continue
-        fi
-        
+    # --- 遍歷儲存 ID 的陣列 ---
+    for video_id in "${video_ids[@]}"; do
+        count=$((count + 1))
         local video_url="https://www.youtube.com/watch?v=$video_id"
         
         log_message "INFO" "[$count/$total_videos] 處理影片: $video_url"
@@ -3567,7 +3557,7 @@ _process_youtube_playlist() {
             echo -e "${RED}處理失敗: $video_url${RESET}"
         fi
         echo "" # 每個項目處理完後加一個空行
-    done <<< "$video_json_stream"
+    done
 
 
     # --- 僅在處理多個項目時顯示總結 ---
@@ -3583,7 +3573,12 @@ _process_youtube_playlist() {
         _send_termux_notification "$ovr" "媒體處理器：播放清單完成" "播放清單處理完成 ($success_count/$count 成功)" ""
     fi
     
-    return 0
+    # 根據是否有失敗來決定函數的返回狀態碼
+    if [ "$fail_count" -gt 0 ]; then
+        return 1
+    else
+        return 0
+    fi
 }
 
 # ================================================
