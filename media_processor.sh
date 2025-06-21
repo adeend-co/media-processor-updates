@@ -642,146 +642,120 @@ detect_platform_and_set_vars() {
      sleep 1 # 短暫顯示檢測結果
 }
 
-############################################
-# <<< 最終修正 v2：腳本自我更新函數 (Git, 改進變更檢查, 移除冗餘提示) >>>
-############################################
+###########################################################
+# 腳本自我更新函數 (v3 - 安全更新版)
+# 在更新後增加自我測試與自動還原功能
+###########################################################
 auto_update_script() {
     clear
-    echo -e "${CYAN}--- 使用 Git 檢查腳本更新 ---${RESET}"
+    echo -e "${CYAN}--- 使用 Git 檢查腳本更新 (安全模式) ---${RESET}"
     log_message "INFO" "使用者觸發 Git 腳本更新檢查。"
 
-    # 檢查 git 命令
     if ! command -v git &> /dev/null; then
-        log_message "ERROR" "未找到 'git' 命令。"; echo -e "${RED}錯誤：找不到 'git' 命令！${RESET}";
-        # <<< 移除冗餘提示 >>>
-        return 1
+        log_message "ERROR" "未找到 'git' 命令。"; echo -e "${RED}錯誤：找不到 'git' 命令！${RESET}"; return 1
     fi
 
-    # 獲取倉庫目錄和原始目錄
     local repo_dir="$SCRIPT_DIR"
     local original_dir=$(pwd)
 
-    # 檢查 Git 倉庫有效性
     if [ ! -d "$repo_dir/.git" ]; then
-         log_message "ERROR" "目錄 '$repo_dir' 不是有效的 Git 倉庫。"; echo -e "${RED}錯誤：目錄 '$repo_dir' 非 Git 倉庫。${RESET}"; echo -e "${YELLOW}請通過 'git clone' 獲取。${RESET}";
-         # <<< 移除冗餘提示 >>>
-         return 1
+         log_message "ERROR" "目錄 '$repo_dir' 不是有效的 Git 倉庫。"; echo -e "${RED}錯誤：目錄 '$repo_dir' 非 Git 倉庫。${RESET}"; echo -e "${YELLOW}請通過 'git clone' 獲取。${RESET}"; return 1
     fi
 
     log_message "INFO" "檢查 Git 倉庫: $repo_dir"
-    # 切換到倉庫目錄
     if ! cd "$repo_dir"; then
-        log_message "ERROR" "無法切換到倉庫目錄 '$repo_dir'"; echo -e "${RED}錯誤：無法進入倉庫目錄！${RESET}";
-        # <<< 移除冗餘提示 >>>
-        return 1;
+        log_message "ERROR" "無法切換到倉庫目錄 '$repo_dir'"; echo -e "${RED}錯誤：無法進入倉庫目錄！${RESET}"; return 1;
     fi
 
-    # --- <<< 修改：使用 git status 檢查本地修改 >>> ---
-    echo -e "${YELLOW}檢查本地是否有未追蹤或未提交的更改...${RESET}"
-    local git_status_output
-    git_status_output=$(git status --porcelain) # 獲取簡潔狀態輸出
-    local needs_reset=false
-
-    if [ -n "$git_status_output" ]; then # 如果輸出不為空，說明有更改
-        log_message "WARNING" "檢測到本地有未追蹤或未提交的更改。"
-        echo -e "${RED}警告：檢測到本地有更改！${RESET}"
-        echo -e "${YELLOW}狀態詳情:${RESET}\n$git_status_output" # 顯示狀態幫助判斷
-        echo -e "${YELLOW}強行更新會覆蓋未提交的修改。${RESET}"
+    echo -e "${YELLOW}檢查本地是否有未提交的更改...${RESET}"
+    if [ -n "$(git status --porcelain)" ]; then
+        log_message "WARNING" "檢測到本地有未提交的更改。"
+        echo -e "${RED}警告：檢測到本地有更改！強行更新會覆蓋這些修改。${RESET}"
         read -r -p "是否要放棄本地修改並繼續？ (輸入 'yes' 確認，其他則取消): " confirm_force
         if [[ "$confirm_force" != "yes" ]]; then
             log_message "INFO" "使用者因本地更改取消操作。"
-            echo -e "${YELLOW}已取消。請處理本地更改。${RESET}"
-            cd "$original_dir";
-            # <<< 移除冗餘提示 >>>
-            return 1 # 返回失敗狀態，以便調用者知道未完成
+            echo -e "${YELLOW}已取消。${RESET}"; cd "$original_dir"; return 1
         fi
-        needs_reset=true
+        echo -e "${YELLOW}正在放棄本地更改...${RESET}"
+        if ! git reset --hard HEAD --quiet || ! git clean -fd --quiet; then
+            log_message "ERROR" "放棄本地更改失敗！"; echo -e "${RED}錯誤：放棄本地更改失敗！${RESET}"; cd "$original_dir"; return 1
+        fi
     else
-         echo -e "${GREEN}本地無未追蹤或未提交更改。${RESET}"
-    fi
-    # --- 本地修改檢查結束 ---
-
-    # --- 如果需要，執行 reset ---
-    if [ "$needs_reset" = true ]; then
-        echo -e "${YELLOW}正在放棄本地更改 ('git reset --hard HEAD' & 'git clean -fd')...${RESET}"
-        # 放棄已追蹤檔案的修改
-        if ! git reset --hard HEAD --quiet; then
-             log_message "ERROR" "'git reset --hard' 失敗！"; echo -e "${RED}錯誤：放棄已追蹤檔案的更改失敗！${RESET}"; cd "$original_dir"; return 1
-        fi
-        # 清理未追蹤的檔案和目錄 (-f 強制, -d 清理目錄)
-        if ! git clean -fd --quiet; then
-             log_message "ERROR" "'git clean -fd' 失敗！"; echo -e "${RED}錯誤：清理未追蹤檔案失敗！${RESET}"; cd "$original_dir"; return 1
-        fi
-        echo -e "${GREEN}本地更改已放棄並清理。${RESET}"
+         echo -e "${GREEN}本地無未提交更改。${RESET}"
     fi
 
-    # --- 獲取遠端資訊 ---
-    echo -e "${YELLOW}正在從遠端倉庫獲取最新資訊 (git fetch)...${RESET}"
+    echo -e "${YELLOW}正在從遠端倉庫獲取最新資訊...${RESET}"
     if ! git fetch --quiet; then
         log_message "ERROR" "'git fetch' 失敗。"; echo -e "${RED}錯誤：無法獲取遠端更新！${RESET}"; cd "$original_dir"; return 1
     fi
-    log_message "INFO" "'git fetch' 成功。"
 
-    # --- 比較版本 ---
-    local local_commit=$(git rev-parse @ 2>/dev/null)
-    local remote_commit=$(git rev-parse @{u} 2>/dev/null)
-    local base_commit=$(git merge-base @ @{u} 2>/dev/null)
-
-    if [ -z "$local_commit" ] || [ -z "$remote_commit" ] || [ -z "$base_commit" ]; then
-         log_message "ERROR" "無法獲取 Git commit 信息。"; echo -e "${RED}錯誤：無法比較版本。請檢查上游分支。${RESET}"; cd "$original_dir"; return 1
-    fi
-
-    # --- 判斷狀態並執行更新 (如果需要) ---
-    local update_performed=false
-    local update_message="" # 用於最後統一顯示
+    local local_commit=$(git rev-parse @)
+    local remote_commit=$(git rev-parse @{u})
+    local base_commit=$(git merge-base @ @{u})
 
     if [ "$local_commit" = "$remote_commit" ]; then
-        log_message "INFO" "腳本已是最新版本。"
-        update_message="${GREEN}腳本已是最新版本。無需更新。${RESET}"
-    elif [ "$local_commit" = "$base_commit" ]; then
-        # 本地落後，執行更新
-        log_message "INFO" "檢測到新版本。"
-        echo -e "${YELLOW}檢測到新版本！${RESET}"
-        read -r -p "是否立即拉取更新 (git pull)？ (y/n): " confirm_update
-        if [[ "$confirm_update" =~ ^[Yy]$ ]]; then
-            echo -e "${YELLOW}正在從遠端拉取更新 (git pull)...${RESET}"
-            if git pull --quiet --ff-only || git pull --quiet; then
-                log_message "SUCCESS" "Git pull 成功。"
-                update_message="${GREEN}更新成功！${RESET}"
-                update_performed=true
-            else
-                log_message "ERROR" "'git pull' 失敗。"; update_message="${RED}錯誤：'git pull' 失敗！請手動檢查。${RESET}"; cd "$original_dir"; return 1
-            fi
-        else
-            log_message "INFO" "使用者取消更新。"
-            update_message="${YELLOW}已取消更新。${RESET}"
-        fi
-    elif [ "$remote_commit" = "$base_commit" ]; then
-        log_message "WARNING", "本地分支領先遠端。"
-        update_message="${YELLOW}本地版本比遠端更新。無需更新。${RESET}"
-    else
-        log_message "WARNING", "本地和遠端分支已分叉。"
-        update_message="${RED}錯誤：本地和遠端分支已分叉！無法自動更新。請手動解決。${RESET}"; cd "$original_dir"; return 1
+        echo -e "${GREEN}腳本已是最新版本。無需更新。${RESET}"
+        cd "$original_dir"; read -p "按 Enter 返回..."
+        return 0
+    elif [ "$local_commit" != "$base_commit" ]; then
+        echo -e "${RED}錯誤：本地和遠端分支已分叉或本地領先！無法自動更新。${RESET}"
+        log_message "WARNING" "本地和遠端分支已分叉或本地領先，無法自動更新。"
+        cd "$original_dir"; read -p "按 Enter 返回..."
+        return 1
     fi
 
-    # --- 重新設定權限 ---
-    echo -e "${YELLOW}正在確保腳本執行權限...${RESET}"
-    local chmod_success=true
-    if [ -f "$SCRIPT_INSTALL_PATH" ]; then if ! chmod +x "$SCRIPT_INSTALL_PATH"; then chmod_success=false; fi; else chmod_success=false; log_message "WARNING" "主腳本 '$SCRIPT_INSTALL_PATH' 不存在。"; fi
-    if [ -f "$PYTHON_ENRICHER_SCRIPT_PATH" ]; then if ! chmod +x "$PYTHON_ENRICHER_SCRIPT_PATH"; then chmod_success=false; fi; fi
-    if [ -f "$PYTHON_ESTIMATOR_SCRIPT_PATH" ]; then if ! chmod +x "$PYTHON_ESTIMATOR_SCRIPT_PATH"; then chmod_success=false; fi; fi
-    if [ -f "$PYTHON_SYNC_HELPER_SCRIPT_PATH" ]; then if ! chmod +x "$PYTHON_SYNC_HELPER_SCRIPT_PATH"; then chmod_success=false; fi; fi # <<< 新增
-    if [ "$chmod_success" = true ]; then echo -e "${GREEN}腳本執行權限已設定。${RESET}"; else echo -e "${RED}錯誤：設定部分或全部腳本權限失敗！${RESET}"; fi
+    echo -e "${YELLOW}檢測到新版本！${RESET}"
+    read -r -p "是否立即拉取更新 (git pull)？ (y/n): " confirm_update
+    if [[ ! "$confirm_update" =~ ^[Yy]$ ]]; then
+        log_message "INFO" "使用者取消更新。"
+        echo -e "${YELLOW}已取消更新。${RESET}"; cd "$original_dir"; read -p "按 Enter 返回..."
+        return 0
+    fi
 
-    # --- 顯示最終結果 ---
-    echo -e "$update_message" # 顯示更新結果
-    if [ "$update_performed" = true ]; then echo -e "${CYAN}建議重新啟動腳本以應用所有更改。${RESET}"; fi
+    echo -e "${YELLOW}正在從遠端拉取更新 (git pull)...${RESET}"
+    if ! git pull --quiet; then
+        log_message "ERROR" "'git pull' 失敗。"; echo -e "${RED}錯誤：'git pull' 失敗！請手動檢查。${RESET}"; cd "$original_dir"; return 1
+    fi
+    log_message "SUCCESS" "Git pull 成功，準備測試新版本。"
+    echo -e "${GREEN}更新檔案下載完成。${RESET}"
+    
+    # --- 【新增】更新後的自我測試與還原邏輯 ---
+    echo -e "${CYAN}正在測試新版本腳本是否能正常啟動...${RESET}"
+    # 測試1：檢查 Bash 語法錯誤
+    if ! bash -n "$SCRIPT_INSTALL_PATH"; then
+        log_message "ERROR" "新版本語法檢查失敗！正在自動還原。"
+        echo -e "${RED}測試失敗：新版本存在語法錯誤！${RESET}"
+    # 測試2：執行健康檢查模式
+    elif ! bash "$SCRIPT_INSTALL_PATH" --health-check &>/dev/null; then
+        log_message "ERROR" "新版本健康檢查失敗！正在自動還原。"
+        echo -e "${RED}測試失敗：新版本無法通過健康檢查！${RESET}"
+    else
+        # 所有測試都通過
+        log_message "SUCCESS" "新版本測試通過，更新完成。"
+        echo -e "${GREEN}新版本測試通過！更新成功！${RESET}"
+        echo -e "${CYAN}正在重新設定腳本權限...${RESET}"
+        chmod +x "$SCRIPT_INSTALL_PATH" "$PYTHON_ESTIMATOR_SCRIPT_PATH" "$PYTHON_SYNC_HELPER_SCRIPT_PATH" 2>/dev/null
+        echo -e "${CYAN}建議重新啟動腳本以應用所有更改。${RESET}"
+        cd "$original_dir"; read -p "按 Enter 返回..."
+        return 0
+    fi
+    
+    # --- 如果任何測試失敗，執行還原 ---
+    echo -e "${YELLOW}正在自動還原到更新前的穩定版本...${RESET}"
+    # ORIG_HEAD 是 Git 在 pull/merge/reset 等危險操作前記錄的 HEAD 位置
+    if git reset --hard ORIG_HEAD --quiet; then
+        log_message "SUCCESS" "成功還原到舊版本 (commit: $(git rev-parse --short ORIG_HEAD))"
+        echo -e "${GREEN}還原成功！您目前仍在使用更新前的穩定版本。${RESET}"
+        echo -e "${YELLOW}請通知開發者檢查最新的更新。${RESET}"
+    else
+        log_message "CRITICAL" "自動還原失敗！倉庫可能處於不穩定狀態！"
+        echo -e "${RED}${BOLD}致命錯誤：自動還原失敗！請手動檢查 Git 倉庫狀態！${RESET}"
+    fi
+    # --- 還原邏輯結束 ---
 
-    # 切換回原始目錄
     cd "$original_dir"
-    # <<< 移除所有中間的 read -p，只保留函數末尾這個 >>>
-    read -p "按 Enter 返回工具選單..."
-    return 0 # 返回成功（即使沒有更新也算成功完成檢查）
+    read -p "按 Enter 返回..."
+    return 1 # 返回失敗狀態，表示更新未成功完成
 }
 
 ############################################
