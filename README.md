@@ -52,4 +52,4 @@ git clone https://github.com/adeend-co/media-processor-updates.git
 
 這意味著您可以自由分享與修改本專案，但必須**標示原作者 (BY)**、**禁止用於任何商業目的 (NC)**，並且衍生的新專案必須以**相同方式分享 (SA)**。
 
-有關完整的法律條文，請參閱專案根目錄下的 [LICENSE](LICENSE) 檔案。
+有關完整的法律條文，請參閱專案根目錄下的 [LICENSE](LICENSE.md) 檔案。
