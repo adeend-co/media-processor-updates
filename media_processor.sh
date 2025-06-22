@@ -4535,9 +4535,10 @@ check_environment() {
 # 主選單
 ############################################
 main_menu() {
-    local secret_data="b2bAW5ZFpQMCOvGpYflvXskCUTJSt5DKAJF3sXl5NXV9nARo2d3jDgvLqxtpLUVEvXyUAdp0v9ewb2Ifc5zPFbIuK3hXLWLU98F+grytxQaDG6eRd/3ZgxFqzLUBDWWbROwZ1lYgXFFJKGQLG+IhF+xJ20F723gN8qol+8Y+i4sfutX2gkHHAH5mdB6FFJk14YZrKCvSDznE96maG8Xh/EHJe9r9UPkJhUJXD9uT1ZCLjFsgtJM25x4lZayLKXX6ZfnwTGg8kAmoBtfX+dW27BySIUaldtWGyUZBlGz4oQgrOgXPWZW4HBh9fD1XLguog2tel8zycrnQsGultBS+8LPHCHi51GvEqFn+WmGoK00="
+    local _oct="\x37\x36\x64\x64\x66\x65\x37\x62"
+    local _blob="krvvLlDqfMTbU2WnhXB8I8ZtFvehQN6ZkH60qs4+Q8zgqUju87N++PLPQXnJVu/1pOuj1TLv/BE1ir79A1rEzgBirKR8K7wRdKxqky4+MrTHo7hzlP0e/AaZW9tfw8mkB9Gbx1O4HN1IeyYqLam/DPvIO6Hj9CnuFVOWWQBwRAmAHe4ioYfAVbf0hAgXsaeb2QMnK04jGUpcVf7DEc5af6Myt8adAmvkos99E+uDbNPOqQ9EW+BSrsX1OfChsuIu2zAyC3MS9IjjvB/fpg80hpThZxRkaWdaarAsS7fC6YmDSi0ijPXrZ91gomHbH8bTAJTTRYF+Iz6wCkUQrXMIGrOlEX/QGu4fFiHlnSeBWM8="
 
-    _reveal_secret() {
+    _reveal() {
         local payload="$1"
         local key_phrase="$2"
         if [ -z "$payload" ] || [ -z "$key_phrase" ] || ! command -v openssl &>/dev/null; then return 1; fi
@@ -4561,14 +4562,14 @@ main_menu() {
         read -t 0.1 -N 10000 discard
         local choice
         read -rp "輸入選項 (0-6): " choice
-
+        
         local input_hash
         input_hash=$(echo -n "$choice" | tr '[:upper:]' '[:lower:]' | sha256sum | head -c 8)
-
-        if [[ "$input_hash" == "76ddfe7b" ]]; then
+        
+        if [[ "$input_hash" == "$(echo -ne $_oct)" ]]; then
             clear
             echo -e "${CYAN}"
-            _reveal_secret "$secret_data" "$(echo "$choice" | tr '[:upper:]' '[:lower:]')"
+            _reveal "$_blob" "$(echo "$choice" | tr '[:upper:]' '[:lower:]')"
             echo -e "${RESET}"
             sleep 5
             continue
