@@ -32,3 +32,16 @@ git clone https://github.com/adeend-co/media-processor-updates.git
     ```
     ./media_processor.sh
     ```
+
+
+## 授權條款 (License)
+
+本專案依據下述創用 CC 授權條款進行發布：
+
+[![創用 CC 授權條款](https://i.creativecommons.org/l/by-nc-sa/4.0/88x31.png)](http://creativecommons.org/licenses/by-nc-sa/4.0/)
+
+**CC BY-NC-SA 4.0**
+
+這意味著您可以自由分享與修改本作品，但必須**標示原作者 (BY)**、**禁止用於商業目的 (NC)**，並且必須以**相同方式分享 (SA)**。
+
+詳細法律條文請參閱專案中的 [LICENSE](LICENSE) 檔案。
