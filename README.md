@@ -1,5 +1,4 @@
-# media-processor-updates
-整合式影音處理平台（IAVPP）
+# 整合式影音處理平台（IAVPP）
 
 腳本下載流程：
 -
