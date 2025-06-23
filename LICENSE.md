@@ -447,6 +447,6 @@ International License.
 You may not use the Work except in compliance with the License.
 You may obtain a copy of the License at
 
-    http://creativecommons.org/licenses/by-nc-sa/4.0/
+    https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode.en
 
 A copy of the full license text is included in this repository.
