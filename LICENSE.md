@@ -438,7 +438,7 @@ Creative Commons may be contacted at creativecommons.org.
 
 ------------------------------------------------------------------------
 
-Copyright (c) 2025 adeend-co
+Copyright © 2025 adeend-co
 
 The work "media-processor-updates" (hereinafter "the Work"), as a whole,
 is licensed under the Creative Commons Attribution-NonCommercial-ShareAlike 4.0
