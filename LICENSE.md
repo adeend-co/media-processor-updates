@@ -435,3 +435,18 @@ the avoidance of doubt, this paragraph does not form part of the
 public licenses.
 
 Creative Commons may be contacted at creativecommons.org.
+
+------------------------------------------------------------------------
+
+Copyright (c) 2025 adeend-co
+
+The work "media-processor-updates" (hereinafter "the Work"), as a whole,
+is licensed under the Creative Commons Attribution-NonCommercial-ShareAlike 4.0
+International License.
+
+You may not use the Work except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://creativecommons.org/licenses/by-nc-sa/4.0/
+
+A copy of the full license text is included in this repository.
