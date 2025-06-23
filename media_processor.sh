@@ -48,7 +48,7 @@ SCRIPT_VERSION="v2.5.5.3" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
-SCRIPT_UPDATE_DATE="2025-06-21" # 請根據實際情況修改此日期
+SCRIPT_UPDATE_DATE="2025-06-23" # 請根據實際情況修改此日期
 ############################################
 
 # ... 其他設定 ...
@@ -193,20 +193,15 @@ log_message() {
 }
 
 ############################################
-# 儲存設定檔 (包含所有設定，包括同步和日誌級別)
+# 儲存設定檔 (包含所有設定)
+# 版本：V2.1 - 新增更新渠道選項
 ############################################
 save_config() {
-    # 嘗試記錄一個 INFO 級別的日誌，如果 log_message 此時可用
-    # 如果在 load_config 完全完成前調用（例如首次創建設定檔），log_message 可能還不能完全工作
     if command -v log_message &> /dev/null && [ -n "$LOG_FILE" ]; then
         log_message "INFO" "準備儲存目前設定到 $CONFIG_FILE ..."
     else
         echo "[$(date "+%Y-%m-%d %H:%M:%S")] [INFO] (Pre-log) 準備儲存目前設定到 $CONFIG_FILE ..."
     fi
-
-    # 使用 > 覆蓋檔案，然後用 >> 追加。確保每個 echo 命令都成功。
-    # 為了增強健壯性，可以將所有 echo 命令包裹在一個 if 條件中，
-    # 但這裡為了清晰，保持每個命令後用 && 連接。
 
     # 開始寫入設定檔，首先是文件頭註解
     echo "# --- Configuration File for Media Processor ---" > "$CONFIG_FILE" && \
@@ -219,6 +214,8 @@ save_config() {
     echo "DOWNLOAD_PATH=\"${DOWNLOAD_PATH:-$HOME/Downloads}\"" >> "$CONFIG_FILE" && \
     echo "COLOR_ENABLED=\"${COLOR_ENABLED:-true}\"" >> "$CONFIG_FILE" && \
     echo "PYTHON_CONVERTER_VERSION=\"${PYTHON_CONVERTER_VERSION:-1.0.0}\"" >> "$CONFIG_FILE" && \
+    # <<< 新增：儲存更新渠道 >>>
+    echo "UPDATE_CHANNEL=\"${UPDATE_CHANNEL:-stable}\"" >> "$CONFIG_FILE" && \
     echo "" >> "$CONFIG_FILE" && \
 
     # --- 終端日誌級別顯示設定 ---
@@ -242,19 +239,15 @@ save_config() {
     echo "SYNC_SSH_KEY_PATH_NEW_PHONE=\"${SYNC_SSH_KEY_PATH_NEW_PHONE:-}\"" >> "$CONFIG_FILE" && \
     echo "SYNC_VIDEO_EXTENSIONS=\"${SYNC_VIDEO_EXTENSIONS:-}\"" >> "$CONFIG_FILE" && \
     echo "SYNC_PHOTO_EXTENSIONS=\"${SYNC_PHOTO_EXTENSIONS:-}\"" >> "$CONFIG_FILE" && \
-    # --- 新增 ---
     echo "SYNC_PROGRESS_STYLE=\"${SYNC_PROGRESS_STYLE:-default}\"" >> "$CONFIG_FILE" && \
     echo "SYNC_BWLIMIT=\"${SYNC_BWLIMIT:-0}\"" >> "$CONFIG_FILE"
-    # 注意：最後一個 echo 後面不需要 && 或 ;
 
-    # 檢查上一個 echo 命令（即寫入 SYNC_PHOTO_EXTENSIONS）是否成功
     if [ $? -eq 0 ]; then
         if command -v log_message &> /dev/null && [ -n "$LOG_FILE" ]; then
             log_message "INFO" "設定已成功儲存到 $CONFIG_FILE"
         else
             echo "[$(date "+%Y-%m-%d %H:%M:%S")] [INFO] (Pre-log) 設定已成功儲存到 $CONFIG_FILE"
         fi
-        # echo -e "${GREEN}設定已儲存。${RESET}" # 可選的即時反饋
     else
         if command -v log_message &> /dev/null && [ -n "$LOG_FILE" ]; then
             log_message "ERROR" "無法寫入設定檔 $CONFIG_FILE！最後一個 echo 失敗。"
@@ -262,7 +255,6 @@ save_config() {
             echo "[$(date "+%Y-%m-%d %H:%M:%S")] [ERROR] (Pre-log) 無法寫入設定檔 $CONFIG_FILE！最後一個 echo 失敗。" >&2
         fi
         echo -e "${RED}錯誤：無法儲存完整設定到 $CONFIG_FILE！請檢查權限和磁碟空間。${RESET}" >&2
-        # sleep 2 # 讓用戶看到錯誤
     fi
 }
 
@@ -335,7 +327,7 @@ _send_termux_notification() {
 
 ################################################################################
 # 載入設定檔 (包含所有設定，並提供預設值)
-# 版本：V3.2 - 新增同步功能選項 (進度條樣式, 頻寬限制)
+# 版本：V3.3 - 新增更新渠道選項 (stable/beta)
 ################################################################################
 load_config() {
     # --- 為所有可配置變數設定初始預設值 ---
@@ -347,6 +339,8 @@ load_config() {
     DOWNLOAD_PATH="${DOWNLOAD_PATH:-${default_dl_path_platform_base}}"
     COLOR_ENABLED="${COLOR_ENABLED:-true}"
     PYTHON_CONVERTER_VERSION="${PYTHON_CONVERTER_VERSION:-1.0.0}"
+    # <<< 新增：更新渠道的預設值 >>>
+    UPDATE_CHANNEL="${UPDATE_CHANNEL:-stable}" # 預設為穩定渠道
 
     # 終端日誌級別顯示預設值
     TERMINAL_LOG_SHOW_INFO="${TERMINAL_LOG_SHOW_INFO:-true}"
@@ -365,7 +359,6 @@ load_config() {
     SYNC_SSH_KEY_PATH_NEW_PHONE="${SYNC_SSH_KEY_PATH_NEW_PHONE:-}"
     SYNC_VIDEO_EXTENSIONS="${SYNC_VIDEO_EXTENSIONS:-mp4,mov,mkv,webm,avi,flv,wmv}"
     SYNC_PHOTO_EXTENSIONS="${SYNC_PHOTO_EXTENSIONS:-jpg,jpeg,png,heic,gif,webp,bmp,tif,tiff,raw,dng}"
-    # --- 【優化】新增同步選項的預設值 ---
     SYNC_PROGRESS_STYLE="${SYNC_PROGRESS_STYLE:-default}" # 'default' 或 'total'
     SYNC_BWLIMIT="${SYNC_BWLIMIT:-0}" # 0 為不限制
 
@@ -374,6 +367,7 @@ load_config() {
     local initial_dl_path="$DOWNLOAD_PATH"
     local initial_color="$COLOR_ENABLED"
     local initial_py_ver="$PYTHON_CONVERTER_VERSION"
+    local initial_update_channel="$UPDATE_CHANNEL" # <<< 新增
     local initial_show_info="$TERMINAL_LOG_SHOW_INFO"
     local initial_show_warning="$TERMINAL_LOG_SHOW_WARNING"
     local initial_show_error="$TERMINAL_LOG_SHOW_ERROR"
@@ -388,7 +382,6 @@ load_config() {
     local initial_sync_ssh_key_path="$SYNC_SSH_KEY_PATH_NEW_PHONE"
     local initial_sync_video_extensions="$SYNC_VIDEO_EXTENSIONS"
     local initial_sync_photo_extensions="$SYNC_PHOTO_EXTENSIONS"
-    # --- 【優化】記錄新增選項的初始值 ---
     local initial_sync_progress_style="$SYNC_PROGRESS_STYLE"
     local initial_sync_bwlimit="$SYNC_BWLIMIT"
 
@@ -408,7 +401,6 @@ load_config() {
                 continue
             fi
             
-            # 正則表達式匹配 VAR="VALUE"，能處理值中包含轉義引號 \" 的情況
             if [[ "$line" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]+)[[:space:]]*=[[:space:]]*\"(([^\"\\]|\\.)*)\"[[:space:]]*$ ]]; then
                 var_name="${BASH_REMATCH[1]}"
                 var_value="${BASH_REMATCH[2]}"
@@ -427,25 +419,15 @@ load_config() {
                             THREADS="$initial_threads"
                         fi
                         ;;
-                    "DOWNLOAD_PATH")
-                        DOWNLOAD_PATH="$var_value"
-                        ;;
+                    "DOWNLOAD_PATH") DOWNLOAD_PATH="$var_value" ;;
                     "COLOR_ENABLED")
-                        if [[ "$var_value" == "true" || "$var_value" == "false" ]]; then
-                            COLOR_ENABLED="$var_value"
-                        else
-                            COLOR_ENABLED="$initial_color"
-                            echo "載入設定警告: COLOR_ENABLED ('$var_value') 無效，使用預設 '$initial_color'。" >&2
-                        fi
-                        ;;
+                        if [[ "$var_value" == "true" || "$var_value" == "false" ]]; then COLOR_ENABLED="$var_value"; else COLOR_ENABLED="$initial_color"; echo "載入設定警告: COLOR_ENABLED ('$var_value') 無效，使用預設 '$initial_color'。" >&2; fi ;;
                     "PYTHON_CONVERTER_VERSION")
-                        if [ -n "$var_value" ]; then
-                            PYTHON_CONVERTER_VERSION="$var_value"
-                        else
-                            PYTHON_CONVERTER_VERSION="$initial_py_ver"
-                            echo "載入設定提示: PYTHON_CONVERTER_VERSION 為空，使用預設 '$initial_py_ver'。" >&2
-                        fi
-                        ;;
+                        if [ -n "$var_value" ]; then PYTHON_CONVERTER_VERSION="$var_value"; else PYTHON_CONVERTER_VERSION="$initial_py_ver"; echo "載入設定提示: PYTHON_CONVERTER_VERSION 為空，使用預設 '$initial_py_ver'。" >&2; fi ;;
+                    # <<< 新增：處理 UPDATE_CHANNEL >>>
+                    "UPDATE_CHANNEL")
+                        if [[ "$var_value" == "stable" || "$var_value" == "beta" ]]; then UPDATE_CHANNEL="$var_value"; else UPDATE_CHANNEL="$initial_update_channel"; echo "載入設定警告: UPDATE_CHANNEL ('$var_value') 無效，使用預設 '$initial_update_channel'。" >&2; fi ;;
+                        
                     "TERMINAL_LOG_SHOW_INFO") if [[ "$var_value" == "true" || "$var_value" == "false" ]]; then TERMINAL_LOG_SHOW_INFO="$var_value"; else TERMINAL_LOG_SHOW_INFO="$initial_show_info"; fi ;;
                     "TERMINAL_LOG_SHOW_WARNING") if [[ "$var_value" == "true" || "$var_value" == "false" ]]; then TERMINAL_LOG_SHOW_WARNING="$var_value"; else TERMINAL_LOG_SHOW_WARNING="$initial_show_warning"; fi ;;
                     "TERMINAL_LOG_SHOW_ERROR") if [[ "$var_value" == "true" || "$var_value" == "false" ]]; then TERMINAL_LOG_SHOW_ERROR="$var_value"; else TERMINAL_LOG_SHOW_ERROR="$initial_show_error"; fi ;;
@@ -462,29 +444,13 @@ load_config() {
                     "SYNC_VIDEO_EXTENSIONS") SYNC_VIDEO_EXTENSIONS="$var_value" ;;
                     "SYNC_PHOTO_EXTENSIONS") SYNC_PHOTO_EXTENSIONS="$var_value" ;;
                     
-                    # --- 【優化】新增同步選項的處理 ---
                     "SYNC_PROGRESS_STYLE")
-                        if [[ "$var_value" == "default" || "$var_value" == "total" ]]; then
-                            SYNC_PROGRESS_STYLE="$var_value"
-                        else
-                            # 如果值無效，回退到此函數開始時的預設值
-                            SYNC_PROGRESS_STYLE="$initial_sync_progress_style"
-                            echo "載入設定警告: SYNC_PROGRESS_STYLE ('$var_value') 無效，使用預設 '$initial_sync_progress_style'。" >&2
-                        fi
-                        ;;
+                        if [[ "$var_value" == "default" || "$var_value" == "total" ]]; then SYNC_PROGRESS_STYLE="$var_value"; else SYNC_PROGRESS_STYLE="$initial_sync_progress_style"; echo "載入設定警告: SYNC_PROGRESS_STYLE ('$var_value') 無效，使用預設 '$initial_sync_progress_style'。" >&2; fi ;;
                     "SYNC_BWLIMIT")
-                        if [[ "$var_value" =~ ^[0-9]+$ ]]; then
-                            SYNC_BWLIMIT="$var_value"
-                        else
-                            # 如果值無效，回退到此函數開始時的預設值
-                            SYNC_BWLIMIT="$initial_sync_bwlimit"
-                            echo "載入設定警告: SYNC_BWLIMIT ('$var_value') 非有效數字，使用預設 '$initial_sync_bwlimit'。" >&2
-                        fi
-                        ;;
+                        if [[ "$var_value" =~ ^[0-9]+$ ]]; then SYNC_BWLIMIT="$var_value"; else SYNC_BWLIMIT="$initial_sync_bwlimit"; echo "載入設定警告: SYNC_BWLIMIT ('$var_value') 非有效數字，使用預設 '$initial_sync_bwlimit'。" >&2; fi ;;
                         
                     *)
-                        # 忽略未知的變數，可以選擇性地發出提示
-                        # echo "載入設定提示: 未知變數 '$var_name' 在設定檔中第 $line_num 行，已忽略。" >&2
+                        # 忽略未知變數
                         ;;
                 esac
             else
@@ -502,12 +468,11 @@ load_config() {
         sleep 1
     fi
 
-    # --- 完成 DOWNLOAD_PATH 的處理與驗證 ---
+    # --- 完成 DOWNLOAD_PATH 的處理與驗證 (此段邏輯不變) ---
     local sanitized_dl_path_final=""
     if [ -n "$DOWNLOAD_PATH" ]; then
         sanitized_dl_path_final=$(realpath -m "$DOWNLOAD_PATH" 2>/dev/null | sed 's/[;|&<>()$`{}]//g')
     fi
-
     if [ -z "$sanitized_dl_path_final" ]; then
         echo -e "${RED:-}警告：設定的下載路徑 '$DOWNLOAD_PATH' 解析失敗或無效！${RESET:-}" >&2
         DOWNLOAD_PATH="$HOME/media_processor_safe_downloads"
@@ -519,14 +484,10 @@ load_config() {
     else
         DOWNLOAD_PATH="$sanitized_dl_path_final"
     fi
-
-    # 安全性檢查：確保最終的 DOWNLOAD_PATH 在允許的操作範圍內
     if ! [[ "$DOWNLOAD_PATH" =~ ^(/storage/emulated/0|/sdcard|$HOME|/data/data/com.termux/files/home) ]]; then
         echo -e "${RED:-}安全性錯誤：最終下載路徑 '$DOWNLOAD_PATH' 不在允許的安全操作範圍內！腳本無法啟動。${RESET:-}" >&2
         exit 1
     fi
-
-    # 確保最終的下載目錄存在且可寫
     if ! mkdir -p "$DOWNLOAD_PATH" 2>/dev/null; then
         echo -e "${RED:-}錯誤：無法創建最終下載目錄 '$DOWNLOAD_PATH'！請檢查權限。腳本無法啟動。${RESET:-}" >&2
         exit 1
@@ -542,9 +503,10 @@ load_config() {
         log_message "INFO" "load_config: 日誌檔案將寫入: '$LOG_FILE'"
         log_message "DEBUG" "load_config: THREADS='$THREADS'"
         log_message "DEBUG" "load_config: COLOR_ENABLED='$COLOR_ENABLED'"
-        # --- 【優化】記錄新增選項的載入後值 ---
         log_message "DEBUG" "load_config: SYNC_PROGRESS_STYLE='$SYNC_PROGRESS_STYLE'"
         log_message "DEBUG" "load_config: SYNC_BWLIMIT='$SYNC_BWLIMIT' KB/s"
+        # <<< 新增：記錄更新渠道的載入後值 >>>
+        log_message "DEBUG" "load_config: UPDATE_CHANNEL='$UPDATE_CHANNEL'"
     else
         echo "提示: log_message 函數未定義，部分設定載入訊息將不會寫入日誌。" >&2
     fi
@@ -705,12 +667,12 @@ spinner() {
 }
 
 ######################################################################
-# 腳本自我更新函數 (v3.4 - 修正輸出格式)
+# 腳本自我更新函數 (v4.1 - 多渠道更新 + 權限修正)
 ######################################################################
 auto_update_script() {
     clear
-    echo -e "${CYAN}--- 使用 Git 檢查腳本更新 (安全模式 v3.4) ---${RESET}"
-    log_message "INFO" "使用者觸發 Git 腳本更新檢查。"
+    echo -e "${CYAN}--- 使用 Git 檢查腳本更新 (渠道模式 v4.1) ---${RESET}"
+    log_message "INFO" "使用者觸發 Git 腳本更新檢查 (當前渠道: ${UPDATE_CHANNEL:-stable})。"
 
     if ! command -v git &> /dev/null; then
         log_message "ERROR" "未找到 'git' 命令。"; echo -e "${RED}錯誤：找不到 'git' 命令！${RESET}"; return 1
@@ -727,6 +689,24 @@ auto_update_script() {
     if ! cd "$repo_dir"; then
         log_message "ERROR" "無法切換到倉庫目錄 '$repo_dir'"; echo -e "${RED}錯誤：無法進入倉庫目錄！${RESET}"; return 1;
     fi
+
+    # <<< 新增：自動修正檔案權限追蹤設定 (核心解決方案) >>>
+    local core_filemode_setting
+    core_filemode_setting=$(git config --local --get core.filemode)
+    if [[ "$core_filemode_setting" != "false" ]]; then
+        echo -e "${YELLOW}偵測到 Git 可能在追蹤檔案權限變化，正在自動修正設定...${RESET}"
+        log_message "INFO" "Git core.filemode is not 'false' (current: '$core_filemode_setting'), attempting to set it."
+        if git config --local core.filemode false; then
+            echo -e "${GREEN}  > 設定成功！Git 將不再因權限變化而提示修改。${RESET}"
+            log_message "SUCCESS" "Successfully set core.filemode to false for this repository."
+            sleep 2
+        else
+            echo -e "${RED}  > 警告：自動設定 core.filemode 失敗！${RESET}"
+            log_message "WARNING" "Failed to set core.filemode to false."
+            sleep 2
+        fi
+    fi
+    # <<< 修正結束 >>>
 
     echo -e "${YELLOW}檢查本地是否有未提交的更改...${RESET}"
     if [ -n "$(git status --porcelain)" ]; then
@@ -746,144 +726,123 @@ auto_update_script() {
     fi
 
     echo -e "${YELLOW}正在從遠端倉庫獲取最新資訊...${RESET}"
-    if ! git fetch --quiet; then
+    if ! git fetch --all --tags --quiet; then
         log_message "ERROR" "'git fetch' 失敗。"; echo -e "${RED}錯誤：無法獲取遠端更新！${RESET}"; cd "$original_dir"; return 1
     fi
 
-    local local_commit=$(git rev-parse @)
-    local remote_commit=$(git rev-parse @{u})
-    local base_commit=$(git merge-base @ @{u})
+    local current_commit_hash=$(git rev-parse @)
+    local restore_point_hash="$current_commit_hash" # 記錄還原點
+    local target_commit_hash=""
+    local target_version_name=""
 
-    if [ "$local_commit" = "$remote_commit" ]; then
-        echo -e "${GREEN}腳本已是最新版本。無需更新。${RESET}"
+    if [[ "${UPDATE_CHANNEL:-stable}" == "beta" ]]; then
+        echo -e "${YELLOW}當前為 [預覽版 Beta] 渠道，檢查 main 分支最新提交...${RESET}"
+        target_commit_hash=$(git rev-parse @{u})
+        target_version_name="main 分支最新版 (${target_commit_hash:0:7})"
+    else # 預設或明確設定為 stable
+        echo -e "${YELLOW}當前為 [穩定版 Stable] 渠道，檢查最新正式發布...${RESET}"
+        if ! command -v curl &> /dev/null || ! command -v jq &> /dev/null; then
+            echo -e "${RED}錯誤：檢查穩定版更新需要 'curl' 和 'jq' 工具！${RESET}"; log_message "ERROR" "檢查穩定版更新失敗，缺少 curl 或 jq。"; cd "$original_dir"; return 1
+        fi
+        
+        local github_repo_owner="adeend-co"; local github_repo_name="media-processor-updates"
+        local api_url="https://api.github.com/repos/${github_repo_owner}/${github_repo_name}/releases/latest"
+        
+        echo -e "${YELLOW}正在從 GitHub API 獲取最新穩定版資訊...${RESET}"
+        local latest_release_json; latest_release_json=$(curl -sL "$api_url")
+        
+        if [[ "$(echo "$latest_release_json" | jq -r '.message // ""')" == "Not Found" ]]; then
+             echo -e "${RED}錯誤：無法從 GitHub API 獲取發布資訊！${RESET}"; log_message "ERROR" "GitHub API 請求失敗。"; cd "$original_dir"; return 1
+        fi
+        target_version_name=$(echo "$latest_release_json" | jq -r '.tag_name // empty')
+        
+        if [ -z "$target_version_name" ]; then echo -e "${RED}錯誤：無法解析最新穩定版的標籤名稱！${RESET}"; log_message "ERROR" "無法從 API 回應中解析 .tag_name"; cd "$original_dir"; return 1; fi
+        target_commit_hash=$(git rev-parse "$target_version_name^{commit}" 2>/dev/null)
+        if [ -z "$target_commit_hash" ]; then echo -e "${RED}錯誤：無法將標籤 '$target_version_name' 解析為一個有效的提交！${RESET}"; log_message "ERROR" "無法解析標籤 '$target_version_name' 的 commit hash"; cd "$original_dir"; return 1; fi
+    fi
+
+    echo -e "${CYAN}目前版本: ${current_commit_hash:0:7}${RESET}"
+    echo -e "${CYAN}目標版本: $target_version_name (${target_commit_hash:0:7})${RESET}"
+
+    if [ "$current_commit_hash" == "$target_commit_hash" ]; then
+        echo -e "${GREEN}您的腳本已是 '${UPDATE_CHANNEL:-stable}' 渠道的最新版本。無需更新。${RESET}"
         cd "$original_dir"; read -p "按 Enter 返回..."
         return 0
-    elif [ "$local_commit" != "$base_commit" ]; then
-        echo -e "${RED}錯誤：本地和遠端分支已分叉或本地領先！無法自動更新。${RESET}"
-        log_message "WARNING" "本地和遠端分支已分叉或本地領先，無法自動更新。"
-        cd "$original_dir"; read -p "按 Enter 返回..."
-        return 1
     fi
 
     echo -e "${YELLOW}檢測到新版本！${RESET}"
-    read -r -p "是否立即拉取更新 (git pull)？ (y/n): " confirm_update
+    read -r -p "是否立即更新到版本 '$target_version_name'？ (y/n): " confirm_update
     if [[ ! "$confirm_update" =~ ^[Yy]$ ]]; then
-        log_message "INFO" "使用者取消更新。"
-        echo -e "${YELLOW}已取消更新。${RESET}"; cd "$original_dir"; read -p "按 Enter 返回..."
-        return 0
+        log_message "INFO" "使用者取消更新。"; echo -e "${YELLOW}已取消更新。${RESET}"; cd "$original_dir"; read -p "按 Enter 返回..."; return 0
     fi
 
-    echo -e "${YELLOW}正在從遠端拉取更新 (git pull)...${RESET}"
-    if ! git pull --quiet; then
-        log_message "ERROR" "'git pull' 失敗。"; echo -e "${RED}錯誤：'git pull' 失敗！請手動檢查。${RESET}"; cd "$original_dir"; return 1
+    echo -e "${YELLOW}正在將腳本重設到目標版本 (${target_commit_hash:0:7})...${RESET}"
+    if ! git reset --hard "$target_commit_hash" --quiet; then
+        log_message "ERROR" "'git reset --hard' 失敗。"; echo -e "${RED}錯誤：更新失敗！請手動檢查。${RESET}"; cd "$original_dir"; return 1
     fi
-    log_message "SUCCESS" "Git pull 成功，準備測試新版本。"
-    echo -e "${GREEN}更新檔案下載完成。${RESET}"
+    log_message "SUCCESS" "成功重設到目標版本 $target_version_name ($target_commit_hash)"
+    echo -e "${GREEN}版本切換完成。${RESET}"
 
-    # --- 更新後的自我測試與還原邏輯 ---
-
-    # 步驟 1: 設定新版本腳本的執行權限
-    echo -e "${CYAN}正在設定新版本腳本的執行權限...${RESET}"
-    local chmod_success=true
-    local scripts_to_chmod=("$SCRIPT_INSTALL_PATH" "$PYTHON_ESTIMATOR_SCRIPT_PATH" "$PYTHON_SYNC_HELPER_SCRIPT_PATH")
-    for script_path in "${scripts_to_chmod[@]}"; do
-        if [ -f "$script_path" ]; then
-            if ! chmod +x "$script_path"; then chmod_success=false; log_message "ERROR" "設定 '$script_path' 權限失敗！"; fi
-        elif [[ "$script_path" == "$SCRIPT_INSTALL_PATH" ]]; then
-            chmod_success=false; log_message "CRITICAL" "主腳本 '$script_path' 不存在！";
-        else
-            log_message "WARNING" "輔助腳本 '$script_path' 不存在，跳過權限設定。"
+    # <<< 新增：更新成功後，主動確保核心腳本的可執行權限 >>>
+    echo -e "${CYAN}正在校驗核心腳本權限...${RESET}"
+    local chmod_success_flag=true
+    local scripts_to_validate=("$SCRIPT_INSTALL_PATH" "$PYTHON_ESTIMATOR_SCRIPT_PATH" "$PYTHON_SYNC_HELPER_SCRIPT_PATH")
+    for script_to_validate in "${scripts_to_validate[@]}"; do
+        if [ -f "$script_to_validate" ]; then
+            if ! chmod +x "$script_to_validate"; then
+                log_message "WARNING" "校驗權限時，無法為 '$script_to_validate' 設定執行權限。"
+                chmod_success_flag=false
+            fi
         fi
     done
-
-    if ! $chmod_success; then
-        echo -e "${RED}設定腳本權限失敗，無法繼續測試。${RESET}"
-        goto_restore=true
+    if ! $chmod_success_flag; then echo -e "${YELLOW}警告：一個或多個腳本的權限校驗失敗。${RESET}"; fi
+    # <<< 校驗結束 >>>
+    
+    # --- 後續的自我測試與還原邏輯 (使用 restore_point_hash) ---
+    local goto_restore=false
+    echo -e "${CYAN}正在測試新版本腳本...${RESET}"
+    echo -n "  - 測試1：語法檢查 (bash -n)... "
+    local syntax_check_output; syntax_check_output=$(bash -n "$SCRIPT_INSTALL_PATH" 2>&1)
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}失敗！${RESET}"; log_message "ERROR" "新版本語法檢查失敗！正在自動還原。"; goto_restore=true
     else
-        echo -e "${GREEN}權限設定完成。${RESET}"
-        goto_restore=false
+        echo -e "${GREEN}通過。${RESET}"
     fi
-
-    # 步驟 2: 開始測試
+    
     local health_check_error_output=""
     if ! $goto_restore; then
-        echo -e "${CYAN}正在測試新版本腳本...${RESET}"
-
-        # 測試1：語法檢查
-        echo -n "  - 測試1：語法檢查 (bash -n)... "
-        local syntax_check_output
-        syntax_check_output=$(bash -n "$SCRIPT_INSTALL_PATH" 2>&1)
-        local syntax_check_status=$?
-
-        if [ $syntax_check_status -ne 0 ]; then
-            # ★★★ 核心修正 ★★★
-            # 先輸出「失敗！」，完成當前行，然後再在新行輸出詳細日誌
-            echo -e "${RED}失敗！${RESET}"
-            log_message "ERROR" "新版本語法檢查失敗！正在自動還原。"
-            health_check_error_output="$syntax_check_output"
-            goto_restore=true
-        else
-            echo -e "${GREEN}通過。${RESET}"
-        fi
-    fi
-
-    # 測試 2: 執行健康檢查模式
-    if ! $goto_restore; then
         echo -n "  - 測試2：啟動健康檢查 (--health-check)... "
-        local health_check_output
-        health_check_output=$(timeout 15s bash "$SCRIPT_INSTALL_PATH" --health-check < /dev/null 2>&1)
+        local health_check_output; health_check_output=$(timeout 15s bash "$SCRIPT_INSTALL_PATH" --health-check < /dev/null 2>&1)
         local health_check_status=$?
-
         if [ $health_check_status -eq 124 ]; then
-            # ★★★ 核心修正 ★★★
-            echo -e "${RED}失敗 (超時)！${RESET}"
-            log_message "ERROR" "新版本健康檢查超時 (超過15秒)！正在自動還原。"
-            health_check_error_output="健康檢查執行超時，腳本可能卡在某處。"
-            goto_restore=true
+            echo -e "${RED}失敗 (超時)！${RESET}"; log_message "ERROR" "新版本健康檢查超時！正在自動還原。"; health_check_error_output="健康檢查執行超時"; goto_restore=true
         elif [ $health_check_status -ne 0 ]; then
-            # ★★★ 核心修正 ★★★
-            echo -e "${RED}失敗 (錯誤碼: $health_check_status)！${RESET}"
-            log_message "ERROR" "新版本健康檢查失敗 (狀態碼: $health_check_status)！正在自動還原。"
-            health_check_error_output+="\n$health_check_output"
-            goto_restore=true
+            echo -e "${RED}失敗 (錯誤碼: $health_check_status)！${RESET}"; log_message "ERROR" "新版本健康檢查失敗 (狀態碼: $health_check_status)！正在自動還原。"; health_check_error_output="$health_check_output"; goto_restore=true
         else
             echo -e "${GREEN}通過。${RESET}"
         fi
     fi
 
-    # 根據測試結果決定流程
     if ! $goto_restore; then
         log_message "SUCCESS" "新版本測試通過，更新完成。"
         echo -e "${GREEN}新版本測試通過！更新成功！${RESET}"
-        echo -e "${CYAN}建議重新啟動腳本以應用所有更改。${RESET}"
-        cd "$original_dir"; read -p "按 Enter 返回..."
-        return 0
+        echo -e "${CYAN}建議重新啟動腳本以應用所有更改。${RESET}"; cd "$original_dir"; read -p "按 Enter 返回..."; return 0
     fi
 
-    # --- 如果任何測試失敗，執行還原 ---
     echo -e "\n${RED}----------------- 更新失敗 -----------------${RESET}"
-    echo -e "${RED}新版本腳本未能通過自動化測試。${RESET}"
-    if [ -n "$health_check_error_output" ]; then
-        echo -e "${YELLOW}偵測到的錯誤訊息如下：${RESET}"
-        echo -e "${PURPLE}--------------------------------------------"
-        printf "%b\n" "$health_check_error_output"
-        echo -e "--------------------------------------------${RESET}"
-    fi
-
-    echo -e "\n${YELLOW}正在自動還原到更新前的穩定版本...${RESET}"
-    if git reset --hard ORIG_HEAD --quiet; then
+    echo -e "${RED}新版本腳本未能通過自動化測試。正在自動還原到更新前的穩定版本...${RESET}"
+    if [ -n "$health_check_error_output" ]; then echo -e "${YELLOW}偵測到的錯誤訊息：\n${PURPLE}$health_check_error_output${RESET}"; fi
+    
+    if git reset --hard "$restore_point_hash" --quiet; then
         chmod +x "$SCRIPT_INSTALL_PATH" 2>/dev/null
-        log_message "SUCCESS" "成功還原到舊版本 (commit: $(git rev-parse --short ORIG_HEAD))"
+        log_message "SUCCESS" "成功還原到舊版本 (commit: ${restore_point_hash:0:7})"
         echo -e "${GREEN}還原成功！您目前仍在使用更新前的穩定版本。${RESET}"
-        echo -e "${YELLOW}請將上述錯誤訊息回報給開發者。${RESET}"
     else
         log_message "CRITICAL" "自動還原失敗！倉庫可能處於不穩定狀態！"
         echo -e "${RED}${BOLD}致命錯誤：自動還原失敗！請手動檢查 Git 倉庫狀態！${RESET}"
     fi
 
-    cd "$original_dir"
-    read -p "按 Enter 返回..."
-    return 1
+    cd "$original_dir"; read -p "按 Enter 返回..."; return 1
 }
 
 ############################################
@@ -3805,7 +3764,7 @@ general_download_menu() {
 ############################################
 
 ############################################
-# <<< 修改：腳本設定與工具選單 (加入同步設定和Termux完整更新選項) >>>
+# 腳本設定與工具選單 (v2.1 - 新增更新渠道選項)
 ############################################
 utilities_menu() {
     while true; do
@@ -3817,86 +3776,88 @@ utilities_menu() {
         echo -e " 3. ${BOLD}檢查並更新依賴套件${RESET} (腳本自身依賴)"
         echo -e " 4. ${BOLD}檢查腳本更新${RESET}"
         echo -e " 5. ${BOLD}設定日誌終端顯示級別${RESET}"
-        # <<< 新增同步功能設定選項 >>>
         echo -e " 6. ${BOLD}同步功能設定${RESET} (新手機 -> 舊手機)"
+        # <<< 新增：更新渠道設定 >>>
+        echo -e " 7. ${BOLD}設定更新渠道${RESET} (當前: ${GREEN}${UPDATE_CHANNEL:-stable}${RESET})"
 
-        local termux_options_start_index=7 # Termux 特定選項的起始編號 (因為前面加了同步設定)
-        local current_max_option=6 # 非 Termux 時的最大選項號 (不計0)
+        local termux_options_start_index=8
+        local current_max_option=7
 
         if [[ "$OS_TYPE" == "termux" ]]; then
             echo -e " ${termux_options_start_index}. ${BOLD}設定 Termux 啟動時詢問${RESET}"
             echo -e " $((termux_options_start_index + 1)). ${BOLD}完整更新 Termux 環境${RESET} (pkg update && upgrade)"
-            current_max_option=$((termux_options_start_index + 1)) # Termux 時的最大選項號
+            current_max_option=$((termux_options_start_index + 1))
         fi
         echo -e "---------------------------------------------"
         echo -e " 0. ${YELLOW}返回主選單${RESET}"
         echo -e "---------------------------------------------"
 
-        read -t 0.1 -N 10000 discard # 清除緩衝區
-
+        read -t 0.1 -N 10000 discard
         local choice_prompt="輸入選項 (0-${current_max_option}): "
         local choice
-
         read -rp "$choice_prompt" choice
 
         case $choice in
-            1)
-                config_menu
-                # config_menu 內部處理返回
+            1) config_menu ;;
+            2) view_log ;;
+            3) update_dependencies ;;
+            4) auto_update_script ;;
+            5) configure_terminal_log_display_menu ;;
+            6) configure_sync_settings_menu ;;
+            # <<< 新增 Case >>>
+            7)
+                clear
+                echo -e "${CYAN}--- 設定更新渠道 ---${RESET}"
+                echo -e "選擇您希望接收的更新類型：\n"
+                echo -e " 1. ${GREEN}stable (穩定版)${RESET}: 只接收官方標記的正式發布，最穩定，推薦普通使用者。"
+                echo -e " 2. ${YELLOW}beta (預覽版)${RESET}:   接收開發分支的最新程式碼，功能最新，但可能不穩定，適合進階使用者或測試者。"
+                echo -e "\n 0. ${CYAN}取消${RESET}"
+                
+                local channel_choice
+                read -p "請選擇 (當前為: ${UPDATE_CHANNEL:-stable}): " channel_choice
+                
+                case $channel_choice in
+                    1) 
+                        UPDATE_CHANNEL="stable"
+                        echo -e "${GREEN}更新渠道已設定為 [穩定版 Stable]。${RESET}"
+                        log_message "INFO" "更新渠道已設定為 [stable]。"
+                        save_config
+                        ;;
+                    2)
+                        UPDATE_CHANNEL="beta"
+                        echo -e "${YELLOW}更新渠道已設定為 [預覽版 Beta]。${RESET}"
+                        log_message "INFO" "更新渠道已設定為 [beta]。"
+                        save_config
+                        ;;
+                    0) echo -e "${CYAN}已取消設定。${RESET}" ;;
+                    *) echo -e "${RED}無效選項。${RESET}" ;;
+                esac
+                sleep 2
                 ;;
-            2)
-                view_log
-                # view_log 使用 less，退出後自動返回
-                ;;
-            3)
-                update_dependencies # 更新腳本的依賴 (yt-dlp, ffmpeg 等)
-                # update_dependencies 內部有 "按 Enter 返回"
-                ;;
-            4)
-                auto_update_script # 腳本自我更新
-                # auto_update_script 內部有 "按 Enter 返回"
-                ;;
-            5)
-                configure_terminal_log_display_menu # 跳轉到日誌級別設定子選單
-                # configure_terminal_log_display_menu 內部處理返回
-                ;;
-            6) # <<< 新增 Case，處理同步功能設定 >>>
-                configure_sync_settings_menu # 跳轉到同步功能設定子選單
-                # configure_sync_settings_menu 內部處理返回
-                ;;
-            7) # Termux 啟動詢問 (如果存在)
+            # <<< Termux 選項編號順延 >>>
+            8) 
                 if [[ "$OS_TYPE" == "termux" ]]; then
                     setup_termux_autostart
                     echo ""; read -p "按 Enter 返回工具選單..."
                 else
-                    # 如果不是 Termux，但用戶可能錯誤輸入了這個數字
-                    echo -e "${RED}無效選項 '$choice' (非 Termux 環境或選項不存在)${RESET}"; sleep 1
+                    echo -e "${RED}無效選項 '$choice'${RESET}"; sleep 1
                 fi
                 ;;
-            8) # Termux 完整更新 (如果存在)
+            9) 
                 if [[ "$OS_TYPE" == "termux" ]]; then
                     clear
                     echo -e "${CYAN}--- 完整更新 Termux 環境 ---${RESET}"
                     echo -e "${YELLOW}此操作將執行 'pkg update -y && pkg upgrade -y'。${RESET}"
-                    echo -e "${YELLOW}這會更新您 Termux 環境中所有已安裝的套件，可能需要一些時間。${RESET}"
-                    echo -e "${RED}${BOLD}請確保您的網路連線穩定。${RESET}"
-                    echo ""
-                    local confirm_full_termux_update # 使用不同變數名以示區分
                     read -p "您確定要繼續嗎？ (y/n): " confirm_full_termux_update
-
                     if [[ "$confirm_full_termux_update" =~ ^[Yy]$ ]]; then
                         log_message "INFO" "使用者觸發 Termux 環境完整更新。"
-                        echo -e "\n${CYAN}正在開始更新 Termux 環境... 這可能需要幾分鐘或更長時間。${RESET}"
-                        echo -e "${CYAN}請耐心等待，不要中斷此過程。${RESET}"
-                        
+                        echo -e "\n${CYAN}正在開始更新 Termux 環境...${RESET}"
                         if pkg update -y && pkg upgrade -y; then
                             log_message "SUCCESS" "Termux 環境已成功更新。"
                             echo -e "\n${GREEN}Termux 環境已成功更新完畢！${RESET}"
                         else
                             log_message "ERROR" "Termux 環境更新過程中發生錯誤。"
                             echo -e "\n${RED}Termux 環境更新過程中發生錯誤。${RESET}"
-                            echo -e "${RED}請檢查上面的輸出訊息以了解詳情。${RESET}"
-                            echo -e "${YELLOW}您可能需要手動執行 'pkg update' 和 'pkg upgrade' 來解決問題。${RESET}"
                         fi
                     else
                         log_message "INFO" "使用者取消了 Termux 環境完整更新。"
@@ -3904,20 +3865,12 @@ utilities_menu() {
                     fi
                     echo ""; read -p "按 Enter 返回工具選單..."
                 else
-                    echo -e "${RED}無效選項 '$choice' (非 Termux 環境或選項不存在)${RESET}"; sleep 1
+                    echo -e "${RED}無效選項 '$choice'${RESET}"; sleep 1
                 fi
                 ;;
-            0)
-                return # 返回到主選單
-                ;;
+            0) return ;;
             *)
-                if [[ -z "$choice" ]]; then
-                    continue # 如果是空輸入，重新顯示選單
-                else
-                    echo -e "${RED}無效選項 '$choice'${RESET}"
-                    log_message "WARNING" "工具選單輸入無效選項: $choice"
-                    sleep 1
-                fi
+                if [[ -z "$choice" ]]; then continue; else echo -e "${RED}無效選項 '$choice'${RESET}"; log_message "WARNING" "工具選單輸入無效選項: $choice"; sleep 1; fi
                 ;;
         esac
     done
