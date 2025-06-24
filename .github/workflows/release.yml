@@ -21,38 +21,49 @@ jobs:
           gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
           passphrase: ${{ secrets.GPG_PASSPHRASE }}
 
-      - name: Sign the Script Template
-        id: sign_script
-        run: |
-          # 建立一個臨時的、標準化換行符的模板副本
-          # 使用 sed 's/\r$//' 強制移除所有可能存在的 CR 字元 (\r)
-          sed 's/\r$//' media_processor.sh > standardized_template.sh
-          
-          # 對這個標準化後的模板進行簽署
-          gpg --detach-sign --armor -u ${{ secrets.GPG_SIGNING_KEY_ID }} standardized_template.sh
-          
-          # 將簽章內容編碼並傳遞給下一步
-          SIGNATURE_B64=$(cat standardized_template.sh.asc | base64 -w 0)
-          echo "SIGNATURE_B64_VALUE=${SIGNATURE_B64}" >> $GITHUB_OUTPUT
-
-      - name: Prepare Final Release Script
+      # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+      # ★★★      核心修正：合併「準備」與「簽署」步驟      ★★★
+      # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+      - name: Prepare and Sign Release Script
         id: prepare_script
         run: |
-          cp media_processor.sh release_script.sh
-          PUBLIC_KEY_B64=$(gpg --armor --export ${{ secrets.GPG_SIGNING_KEY_ID }} | base64 -w 0)
+          # 1. 準備用於簽署的內容。
+          #    這一步的操作必須和 media_processor.sh 中的 verify_script_integrity 函式完全一致。
+          #    我們從原始模板中，移除所有將被動態替換的「整行」內容。
+          echo "Preparing data for signing..."
+          grep -Fv 'SCRIPT_VERSION="v' media_processor.sh | \
+          grep -Fv 'SCRIPT_UPDATE_DATE=' | \
+          grep -Fv 'OFFICIAL_SIGNATURE_B64="SIGNATURE_PLACEHOLDER"' | \
+          grep -Fv 'OFFICIAL_PUBLIC_KEY_B64="PUBLIC_KEY_PLACEHOLDER"' | \
+          sed 's/\r$//' > data_to_sign.sh
+
+          # 2. 對這個準備好的、純淨的內容產生數位簽章。
+          echo "Generating signature for the prepared data..."
+          gpg --detach-sign --armor -u ${{ secrets.GPG_SIGNING_KEY_ID }} data_to_sign.sh
+          SIGNATURE_B64=$(cat data_to_sign.sh.asc | base64 -w 0)
           
+          # 3. 準備最終要發布的腳本，從原始模板開始。
+          echo "Preparing the final release script..."
+          cp media_processor.sh release_script.sh
+          
+          # 4. 將所有動態值（版本、日期、公鑰、和剛剛產生的簽章）注入到最終腳本中。
+          PUBLIC_KEY_B64=$(gpg --armor --export ${{ secrets.GPG_SIGNING_KEY_ID }} | base64 -w 0)
           sed -i "s/^SCRIPT_VERSION=\".*\"/SCRIPT_VERSION=\"${{ github.ref_name }}\"/" release_script.sh
           sed -i "s/^SCRIPT_UPDATE_DATE=\".*\"/SCRIPT_UPDATE_DATE=\"$(date +%Y-%m-%d)\"/" release_script.sh
           sed -i "s@PUBLIC_KEY_PLACEHOLDER@${PUBLIC_KEY_B64}@" release_script.sh
-          sed -i "s@SIGNATURE_PLACEHOLDER@${{ steps.sign_script.outputs.SIGNATURE_B64_VALUE }}@" release_script.sh
+          sed -i "s@SIGNATURE_PLACEHOLDER@${SIGNATURE_B64}@" release_script.sh
           
+          # 5. 將最終腳本的路徑傳遞給下一步。
           echo "script_path=release_script.sh" >> $GITHUB_OUTPUT
+          echo "Final script prepared at release_script.sh"
 
       - name: Create Release Package
         run: |
+          # 將處理好的腳本重新命名，以便打包
           mv ${{ steps.prepare_script.outputs.script_path }} media_processor.sh
-          zip release.zip media_processor.sh estimate_size.py sync_helper.py LICENSE.md README.md
-      
+          # 將所有需要的檔案打包成 release.zip
+          zip release.zip media_processor.sh estimate_size.py sync_helper.py LICENSE README.md
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -62,4 +73,4 @@ jobs:
           body: |
             自動化發布版本 ${{ github.ref_name }}。
             此版本包含 GPG 數位簽章，可透過腳本內建的「腳本完整性驗證」功能進行驗證。
-          prerelease: false
+          prerelease: ${{ contains(github.ref, 'beta') || contains(github.ref, 'alpha') || contains(github.ref, 'rc') }}
