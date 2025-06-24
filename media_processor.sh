@@ -44,7 +44,7 @@
 ################################################################################
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.8.15" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.8.15-beta.1" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -4518,7 +4518,7 @@ check_environment() {
 }
 
 ############################################################
-# 腳本完整性自我驗證 (v3.1 - 行號模式，終極可靠版)
+# 腳本完整性自我驗證 (v4.0 - 固定區塊模式)
 ############################################################
 verify_script_integrity() {
     local script_to_verify="$1"
@@ -4533,31 +4533,14 @@ verify_script_integrity() {
         echo -e "${RED}[✗] 驗證失敗：找不到 gpg 或 base64 命令。${RESET}"; return 1;
     fi
 
-    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-    # ★★★      核心修正：使用行號進行過濾，避免特殊字元問題      ★★★
-    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-    local sig_line_content; sig_line_content=$(grep '^OFFICIAL_SIGNATURE_B64=' "$script_to_verify")
-    local key_line_content; key_line_content=$(grep '^OFFICIAL_PUBLIC_KEY_B64=' "$script_to_verify")
-    
-    local signature_b64; signature_b64=$(echo "$sig_line_content" | sed -n 's/.*"\(.*\)"/\1/p')
-    local public_key_b64; public_key_b64=$(echo "$key_line_content" | sed -n 's/.*"\(.*\)"/\1/p')
+    # 直接從目標檔案中提取簽章和公鑰的 Base64 值
+    local signature_b64; signature_b64=$(grep '^OFFICIAL_SIGNATURE_B64=' "$script_to_verify" | sed -n 's/.*"\(.*\)"/\1/p')
+    local public_key_b64; public_key_b64=$(grep '^OFFICIAL_PUBLIC_KEY_B64=' "$script_to_verify" | sed -n 's/.*"\(.*\)"/\1/p')
 
     if [[ "$signature_b64" == "SIGNATURE_PLACEHOLDER" || -z "$signature_b64" ]] || \
        [[ "$public_key_b64" == "PUBLIC_KEY_PLACEHOLDER" || -z "$public_key_b64" ]]; then
         echo -e "${YELLOW}[!] 驗證無法進行：此為開發中版本，無官方簽章。${RESET}"; return 1;
     fi
-
-    # 獲取需要排除的行的行號
-    local lines_to_delete
-    # 使用 grep -n 來獲取行號，然後用 cut 提取數字部分
-    # awk 也是一個好選擇，但 cut 更普遍
-    lines_to_delete=$(grep -n -E '^SCRIPT_VERSION=|^SCRIPT_UPDATE_DATE=|^OFFICIAL_SIGNATURE_B64=|^OFFICIAL_PUBLIC_KEY_B64=' "$script_to_verify" | cut -d: -f1)
-
-    # 構建 sed 刪除命令，例如 "10d;11d;14d;15d"
-    local sed_delete_cmd=""
-    for line_num in $lines_to_delete; do
-        sed_delete_cmd+="${line_num}d;"
-    done
 
     local temp_dir; temp_dir=$(mktemp -d)
     local temp_pubkey_file="$temp_dir/pubkey.asc"
@@ -4569,8 +4552,16 @@ verify_script_integrity() {
         echo -e "${RED}[✗] 驗證失敗：無法解碼內嵌簽章或公鑰。${RESET}"; rm -rf "$temp_dir"; return 1;
     fi
 
-    # 使用 sed 和行號命令來創建用於驗證的純淨檔案
-    sed "$sed_delete_cmd" "$script_to_verify" | sed 's/\r$//' > "$temp_data_file"
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+    # ★★★   核心修正：只提取並驗證固定不變的程式碼主體   ★★★
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+    # 找到 "main()" 函數的起始行號
+    local main_func_start_line; main_func_start_line=$(grep -n -m 1 "^main()" "$script_to_verify" | cut -d: -f1)
+    if [ -z "$main_func_start_line" ]; then
+        echo -e "${RED}[✗] 驗證失敗：找不到 'main()' 函數作為驗證錨點。${RESET}"; rm -rf "$temp_dir"; return 1;
+    fi
+    # 提取從檔案開頭到 main() 函數之前的所有行
+    head -n $((main_func_start_line - 1)) "$script_to_verify" | sed 's/\r$//' > "$temp_data_file"
 
     local gpg_output
     gpg_output=$(gpg --no-default-keyring --keyring "$temp_dir/keyring.gpg" --import "$temp_pubkey_file" 2>&1 && \
@@ -4579,9 +4570,8 @@ verify_script_integrity() {
     if echo "$gpg_output" | grep -q "Good signature"; then
         local signer; signer=$(echo "$gpg_output" | grep -oP "Good signature from \K.*")
         echo -e "${GREEN}[✓] 驗證通過！${RESET}"
-        echo "數位簽章有效，確認是由以下金鑰持有者簽署："
-        echo -e "${CYAN}${signer}${RESET}"
-        echo "證明您正在執行的是未經篡改的官方發布版本。"
+        echo "數位簽章有效，證明此腳本核心部分未經篡改。"
+        echo -e "簽署者: ${CYAN}${signer}${RESET}"
         rm -rf "$temp_dir"; return 0
     else
         echo -e "${RED}[✗] 驗證失敗！${RESET}"
@@ -4664,37 +4654,22 @@ main_menu() {
 ############################################
 
 ####################################################################
-# 主程式 (v6.1 - 標準化啟動引導模式 + 更新驗證支持)
+# 主程式 (v8.3 - 標準化啟動引導模式)
 ####################################################################
 main() {
     # --- 步驟 1：處理特殊啟動模式 ---
-    # 如果第一個參數是 --health-check，則直接成功退出
+    # 如果第一個參數是 --health-check，則直接成功退出，不做任何操作
+    # 這是為了讓腳本自我更新時的測試能夠正常通過
     if [[ "$1" == "--health-check" ]]; then
         exit 0
     fi
-    
-    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-    # ★★★      新增的程式碼區塊，用於支持更新驗證      ★★★
-    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-    # 讓腳本可以自我驗證 GPG 簽章並退出
-    if [[ "$1" == "--self-verify" ]]; then
-        # 暫時禁用顏色，避免干擾驗證結果的捕獲
-        COLOR_ENABLED=false
-        # 由於此模式下設定檔可能未載入，所以不調用 apply_color_settings
-        # 而是直接調用驗證函數，其內部輸出不依賴顏色變數
-        verify_script_integrity
-        # verify_script_integrity 函數的輸出將被父進程捕獲
-        exit 0
-    fi
-    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-    # ★★★               新增區塊結束               ★★★
-    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 
     # --- 步驟 2：核心變數初始化 ---
     # a. 執行平台偵測，獲取平台相關的預設路徑
     detect_platform_and_set_vars
 
     # b. 為工作變數賦予初始值
+    #    此處 DOWNLOAD_PATH 和 TEMP_DIR 的值來自 detect_platform_and_set_vars
     DOWNLOAD_PATH="$DOWNLOAD_PATH_DEFAULT"
     TEMP_DIR="$TEMP_DIR_DEFAULT"
 
@@ -4709,6 +4684,7 @@ main() {
     
     # f. 創建必要的目錄並檢查權限
     if ! mkdir -p "$DOWNLOAD_PATH" 2>/dev/null || ! mkdir -p "$TEMP_DIR" 2>/dev/null; then
+        # 在 log_message 可用前，使用原生 echo 輸出到 stderr
         echo -e "\033[0;31m嚴重錯誤：無法創建下載目錄或臨時目錄！請檢查權限。\033[0m" >&2
         echo -e "下載目錄: $DOWNLOAD_PATH" >&2
         echo -e "臨時目錄: $TEMP_DIR" >&2
@@ -4716,9 +4692,11 @@ main() {
     fi
 
     # --- 步驟 3：記錄日誌並進行環境驗證 ---
+    # 此時所有核心變數和日誌系統都已就緒
     log_message "INFO" "腳本啟動 (版本: $SCRIPT_VERSION, OS: $OS_TYPE, Config: $CONFIG_FILE)"
 
     if ! check_environment; then
+        # 如果環境檢查失敗，顯示詳細提示並引導用戶修復
         echo -e "\n${RED}##############################################${RESET}"
         echo -e "${RED}# ${BOLD}環境檢查發現問題！腳本可能無法正常運行。${RESET}${RED} #${RESET}"
         echo -e "${RED}##############################################${RESET}"
