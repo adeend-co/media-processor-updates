@@ -24,9 +24,7 @@ jobs:
       - name: Prepare Signature Data
         id: sig_data
         run: |
-          # ★★★ 修正點：使用您設定的 GPG_SIGNING_KEY_ID ★★★
           gpg --detach-sign --armor -u ${{ secrets.GPG_SIGNING_KEY_ID }} media_processor.sh
-          
           PUBLIC_KEY_B64=$(gpg --armor --export ${{ secrets.GPG_SIGNING_KEY_ID }} | base64 -w 0)
           SIGNATURE_B64=$(cat media_processor.sh.asc | base64 -w 0)
           
@@ -35,12 +33,23 @@ jobs:
 
       - name: Inject Signature into Script
         run: |
+          # 獲取 Tag 作為新版本號
+          NEW_VERSION=${{ github.ref_name }}
+          # 獲取當前日期
+          NEW_DATE=$(date +%Y-%m-%d)
+
           cp media_processor.sh release_media_processor.sh
+          # 動態更新版本號和日期
+          sed -i "s/^SCRIPT_VERSION=\".*\"/SCRIPT_VERSION=\"$NEW_VERSION\"/" release_media_processor.sh
+          sed -i "s/^SCRIPT_UPDATE_DATE=\".*\"/SCRIPT_UPDATE_DATE=\"$NEW_DATE\"/" release_media_processor.sh
+
+          # 注入簽章和公鑰
           sed -i "s@SIGNATURE_PLACEHOLDER@${{ steps.sig_data.outputs.SIGNATURE_B64_VALUE }}@" release_media_processor.sh
           sed -i "s@PUBLIC_KEY_PLACEHOLDER@${{ steps.sig_data.outputs.PUBLIC_KEY_B64_VALUE }}@" release_media_processor.sh
 
       - name: Create Release Package
         run: |
+          # 打包注入了簽章和新版本號的腳本
           zip release.zip release_media_processor.sh estimate_size.py sync_helper.py
 
       - name: Create GitHub Release
@@ -49,5 +58,8 @@ jobs:
           files: release.zip
           tag_name: ${{ github.ref_name }}
           name: Release ${{ github.ref_name }}
-          body: "自動化發布版本 ${{ github.ref_name }}。"
+          body: |
+            自動化發布版本 ${{ github.ref_name }}。
+            
+            此版本包含 GPG 數位簽章，可透過腳本內建的「腳本完整性驗證」功能進行驗證。
           prerelease: false
