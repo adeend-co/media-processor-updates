@@ -44,7 +44,7 @@
 ################################################################################
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.8.2" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.8.3" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -4452,7 +4452,7 @@ check_environment() {
 }
 
 ############################################
-# 腳本完整性自我驗證
+# 腳本完整性自我驗證（v2.0)
 ############################################
 verify_script_integrity() {
     clear
@@ -4484,15 +4484,22 @@ verify_script_integrity() {
     local temp_sig_file="$temp_dir/signature.asc"
     local temp_data_file="$temp_dir/data.sh"
 
+    # 將 Base64 編碼的公鑰和簽章解碼回原始的 Armor 格式
     echo "$OFFICIAL_PUBLIC_KEY_B64" | base64 -d > "$temp_pubkey_file"
     echo "$OFFICIAL_SIGNATURE_B64" | base64 -d > "$temp_sig_file"
 
-    grep -v "OFFICIAL_SIGNATURE_B64" "$this_script_path" > "$temp_data_file"
+    # ★★★ 核心修正 ★★★
+    # 準備被驗證的資料：即腳本本身，但精確地排除掉定義簽章的那一行。
+    # -F: 將模式視為固定字串，而不是正則表達式，防止特殊字元被解釋。
+    # -v: 反向選擇，即排除匹配的行。
+    grep -Fv "OFFICIAL_SIGNATURE_B64=\"$OFFICIAL_SIGNATURE_B64\"" "$this_script_path" > "$temp_data_file"
 
     local gpg_output
+    # 在一個隔離的臨時鑰匙圈中匯入公鑰並進行驗證
     gpg_output=$(gpg --no-default-keyring --keyring "$temp_dir/keyring.gpg" --import "$temp_pubkey_file" 2>&1 && \
                  gpg --no-default-keyring --keyring "$temp_dir/keyring.gpg" --verify "$temp_sig_file" "$temp_data_file" 2>&1)
 
+    # 根據 gpg 的輸出判斷結果
     if echo "$gpg_output" | grep -q "Good signature"; then
         local signer
         signer=$(echo "$gpg_output" | grep -oP "Good signature from \K.*")
@@ -4502,14 +4509,16 @@ verify_script_integrity() {
         echo "證明您正在執行的是未經篡改的官方發布版本。"
     else
         echo -e "${RED}[✗] 驗證失敗！${RESET}"
-        echo "此腳本的數位簽章無效或不存在。"
+        echo "此腳本的數位簽章無效或與內容不符。"
         echo "這可能意味著："
         echo "  - 腳本內容已被修改。"
         echo "  - 腳本並非來自官方發布管道。"
         echo -e "\n${YELLOW}GPG 原始輸出以供除錯：${RESET}"
-        echo "$gpg_output"
+        # 為了更清晰，只顯示 verify 步驟的輸出
+        echo "$gpg_output" | grep -A 5 "gpg: Signature made"
     fi
 
+    # 清理臨時檔案和目錄
     rm -rf "$temp_dir"
 
     read -p "按 Enter 返回..."
