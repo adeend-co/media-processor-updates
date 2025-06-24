@@ -24,24 +24,23 @@ jobs:
       - name: Prepare and Sign Release Script
         id: prepare_script
         run: |
-          # 1. 準備用於簽署的內容 (行號模式)
-          echo "Preparing data for signing using line number exclusion..."
-          # 獲取需要排除的行的行號
-          LINES_TO_DELETE=$(grep -n -E '^SCRIPT_VERSION=|^SCRIPT_UPDATE_DATE=|^OFFICIAL_SIGNATURE_B64=|^OFFICIAL_PUBLIC_KEY_B64=' media_processor.sh | cut -d: -f1)
-          # 構建 sed 刪除命令
-          SED_DELETE_CMD=""
-          for line_num in $LINES_TO_DELETE; do
-              SED_DELETE_CMD+="${line_num}d;"
-          done
-          # 使用 sed 刪除指定行來創建純淨內容
-          sed "$SED_DELETE_CMD" media_processor.sh | sed 's/\r$//' > data_to_sign.sh
+          # 1. 準備用於簽署的內容 (固定區塊模式)
+          echo "Preparing data for signing using fixed code block..."
+          # 找到 "main()" 函數的起始行號
+          MAIN_FUNC_START_LINE=$(grep -n -m 1 "^main()" media_processor.sh | cut -d: -f1)
+          if [ -z "$MAIN_FUNC_START_LINE" ]; then
+            echo "::error::Could not find main() anchor in script!"
+            exit 1
+          fi
+          # 提取從檔案開頭到 main() 函數之前的所有行作為簽署內容
+          head -n $((MAIN_FUNC_START_LINE - 1)) media_processor.sh | sed 's/\r$//' > data_to_sign.sh
 
           # 2. 對這個準備好的、純淨的內容產生數位簽章
           echo "Generating signature for the prepared data..."
           gpg --detach-sign --armor -u ${{ secrets.GPG_SIGNING_KEY_ID }} data_to_sign.sh
           SIGNATURE_B64=$(cat data_to_sign.sh.asc | base64 -w 0)
           
-          # 3. 準備最終要發布的腳本，從原始模板開始
+          # 3. 準備最終要發布的腳本
           echo "Preparing the final release script..."
           cp media_processor.sh release_script.sh
           
@@ -52,9 +51,7 @@ jobs:
           sed -i "s@PUBLIC_KEY_PLACEHOLDER@${PUBLIC_KEY_B64}@" release_script.sh
           sed -i "s@SIGNATURE_PLACEHOLDER@${SIGNATURE_B64}@" release_script.sh
           
-          # 5. 將最終腳本的路徑傳遞給下一步
           echo "script_path=release_script.sh" >> $GITHUB_OUTPUT
-          echo "Final script prepared at release_script.sh"
 
       - name: Create Release Package
         run: |
