@@ -50,7 +50,10 @@ SCRIPT_VERSION="v2.5.7" # <<< 版本號更新
 ############################################
 SCRIPT_UPDATE_DATE="2025-06-23" # 請根據實際情況修改此日期
 ############################################
-
+# --- 自動化簽章與驗證資料 ---
+# 這些佔位符將在 GitHub Actions 自動發布時被替換
+OFFICIAL_SIGNATURE_B64="SIGNATURE_PLACEHOLDER"
+OFFICIAL_PUBLIC_KEY_B64="PUBLIC_KEY_PLACEHOLDER"
 # ... 其他設定 ...
 TARGET_DATE="2025-07-11" # <<< 新增：設定您的目標日期
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
@@ -3715,7 +3718,7 @@ general_download_menu() {
 ############################################
 
 ############################################
-# 腳本設定與工具選單 (v2.1 - 新增更新渠道選項)
+# 腳本設定與工具選單 (v2.2 - 加入完整性驗證)
 ############################################
 utilities_menu() {
     while true; do
@@ -3724,27 +3727,30 @@ utilities_menu() {
         echo -e "${YELLOW}請選擇操作：${RESET}"
         echo -e " 1. 參數設定 (執行緒, 下載路徑, 顏色)"
         echo -e " 2. 檢視操作日誌"
-        echo -e " 3. ${BOLD}檢查並更新依賴套件${RESET} (腳本自身依賴)"
+        echo -e " 3. ${BOLD}檢查並更新依賴套件${RESET}"
         echo -e " 4. ${BOLD}檢查腳本更新${RESET}"
         echo -e " 5. ${BOLD}設定日誌終端顯示級別${RESET}"
-        echo -e " 6. ${BOLD}同步功能設定${RESET} (新手機 -> 舊手機)"
-        # <<< 新增：更新渠道設定 >>>
+        echo -e " 6. ${BOLD}同步功能設定${RESET}"
         echo -e " 7. ${BOLD}設定更新渠道${RESET} (當前: ${GREEN}${UPDATE_CHANNEL:-stable}${RESET})"
 
         local termux_options_start_index=8
-        local current_max_option=7
+        local verification_option_index=9 # 將驗證選項固定在 9
+        local current_max_option=$verification_option_index
+
+        echo -e " ${verification_option_index}. ${BOLD}腳本完整性驗證${RESET} (檢查是否為官方正版)"
 
         if [[ "$OS_TYPE" == "termux" ]]; then
             echo -e " ${termux_options_start_index}. ${BOLD}設定 Termux 啟動時詢問${RESET}"
-            echo -e " $((termux_options_start_index + 1)). ${BOLD}完整更新 Termux 環境${RESET} (pkg update && upgrade)"
-            current_max_option=$((termux_options_start_index + 1))
+            # Termux 的完整更新選項可以順延
+            echo -e " $((verification_option_index + 1)). ${BOLD}完整更新 Termux 環境${RESET}"
+            current_max_option=$((verification_option_index + 1))
         fi
         echo -e "---------------------------------------------"
         echo -e " 0. ${YELLOW}返回主選單${RESET}"
         echo -e "---------------------------------------------"
 
         read -t 0.1 -N 10000 discard
-        local choice_prompt="輸入選項 (0-${current_max_option}): "
+        local choice_prompt="輸入選項: "
         local choice
         read -rp "$choice_prompt" choice
 
@@ -3755,73 +3761,45 @@ utilities_menu() {
             4) auto_update_script ;;
             5) configure_terminal_log_display_menu ;;
             6) configure_sync_settings_menu ;;
-            # <<< 新增 Case >>>
             7)
                 clear
                 echo -e "${CYAN}--- 設定更新渠道 ---${RESET}"
                 echo -e "選擇您希望接收的更新類型：\n"
-                echo -e " 1. ${GREEN}stable (穩定版)${RESET}: 只接收官方標記的正式發布，最穩定，推薦普通使用者。"
-                echo -e " 2. ${YELLOW}beta (預覽版)${RESET}:   接收開發分支的最新程式碼，功能最新，但可能不穩定，適合進階使用者或測試者。"
+                echo -e " 1. ${GREEN}stable (穩定版)${RESET}: 只接收官方標記的正式發布，最穩定。"
+                echo -e " 2. ${YELLOW}beta (預覽版)${RESET}:   接收開發分支的最新程式碼，功能最新。"
                 echo -e "\n 0. ${CYAN}取消${RESET}"
-                
                 local channel_choice
                 read -p "請選擇 (當前為: ${UPDATE_CHANNEL:-stable}): " channel_choice
-                
                 case $channel_choice in
-                    1) 
-                        UPDATE_CHANNEL="stable"
-                        echo -e "${GREEN}更新渠道已設定為 [穩定版 Stable]。${RESET}"
-                        log_message "INFO" "更新渠道已設定為 [stable]。"
-                        save_config
-                        ;;
-                    2)
-                        UPDATE_CHANNEL="beta"
-                        echo -e "${YELLOW}更新渠道已設定為 [預覽版 Beta]。${RESET}"
-                        log_message "INFO" "更新渠道已設定為 [beta]。"
-                        save_config
-                        ;;
-                    0) echo -e "${CYAN}已取消設定。${RESET}" ;;
+                    1) UPDATE_CHANNEL="stable"; echo -e "${GREEN}更新渠道已設為 [穩定版]。${RESET}"; save_config ;;
+                    2) UPDATE_CHANNEL="beta"; echo -e "${YELLOW}更新渠道已設為 [預覽版]。${RESET}"; save_config ;;
+                    0) echo -e "${CYAN}已取消。${RESET}" ;;
                     *) echo -e "${RED}無效選項。${RESET}" ;;
                 esac
                 sleep 2
                 ;;
-            # <<< Termux 選項編號順延 >>>
             8) 
                 if [[ "$OS_TYPE" == "termux" ]]; then
                     setup_termux_autostart
-                    echo ""; read -p "按 Enter 返回工具選單..."
+                    echo ""; read -p "按 Enter 返回..."
                 else
                     echo -e "${RED}無效選項 '$choice'${RESET}"; sleep 1
                 fi
                 ;;
-            9) 
+            9) verify_script_integrity ;; # 觸發驗證函數
+            10) 
                 if [[ "$OS_TYPE" == "termux" ]]; then
                     clear
-                    echo -e "${CYAN}--- 完整更新 Termux 環境 ---${RESET}"
-                    echo -e "${YELLOW}此操作將執行 'pkg update -y && pkg upgrade -y'。${RESET}"
-                    read -p "您確定要繼續嗎？ (y/n): " confirm_full_termux_update
-                    if [[ "$confirm_full_termux_update" =~ ^[Yy]$ ]]; then
-                        log_message "INFO" "使用者觸發 Termux 環境完整更新。"
-                        echo -e "\n${CYAN}正在開始更新 Termux 環境...${RESET}"
-                        if pkg update -y && pkg upgrade -y; then
-                            log_message "SUCCESS" "Termux 環境已成功更新。"
-                            echo -e "\n${GREEN}Termux 環境已成功更新完畢！${RESET}"
-                        else
-                            log_message "ERROR" "Termux 環境更新過程中發生錯誤。"
-                            echo -e "\n${RED}Termux 環境更新過程中發生錯誤。${RESET}"
-                        fi
-                    else
-                        log_message "INFO" "使用者取消了 Termux 環境完整更新。"
-                        echo -e "\n${YELLOW}已取消 Termux 環境更新。${RESET}"
-                    fi
-                    echo ""; read -p "按 Enter 返回工具選單..."
+                    read -p "此操作將執行 'pkg update -y && pkg upgrade -y'，確定嗎？(y/n): " confirm
+                    if [[ "$confirm" =~ ^[Yy]$ ]]; then pkg update -y && pkg upgrade -y; fi
+                    echo ""; read -p "按 Enter 返回..."
                 else
                     echo -e "${RED}無效選項 '$choice'${RESET}"; sleep 1
                 fi
                 ;;
             0) return ;;
             *)
-                if [[ -z "$choice" ]]; then continue; else echo -e "${RED}無效選項 '$choice'${RESET}"; log_message "WARNING" "工具選單輸入無效選項: $choice"; sleep 1; fi
+                if [[ -z "$choice" ]]; then continue; else echo -e "${RED}無效選項 '$choice'${RESET}"; sleep 1; fi
                 ;;
         esac
     done
@@ -4433,6 +4411,70 @@ check_environment() {
     echo -e "${GREEN}環境檢查通過。${RESET}"
     sleep 1 # 短暫顯示成功信息
     return 0 # 返回成功狀態碼
+}
+
+############################################
+# 腳本完整性自我驗證
+############################################
+verify_script_integrity() {
+    clear
+    echo -e "${CYAN}--- 正在進行腳本完整性驗證 ---${RESET}"
+    echo "這將使用 GPG 數位簽章來驗證當前腳本的真偽與完整性。"
+    echo -e "${YELLOW}請稍候...${RESET}\n"
+    sleep 1
+
+    if ! command -v gpg &>/dev/null; then
+        echo -e "${RED}[✗] 驗證失敗：找不到 gpg 命令。${RESET}"
+        echo "請先安裝 'gnupg' 套件 (例如: pkg install gnupg)。"
+        read -p "按 Enter 返回..."
+        return 1
+    fi
+
+    if [[ "$OFFICIAL_SIGNATURE_B64" == "SIGNATURE_PLACEHOLDER" || "$OFFICIAL_PUBLIC_KEY_B64" == "PUBLIC_KEY_PLACEHOLDER" ]]; then
+        echo -e "${YELLOW}[!] 驗證無法進行：${RESET}"
+        echo "您執行的似乎是開發中的版本，尚未包含官方數位簽章。"
+        echo "請從 GitHub Releases 頁面下載正式發布的版本以進行驗證。"
+        read -p "按 Enter 返回..."
+        return 1
+    fi
+
+    local this_script_path
+    this_script_path="${BASH_SOURCE[0]}"
+    local temp_dir
+    temp_dir=$(mktemp -d)
+    local temp_pubkey_file="$temp_dir/pubkey.asc"
+    local temp_sig_file="$temp_dir/signature.asc"
+    local temp_data_file="$temp_dir/data.sh"
+
+    echo "$OFFICIAL_PUBLIC_KEY_B64" | base64 -d > "$temp_pubkey_file"
+    echo "$OFFICIAL_SIGNATURE_B64" | base64 -d > "$temp_sig_file"
+
+    grep -v "OFFICIAL_SIGNATURE_B64" "$this_script_path" > "$temp_data_file"
+
+    local gpg_output
+    gpg_output=$(gpg --no-default-keyring --keyring "$temp_dir/keyring.gpg" --import "$temp_pubkey_file" 2>&1 && \
+                 gpg --no-default-keyring --keyring "$temp_dir/keyring.gpg" --verify "$temp_sig_file" "$temp_data_file" 2>&1)
+
+    if echo "$gpg_output" | grep -q "Good signature"; then
+        local signer
+        signer=$(echo "$gpg_output" | grep -oP "Good signature from \K.*")
+        echo -e "${GREEN}[✓] 驗證通過！${RESET}"
+        echo "此腳本的數位簽章有效，確認是由以下金鑰持有者簽署："
+        echo -e "${CYAN}${signer}${RESET}"
+        echo "證明您正在執行的是未經篡改的官方發布版本。"
+    else
+        echo -e "${RED}[✗] 驗證失敗！${RESET}"
+        echo "此腳本的數位簽章無效或不存在。"
+        echo "這可能意味著："
+        echo "  - 腳本內容已被修改。"
+        echo "  - 腳本並非來自官方發布管道。"
+        echo -e "\n${YELLOW}GPG 原始輸出以供除錯：${RESET}"
+        echo "$gpg_output"
+    fi
+
+    rm -rf "$temp_dir"
+
+    read -p "按 Enter 返回..."
 }
 
 ############################################
