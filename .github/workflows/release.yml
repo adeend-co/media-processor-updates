@@ -1,4 +1,4 @@
-# .github/workflows/release.yml (v1.1 - 修正簽署順序)
+# .github/workflows/release.yml (v1.2 - 修正 ZIP 打包邏輯)
 name: Create and Sign Release
 
 on:
@@ -22,55 +22,40 @@ jobs:
           gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
           passphrase: ${{ secrets.GPG_PASSPHRASE }}
 
-      # ★★★ 步驟一：先對腳本進行所有必要的修改 ★★★
       - name: Prepare Release Version of Script
         id: prepare_script
         run: |
-          # 獲取 Tag 作為新版本號
           NEW_VERSION=${{ github.ref_name }}
-          # 獲取當前日期
           NEW_DATE=$(date +%Y-%m-%d)
-          
-          # 建立一個新的、準備發布的腳本檔案
           cp media_processor.sh release_media_processor.sh
-          
-          # 動態更新版本號和日期
           sed -i "s/^SCRIPT_VERSION=\".*\"/SCRIPT_VERSION=\"$NEW_VERSION\"/" release_media_processor.sh
           sed -i "s/^SCRIPT_UPDATE_DATE=\".*\"/SCRIPT_UPDATE_DATE=\"$NEW_DATE\"/" release_media_processor.sh
-          
-          # 將準備好的檔案路徑傳遞給下一步
           echo "script_path=release_media_processor.sh" >> $GITHUB_OUTPUT
 
-      # ★★★ 步驟二：對修改後的最終版本進行簽署 ★★★
       - name: Prepare Signature Data
         id: sig_data
         run: |
-          # 簽署的是上一步準備好的 release_media_processor.sh
           SCRIPT_TO_SIGN="${{ steps.prepare_script.outputs.script_path }}"
-
           gpg --detach-sign --armor -u ${{ secrets.GPG_SIGNING_KEY_ID }} "$SCRIPT_TO_SIGN"
-          
           PUBLIC_KEY_B64=$(gpg --armor --export ${{ secrets.GPG_SIGNING_KEY_ID }} | base64 -w 0)
           SIGNATURE_B64=$(cat ${SCRIPT_TO_SIGN}.asc | base64 -w 0)
-          
           echo "PUBLIC_KEY_B64_VALUE=$PUBLIC_KEY_B64" >> $GITHUB_OUTPUT
           echo "SIGNATURE_B64_VALUE=$SIGNATURE_B64" >> $GITHUB_OUTPUT
 
-      # ★★★ 步驟三：將簽章注入到已經修改過的腳本中 ★★★
       - name: Inject Signature into Script
         run: |
           SCRIPT_TO_INJECT="${{ steps.prepare_script.outputs.script_path }}"
-          
-          # 使用 sed 將佔位符替換為真實的 Base64 簽章和公鑰
           sed -i "s@SIGNATURE_PLACEHOLDER@${{ steps.sig_data.outputs.SIGNATURE_B64_VALUE }}@" "$SCRIPT_TO_INJECT"
           sed -i "s@PUBLIC_KEY_PLACEHOLDER@${{ steps.sig_data.outputs.PUBLIC_KEY_B64_VALUE }}@" "$SCRIPT_TO_INJECT"
 
+      # ★★★ 核心修正：簡化打包流程 ★★★
       - name: Create Release Package
         run: |
-          # 打包注入了所有內容的最終版腳本
-          zip release.zip ${{ steps.prepare_script.outputs.script_path }} estimate_size.py sync_helper.py
-          # 為了方便使用者，我們將注入後的腳本重命名回 media_processor.sh
-          cd $(dirname release.zip) && zip -u release.zip -j ${{ steps.prepare_script.outputs.script_path }} -x ${{ steps.prepare_script.outputs.script_path }} && mv ${{ steps.prepare_script.outputs.script_path }} media_processor.sh && zip -u release.zip media_processor.sh
+          # 1. 先將準備好的腳本重命名為最終發布的名稱
+          mv ${{ steps.prepare_script.outputs.script_path }} media_processor.sh
+          
+          # 2. 用一個簡單的 zip 命令直接打包所有需要的檔案
+          zip release.zip media_processor.sh estimate_size.py sync_helper.py
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
