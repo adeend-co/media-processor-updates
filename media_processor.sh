@@ -4507,25 +4507,23 @@ main_menu() {
 }
 ############################################
 
-
 ######################################################################
-# 新增：處理首次運行同意條款 (v2.1 - 優化版，使用全域顏色)
+# 新增：處理首次運行同意條款 (v2.2 - 修正顏色顯示)
 # Handles the first-run terms of service agreement.
 ######################################################################
 handle_first_run_agreement() {
     # 檢查 TERMS_AGREED 變數是否為 "true"
-    # 此變數應已由 load_config 載入
     if [[ "${TERMS_AGREED}" == "true" ]]; then
         log_message "DEBUG" "使用者已同意條款，跳過首次運行同意程序。"
         return 0
     fi
 
-    # 注意：此版本不再手動定義顏色，它依賴 main() 函數
-    # 在調用此函數前已先調用 apply_color_settings
     clear
-    # 使用 'less' 命令來分頁顯示長文本，並允許使用者滾動
-    # 使用 EOF (Here Document) 來包裹要顯示的長文本
-    less -R --mouse --wheel-lines=3 << EOF
+    
+    # ★★★ 核心修正 ★★★
+    # 使用 'echo -e' 命令並將其輸出通過管道傳遞給 'less -R'
+    # 這樣可以確保顏色代碼被正確解釋
+    echo -e "
 ${CYAN}=======================================================================${RESET}
              ${BOLD}整合式影音處理平台 (IAVPP)${RESET}
            ${YELLOW}使 用 同 意 事 項 書 (User Consent Agreement)${RESET}
@@ -4600,8 +4598,9 @@ ${WHITE}${BOLD}十一、其他${RESET}
 ${YELLOW}${BOLD}
 請使用方向鍵或滑鼠滾輪閱讀全文。閱讀完畢後，請按 'q' 鍵退出。
 ${RESET}
-EOF
+" | less -R --mouse --wheel-lines=3
 
+    # 後續同意邏輯不變
     echo ""
     echo -e "${YELLOW}${BOLD}您已閱讀完畢「使用同意事項書」。${RESET}"
 
@@ -4610,16 +4609,14 @@ EOF
         read -p "若您完全理解並同意上述所有條款，請輸入「agree」以繼續： " user_agreement
         
         if [[ "$(echo "$user_agreement" | tr '[:upper:]' '[:lower:]')" == "agree" ]]; then
-            # 設定全域變數，以便後續的 save_config 可以儲存它
             TERMS_AGREED="true" 
             
-            # 立即手動將標記附加到設定檔，以防 save_config 未被立即調用
             if ! mkdir -p "$(dirname "$CONFIG_FILE")"; then
                 echo -e "${RED}錯誤：無法創建設定檔目錄！請檢查權限。腳本無法繼續。${RESET}" >&2
                 exit 1
             fi
             echo "" >> "$CONFIG_FILE"
-            echo "# --- User Agreement Status (v2.1) ---" >> "$CONFIG_FILE"
+            echo "# --- User Agreement Status (v2.2) ---" >> "$CONFIG_FILE"
             echo "TERMS_AGREED=\"true\"" >> "$CONFIG_FILE"
 
             echo ""
