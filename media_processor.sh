@@ -49,7 +49,7 @@
 
 
 # 腳本設定
-SCRIPT_VERSION="v2.6.0-beta.1" # <<< 版本號更新
+SCRIPT_VERSION="v2.6.0-beta.2" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -4507,8 +4507,9 @@ main_menu() {
 }
 ############################################
 
+
 ######################################################################
-# 新增：處理首次運行同意條款 (v2.0 - 採用專業版同意書)
+# 新增：處理首次運行同意條款 (v2.1 - 優化版，使用全域顏色)
 # Handles the first-run terms of service agreement.
 ######################################################################
 handle_first_run_agreement() {
@@ -4519,37 +4520,35 @@ handle_first_run_agreement() {
         return 0
     fi
 
-    # 手動定義臨時顏色變數，以防顏色系統尚未初始化
-    local C_RED='\033[0;31m'; local C_YELLOW='\033[0;33m'; local C_CYAN='\033[0;36m'
-    local C_WHITE='\033[0;37m'; local C_BOLD='\033[1m'; local C_RESET='\033[0m'
-    local C_GREEN='\033[0;32m'
-
+    # 注意：此版本不再手動定義顏色，它依賴 main() 函數
+    # 在調用此函數前已先調用 apply_color_settings
     clear
-    # 使用 'less' 命令來分頁顯示長文本
+    # 使用 'less' 命令來分頁顯示長文本，並允許使用者滾動
+    # 使用 EOF (Here Document) 來包裹要顯示的長文本
     less -R --mouse --wheel-lines=3 << EOF
-${C_CYAN}=======================================================================${C_RESET}
-             ${C_BOLD}整合式影音處理平台 (IAVPP)${C_RESET}
-           ${C_YELLOW}使 用 同 意 事 項 書 (User Consent Agreement)${C_RESET}
-${C_CYAN}=======================================================================${C_RESET}
-${C_YELLOW}
+${CYAN}=======================================================================${RESET}
+             ${BOLD}整合式影音處理平台 (IAVPP)${RESET}
+           ${YELLOW}使 用 同 意 事 項 書 (User Consent Agreement)${RESET}
+${CYAN}=======================================================================${RESET}
+${YELLOW}
 使用者於下載、安裝、執行或以其他方式利用「整合式影音處理平台」
 (以下稱「本軟體」) 前，應審慎閱讀並完全同意本同意事項書之全部
 內容。倘使用者不同意全部或部分內容，應立即停止下載或使用本軟體。
-${C_RESET}
+${RESET}
 ---
 
-${C_WHITE}${C_BOLD}一、定義${C_RESET}
-1. ${C_BOLD}本軟體${C_RESET}：指由 adeend-co 發佈之「整合式影音處理平台」及其相關
+${WHITE}${BOLD}一、定義${RESET}
+1. ${BOLD}本軟體${RESET}：指由 adeend-co 發佈之「整合式影音處理平台」及其相關
    原始程式碼、文件、版本控制歷史及後續更新。
-2. ${C_BOLD}著作權人${C_RESET}：指本軟體之著作權所有人 adeend-co。
-3. ${C_BOLD}被授權人 / 使用者${C_RESET}：指任何下載、安裝、執行或以其他方式利用
+2. ${BOLD}著作權人${RESET}：指本軟體之著作權所有人 adeend-co。
+3. ${BOLD}被授權人 / 使用者${RESET}：指任何下載、安裝、執行或以其他方式利用
    本軟體之自然人或法人。
 
-${C_WHITE}${C_BOLD}二、同意與接受${C_RESET}
+${WHITE}${BOLD}二、同意與接受${RESET}
 使用者自下載、安裝或使用本軟體起，即表示已閱讀、瞭解並同意受
 本同意事項書及其後修訂版本之拘束。
 
-${C_WHITE}${C_BOLD}三、授權範圍${C_RESET}
+${WHITE}${BOLD}三、授權範圍${RESET}
 1. 本軟體依「創用 CC 姓名標示–非商業性–相同方式分享 4.0 國際」
    (CC BY-NC-SA 4.0) 授權條款提供。
 2. 被授權人得依前開授權條款進行重製、散布、改作，惟須：
@@ -4557,25 +4556,25 @@ ${C_WHITE}${C_BOLD}三、授權範圍${C_RESET}
    - 僅作非商業性利用；
    - 於改作後以相同或相容授權條款散布。
 
-${C_WHITE}${C_BOLD}四、使用者義務${C_RESET}
-1. ${C_BOLD}法令遵循${C_RESET}：使用者應遵守中華民國著作權法及其行為所在地相關
+${WHITE}${BOLD}四、使用者義務${RESET}
+1. ${BOLD}法令遵循${RESET}：使用者應遵守中華民國著作權法及其行為所在地相關
    智慧財產權、電腦犯罪及通訊傳播等法規。
-2. ${C_BOLD}合法來源${C_RESET}：僅得處理本人已合法取得之影音及相關資料，不得
+2. ${BOLD}合法來源${RESET}：僅得處理本人已合法取得之影音及相關資料，不得
    藉由本軟體侵害第三人權益。
-3. ${C_BOLD}資訊安全${C_RESET}：使用者應自行維護系統與資料安全，並避免散布惡意
+3. ${BOLD}資訊安全${RESET}：使用者應自行維護系統與資料安全，並避免散布惡意
    程式碼。
-4. ${C_BOLD}誠實標示${C_RESET}：散布或公開改作版本時，應明確標示原著作權人、
+4. ${BOLD}誠實標示${RESET}：散布或公開改作版本時，應明確標示原著作權人、
    授權條款及變更內容。
 
-${C_WHITE}${C_BOLD}五、禁止行為${C_RESET}
+${WHITE}${BOLD}五、禁止行為${RESET}
 1. 將本軟體或其衍生著作用於任何直接或間接營利目的。
 2. 以本軟體進行侵害第三人著作權、肖像權、隱私權或其他權利之行為。
 
-${C_WHITE}${C_BOLD}六、智慧財產權${C_RESET}
+${WHITE}${BOLD}六、智慧財產權${RESET}
 除依 CC BY-NC-SA 4.0 授權範圍所允許者外，本軟體之一切權利仍為
 著作權人所有。
 
-${C_WHITE}${C_BOLD}七、免責聲明與責任限制${C_RESET}
+${WHITE}${BOLD}七、免責聲明與責任限制${RESET}
 1. 本軟體係依「現狀」提供，著作權人對本軟體不負任何明示或默示
    之保證，包括但不限於適售性、特定目的適用性及未侵害第三人權
    利之保證。
@@ -4583,28 +4582,28 @@ ${C_WHITE}${C_BOLD}七、免責聲明與責任限制${C_RESET}
    衍生或懲罰性損害，均不負任何賠償責任。
 3. 使用本軟體所產生之全部風險與法律責任，概由使用者自行承擔。
 
-${C_WHITE}${C_BOLD}八、第三人權益${C_RESET}
+${WHITE}${BOLD}八、第三人權益${RESET}
 若使用者於利用本軟體之過程涉及第三人著作或資料，應自負取得授權
 之責任，並使著作權人免於任何第三人主張。
 
-${C_WHITE}${C_BOLD}九、準據法與管轄${C_RESET}
+${WHITE}${BOLD}九、準據法與管轄${RESET}
 本同意事項書之解釋與適用，以中華民國法律為準據法。
 
-${C_WHITE}${C_BOLD}十、條款修訂${C_RESET}
+${WHITE}${BOLD}十、條款修訂${RESET}
 著作權人得不定期修訂本同意事項書；修訂後版本將公布於官方儲存庫
 頁面。使用者續行使用本軟體，視為同意受修訂後條款之拘束。
 
-${C_WHITE}${C_BOLD}十一、其他${C_RESET}
+${WHITE}${BOLD}十一、其他${RESET}
 本同意事項書任何條款被法院或有權機關裁定無效時，不影響其他條款
 之效力。
 ---
-${C_YELLOW}${C_BOLD}
+${YELLOW}${BOLD}
 請使用方向鍵或滑鼠滾輪閱讀全文。閱讀完畢後，請按 'q' 鍵退出。
-${C_RESET}
+${RESET}
 EOF
 
     echo ""
-    echo -e "${C_YELLOW}${C_BOLD}您已閱讀完畢「使用同意事項書」。${C_RESET}"
+    echo -e "${YELLOW}${BOLD}您已閱讀完畢「使用同意事項書」。${RESET}"
 
     local user_agreement=""
     while true; do
@@ -4616,20 +4615,20 @@ EOF
             
             # 立即手動將標記附加到設定檔，以防 save_config 未被立即調用
             if ! mkdir -p "$(dirname "$CONFIG_FILE")"; then
-                echo -e "${C_RED}錯誤：無法創建設定檔目錄！請檢查權限。腳本無法繼續。${C_RESET}" >&2
+                echo -e "${RED}錯誤：無法創建設定檔目錄！請檢查權限。腳本無法繼續。${RESET}" >&2
                 exit 1
             fi
             echo "" >> "$CONFIG_FILE"
-            echo "# --- User Agreement Status (v2.0) ---" >> "$CONFIG_FILE"
+            echo "# --- User Agreement Status (v2.1) ---" >> "$CONFIG_FILE"
             echo "TERMS_AGREED=\"true\"" >> "$CONFIG_FILE"
 
             echo ""
-            echo -e "${C_GREEN}感謝您的同意。正在繼續啟動腳本...${C_RESET}"
+            echo -e "${GREEN}感謝您的同意。正在繼續啟動腳本...${RESET}"
             sleep 1
             break
         else
             echo ""
-            echo -e "${C_RED}輸入錯誤或您未同意條款。腳本無法繼續，即將退出。${C_RESET}"
+            echo -e "${RED}輸入錯誤或您未同意條款。腳本無法繼續，即將退出。${RESET}"
             sleep 3
             exit 1
         fi
@@ -4639,52 +4638,46 @@ EOF
 }
 
 ####################################################################
-# 主程式 (v5.1 - 整合首次運行同意程序)
+# 主程式 (v5.2 - 優化啟動順序與顏色處理)
 # 徹底重構啟動流程，確保變數初始化順序清晰、穩健
 ####################################################################
 main() {
     # --- 步驟 1：處理特殊啟動模式 ---
-    # 如果第一個參數是 --health-check，則直接成功退出，不做任何操作
-    # 這是為了讓腳本自我更新時的測試能夠正常通過
     if [[ "$1" == "--health-check" ]]; then
         exit 0
     fi
 
     # --- 步驟 2：核心變數與路徑初始化 ---
-    # a. 執行平台偵測，獲取平台相關的預設路徑
+    # a. 執行平台偵測
     detect_platform_and_set_vars
 
     # b. 為工作變數賦予初始值
-    #    此處 DOWNLOAD_PATH 和 TEMP_DIR 的值來自 detect_platform_and_set_vars
     DOWNLOAD_PATH="$DOWNLOAD_PATH_DEFAULT"
     TEMP_DIR="$TEMP_DIR_DEFAULT"
 
-    # c. 載入使用者設定檔。此函數會讀取設定檔並覆蓋上面的工作變數
-    #    注意：此時 TERMS_AGREED 可能會被載入
+    # c. 載入使用者設定檔
     load_config
     
-    # d. 最終化變數。在所有路徑都確定後，設定 LOG_FILE
+    # d. 最終化日誌檔案路徑
     LOG_FILE="$DOWNLOAD_PATH/script_log.txt"
-
-    # --- 步驟 3：處理首次運行同意程序 (關鍵新增步驟) ---
-    # 這個函數會檢查是否已同意，如果沒有，會顯示條款並要求同意
-    # 它必須在日誌系統和顏色系統完全初始化之前運行
-    handle_first_run_agreement
     
-    # e. 根據設定啟用或禁用顏色 (在同意程序後執行，確保後續介面顏色正確)
+    # ★★★ 關鍵優化：提前應用顏色設定 ★★★
+    # 在顯示任何介面（包括同意條款）之前，先根據設定決定是否使用顏色
     apply_color_settings
+
+    # --- 步驟 3：處理首次運行同意程序 ---
+    # 此函數現在可以直接使用已設定好的全域顏色變數
+    handle_first_run_agreement
     
     # f. 創建必要的目錄並檢查權限
     if ! mkdir -p "$DOWNLOAD_PATH" 2>/dev/null || ! mkdir -p "$TEMP_DIR" 2>/dev/null; then
-        # 在 log_message 可用前，使用原生 echo 輸出到 stderr
-        echo -e "\033[0;31m嚴重錯誤：無法創建下載目錄或臨時目錄！請檢查權限。\033[0m" >&2
+        echo -e "${RED}嚴重錯誤：無法創建下載目錄或臨時目錄！請檢查權限。${RESET}" >&2
         echo -e "下載目錄: $DOWNLOAD_PATH" >&2
         echo -e "臨時目錄: $TEMP_DIR" >&2
         exit 1
     fi
 
     # --- 步驟 4：記錄日誌並進行環境驗證 ---
-    # 此時所有核心變數和日誌系統都已就緒
     log_message "INFO" "腳本啟動 (版本: $SCRIPT_VERSION, OS: $OS_TYPE, Config: $CONFIG_FILE)"
 
     if ! check_environment; then
