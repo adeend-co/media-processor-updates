@@ -1,0 +1,53 @@
+name: Create and Sign Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Import GPG key
+        uses: crazy-max/ghaction-import-gpg@v6
+        with:
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+          passphrase: ${{ secrets.GPG_PASSPHRASE }}
+
+      - name: Prepare Signature Data
+        id: sig_data
+        run: |
+          # ★★★ 修正點：使用您設定的 GPG_SIGNING_KEY_ID ★★★
+          gpg --detach-sign --armor -u ${{ secrets.GPG_SIGNING_KEY_ID }} media_processor.sh
+          
+          PUBLIC_KEY_B64=$(gpg --armor --export ${{ secrets.GPG_SIGNING_KEY_ID }} | base64 -w 0)
+          SIGNATURE_B64=$(cat media_processor.sh.asc | base64 -w 0)
+          
+          echo "PUBLIC_KEY_B64_VALUE=$PUBLIC_KEY_B64" >> $GITHUB_OUTPUT
+          echo "SIGNATURE_B64_VALUE=$SIGNATURE_B64" >> $GITHUB_OUTPUT
+
+      - name: Inject Signature into Script
+        run: |
+          cp media_processor.sh release_media_processor.sh
+          sed -i "s@SIGNATURE_PLACEHOLDER@${{ steps.sig_data.outputs.SIGNATURE_B64_VALUE }}@" release_media_processor.sh
+          sed -i "s@PUBLIC_KEY_PLACEHOLDER@${{ steps.sig_data.outputs.PUBLIC_KEY_B64_VALUE }}@" release_media_processor.sh
+
+      - name: Create Release Package
+        run: |
+          zip release.zip release_media_processor.sh estimate_size.py sync_helper.py
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release.zip
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          body: "自動化發布版本 ${{ github.ref_name }}。"
+          prerelease: false
