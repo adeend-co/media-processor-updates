@@ -44,7 +44,7 @@
 ################################################################################
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.8.7" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.8.8" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -4452,7 +4452,7 @@ check_environment() {
 }
 
 ############################################
-# 腳本完整性自我驗證 (v2.2 - 修正版)
+# 腳本完整性自我驗證 (v2.3 - 抗換行符干擾版)
 ############################################
 verify_script_integrity() {
     clear
@@ -4461,20 +4461,13 @@ verify_script_integrity() {
     echo -e "${YELLOW}請稍候...${RESET}\n"
     sleep 1
 
-    # 檢查 gpg 命令是否存在
     if ! command -v gpg &> /dev/null; then
-        echo -e "${RED}[✗] 驗證失敗：找不到 gpg 命令。${RESET}";
-        echo "請先安裝 'gnupg' 套件 (例如: pkg install gnupg)。"; read -p "按 Enter 返回..."; return 1;
+        echo -e "${RED}[✗] 驗證失敗：找不到 gpg 命令。${RESET}"; read -p "按 Enter 返回..."; return 1;
     fi
 
-    # 檢查佔位符，判斷是否為開發中版本
     if [[ "$OFFICIAL_SIGNATURE_B64" == "SIGNATURE_PLACEHOLDER" || -z "$OFFICIAL_SIGNATURE_B64" ]] || \
        [[ "$OFFICIAL_PUBLIC_KEY_B64" == "PUBLIC_KEY_PLACEHOLDER" || -z "$OFFICIAL_PUBLIC_KEY_B64" ]]; then
-        echo -e "${YELLOW}[!] 驗證無法進行：${RESET}"
-        echo "您執行的似乎是開發中的版本，尚未包含官方數位簽章。"
-        echo "請從 GitHub Releases 頁面下載正式發布的版本以進行驗證。"
-        read -p "按 Enter 返回..."
-        return 1
+        echo -e "${YELLOW}[!] 驗證無法進行：此為開發中版本，無官方簽章。${RESET}"; read -p "按 Enter 返回..."; return 1;
     fi
 
     local this_script_path="${BASH_SOURCE[0]}"
@@ -4483,41 +4476,35 @@ verify_script_integrity() {
     local temp_sig_file="$temp_dir/signature.asc"
     local temp_data_file="$temp_dir/data_to_verify.sh"
     
-    # 將 Base64 編碼的公鑰和簽章解碼回原始的 Armor 格式
     if ! echo "$OFFICIAL_PUBLIC_KEY_B64" | base64 -d > "$temp_pubkey_file" || \
        ! echo "$OFFICIAL_SIGNATURE_B64" | base64 -d > "$temp_sig_file"; then
-        echo -e "${RED}[✗] 驗證失敗：無法解碼內嵌的簽章或公鑰。腳本可能已損壞。${RESET}";
-        rm -rf "$temp_dir"; read -p "按 Enter 返回..."; return 1;
+        echo -e "${RED}[✗] 驗證失敗：無法解碼內嵌簽章或公鑰。${RESET}"; rm -rf "$temp_dir"; read -p "按 Enter 返回..."; return 1;
     fi
 
     grep -Fv "SCRIPT_VERSION=\"$SCRIPT_VERSION\"" "$this_script_path" | \
     grep -Fv "SCRIPT_UPDATE_DATE=\"$SCRIPT_UPDATE_DATE\"" | \
     grep -Fv "OFFICIAL_SIGNATURE_B64=\"$OFFICIAL_SIGNATURE_B64\"" | \
-    grep -Fv "OFFICIAL_PUBLIC_KEY_B64=\"$OFFICIAL_PUBLIC_KEY_B64\"" > "$temp_data_file"
+    grep -Fv "OFFICIAL_PUBLIC_KEY_B64=\"$OFFICIAL_PUBLIC_KEY_B64\"" | \
+    sed 's/\r$//' > "$temp_data_file"
 
-    # 在一個隔離的臨時鑰匙圈中匯入公鑰並進行驗證
     local gpg_output
     gpg_output=$(gpg --no-default-keyring --keyring "$temp_dir/keyring.gpg" --import "$temp_pubkey_file" 2>&1 && \
                  gpg --no-default-keyring --keyring "$temp_dir/keyring.gpg" --verify "$temp_sig_file" "$temp_data_file" 2>&1)
 
-    # 根據 gpg 的輸出判斷結果
     if echo "$gpg_output" | grep -q "Good signature"; then
         local signer; signer=$(echo "$gpg_output" | grep -oP "Good signature from \K.*")
         echo -e "${GREEN}[✓] 驗證通過！${RESET}"
-        echo "此腳本的數位簽章有效，確認是由以下金鑰持有者簽署："
+        echo "數位簽章有效，確認是由以下金鑰持有者簽署："
         echo -e "${CYAN}${signer}${RESET}"
         echo "證明您正在執行的是未經篡改的官方發布版本。"
     else
         echo -e "${RED}[✗] 驗證失敗！${RESET}"
-        echo "此腳本的數位簽章無效或與內容不符。"
-        echo "這可能意味著腳本內容已被修改，或並非來自官方發布管道。"
-        echo -e "\n${YELLOW}GPG 原始輸出以供除錯：${RESET}"
+        echo "數位簽章無效或與內容不符。腳本可能已被修改。"
+        echo -e "\n${YELLOW}GPG 原始輸出：${RESET}"
         echo "$gpg_output" | grep -E "gpg:|signature|Good|BAD"
     fi
 
-    # 清理臨時檔案和目錄
     rm -rf "$temp_dir"
-
     read -p "按 Enter 返回..."
 }
 
