@@ -44,7 +44,7 @@
 ################################################################################
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.8.12" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.8.12-beta.1" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -670,15 +670,20 @@ spinner() {
 }
 
 ######################################################################
-# 腳本自我更新函數 (v7.2 - 混合模式 + 修正版本比較)
+# 腳本自我更新函數 (v8.0 - 混合模式：下載穩定版 / Git 更新預覽版)
+# 最終、最穩健的架構
 ######################################################################
 auto_update_script() {
     clear
-    echo -e "${CYAN}--- 檢查腳本更新 (混合模式 v7.2) ---${RESET}"
+    echo -e "${CYAN}--- 檢查腳本更新 (混合模式 v8.0) ---${RESET}"
     log_message "INFO" "使用者觸發腳本更新檢查 (當前渠道: ${UPDATE_CHANNEL:-stable})。"
 
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+    # ★★★      根據更新渠道，執行不同的更新邏輯      ★★★
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+
     if [[ "${UPDATE_CHANNEL:-stable}" == "beta" ]]; then
-        # --- 預覽版 (Beta) 更新邏輯：使用 Git ---
+        # --- 預覽版 (Beta) 更新邏輯：使用 Git (對應您的分析) ---
         echo -e "${CYAN}渠道：${YELLOW}預覽版${CYAN}。將使用 Git 進行更新...${RESET}"
         if ! command -v git &> /dev/null; then
             log_message "ERROR" "預覽版更新需要 'git'。";
@@ -741,7 +746,7 @@ auto_update_script() {
         cd "$original_dir"; read -p "按 Enter 返回...";
 
     else
-        # --- 穩定版 (Stable) 更新邏輯：下載發布包 ---
+        # --- 穩定版 (Stable) 更新邏輯：下載發布包 (對應您的方案 B) ---
         echo -e "${CYAN}渠道：${GREEN}穩定版${CYAN}。將從 GitHub Release 安全下載...${RESET}"
         if ! command -v curl &> /dev/null || ! command -v jq &> /dev/null || ! command -v unzip &> /dev/null; then
             log_message "ERROR" "穩定版更新需要 'curl', 'jq', 'unzip'。";
@@ -767,15 +772,9 @@ auto_update_script() {
         echo -e "${CYAN}  - 最新發布版本: ${GREEN}${remote_version}${RESET}"
         echo -e "${CYAN}--------------------------------------------${RESET}\n"
 
-        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-        # ★★★         核心修正：使用正規化版本號比較         ★★★
-        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-        # 將 'v2.5.8.9-beta.1' 轉換為 'v2.5.8.9~beta.1' 以便正確排序
         local current_version_sortable=$(echo "$SCRIPT_VERSION" | sed 's/-/~/')
         local remote_version_sortable=$(echo "$remote_version" | sed 's/-/~/')
 
-        # 比較正規化後的版本號
-        # 邏輯：如果排序後的第一個（最舊的）不是遠端版本，代表遠端有更新
         if [[ "$(printf '%s\n' "$remote_version_sortable" "$current_version_sortable" | sort -V | head -n 1)" != "$remote_version_sortable" ]]; then
             echo -e "${GREEN}檢測到新的穩定版本！${RESET}"
         else
@@ -792,7 +791,7 @@ auto_update_script() {
         
         echo -e "\n${CYAN}--- 開始更新流程 ---${RESET}"
         echo -e "${YELLOW}[1/5] 正在下載更新包...${RESET}"
-        if ! curl -L -o "$downloaded_zip_file" "$release_zip_url"; then
+        if ! curl -L --progress-bar -o "$downloaded_zip_file" "$release_zip_url"; then
             echo -e "${RED}錯誤：下載更新包失敗！${RESET}"; rm -rf "$temp_dir"; return 1
         fi
         
@@ -818,11 +817,12 @@ auto_update_script() {
 
         if ! $pre_check_failed; then
             echo -n "  - 正在驗證數位簽章... ";
+            # 這裡的 --self-verify 是我們在 main() 函數中新增的入口
             local verification_result; verification_result=$(bash "$new_main_script" --self-verify)
             if ! echo "$verification_result" | grep -q "驗證通過"; then
                 echo -e "${RED}失敗！${RESET}"
                 echo -e "${YELLOW}--- 驗證失敗詳細資訊 ---${RESET}"
-                echo "$verification_result"
+                echo "$verification_result" # 輸出 GPG 的詳細錯誤訊息
                 echo -e "${YELLOW}--------------------------${RESET}"
                 pre_check_failed=true
             else
