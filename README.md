@@ -80,4 +80,6 @@ git clone https://github.com/adeend-co/media-processor-updates.git
 2. **合法使用** — 僅得將本著作用於合法目的，嚴禁用於侵害第三人權益或違法行為
 3. **自負風險** — 自行承擔使用本著作之一切風險及可能產生之法律責任
 
+---
+
 有關完整的法律條文，請參閱專案根目錄下的 [LICENSE](LICENSE.md) 檔案。
