@@ -44,7 +44,7 @@
 ################################################################################
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.8.8" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.8.9" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -670,37 +670,36 @@ spinner() {
 }
 
 ######################################################################
-# 腳本自我更新函數 (v5.0 - 基於內建版本號的穩健判斷)
+# 腳本自我更新函數 (v5.1 - 基於 Git 標籤簽章驗證的穩健模式)
 ######################################################################
 auto_update_script() {
     clear
-    echo -e "${CYAN}--- 使用 Git 檢查腳本更新 (穩健模式 v5.0) ---${RESET}"
+    echo -e "${CYAN}--- 使用 Git 檢查腳本更新 (穩健模式 v5.1) ---${RESET}"
     log_message "INFO" "使用者觸發 Git 腳本更新檢查 (當前渠道: ${UPDATE_CHANNEL:-stable})。"
 
-    if ! command -v git &> /dev/null || ! command -v curl &> /dev/null || ! command -v jq &> /dev/null; then
-        log_message "ERROR" "更新功能需要 'git', 'curl', 'jq'。";
-        echo -e "${RED}錯誤：此功能需要 git, curl, jq 套件！${RESET}"; return 1;
+    # 檢查 gpg 是新加入的依賴
+    if ! command -v git &> /dev/null || ! command -v curl &> /dev/null || ! command -v jq &> /dev/null || ! command -v gpg &> /dev/null; then
+        log_message "ERROR" "更新功能需要 'git', 'curl', 'jq', 'gpg'。";
+        echo -e "${RED}錯誤：此功能需要 git, curl, jq, gpg 套件！${RESET}"; return 1;
     fi
 
     local repo_dir="$SCRIPT_DIR"; local original_dir=$(pwd)
     if [ ! -d "$repo_dir/.git" ]; then echo -e "${RED}錯誤：目錄 '$repo_dir' 非 Git 倉庫。${RESET}"; return 1; fi
     if ! cd "$repo_dir"; then echo -e "${RED}錯誤：無法進入倉庫目錄！${RESET}"; return 1; fi
 
-    echo -e "${YELLOW}正在從遠端倉庫獲取最新資訊...${RESET}"
+    echo -e "${YELLOW}正在從遠端倉庫獲取最新資訊 (包含所有標籤)...${RESET}"
+    # --tags 是關鍵，確保所有標籤都被獲取
     if ! git fetch --all --tags --quiet; then
         echo -e "${RED}錯誤：無法獲取遠端更新！請檢查網路連線。${RESET}"; cd "$original_dir"; return 1;
     fi
 
-    # 獲取當前腳本的 commit hash，這是最可靠的「我是誰」的證明
     local current_script_commit_hash
     current_script_commit_hash=$(git log -1 --pretty=format:%H -- "$SCRIPT_INSTALL_PATH" 2>/dev/null)
     if [ -z "$current_script_commit_hash" ]; then
-        # 如果檔案未被追蹤或有問題，回退到 HEAD
         current_script_commit_hash=$(git rev-parse HEAD)
         log_message "WARNING" "無法獲取腳本檔案的特定 commit，回退到使用 HEAD commit。"
     fi
 
-    # 顯示當前版本資訊
     echo -e "\n${CYAN}------------------- 版本狀態 -------------------${RESET}"
     echo -e "${CYAN}  - 當前腳本版本 (內建): ${GREEN}${SCRIPT_VERSION}${RESET}"
     echo -e "${CYAN}  - 對應 Git Commit: ${WHITE}${current_script_commit_hash:0:7}${RESET}"
@@ -733,8 +732,6 @@ auto_update_script() {
         target_version_display=$(echo "$latest_release_json" | jq -r '.tag_name // empty')
         echo -e "${CYAN}  - 目標最新版本: ${GREEN}${target_version_display}${RESET}"
 
-        # 使用 sort -V 進行版本號比較，這是處理語意化版本 (semantic versioning) 的標準方法
-        # dpkg --compare-versions 也是一個好選擇
         if [[ "$(printf '%s\n' "$target_version_display" "$SCRIPT_VERSION" | sort -V | head -n 1)" != "$target_version_display" ]]; then
             update_needed=true
             action_description="${GREEN}檢測到新的穩定版本！${RESET}"
@@ -749,13 +746,49 @@ auto_update_script() {
         return 0
     fi
 
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+    # ★★★ 新增的 GPG 標籤驗證邏輯 (僅對穩定版) ★★★
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+    if [[ "${UPDATE_CHANNEL:-stable}" != "beta" ]]; then
+        echo -e "${YELLOW}正在驗證遠端版本 '${target_version_display}' 的數位簽章...${RESET}"
+        
+        # 檢查腳本內是否有公鑰
+        if [[ "$OFFICIAL_PUBLIC_KEY_B64" == "PUBLIC_KEY_PLACEHOLDER" || -z "$OFFICIAL_PUBLIC_KEY_B64" ]]; then
+            echo -e "${YELLOW}[!] 無法驗證：當前腳本無內嵌公鑰，可能為開發中版本。${RESET}"
+            echo -e "${YELLOW}將跳過簽章檢查直接詢問是否更新。${RESET}"
+            sleep 2
+        else
+            # 臨時導入公鑰以供 git 驗證使用
+            local temp_keyring; temp_keyring=$(mktemp)
+            echo "$OFFICIAL_PUBLIC_KEY_B64" | base64 -d | gpg --no-default-keyring --keyring "$temp_keyring" --import > /dev/null 2>&1
+            
+            # 使用 git tag -v 來驗證標籤簽章
+            local verification_output
+            verification_output=$(git --keyring "$temp_keyring" tag -v "$target_version_display" 2>&1)
+            
+            rm -f "$temp_keyring" # 清理臨時鑰匙圈
+
+            if echo "$verification_output" | grep -q "Good signature"; then
+                echo -e "${GREEN}[✓] 遠端版本簽章驗證通過！來源可信。${RESET}"
+                sleep 1
+            else
+                echo -e "${RED}${BOLD}[✗] 安全警告：遠端版本 '${target_version_display}' 的簽章無效或未簽署！${RESET}"
+                echo -e "${RED}為安全起見，更新已中止。請聯繫開發者確認版本狀態。${RESET}"
+                log_message "SECURITY" "遠端標籤 ${target_version_display} 簽章驗證失敗，更新已中止。"
+                cd "$original_dir"; read -p "按 Enter 返回..."; return 1
+            fi
+        fi
+    fi
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+    # ★★★         驗證邏輯結束         ★★★
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+
     echo -e "$action_description"
     read -r -p "$confirm_prompt" confirm_action
     if [[ ! "$confirm_action" =~ ^[Yy]$ ]]; then
         echo -e "${YELLOW}操作已取消。${RESET}"; cd "$original_dir"; read -p "按 Enter 返回..."; return 0
     fi
     
-    # 執行更新前，先檢查本地是否有未提交的更改
     if [ -n "$(git status --porcelain)" ]; then
         echo -e "${RED}警告：檢測到本地有更改！強行更新會覆蓋這些修改。${RESET}"
         read -r -p "是否要放棄本地修改並繼續？ (輸入 'yes' 確認): " confirm_force
@@ -767,7 +800,6 @@ auto_update_script() {
         fi
     fi
 
-    # 執行更新
     local update_target="${target_version_display}"
     if [[ "${UPDATE_CHANNEL:-stable}" == "beta" ]]; then
         update_target="origin/main"
@@ -778,11 +810,9 @@ auto_update_script() {
          echo -e "${RED}錯誤：切換到目標版本失敗！${RESET}"; cd "$original_dir"; return 1
     fi
 
-    # 執行更新後的測試與還原 (這部分邏輯與您現有的類似，但更健壯)
     log_message "SUCCESS" "成功切換到目標版本 ${update_target}"; echo -e "${GREEN}版本切換完成。${RESET}"
-    local restore_point_hash="$current_script_commit_hash" # 保存舊版本的 commit 以便還原
+    local restore_point_hash="$current_script_commit_hash"
 
-    # 重新設定權限並進行健康檢查...
     chmod +x "$SCRIPT_INSTALL_PATH" 2>/dev/null
     local goto_restore=false
     echo -n "  - 正在測試新版本語法... ";
