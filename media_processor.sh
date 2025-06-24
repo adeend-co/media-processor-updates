@@ -44,7 +44,7 @@
 ################################################################################
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.8.14" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.8.14-beta.1" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -4518,16 +4518,14 @@ check_environment() {
 }
 
 ############################################################
-# 腳本完整性自我驗證 (v3.1 - 修正語法錯誤)
+# 腳本完整性自我驗證 (v3.1 - 行號模式，終極可靠版)
 ############################################################
 verify_script_integrity() {
     local script_to_verify="$1"
-    # 如果沒有提供路徑，就驗證當前腳本
-    if [ -z "$script_to_verify" ]; then # ★★★ 核心修正：加上遺漏的 "then" ★★★
+    if [ -z "$script_to_verify" ]; then
         script_to_verify="${BASH_SOURCE[0]}"
     fi
 
-    # 在函數內部顯示標題，這樣 --self-verify 模式也能有輸出
     echo -e "${CYAN}--- 正在進行腳本完整性驗證 ---${RESET}"
     echo "目標檔案: $script_to_verify"
     
@@ -4535,18 +4533,31 @@ verify_script_integrity() {
         echo -e "${RED}[✗] 驗證失敗：找不到 gpg 或 base64 命令。${RESET}"; return 1;
     fi
 
-    local version_line; version_line=$(grep '^SCRIPT_VERSION=' "$script_to_verify")
-    local date_line; date_line=$(grep '^SCRIPT_UPDATE_DATE=' "$script_to_verify")
-    local sig_line; sig_line=$(grep '^OFFICIAL_SIGNATURE_B64=' "$script_to_verify")
-    local key_line; key_line=$(grep '^OFFICIAL_PUBLIC_KEY_B64=' "$script_to_verify")
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+    # ★★★      核心修正：使用行號進行過濾，避免特殊字元問題      ★★★
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+    local sig_line_content; sig_line_content=$(grep '^OFFICIAL_SIGNATURE_B64=' "$script_to_verify")
+    local key_line_content; key_line_content=$(grep '^OFFICIAL_PUBLIC_KEY_B64=' "$script_to_verify")
     
-    local signature_b64; signature_b64=$(echo "$sig_line" | sed -n 's/.*"\(.*\)"/\1/p')
-    local public_key_b64; public_key_b64=$(echo "$key_line" | sed -n 's/.*"\(.*\)"/\1/p')
+    local signature_b64; signature_b64=$(echo "$sig_line_content" | sed -n 's/.*"\(.*\)"/\1/p')
+    local public_key_b64; public_key_b64=$(echo "$key_line_content" | sed -n 's/.*"\(.*\)"/\1/p')
 
     if [[ "$signature_b64" == "SIGNATURE_PLACEHOLDER" || -z "$signature_b64" ]] || \
        [[ "$public_key_b64" == "PUBLIC_KEY_PLACEHOLDER" || -z "$public_key_b64" ]]; then
         echo -e "${YELLOW}[!] 驗證無法進行：此為開發中版本，無官方簽章。${RESET}"; return 1;
     fi
+
+    # 獲取需要排除的行的行號
+    local lines_to_delete
+    # 使用 grep -n 來獲取行號，然後用 cut 提取數字部分
+    # awk 也是一個好選擇，但 cut 更普遍
+    lines_to_delete=$(grep -n -E '^SCRIPT_VERSION=|^SCRIPT_UPDATE_DATE=|^OFFICIAL_SIGNATURE_B64=|^OFFICIAL_PUBLIC_KEY_B64=' "$script_to_verify" | cut -d: -f1)
+
+    # 構建 sed 刪除命令，例如 "10d;11d;14d;15d"
+    local sed_delete_cmd=""
+    for line_num in $lines_to_delete; do
+        sed_delete_cmd+="${line_num}d;"
+    done
 
     local temp_dir; temp_dir=$(mktemp -d)
     local temp_pubkey_file="$temp_dir/pubkey.asc"
@@ -4558,11 +4569,8 @@ verify_script_integrity() {
         echo -e "${RED}[✗] 驗證失敗：無法解碼內嵌簽章或公鑰。${RESET}"; rm -rf "$temp_dir"; return 1;
     fi
 
-    grep -Fv "$version_line" "$script_to_verify" | \
-    grep -Fv "$date_line" | \
-    grep -Fv "$sig_line" | \
-    grep -Fv "$key_line" | \
-    sed 's/\r$//' > "$temp_data_file"
+    # 使用 sed 和行號命令來創建用於驗證的純淨檔案
+    sed "$sed_delete_cmd" "$script_to_verify" | sed 's/\r$//' > "$temp_data_file"
 
     local gpg_output
     gpg_output=$(gpg --no-default-keyring --keyring "$temp_dir/keyring.gpg" --import "$temp_pubkey_file" 2>&1 && \
