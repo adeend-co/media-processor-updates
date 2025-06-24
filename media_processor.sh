@@ -44,11 +44,11 @@
 ################################################################################
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.7" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.8" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
-SCRIPT_UPDATE_DATE="2025-06-23" # 請根據實際情況修改此日期
+SCRIPT_UPDATE_DATE="2025-06-24" # 請根據實際情況修改此日期
 ############################################
 # --- 自動化簽章與驗證資料 ---
 # 這些佔位符將在 GitHub Actions 自動發布時被替換
@@ -670,133 +670,148 @@ spinner() {
 }
 
 ######################################################################
-# 腳本自我更新函數 (v4.3 - 增強版本號顯示)
+# 腳本自我更新函數 (v5.0 - 基於內建版本號的穩健判斷)
 ######################################################################
 auto_update_script() {
     clear
-    echo -e "${CYAN}--- 使用 Git 檢查腳本更新 (增強顯示 v4.3) ---${RESET}"
+    echo -e "${CYAN}--- 使用 Git 檢查腳本更新 (穩健模式 v5.0) ---${RESET}"
     log_message "INFO" "使用者觸發 Git 腳本更新檢查 (當前渠道: ${UPDATE_CHANNEL:-stable})。"
 
-    if ! command -v git &> /dev/null; then log_message "ERROR" "未找到 'git' 命令。"; echo -e "${RED}錯誤：找不到 'git' 命令！${RESET}"; return 1; fi
+    if ! command -v git &> /dev/null || ! command -v curl &> /dev/null || ! command -v jq &> /dev/null; then
+        log_message "ERROR" "更新功能需要 'git', 'curl', 'jq'。";
+        echo -e "${RED}錯誤：此功能需要 git, curl, jq 套件！${RESET}"; return 1;
+    fi
 
     local repo_dir="$SCRIPT_DIR"; local original_dir=$(pwd)
-    if [ ! -d "$repo_dir/.git" ]; then log_message "ERROR" "目錄 '$repo_dir' 非 Git 倉庫。"; echo -e "${RED}錯誤：目錄 '$repo_dir' 非 Git 倉庫。${RESET}"; return 1; fi
-    if ! cd "$repo_dir"; then log_message "ERROR" "無法進入倉庫目錄 '$repo_dir'"; echo -e "${RED}錯誤：無法進入倉庫目錄！${RESET}"; return 1; fi
+    if [ ! -d "$repo_dir/.git" ]; then echo -e "${RED}錯誤：目錄 '$repo_dir' 非 Git 倉庫。${RESET}"; return 1; fi
+    if ! cd "$repo_dir"; then echo -e "${RED}錯誤：無法進入倉庫目錄！${RESET}"; return 1; fi
 
-    # 修正檔案權限追蹤設定
-    local core_filemode_setting; core_filemode_setting=$(git config --local --get core.filemode)
-    if [[ "$core_filemode_setting" != "false" ]]; then
-        echo -e "${YELLOW}偵測到 Git 可能在追蹤檔案權限變化，正在自動修正...${RESET}"
-        if git config --local core.filemode false; then echo -e "${GREEN}  > 設定成功！${RESET}"; else echo -e "${RED}  > 警告：自動設定失敗！${RESET}"; fi
-        sleep 1
-    fi
-
-    # 檢查本地更改
-    echo -e "${YELLOW}檢查本地是否有未提交的更改...${RESET}"
-    if [ -n "$(git status --porcelain)" ]; then
-        echo -e "${RED}警告：檢測到本地有更改！${RESET}"; read -r -p "是否放棄本地修改並繼續？(輸入 'yes'): " confirm_force
-        if [[ "$confirm_force" != "yes" ]]; then echo -e "${YELLOW}已取消。${RESET}"; cd "$original_dir"; return 1; fi
-        if ! git reset --hard HEAD --quiet || ! git clean -fd --quiet; then echo -e "${RED}錯誤：放棄本地更改失敗！${RESET}"; cd "$original_dir"; return 1; fi
-    else
-         echo -e "${GREEN}本地無未提交更改。${RESET}"
-    fi
-
-    # 獲取遠端資訊
     echo -e "${YELLOW}正在從遠端倉庫獲取最新資訊...${RESET}"
-    if ! git fetch --all --tags --quiet; then log_message "ERROR" "'git fetch' 失敗。"; echo -e "${RED}錯誤：無法獲取遠端更新！${RESET}"; cd "$original_dir"; return 1; fi
-    
-    local current_commit_hash=$(git rev-parse @); local restore_point_hash="$current_commit_hash"
-    
-    # 獲取當前版本的可讀名稱
-    local current_version_display
-    # git describe --tags --exact-match 會在當前 commit 正好是 tag 時返回 tag 名
-    # 如果不是，--always 會回退到顯示 commit hash
-    current_version_display=$(git describe --tags --exact-match "$current_commit_hash" 2>/dev/null || git describe --tags --always "$current_commit_hash" 2>/dev/null || echo "${current_commit_hash:0:7}")
-
-    local target_commit_hash=""; local target_version_display=""
-    local channel_display="${UPDATE_CHANNEL:-stable}"
-
-    if [[ "$channel_display" == "beta" ]]; then
-        echo -e "${YELLOW}當前為 [預覽版 Beta] 渠道，目標為 main 分支最新提交...${RESET}"
-        target_commit_hash=$(git rev-parse @{u})
-        # 獲取目標版本的可讀名稱
-        target_version_display=$(git describe --tags --exact-match "$target_commit_hash" 2>/dev/null || git describe --tags --always "$target_commit_hash" 2>/dev/null || echo "預覽版 (${target_commit_hash:0:7})")
-    else
-        echo -e "${YELLOW}當前為 [穩定版 Stable] 渠道，目標為最新正式發布...${RESET}"
-        if ! command -v curl &> /dev/null || ! command -v jq &> /dev/null; then echo -e "${RED}錯誤：檢查穩定版更新需要 'curl' 和 'jq'！${RESET}"; cd "$original_dir"; return 1; fi
-        local api_url="https://api.github.com/repos/adeend-co/media-processor-updates/releases/latest"
-        local latest_release_json; latest_release_json=$(curl -sL "$api_url")
-        if [[ "$(echo "$latest_release_json" | jq -r '.message // ""')" == "Not Found" ]]; then echo -e "${RED}錯誤：無法從 GitHub API 獲取發布資訊！${RESET}"; cd "$original_dir"; return 1; fi
-        
-        # 目標版本名直接就是 release tag
-        target_version_display=$(echo "$latest_release_json" | jq -r '.tag_name // empty')
-        if [ -z "$target_version_display" ]; then echo -e "${RED}錯誤：無法解析最新穩定版的標籤名稱！${RESET}"; cd "$original_dir"; return 1; fi
-        
-        target_commit_hash=$(git rev-parse "$target_version_display^{commit}" 2>/dev/null)
-        if [ -z "$target_commit_hash" ]; then echo -e "${RED}錯誤：無法將標籤 '$target_version_display' 解析為一個有效的提交！${RESET}"; cd "$original_dir"; return 1; fi
+    if ! git fetch --all --tags --quiet; then
+        echo -e "${RED}錯誤：無法獲取遠端更新！請檢查網路連線。${RESET}"; cd "$original_dir"; return 1;
     fi
-    
-    # --- 美化的版本狀態顯示 ---
+
+    # 獲取當前腳本的 commit hash，這是最可靠的「我是誰」的證明
+    local current_script_commit_hash
+    current_script_commit_hash=$(git log -1 --pretty=format:%H -- "$SCRIPT_INSTALL_PATH" 2>/dev/null)
+    if [ -z "$current_script_commit_hash" ]; then
+        # 如果檔案未被追蹤或有問題，回退到 HEAD
+        current_script_commit_hash=$(git rev-parse HEAD)
+        log_message "WARNING" "無法獲取腳本檔案的特定 commit，回退到使用 HEAD commit。"
+    fi
+
+    # 顯示當前版本資訊
     echo -e "\n${CYAN}------------------- 版本狀態 -------------------${RESET}"
-    echo -e "${CYAN}  - 當前渠道: ${GREEN}${channel_display}${RESET}"
-    echo -e "${CYAN}  - 當前版本: ${WHITE}${current_version_display} (${current_commit_hash:0:7})${RESET}"
-    echo -e "${CYAN}  - 目標版本: ${WHITE}${target_version_display} (${target_commit_hash:0:7})${RESET}"
-    echo -e "${CYAN}--------------------------------------------${RESET}\n"
+    echo -e "${CYAN}  - 當前腳本版本 (內建): ${GREEN}${SCRIPT_VERSION}${RESET}"
+    echo -e "${CYAN}  - 對應 Git Commit: ${WHITE}${current_script_commit_hash:0:7}${RESET}"
     
-    # 後續邏輯與 v4.2 完全相同
-    if [ "$current_commit_hash" == "$target_commit_hash" ]; then
-        echo -e "${GREEN}您的腳本已是 '${channel_display}' 渠道的最新版本。無需任何操作。${RESET}"
+    local target_commit_hash=""
+    local target_version_display=""
+    local update_needed=false
+    local action_description=""
+    local confirm_prompt=""
+
+    if [[ "${UPDATE_CHANNEL:-stable}" == "beta" ]]; then
+        echo -e "${CYAN}  - 更新渠道: ${YELLOW}預覽版 (Beta)${RESET}"
+        target_commit_hash=$(git rev-parse origin/main)
+        target_version_display="預覽版 (${target_commit_hash:0:7})"
+        echo -e "${CYAN}  - 目標最新 Commit: ${WHITE}${target_commit_hash:0:7}${RESET}"
+        
+        if [[ "$current_script_commit_hash" != "$target_commit_hash" ]]; then
+            update_needed=true
+            action_description="${GREEN}檢測到新的預覽版程式碼！${RESET}"
+            confirm_prompt="是否立即更新到最新的預覽版？ (y/n): "
+        fi
+    else # stable channel
+        echo -e "${CYAN}  - 更新渠道: ${GREEN}穩定版 (Stable)${RESET}"
+        local api_url="https://api.github.com/repos/adeend-co/media-processor-updates/releases/latest"
+        local latest_release_json
+        latest_release_json=$(curl -sL --connect-timeout 5 "$api_url")
+        if [ -z "$latest_release_json" ] || echo "$latest_release_json" | jq -e '.message' > /dev/null; then
+            echo -e "${RED}錯誤：無法從 GitHub API 獲取最新穩定版資訊！${RESET}"; cd "$original_dir"; return 1;
+        fi
+        target_version_display=$(echo "$latest_release_json" | jq -r '.tag_name // empty')
+        echo -e "${CYAN}  - 目標最新版本: ${GREEN}${target_version_display}${RESET}"
+
+        # 使用 sort -V 進行版本號比較，這是處理語意化版本 (semantic versioning) 的標準方法
+        # dpkg --compare-versions 也是一個好選擇
+        if [[ "$(printf '%s\n' "$target_version_display" "$SCRIPT_VERSION" | sort -V | head -n 1)" != "$target_version_display" ]]; then
+            update_needed=true
+            action_description="${GREEN}檢測到新的穩定版本！${RESET}"
+            confirm_prompt="是否立即更新到版本 '${target_version_display}'？ (y/n): "
+        fi
+    fi
+    echo -e "${CYAN}--------------------------------------------${RESET}\n"
+
+    if ! $update_needed; then
+        echo -e "${GREEN}您的腳本已是所選渠道的最新版本。無需操作。${RESET}"
         cd "$original_dir"; read -p "按 Enter 返回..."
         return 0
-    fi
-
-    local base_commit; base_commit=$(git merge-base "$current_commit_hash" "$target_commit_hash" 2>/dev/null)
-    local action_description=""; local confirm_prompt=""
-
-    if [ "$base_commit" == "$current_commit_hash" ]; then
-        action_description="${GREEN}檢測到新版本！這是一個標準的向前更新。${RESET}"
-        confirm_prompt="是否立即【更新】到版本 '${target_version_display}'？ (y/n): "
-    elif [ "$base_commit" == "$target_commit_hash" ]; then
-        action_description="${YELLOW}檢測到版本變化！您當前的預覽版比目標穩定版要新。${RESET}"
-        confirm_prompt="是否要從當前版本【降級/切換】到穩定的 '${target_version_display}' 版本？ (y/n): "
-    else
-        action_description="${CYAN}檢測到版本變化！您當前的版本與目標版本處於不同開發分支。${RESET}"
-        confirm_prompt="是否要【切換】到 '${target_version_display}' 版本？ (y/n): "
     fi
 
     echo -e "$action_description"
     read -r -p "$confirm_prompt" confirm_action
     if [[ ! "$confirm_action" =~ ^[Yy]$ ]]; then
-        log_message "INFO" "使用者取消了版本變更操作。"; echo -e "${YELLOW}操作已取消。${RESET}"; cd "$original_dir"; read -p "按 Enter 返回..."; return 0
+        echo -e "${YELLOW}操作已取消。${RESET}"; cd "$original_dir"; read -p "按 Enter 返回..."; return 0
+    fi
+    
+    # 執行更新前，先檢查本地是否有未提交的更改
+    if [ -n "$(git status --porcelain)" ]; then
+        echo -e "${RED}警告：檢測到本地有更改！強行更新會覆蓋這些修改。${RESET}"
+        read -r -p "是否要放棄本地修改並繼續？ (輸入 'yes' 確認): " confirm_force
+        if [[ "$confirm_force" != "yes" ]]; then
+            echo -e "${YELLOW}已取消。${RESET}"; cd "$original_dir"; return 1
+        fi
+        if ! git reset --hard HEAD --quiet || ! git clean -fd --quiet; then
+            echo -e "${RED}錯誤：放棄本地更改失敗！${RESET}"; cd "$original_dir"; return 1
+        fi
     fi
 
-    # 執行更新、測試、還原 (邏輯不變)
-    echo -e "${YELLOW}正在將腳本重設到目標版本 (${target_commit_hash:0:7})...${RESET}"
-    if ! git reset --hard "$target_commit_hash" --quiet; then log_message "ERROR" "'git reset --hard' 失敗。"; echo -e "${RED}錯誤：操作失敗！${RESET}"; cd "$original_dir"; return 1; fi
-    log_message "SUCCESS" "成功重設到目標版本 $target_version_display ($target_commit_hash)"; echo -e "${GREEN}版本變更完成。${RESET}"
+    # 執行更新
+    local update_target="${target_version_display}"
+    if [[ "${UPDATE_CHANNEL:-stable}" == "beta" ]]; then
+        update_target="origin/main"
+    fi
+    
+    echo -e "${YELLOW}正在將腳本切換到目標版本 '${update_target}'...${RESET}"
+    if ! git checkout -f "$update_target" --quiet || ! git reset --hard "$update_target" --quiet; then
+         echo -e "${RED}錯誤：切換到目標版本失敗！${RESET}"; cd "$original_dir"; return 1
+    fi
 
-    echo -e "${CYAN}正在校驗核心腳本權限...${RESET}"; chmod +x "$SCRIPT_INSTALL_PATH" "$PYTHON_ESTIMATOR_SCRIPT_PATH" "$PYTHON_SYNC_HELPER_SCRIPT_PATH" 2>/dev/null
+    # 執行更新後的測試與還原 (這部分邏輯與您現有的類似，但更健壯)
+    log_message "SUCCESS" "成功切換到目標版本 ${update_target}"; echo -e "${GREEN}版本切換完成。${RESET}"
+    local restore_point_hash="$current_script_commit_hash" # 保存舊版本的 commit 以便還原
 
-    local goto_restore=false; local health_check_error_output=""
-    echo -e "${CYAN}正在測試新版本腳本...${RESET}"
-    echo -n "  - 測試1：語法檢查... "; local syntax_check_output; syntax_check_output=$(bash -n "$SCRIPT_INSTALL_PATH" 2>&1); if [ $? -ne 0 ]; then echo -e "${RED}失敗！${RESET}"; health_check_error_output="$syntax_check_output"; goto_restore=true; else echo -e "${GREEN}通過。${RESET}"; fi
-    if ! $goto_restore; then echo -n "  - 測試2：健康檢查... "; local health_check_output; health_check_output=$(timeout 15s bash "$SCRIPT_INSTALL_PATH" --health-check < /dev/null 2>&1); local s=$?; if [ $s -eq 124 ]; then echo -e "${RED}失敗(超時)！${RESET}"; health_check_error_output="執行超時"; goto_restore=true; elif [ $s -ne 0 ]; then echo -e "${RED}失敗(錯誤碼:$s)！${RESET}"; health_check_error_output="$health_check_output"; goto_restore=true; else echo -e "${GREEN}通過。${RESET}"; fi; fi
+    # 重新設定權限並進行健康檢查...
+    chmod +x "$SCRIPT_INSTALL_PATH" 2>/dev/null
+    local goto_restore=false
+    echo -n "  - 正在測試新版本語法... ";
+    if ! bash -n "$SCRIPT_INSTALL_PATH" 2> /dev/null; then
+        echo -e "${RED}失敗！${RESET}"; goto_restore=true
+    else
+        echo -e "${GREEN}通過。${RESET}"
+        echo -n "  - 正在執行健康檢查... ";
+        if ! timeout 15s bash "$SCRIPT_INSTALL_PATH" --health-check &>/dev/null; then
+             echo -e "${RED}失敗！${RESET}"; goto_restore=true
+        else
+             echo -e "${GREEN}通過。${RESET}"
+        fi
+    fi
 
     if ! $goto_restore; then
-        log_message "SUCCESS" "新版本測試通過，操作完成。"; echo -e "${GREEN}新版本測試通過！操作成功！${RESET}"
-        echo -e "${CYAN}建議重新啟動腳本以應用所有更改。${RESET}"; cd "$original_dir"; read -p "按 Enter 返回..."; return 0
-    fi
-
-    echo -e "\n${RED}--- 操作失敗 ---${RESET}"; echo -e "${RED}新版本腳本未能通過自動化測試。正在自動還原...${RESET}"
-    if [ -n "$health_check_error_output" ]; then echo -e "${YELLOW}偵測到的錯誤：\n${PURPLE}$health_check_error_output${RESET}"; fi
-    if git reset --hard "$restore_point_hash" --quiet; then
-        chmod +x "$SCRIPT_INSTALL_PATH" 2>/dev/null
-        log_message "SUCCESS" "成功還原到舊版本 (commit: ${restore_point_hash:0:7})"; echo -e "${GREEN}還原成功！${RESET}"
+        echo -e "\n${GREEN}新版本測試通過！更新成功！${RESET}"
+        echo -e "${CYAN}建議重新啟動腳本以應用所有更改。${RESET}";
     else
-        log_message "CRITICAL" "自動還原失敗！"; echo -e "${RED}${BOLD}致命錯誤：自動還原失敗！請手動檢查 Git 倉庫！${RESET}"
+        echo -e "\n${RED}--- 更新失敗 ---${RESET}";
+        echo -e "${RED}新版本腳本未能通過自動化測試。正在自動還原到更新前的版本...${RESET}"
+        if git reset --hard "$restore_point_hash" --quiet; then
+            echo -e "${GREEN}還原成功！您仍在使用版本 ${SCRIPT_VERSION}。${RESET}"
+        else
+            echo -e "${RED}${BOLD}致命錯誤：自動還原失敗！請手動檢查 Git 倉庫！${RESET}"
+        fi
     fi
 
-    cd "$original_dir"; read -p "按 Enter 返回..."; return 1
+    cd "$original_dir"; read -p "按 Enter 返回...";
 }
 
 ############################################
