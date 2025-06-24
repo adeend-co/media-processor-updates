@@ -21,47 +21,44 @@ jobs:
           gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
           passphrase: ${{ secrets.GPG_PASSPHRASE }}
 
-      # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-      # ★★★      核心修正：合併「準備」與「簽署」步驟      ★★★
-      # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
       - name: Prepare and Sign Release Script
         id: prepare_script
         run: |
-          # 1. 準備用於簽署的內容。
-          #    這一步的操作必須和 media_processor.sh 中的 verify_script_integrity 函式完全一致。
-          #    我們從原始模板中，移除所有將被動態替換的「整行」內容。
-          echo "Preparing data for signing..."
-          grep -Fv 'SCRIPT_VERSION="v' media_processor.sh | \
-          grep -Fv 'SCRIPT_UPDATE_DATE=' | \
-          grep -Fv 'OFFICIAL_SIGNATURE_B64="SIGNATURE_PLACEHOLDER"' | \
-          grep -Fv 'OFFICIAL_PUBLIC_KEY_B64="PUBLIC_KEY_PLACEHOLDER"' | \
-          sed 's/\r$//' > data_to_sign.sh
+          # 1. 準備用於簽署的內容 (行號模式)
+          echo "Preparing data for signing using line number exclusion..."
+          # 獲取需要排除的行的行號
+          LINES_TO_DELETE=$(grep -n -E '^SCRIPT_VERSION=|^SCRIPT_UPDATE_DATE=|^OFFICIAL_SIGNATURE_B64=|^OFFICIAL_PUBLIC_KEY_B64=' media_processor.sh | cut -d: -f1)
+          # 構建 sed 刪除命令
+          SED_DELETE_CMD=""
+          for line_num in $LINES_TO_DELETE; do
+              SED_DELETE_CMD+="${line_num}d;"
+          done
+          # 使用 sed 刪除指定行來創建純淨內容
+          sed "$SED_DELETE_CMD" media_processor.sh | sed 's/\r$//' > data_to_sign.sh
 
-          # 2. 對這個準備好的、純淨的內容產生數位簽章。
+          # 2. 對這個準備好的、純淨的內容產生數位簽章
           echo "Generating signature for the prepared data..."
           gpg --detach-sign --armor -u ${{ secrets.GPG_SIGNING_KEY_ID }} data_to_sign.sh
           SIGNATURE_B64=$(cat data_to_sign.sh.asc | base64 -w 0)
           
-          # 3. 準備最終要發布的腳本，從原始模板開始。
+          # 3. 準備最終要發布的腳本，從原始模板開始
           echo "Preparing the final release script..."
           cp media_processor.sh release_script.sh
           
-          # 4. 將所有動態值（版本、日期、公鑰、和剛剛產生的簽章）注入到最終腳本中。
+          # 4. 將所有動態值注入到最終腳本中
           PUBLIC_KEY_B64=$(gpg --armor --export ${{ secrets.GPG_SIGNING_KEY_ID }} | base64 -w 0)
           sed -i "s/^SCRIPT_VERSION=\".*\"/SCRIPT_VERSION=\"${{ github.ref_name }}\"/" release_script.sh
           sed -i "s/^SCRIPT_UPDATE_DATE=\".*\"/SCRIPT_UPDATE_DATE=\"$(date +%Y-%m-%d)\"/" release_script.sh
           sed -i "s@PUBLIC_KEY_PLACEHOLDER@${PUBLIC_KEY_B64}@" release_script.sh
           sed -i "s@SIGNATURE_PLACEHOLDER@${SIGNATURE_B64}@" release_script.sh
           
-          # 5. 將最終腳本的路徑傳遞給下一步。
+          # 5. 將最終腳本的路徑傳遞給下一步
           echo "script_path=release_script.sh" >> $GITHUB_OUTPUT
           echo "Final script prepared at release_script.sh"
 
       - name: Create Release Package
         run: |
-          # 將處理好的腳本重新命名，以便打包
           mv ${{ steps.prepare_script.outputs.script_path }} media_processor.sh
-          # 將所有需要的檔案打包成 release.zip
           zip release.zip media_processor.sh estimate_size.py sync_helper.py LICENSE README.md
 
       - name: Create GitHub Release
