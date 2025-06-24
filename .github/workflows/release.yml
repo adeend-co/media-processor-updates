@@ -21,62 +21,48 @@ jobs:
           gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
           passphrase: ${{ secrets.GPG_PASSPHRASE }}
 
-      - name: Prepare Script for Signing
-        id: prepare_script
-        run: |
-          # 1. 建立一個副本，後續所有修改都在副本上進行
-          cp media_processor.sh script_to_process.sh
-          
-          # 2. 在副本中注入所有【非簽章】的動態內容
-          # 注意：這裡不再注入公鑰，因為公鑰也需要在簽署前被排除
-          sed -i "s/^SCRIPT_VERSION=\".*\"/SCRIPT_VERSION=\"${{ github.ref_name }}\"/" script_to_process.sh
-          sed -i "s/^SCRIPT_UPDATE_DATE=\".*\"/SCRIPT_UPDATE_DATE=\"$(date +%Y-%m-%d)\"/" script_to_process.sh
-          
-          # 3. 將準備好的檔案路徑傳遞給後續步驟
-          echo "script_path=script_to_process.sh" >> $GITHUB_OUTPUT
-
-      - name: Sign the Prepared Script
+      - name: Sign the Script Template
         id: sign_script
         run: |
-          # 獲取上一步準備好的腳本路徑
-          SCRIPT_TO_PROCESS="${{ steps.prepare_script.outputs.script_path }}"
-          
           # ================================================================= #
           # ★★★ 核心修正 ★★★
-          # 準備被簽署的資料：從處理後的腳本中，排除掉【簽章】和【公鑰】這兩行的佔位符。
-          # 這確保了簽署的對象和本地驗證時計算雜湊值的對象完全一致。
+          # 被簽署的對象是原始的、未經任何修改的 media_processor.sh 模板檔案。
+          # 這個模板檔案中的版本號、日期、公鑰、簽章都是佔位符。
+          # 這樣就確保了本地驗證時，只要將這四行排除，就能還原出完全一樣的模板內容。
           # ================================================================= #
-          grep -Fv 'OFFICIAL_SIGNATURE_B64="SIGNATURE_PLACEHOLDER"' "$SCRIPT_TO_PROCESS" | \
-          grep -Fv 'OFFICIAL_PUBLIC_KEY_B64="PUBLIC_KEY_PLACEHOLDER"' > data_to_sign.sh
           
-          # 對這個「乾淨」的資料進行簽署
-          gpg --detach-sign --armor -u ${{ secrets.GPG_SIGNING_KEY_ID }} data_to_sign.sh
+          # 直接對原始模板進行簽署
+          gpg --detach-sign --armor -u ${{ secrets.GPG_SIGNING_KEY_ID }} media_processor.sh
           
           # 將簽章內容編碼並傳遞給下一步
-          SIGNATURE_B64=$(cat data_to_sign.sh.asc | base64 -w 0)
+          SIGNATURE_B64=$(cat media_processor.sh.asc | base64 -w 0)
           echo "SIGNATURE_B64_VALUE=${SIGNATURE_B64}" >> $GITHUB_OUTPUT
-      
-      - name: Inject Final Signature and Public Key
-        id: inject_final
-        run: |
-          # 將最終的簽章和公鑰注入到已經包含了其他所有內容的腳本中
-          SCRIPT_TO_INJECT="${{ steps.prepare_script.outputs.script_path }}"
-          
-          # 提取公鑰
-          PUBLIC_KEY_B64=$(gpg --armor --export ${{ secrets.GPG_SIGNING_KEY_ID }} | base64 -w 0)
-          
-          # 注入簽章
-          sed -i "s@SIGNATURE_PLACEHOLDER@${{ steps.sign_script.outputs.SIGNATURE_B64_VALUE }}@" "$SCRIPT_TO_INJECT"
-          # 注入公鑰
-          sed -i "s@PUBLIC_KEY_PLACEHOLDER@${PUBLIC_KEY_B64}@" "$SCRIPT_TO_INJECT"
 
-      - name: Create Release Package and Finalize Name
+      - name: Prepare Final Release Script
+        id: prepare_script
         run: |
-          # 將最終處理好的腳本重命名回標準名稱
+          # 1. 建立一個副本用於發布
+          cp media_processor.sh release_script.sh
+          
+          # 2. 提取公鑰
+          PUBLIC_KEY_B64=$(gpg --armor --export ${{ secrets.GPG_SIGNING_KEY_ID }} | base64 -w 0)
+
+          # 3. 將所有動態內容注入到發布腳本中
+          sed -i "s/^SCRIPT_VERSION=\".*\"/SCRIPT_VERSION=\"${{ github.ref_name }}\"/" release_script.sh
+          sed -i "s/^SCRIPT_UPDATE_DATE=\".*\"/SCRIPT_UPDATE_DATE=\"$(date +%Y-%m-%d)\"/" release_script.sh
+          sed -i "s@PUBLIC_KEY_PLACEHOLDER@${PUBLIC_KEY_B64}@" release_script.sh
+          sed -i "s@SIGNATURE_PLACEHOLDER@${{ steps.sign_script.outputs.SIGNATURE_B64_VALUE }}@" release_script.sh
+          
+          # 4. 將最終檔案的路徑傳遞出去
+          echo "script_path=release_script.sh" >> $GITHUB_OUTPUT
+
+      - name: Create Release Package
+        run: |
+          # 將最終處理好的腳本重命名回標準名稱，以便打包
           mv ${{ steps.prepare_script.outputs.script_path }} media_processor.sh
           
           # 打包所有需要的檔案
-          zip release.zip media_processor.sh estimate_size.py sync_helper.py LICENSE README.md
+          zip release.zip media_processor.sh estimate_size.py sync_helper.py LICENSE.md README.md
       
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -88,5 +74,4 @@ jobs:
             自動化發布版本 ${{ github.ref_name }}。
             
             此版本包含 GPG 數位簽章，可透過腳本內建的「腳本完整性驗證」功能進行驗證。
-            
           prerelease: false
