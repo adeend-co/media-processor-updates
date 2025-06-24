@@ -44,7 +44,7 @@
 ################################################################################
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.8.10" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.8.10-beta.1" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -670,16 +670,12 @@ spinner() {
 }
 
 ######################################################################
-# 腳本自我更新函數 (v7.1 - 混合模式 + 完整檢查/還原/錯誤輸出)
+# 腳本自我更新函數 (v7.2 - 混合模式 + 修正版本比較)
 ######################################################################
 auto_update_script() {
     clear
-    echo -e "${CYAN}--- 檢查腳本更新 (混合模式 v7.1) ---${RESET}"
+    echo -e "${CYAN}--- 檢查腳本更新 (混合模式 v7.2) ---${RESET}"
     log_message "INFO" "使用者觸發腳本更新檢查 (當前渠道: ${UPDATE_CHANNEL:-stable})。"
-
-    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-    # ★★★      根據更新渠道，執行不同的更新邏輯      ★★★
-    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 
     if [[ "${UPDATE_CHANNEL:-stable}" == "beta" ]]; then
         # --- 預覽版 (Beta) 更新邏輯：使用 Git ---
@@ -771,7 +767,16 @@ auto_update_script() {
         echo -e "${CYAN}  - 最新發布版本: ${GREEN}${remote_version}${RESET}"
         echo -e "${CYAN}--------------------------------------------${RESET}\n"
 
-        if [[ "$(printf '%s\n' "$remote_version" "$SCRIPT_VERSION" | sort -V | head -n 1)" == "$remote_version" && "$remote_version" != "$SCRIPT_VERSION" ]]; then
+        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+        # ★★★         核心修正：使用正規化版本號比較         ★★★
+        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+        # 將 'v2.5.8.9-beta.1' 轉換為 'v2.5.8.9~beta.1' 以便正確排序
+        local current_version_sortable=$(echo "$SCRIPT_VERSION" | sed 's/-/~/')
+        local remote_version_sortable=$(echo "$remote_version" | sed 's/-/~/')
+
+        # 比較正規化後的版本號
+        # 邏輯：如果排序後的第一個（最舊的）不是遠端版本，代表遠端有更新
+        if [[ "$(printf '%s\n' "$remote_version_sortable" "$current_version_sortable" | sort -V | head -n 1)" != "$remote_version_sortable" ]]; then
             echo -e "${GREEN}檢測到新的穩定版本！${RESET}"
         else
             echo -e "${GREEN}您的腳本已是最新版本。無需操作。${RESET}"; read -p "按 Enter 返回..."; return 0
@@ -817,7 +822,7 @@ auto_update_script() {
             if ! echo "$verification_result" | grep -q "驗證通過"; then
                 echo -e "${RED}失敗！${RESET}"
                 echo -e "${YELLOW}--- 驗證失敗詳細資訊 ---${RESET}"
-                echo "$verification_result" # 輸出 GPG 的詳細錯誤訊息
+                echo "$verification_result"
                 echo -e "${YELLOW}--------------------------${RESET}"
                 pre_check_failed=true
             else
