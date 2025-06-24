@@ -44,7 +44,7 @@
 ################################################################################
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.8.13-beta.1" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.8.13-beta.2" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -670,11 +670,11 @@ spinner() {
 }
 
 ######################################################################
-# 腳本自我更新函數 (v8.1 - 混合模式 + 修正驗證調用)
+# 腳本自我更新函數 (v8.2 - 混合模式 + 完整錯誤輸出)
 ######################################################################
 auto_update_script() {
     clear
-    echo -e "${CYAN}--- 檢查腳本更新 (混合模式 v8.1) ---${RESET}"
+    echo -e "${CYAN}--- 檢查腳本更新 (混合模式 v8.2) ---${RESET}"
     log_message "INFO" "使用者觸發腳本更新檢查 (當前渠道: ${UPDATE_CHANNEL:-stable})。"
 
     if [[ "${UPDATE_CHANNEL:-stable}" == "beta" ]]; then
@@ -726,15 +726,23 @@ auto_update_script() {
 
         echo -e "${GREEN}版本切換完成。正在進行健康檢查...${RESET}"
         chmod +x "$SCRIPT_INSTALL_PATH" 2>/dev/null
-        if ! timeout 15s bash "$SCRIPT_INSTALL_PATH" --health-check &>/dev/null; then
+        
+        # ★★★ 核心修正：Beta 版健康檢查也加入錯誤輸出 ★★★
+        local beta_health_check_log="$HOME/beta_health_check_fail.log"
+        if ! timeout 15s bash "$SCRIPT_INSTALL_PATH" --health-check &> "$beta_health_check_log"; then
             echo -e "\n${RED}--- 更新失敗 ---${RESET}";
             echo -e "${RED}新版本腳本未能通過健康檢查。正在自動還原...${RESET}"
+            echo -e "${YELLOW}--- 健康檢查失敗詳細資訊 ---${RESET}"
+            cat "$beta_health_check_log"
+            echo -e "${YELLOW}--------------------------${RESET}"
+            rm -f "$beta_health_check_log"
             if git reset --hard "$current_commit" --quiet; then
                 echo -e "${GREEN}還原成功！您仍在使用更新前的版本。${RESET}"
             else
                 echo -e "${RED}${BOLD}致命錯誤：自動還原失敗！請手動檢查 Git 倉庫！${RESET}"
             fi
         else
+            rm -f "$beta_health_check_log"
             echo -e "\n${GREEN}新版本測試通過！更新成功！${RESET}"
             echo -e "${CYAN}建議重新啟動腳本以應用所有更改。${RESET}";
         fi
@@ -802,17 +810,27 @@ auto_update_script() {
 
         echo -e "${YELLOW}[3/5] 正在預先驗證新版本腳本...${RESET}"
         local pre_check_failed=false
+        local health_check_log="$temp_dir/health_check_fail.log"
+
         echo -n "  - 正在測試語法... ";
         if ! bash -n "$new_main_script"; then echo -e "${RED}失敗！${RESET}"; pre_check_failed=true; else echo -e "${GREEN}通過。${RESET}"; fi
 
+        # ★★★ 核心修正 1：預安裝健康檢查 ★★★
         if ! $pre_check_failed; then
             echo -n "  - 正在執行健康檢查... ";
-            if ! timeout 15s bash "$new_main_script" --health-check &>/dev/null; then echo -e "${RED}失敗！${RESET}"; pre_check_failed=true; else echo -e "${GREEN}通過。${RESET}"; fi
+            if ! timeout 15s bash "$new_main_script" --health-check &> "$health_check_log"; then
+                echo -e "${RED}失敗！${RESET}";
+                echo -e "${YELLOW}--- 健康檢查失敗詳細資訊 ---${RESET}"
+                cat "$health_check_log"
+                echo -e "${YELLOW}--------------------------${RESET}"
+                pre_check_failed=true
+            else
+                echo -e "${GREEN}通過。${RESET}"
+            fi
         fi
 
         if ! $pre_check_failed; then
             echo -n "  - 正在驗證數位簽章... ";
-            # 現在調用的是新的、自給自足的驗證函式
             if ! verify_script_integrity "$new_main_script"; then
                 # 失敗訊息會由 verify_script_integrity 自己印出
                 pre_check_failed=true
@@ -836,8 +854,13 @@ auto_update_script() {
         chmod +x "$SCRIPT_INSTALL_PATH" "$PYTHON_ESTIMATOR_SCRIPT_PATH" "$PYTHON_SYNC_HELPER_SCRIPT_PATH" 2>/dev/null
 
         echo -e "${YELLOW}[5/5] 正在進行最終確認...${RESET}"
-        if ! timeout 15s bash "$SCRIPT_INSTALL_PATH" --health-check &>/dev/null; then
+        # ★★★ 核心修正 2：安裝後健康檢查 ★★★
+        local post_health_check_log="$temp_dir/post_health_check_fail.log"
+        if ! timeout 15s bash "$SCRIPT_INSTALL_PATH" --health-check &> "$post_health_check_log"; then
             echo -e "${RED}安裝後健康檢查失敗！正在自動還原...${RESET}"
+            echo -e "${YELLOW}--- 健康檢查失敗詳細資訊 ---${RESET}"
+            cat "$post_health_check_log"
+            echo -e "${YELLOW}--------------------------${RESET}"
             cp "$backup_dir"/* "$SCRIPT_DIR/"
             echo -e "${GREEN}已成功還原到舊版本。您的腳本未受影響。${RESET}"
             read -p "按 Enter 返回..."
