@@ -44,7 +44,7 @@
 ################################################################################
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.8.13" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.8.13-beta.1" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -670,20 +670,15 @@ spinner() {
 }
 
 ######################################################################
-# 腳本自我更新函數 (v8.0 - 混合模式：下載穩定版 / Git 更新預覽版)
-# 最終、最穩健的架構
+# 腳本自我更新函數 (v8.1 - 混合模式 + 修正驗證調用)
 ######################################################################
 auto_update_script() {
     clear
-    echo -e "${CYAN}--- 檢查腳本更新 (混合模式 v8.0) ---${RESET}"
+    echo -e "${CYAN}--- 檢查腳本更新 (混合模式 v8.1) ---${RESET}"
     log_message "INFO" "使用者觸發腳本更新檢查 (當前渠道: ${UPDATE_CHANNEL:-stable})。"
 
-    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-    # ★★★      根據更新渠道，執行不同的更新邏輯      ★★★
-    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-
     if [[ "${UPDATE_CHANNEL:-stable}" == "beta" ]]; then
-        # --- 預覽版 (Beta) 更新邏輯：使用 Git (對應您的分析) ---
+        # --- 預覽版 (Beta) 更新邏輯：使用 Git ---
         echo -e "${CYAN}渠道：${YELLOW}預覽版${CYAN}。將使用 Git 進行更新...${RESET}"
         if ! command -v git &> /dev/null; then
             log_message "ERROR" "預覽版更新需要 'git'。";
@@ -746,7 +741,7 @@ auto_update_script() {
         cd "$original_dir"; read -p "按 Enter 返回...";
 
     else
-        # --- 穩定版 (Stable) 更新邏輯：下載發布包 (對應您的方案 B) ---
+        # --- 穩定版 (Stable) 更新邏輯：下載發布包 ---
         echo -e "${CYAN}渠道：${GREEN}穩定版${CYAN}。將從 GitHub Release 安全下載...${RESET}"
         if ! command -v curl &> /dev/null || ! command -v jq &> /dev/null || ! command -v unzip &> /dev/null; then
             log_message "ERROR" "穩定版更新需要 'curl', 'jq', 'unzip'。";
@@ -817,16 +812,12 @@ auto_update_script() {
 
         if ! $pre_check_failed; then
             echo -n "  - 正在驗證數位簽章... ";
-            # 這裡的 --self-verify 是我們在 main() 函數中新增的入口
-            local verification_result; verification_result=$(bash "$new_main_script" --self-verify)
-            if ! echo "$verification_result" | grep -q "驗證通過"; then
-                echo -e "${RED}失敗！${RESET}"
-                echo -e "${YELLOW}--- 驗證失敗詳細資訊 ---${RESET}"
-                echo "$verification_result" # 輸出 GPG 的詳細錯誤訊息
-                echo -e "${YELLOW}--------------------------${RESET}"
+            # 現在調用的是新的、自給自足的驗證函式
+            if ! verify_script_integrity "$new_main_script"; then
+                # 失敗訊息會由 verify_script_integrity 自己印出
                 pre_check_failed=true
             else
-                echo -e "${GREEN}通過。${RESET}"
+                # 成功訊息也會由它自己印出
             fi
         fi
 
@@ -4502,40 +4493,56 @@ check_environment() {
     return 0 # 返回成功狀態碼
 }
 
-############################################
-# 腳本完整性自我驗證 (v2.3 - 抗換行符干擾版)
-############################################
+############################################################
+# 腳本完整性自我驗證 (v3.0 - 自給自足路徑版)
+############################################################
 verify_script_integrity() {
-    clear
+    local script_to_verify="$1"
+    # 如果沒有提供路徑，就驗證當前腳本
+    if [ -z "$script_to_verify" ]; then
+        script_to_verify="${BASH_SOURCE[0]}"
+    fi
+
+    # 在函數內部顯示標題，這樣 --self-verify 模式也能有輸出
     echo -e "${CYAN}--- 正在進行腳本完整性驗證 ---${RESET}"
-    echo "這將使用 GPG 數位簽章來驗證當前腳本的真偽與完整性。"
-    echo -e "${YELLOW}請稍候...${RESET}\n"
-    sleep 1
-
-    if ! command -v gpg &> /dev/null; then
-        echo -e "${RED}[✗] 驗證失敗：找不到 gpg 命令。${RESET}"; read -p "按 Enter 返回..."; return 1;
+    echo "目標檔案: $script_to_verify"
+    
+    if ! command -v gpg &> /dev/null || ! command -v base64 &> /dev/null; then
+        echo -e "${RED}[✗] 驗證失敗：找不到 gpg 或 base64 命令。${RESET}"; return 1;
     fi
 
-    if [[ "$OFFICIAL_SIGNATURE_B64" == "SIGNATURE_PLACEHOLDER" || -z "$OFFICIAL_SIGNATURE_B64" ]] || \
-       [[ "$OFFICIAL_PUBLIC_KEY_B64" == "PUBLIC_KEY_PLACEHOLDER" || -z "$OFFICIAL_PUBLIC_KEY_B64" ]]; then
-        echo -e "${YELLOW}[!] 驗證無法進行：此為開發中版本，無官方簽章。${RESET}"; read -p "按 Enter 返回..."; return 1;
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+    # ★★★   核心修正：直接從目標檔案中讀取所有資訊   ★★★
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+    local version_line; version_line=$(grep '^SCRIPT_VERSION=' "$script_to_verify")
+    local date_line; date_line=$(grep '^SCRIPT_UPDATE_DATE=' "$script_to_verify")
+    local sig_line; sig_line=$(grep '^OFFICIAL_SIGNATURE_B64=' "$script_to_verify")
+    local key_line; key_line=$(grep '^OFFICIAL_PUBLIC_KEY_B64=' "$script_to_verify")
+    
+    # 從行中提取 Base64 編碼的值
+    local signature_b64; signature_b64=$(echo "$sig_line" | sed -n 's/.*"\(.*\)"/\1/p')
+    local public_key_b64; public_key_b64=$(echo "$key_line" | sed -n 's/.*"\(.*\)"/\1/p')
+
+    if [[ "$signature_b64" == "SIGNATURE_PLACEHOLDER" || -z "$signature_b64" ]] || \
+       [[ "$public_key_b64" == "PUBLIC_KEY_PLACEHOLDER" || -z "$public_key_b64" ]]; then
+        echo -e "${YELLOW}[!] 驗證無法進行：此為開發中版本，無官方簽章。${RESET}"; return 1;
     fi
 
-    local this_script_path="${BASH_SOURCE[0]}"
     local temp_dir; temp_dir=$(mktemp -d)
     local temp_pubkey_file="$temp_dir/pubkey.asc"
     local temp_sig_file="$temp_dir/signature.asc"
     local temp_data_file="$temp_dir/data_to_verify.sh"
     
-    if ! echo "$OFFICIAL_PUBLIC_KEY_B64" | base64 -d > "$temp_pubkey_file" || \
-       ! echo "$OFFICIAL_SIGNATURE_B64" | base64 -d > "$temp_sig_file"; then
-        echo -e "${RED}[✗] 驗證失敗：無法解碼內嵌簽章或公鑰。${RESET}"; rm -rf "$temp_dir"; read -p "按 Enter 返回..."; return 1;
+    if ! echo "$public_key_b64" | base64 -d > "$temp_pubkey_file" || \
+       ! echo "$signature_b64" | base64 -d > "$temp_sig_file"; then
+        echo -e "${RED}[✗] 驗證失敗：無法解碼內嵌簽章或公鑰。${RESET}"; rm -rf "$temp_dir"; return 1;
     fi
 
-    grep -Fv "SCRIPT_VERSION=\"$SCRIPT_VERSION\"" "$this_script_path" | \
-    grep -Fv "SCRIPT_UPDATE_DATE=\"$SCRIPT_UPDATE_DATE\"" | \
-    grep -Fv "OFFICIAL_SIGNATURE_B64=\"$OFFICIAL_SIGNATURE_B64\"" | \
-    grep -Fv "OFFICIAL_PUBLIC_KEY_B64=\"$OFFICIAL_PUBLIC_KEY_B64\"" | \
+    # 使用從檔案中讀取到的完整行內容來過濾，確保與 Actions 流程一致
+    grep -Fv "$version_line" "$script_to_verify" | \
+    grep -Fv "$date_line" | \
+    grep -Fv "$sig_line" | \
+    grep -Fv "$key_line" | \
     sed 's/\r$//' > "$temp_data_file"
 
     local gpg_output
@@ -4548,15 +4555,14 @@ verify_script_integrity() {
         echo "數位簽章有效，確認是由以下金鑰持有者簽署："
         echo -e "${CYAN}${signer}${RESET}"
         echo "證明您正在執行的是未經篡改的官方發布版本。"
+        rm -rf "$temp_dir"; return 0
     else
         echo -e "${RED}[✗] 驗證失敗！${RESET}"
         echo "數位簽章無效或與內容不符。腳本可能已被修改。"
         echo -e "\n${YELLOW}GPG 原始輸出：${RESET}"
         echo "$gpg_output" | grep -E "gpg:|signature|Good|BAD"
+        rm -rf "$temp_dir"; return 1
     fi
-
-    rm -rf "$temp_dir"
-    read -p "按 Enter 返回..."
 }
 
 ############################################
