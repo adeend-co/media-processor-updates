@@ -670,11 +670,11 @@ spinner() {
 }
 
 ######################################################################
-# 腳本自我更新函數 (v8.2 - 混合模式 + 完整錯誤輸出)
+# 腳本自我更新函數 (v8.3 - 混合模式 + 修正語法錯誤)
 ######################################################################
 auto_update_script() {
     clear
-    echo -e "${CYAN}--- 檢查腳本更新 (混合模式 v8.2) ---${RESET}"
+    echo -e "${CYAN}--- 檢查腳本更新 (混合模式 v8.3) ---${RESET}"
     log_message "INFO" "使用者觸發腳本更新檢查 (當前渠道: ${UPDATE_CHANNEL:-stable})。"
 
     if [[ "${UPDATE_CHANNEL:-stable}" == "beta" ]]; then
@@ -727,7 +727,6 @@ auto_update_script() {
         echo -e "${GREEN}版本切換完成。正在進行健康檢查...${RESET}"
         chmod +x "$SCRIPT_INSTALL_PATH" 2>/dev/null
         
-        # ★★★ 核心修正：Beta 版健康檢查也加入錯誤輸出 ★★★
         local beta_health_check_log="$HOME/beta_health_check_fail.log"
         if ! timeout 15s bash "$SCRIPT_INSTALL_PATH" --health-check &> "$beta_health_check_log"; then
             echo -e "\n${RED}--- 更新失敗 ---${RESET}";
@@ -815,7 +814,6 @@ auto_update_script() {
         echo -n "  - 正在測試語法... ";
         if ! bash -n "$new_main_script"; then echo -e "${RED}失敗！${RESET}"; pre_check_failed=true; else echo -e "${GREEN}通過。${RESET}"; fi
 
-        # ★★★ 核心修正 1：預安裝健康檢查 ★★★
         if ! $pre_check_failed; then
             echo -n "  - 正在執行健康檢查... ";
             if ! timeout 15s bash "$new_main_script" --health-check &> "$health_check_log"; then
@@ -836,6 +834,10 @@ auto_update_script() {
                 pre_check_failed=true
             else
                 # 成功訊息也會由它自己印出
+                # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+                # ★★★      最終、最關鍵的語法修正      ★★★
+                # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+                : # 這個冒號是「什麼都不做」的指令，用來填補這個空的 else 區塊
             fi
         fi
 
@@ -854,7 +856,6 @@ auto_update_script() {
         chmod +x "$SCRIPT_INSTALL_PATH" "$PYTHON_ESTIMATOR_SCRIPT_PATH" "$PYTHON_SYNC_HELPER_SCRIPT_PATH" 2>/dev/null
 
         echo -e "${YELLOW}[5/5] 正在進行最終確認...${RESET}"
-        # ★★★ 核心修正 2：安裝後健康檢查 ★★★
         local post_health_check_log="$temp_dir/post_health_check_fail.log"
         if ! timeout 15s bash "$SCRIPT_INSTALL_PATH" --health-check &> "$post_health_check_log"; then
             echo -e "${RED}安裝後健康檢查失敗！正在自動還原...${RESET}"
