@@ -44,7 +44,7 @@
 ################################################################################
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.8.13-beta.2" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.8.13-beta.3" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -4517,12 +4517,12 @@ check_environment() {
 }
 
 ############################################################
-# 腳本完整性自我驗證 (v3.0 - 自給自足路徑版)
+# 腳本完整性自我驗證 (v3.1 - 修正語法錯誤)
 ############################################################
 verify_script_integrity() {
     local script_to_verify="$1"
     # 如果沒有提供路徑，就驗證當前腳本
-    if [ -z "$script_to_verify" ]; then
+    if [ -z "$script_to_verify" ]; then # ★★★ 核心修正：加上遺漏的 "then" ★★★
         script_to_verify="${BASH_SOURCE[0]}"
     fi
 
@@ -4534,15 +4534,11 @@ verify_script_integrity() {
         echo -e "${RED}[✗] 驗證失敗：找不到 gpg 或 base64 命令。${RESET}"; return 1;
     fi
 
-    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-    # ★★★   核心修正：直接從目標檔案中讀取所有資訊   ★★★
-    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
     local version_line; version_line=$(grep '^SCRIPT_VERSION=' "$script_to_verify")
     local date_line; date_line=$(grep '^SCRIPT_UPDATE_DATE=' "$script_to_verify")
     local sig_line; sig_line=$(grep '^OFFICIAL_SIGNATURE_B64=' "$script_to_verify")
     local key_line; key_line=$(grep '^OFFICIAL_PUBLIC_KEY_B64=' "$script_to_verify")
     
-    # 從行中提取 Base64 編碼的值
     local signature_b64; signature_b64=$(echo "$sig_line" | sed -n 's/.*"\(.*\)"/\1/p')
     local public_key_b64; public_key_b64=$(echo "$key_line" | sed -n 's/.*"\(.*\)"/\1/p')
 
@@ -4561,7 +4557,6 @@ verify_script_integrity() {
         echo -e "${RED}[✗] 驗證失敗：無法解碼內嵌簽章或公鑰。${RESET}"; rm -rf "$temp_dir"; return 1;
     fi
 
-    # 使用從檔案中讀取到的完整行內容來過濾，確保與 Actions 流程一致
     grep -Fv "$version_line" "$script_to_verify" | \
     grep -Fv "$date_line" | \
     grep -Fv "$sig_line" | \
