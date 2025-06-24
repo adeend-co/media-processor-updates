@@ -1,4 +1,3 @@
-# .github/workflows/release.yml (v1.2 - 修正 ZIP 打包邏輯)
 name: Create and Sign Release
 
 on:
@@ -22,41 +21,56 @@ jobs:
           gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
           passphrase: ${{ secrets.GPG_PASSPHRASE }}
 
-      - name: Prepare Release Version of Script
+      - name: Prepare Script for Signing
         id: prepare_script
         run: |
-          NEW_VERSION=${{ github.ref_name }}
-          NEW_DATE=$(date +%Y-%m-%d)
-          cp media_processor.sh release_media_processor.sh
-          sed -i "s/^SCRIPT_VERSION=\".*\"/SCRIPT_VERSION=\"$NEW_VERSION\"/" release_media_processor.sh
-          sed -i "s/^SCRIPT_UPDATE_DATE=\".*\"/SCRIPT_UPDATE_DATE=\"$NEW_DATE\"/" release_media_processor.sh
-          echo "script_path=release_media_processor.sh" >> $GITHUB_OUTPUT
-
-      - name: Prepare Signature Data
-        id: sig_data
-        run: |
-          SCRIPT_TO_SIGN="${{ steps.prepare_script.outputs.script_path }}"
-          gpg --detach-sign --armor -u ${{ secrets.GPG_SIGNING_KEY_ID }} "$SCRIPT_TO_SIGN"
+          # 1. 建立一個副本，後續所有修改都在副本上進行
+          cp media_processor.sh script_to_process.sh
+          
+          # 2. 在副本中注入所有【非簽章】的動態內容
+          sed -i "s/^SCRIPT_VERSION=\".*\"/SCRIPT_VERSION=\"${{ github.ref_name }}\"/" script_to_process.sh
+          sed -i "s/^SCRIPT_UPDATE_DATE=\".*\"/SCRIPT_UPDATE_DATE=\"$(date +%Y-%m-%d)\"/" script_to_process.sh
+          
+          # 3. 將公鑰也視為內容的一部分，先注入
           PUBLIC_KEY_B64=$(gpg --armor --export ${{ secrets.GPG_SIGNING_KEY_ID }} | base64 -w 0)
-          SIGNATURE_B64=$(cat ${SCRIPT_TO_SIGN}.asc | base64 -w 0)
-          echo "PUBLIC_KEY_B64_VALUE=$PUBLIC_KEY_B64" >> $GITHUB_OUTPUT
-          echo "SIGNATURE_B64_VALUE=$SIGNATURE_B64" >> $GITHUB_OUTPUT
+          sed -i "s@PUBLIC_KEY_PLACEHOLDER@${PUBLIC_KEY_B64}@" script_to_process.sh
+          
+          # 4. 將準備好的檔案路徑和公鑰傳遞給後續步驟
+          echo "script_path=script_to_process.sh" >> $GITHUB_OUTPUT
+          echo "PUBLIC_KEY_B64_VALUE=${PUBLIC_KEY_B64}" >> $GITHUB_OUTPUT
 
-      - name: Inject Signature into Script
+      - name: Sign the Prepared Script
+        id: sign_script
         run: |
+          # ★★★ 核心邏輯 ★★★
+          # 獲取上一步準備好的腳本路徑
+          SCRIPT_TO_PROCESS="${{ steps.prepare_script.outputs.script_path }}"
+          
+          # 準備被簽署的資料：即排除了【簽章佔位符那一行】的腳本內容
+          # 這確保了簽署的對象和本地驗證時計算雜湊值的對象完全一致
+          grep -Fv 'OFFICIAL_SIGNATURE_B64="SIGNATURE_PLACEHOLDER"' "$SCRIPT_TO_PROCESS" > data_to_sign.sh
+          
+          # 對這個「乾淨」的資料進行簽署
+          gpg --detach-sign --armor -u ${{ secrets.GPG_SIGNING_KEY_ID }} data_to_sign.sh
+          
+          # 將簽章內容編碼並傳遞給下一步
+          SIGNATURE_B64=$(cat data_to_sign.sh.asc | base64 -w 0)
+          echo "SIGNATURE_B64_VALUE=${SIGNATURE_B64}" >> $GITHUB_OUTPUT
+      
+      - name: Inject Final Signature
+        run: |
+          # 將最終的簽章注入到已經包含了其他所有內容的腳本中
           SCRIPT_TO_INJECT="${{ steps.prepare_script.outputs.script_path }}"
-          sed -i "s@SIGNATURE_PLACEHOLDER@${{ steps.sig_data.outputs.SIGNATURE_B64_VALUE }}@" "$SCRIPT_TO_INJECT"
-          sed -i "s@PUBLIC_KEY_PLACEHOLDER@${{ steps.sig_data.outputs.PUBLIC_KEY_B64_VALUE }}@" "$SCRIPT_TO_INJECT"
+          sed -i "s@SIGNATURE_PLACEHOLDER@${{ steps.sign_script.outputs.SIGNATURE_B64_VALUE }}@" "$SCRIPT_TO_INJECT"
 
-      # ★★★ 核心修正：簡化打包流程 ★★★
-      - name: Create Release Package
+      - name: Create Release Package and Finalize Name
         run: |
-          # 1. 先將準備好的腳本重命名為最終發布的名稱
+          # 將最終處理好的腳本重命名回標準名稱
           mv ${{ steps.prepare_script.outputs.script_path }} media_processor.sh
           
-          # 2. 用一個簡單的 zip 命令直接打包所有需要的檔案
+          # 打包所有需要的檔案
           zip release.zip media_processor.sh estimate_size.py sync_helper.py
-
+      
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
