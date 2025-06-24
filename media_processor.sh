@@ -44,7 +44,7 @@
 ################################################################################
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.8.4" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.8.5" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -4452,7 +4452,7 @@ check_environment() {
 }
 
 ############################################
-# 腳本完整性自我驗證（v2.0)
+# 腳本完整性自我驗證(v2.1)
 ############################################
 verify_script_integrity() {
     clear
@@ -4461,7 +4461,7 @@ verify_script_integrity() {
     echo -e "${YELLOW}請稍候...${RESET}\n"
     sleep 1
 
-    if ! command -v gpg &>/dev/null; then
+    if ! command -v gpg &> /dev/null; then
         echo -e "${RED}[✗] 驗證失敗：找不到 gpg 命令。${RESET}"
         echo "請先安裝 'gnupg' 套件 (例如: pkg install gnupg)。"
         read -p "按 Enter 返回..."
@@ -4489,10 +4489,12 @@ verify_script_integrity() {
     echo "$OFFICIAL_SIGNATURE_B64" | base64 -d > "$temp_sig_file"
 
     # ★★★ 核心修正 ★★★
-    # 準備被驗證的資料：即腳本本身，但精確地排除掉定義簽章的那一行。
-    # -F: 將模式視為固定字串，而不是正則表達式，防止特殊字元被解釋。
-    # -v: 反向選擇，即排除匹配的行。
-    grep -Fv "OFFICIAL_SIGNATURE_B64=\"$OFFICIAL_SIGNATURE_B64\"" "$this_script_path" > "$temp_data_file"
+    # 準備被驗證的資料：即腳本本身，但精確地排除掉定義簽章和公鑰的那兩行。
+    # 這樣計算出的雜湊值，才會和 Actions 中簽署時的雜湊值一致。
+    # 使用 -F: 將模式視為固定字串，-v: 反向選擇（排除）。
+    # 透過管道連續排除兩行。
+    grep -Fv "OFFICIAL_SIGNATURE_B64=\"$OFFICIAL_SIGNATURE_B64\"" "$this_script_path" | \
+    grep -Fv "OFFICIAL_PUBLIC_KEY_B64=\"$OFFICIAL_PUBLIC_KEY_B64\"" > "$temp_data_file"
 
     local gpg_output
     # 在一個隔離的臨時鑰匙圈中匯入公鑰並進行驗證
@@ -4514,8 +4516,8 @@ verify_script_integrity() {
         echo "  - 腳本內容已被修改。"
         echo "  - 腳本並非來自官方發布管道。"
         echo -e "\n${YELLOW}GPG 原始輸出以供除錯：${RESET}"
-        # 為了更清晰，只顯示 verify 步驟的輸出
-        echo "$gpg_output" | grep -A 5 "gpg: Signature made"
+        # 為了更清晰，只顯示與簽章相關的關鍵輸出
+        echo "$gpg_output" | grep -E "gpg: Signature made|Good signature|BAD signature"
     fi
 
     # 清理臨時檔案和目錄
