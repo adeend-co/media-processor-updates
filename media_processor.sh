@@ -3718,13 +3718,15 @@ general_download_menu() {
 ############################################
 
 ############################################
-# 腳本設定與工具選單 (v2.2 - 加入完整性驗證)
+# 腳本設定與工具選單 (v2.3 - 修正選單順序)
 ############################################
 utilities_menu() {
     while true; do
         clear
         echo -e "${CYAN}--- 腳本設定與工具 ---${RESET}"
         echo -e "${YELLOW}請選擇操作：${RESET}"
+        
+        # --- 通用選項 ---
         echo -e " 1. 參數設定 (執行緒, 下載路徑, 顏色)"
         echo -e " 2. 檢視操作日誌"
         echo -e " 3. ${BOLD}檢查並更新依賴套件${RESET}"
@@ -3732,27 +3734,37 @@ utilities_menu() {
         echo -e " 5. ${BOLD}設定日誌終端顯示級別${RESET}"
         echo -e " 6. ${BOLD}同步功能設定${RESET}"
         echo -e " 7. ${BOLD}設定更新渠道${RESET} (當前: ${GREEN}${UPDATE_CHANNEL:-stable}${RESET})"
-
-        local termux_options_start_index=8
-        local verification_option_index=9 # 將驗證選項固定在 9
-        local current_max_option=$verification_option_index
-
-        echo -e " ${verification_option_index}. ${BOLD}腳本完整性驗證${RESET} (檢查是否為官方正版)"
+        
+        # --- Termux 特定選項 ---
+        # 預先定義選項編號，如果不是 Termux 就不會顯示
+        local termux_autostart_option=8
+        local termux_update_option=9
+        local verification_option=10 # 驗證選項放在最後
+        local max_option=7 # 預設最大選項號
 
         if [[ "$OS_TYPE" == "termux" ]]; then
-            echo -e " ${termux_options_start_index}. ${BOLD}設定 Termux 啟動時詢問${RESET}"
-            # Termux 的完整更新選項可以順延
-            echo -e " $((verification_option_index + 1)). ${BOLD}完整更新 Termux 環境${RESET}"
-            current_max_option=$((verification_option_index + 1))
+            echo -e " ${termux_autostart_option}. ${BOLD}設定 Termux 啟動時詢問${RESET}"
+            echo -e " ${termux_update_option}. ${BOLD}完整更新 Termux 環境${RESET}"
+            max_option=$termux_update_option # 更新最大選項號
         fi
+
+        # --- 驗證選項總是顯示，但編號會變動 ---
+        # 如果是 Termux，驗證選項是 10；如果不是，驗證選項是 8
+        if [[ "$OS_TYPE" == "termux" ]]; then
+            verification_option=10
+        else
+            verification_option=8
+        fi
+        echo -e " ${verification_option}. ${BOLD}腳本完整性驗證${RESET} (檢查是否為官方正版)"
+        max_option=$verification_option # 最終的最大選項號
+
         echo -e "---------------------------------------------"
         echo -e " 0. ${YELLOW}返回主選單${RESET}"
         echo -e "---------------------------------------------"
 
         read -t 0.1 -N 10000 discard
-        local choice_prompt="輸入選項: "
         local choice
-        read -rp "$choice_prompt" choice
+        read -rp "輸入選項: " choice
 
         case $choice in
             1) config_menu ;;
@@ -3765,8 +3777,8 @@ utilities_menu() {
                 clear
                 echo -e "${CYAN}--- 設定更新渠道 ---${RESET}"
                 echo -e "選擇您希望接收的更新類型：\n"
-                echo -e " 1. ${GREEN}stable (穩定版)${RESET}: 只接收官方標記的正式發布，最穩定。"
-                echo -e " 2. ${YELLOW}beta (預覽版)${RESET}:   接收開發分支的最新程式碼，功能最新。"
+                echo -e " 1. ${GREEN}stable (穩定版)${RESET}: 只接收官方標記的正式發布。"
+                echo -e " 2. ${YELLOW}beta (預覽版)${RESET}:   接收開發分支的最新程式碼。"
                 echo -e "\n 0. ${CYAN}取消${RESET}"
                 local channel_choice
                 read -p "請選擇 (當前為: ${UPDATE_CHANNEL:-stable}): " channel_choice
@@ -3778,21 +3790,32 @@ utilities_menu() {
                 esac
                 sleep 2
                 ;;
-            8) 
+            8) # 這個數字現在只對應 Termux 的選項
                 if [[ "$OS_TYPE" == "termux" ]]; then
                     setup_termux_autostart
                     echo ""; read -p "按 Enter 返回..."
                 else
-                    echo -e "${RED}無效選項 '$choice'${RESET}"; sleep 1
+                    # 如果不是 Termux，但使用者輸入了 8，就檢查是否對應驗證選項
+                    if [[ "$verification_option" -eq 8 ]]; then
+                        verify_script_integrity
+                    else
+                        echo -e "${RED}無效選項 '$choice'${RESET}"; sleep 1
+                    fi
                 fi
                 ;;
-            9) verify_script_integrity ;; # 觸發驗證函數
-            10) 
+            9) # 這個數字現在只對應 Termux 的選項
                 if [[ "$OS_TYPE" == "termux" ]]; then
                     clear
                     read -p "此操作將執行 'pkg update -y && pkg upgrade -y'，確定嗎？(y/n): " confirm
                     if [[ "$confirm" =~ ^[Yy]$ ]]; then pkg update -y && pkg upgrade -y; fi
                     echo ""; read -p "按 Enter 返回..."
+                else
+                    echo -e "${RED}無效選項 '$choice'${RESET}"; sleep 1
+                fi
+                ;;
+            10) # 這個數字現在只對應 Termux 的驗證選項
+                if [[ "$OS_TYPE" == "termux" ]] && [[ "$verification_option" -eq 10 ]]; then
+                    verify_script_integrity
                 else
                     echo -e "${RED}無效選項 '$choice'${RESET}"; sleep 1
                 fi
