@@ -44,7 +44,7 @@
 ################################################################################
 
 # 腳本設定
-SCRIPT_VERSION="v2.5.8.6" # <<< 版本號更新
+SCRIPT_VERSION="v2.5.8.7" # <<< 版本號更新
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
@@ -4451,8 +4451,12 @@ check_environment() {
     return 0 # 返回成功狀態碼
 }
 
+#!/bin/bash
+
+# ... (此處所有內容，從腳本開頭到 `check_environment` 函式，都保持您提供的 `media_processor(50).txt` 的原樣，此處省略以保持簡潔) ...
+
 ############################################
-# 腳本完整性自我驗證(v2.1)
+# 腳本完整性自我驗證 (v2.2 - 修正版)
 ############################################
 verify_script_integrity() {
     clear
@@ -4461,14 +4465,15 @@ verify_script_integrity() {
     echo -e "${YELLOW}請稍候...${RESET}\n"
     sleep 1
 
+    # 檢查 gpg 命令是否存在
     if ! command -v gpg &> /dev/null; then
-        echo -e "${RED}[✗] 驗證失敗：找不到 gpg 命令。${RESET}"
-        echo "請先安裝 'gnupg' 套件 (例如: pkg install gnupg)。"
-        read -p "按 Enter 返回..."
-        return 1
+        echo -e "${RED}[✗] 驗證失敗：找不到 gpg 命令。${RESET}";
+        echo "請先安裝 'gnupg' 套件 (例如: pkg install gnupg)。"; read -p "按 Enter 返回..."; return 1;
     fi
 
-    if [[ "$OFFICIAL_SIGNATURE_B64" == "SIGNATURE_PLACEHOLDER" || "$OFFICIAL_PUBLIC_KEY_B64" == "PUBLIC_KEY_PLACEHOLDER" ]]; then
+    # 檢查佔位符，判斷是否為開發中版本
+    if [[ "$OFFICIAL_SIGNATURE_B64" == "SIGNATURE_PLACEHOLDER" || -z "$OFFICIAL_SIGNATURE_B64" ]] || \
+       [[ "$OFFICIAL_PUBLIC_KEY_B64" == "PUBLIC_KEY_PLACEHOLDER" || -z "$OFFICIAL_PUBLIC_KEY_B64" ]]; then
         echo -e "${YELLOW}[!] 驗證無法進行：${RESET}"
         echo "您執行的似乎是開發中的版本，尚未包含官方數位簽章。"
         echo "請從 GitHub Releases 頁面下載正式發布的版本以進行驗證。"
@@ -4476,35 +4481,32 @@ verify_script_integrity() {
         return 1
     fi
 
-    local this_script_path
-    this_script_path="${BASH_SOURCE[0]}"
-    local temp_dir
-    temp_dir=$(mktemp -d)
+    local this_script_path="${BASH_SOURCE[0]}"
+    local temp_dir; temp_dir=$(mktemp -d)
     local temp_pubkey_file="$temp_dir/pubkey.asc"
     local temp_sig_file="$temp_dir/signature.asc"
-    local temp_data_file="$temp_dir/data.sh"
-
+    local temp_data_file="$temp_dir/data_to_verify.sh"
+    
     # 將 Base64 編碼的公鑰和簽章解碼回原始的 Armor 格式
-    echo "$OFFICIAL_PUBLIC_KEY_B64" | base64 -d > "$temp_pubkey_file"
-    echo "$OFFICIAL_SIGNATURE_B64" | base64 -d > "$temp_sig_file"
+    if ! echo "$OFFICIAL_PUBLIC_KEY_B64" | base64 -d > "$temp_pubkey_file" || \
+       ! echo "$OFFICIAL_SIGNATURE_B64" | base64 -d > "$temp_sig_file"; then
+        echo -e "${RED}[✗] 驗證失敗：無法解碼內嵌的簽章或公鑰。腳本可能已損壞。${RESET}";
+        rm -rf "$temp_dir"; read -p "按 Enter 返回..."; return 1;
+    fi
 
-    # ★★★ 核心修正 ★★★
-    # 準備被驗證的資料：即腳本本身，但精確地排除掉定義簽章和公鑰的那兩行。
-    # 這樣計算出的雜湊值，才會和 Actions 中簽署時的雜湊值一致。
-    # 使用 -F: 將模式視為固定字串，-v: 反向選擇（排除）。
-    # 透過管道連續排除兩行。
-    grep -Fv "OFFICIAL_SIGNATURE_B64=\"$OFFICIAL_SIGNATURE_B64\"" "$this_script_path" | \
+    grep -Fv "SCRIPT_VERSION=\"$SCRIPT_VERSION\"" "$this_script_path" | \
+    grep -Fv "SCRIPT_UPDATE_DATE=\"$SCRIPT_UPDATE_DATE\"" | \
+    grep -Fv "OFFICIAL_SIGNATURE_B64=\"$OFFICIAL_SIGNATURE_B64\"" | \
     grep -Fv "OFFICIAL_PUBLIC_KEY_B64=\"$OFFICIAL_PUBLIC_KEY_B64\"" > "$temp_data_file"
 
-    local gpg_output
     # 在一個隔離的臨時鑰匙圈中匯入公鑰並進行驗證
+    local gpg_output
     gpg_output=$(gpg --no-default-keyring --keyring "$temp_dir/keyring.gpg" --import "$temp_pubkey_file" 2>&1 && \
                  gpg --no-default-keyring --keyring "$temp_dir/keyring.gpg" --verify "$temp_sig_file" "$temp_data_file" 2>&1)
 
     # 根據 gpg 的輸出判斷結果
     if echo "$gpg_output" | grep -q "Good signature"; then
-        local signer
-        signer=$(echo "$gpg_output" | grep -oP "Good signature from \K.*")
+        local signer; signer=$(echo "$gpg_output" | grep -oP "Good signature from \K.*")
         echo -e "${GREEN}[✓] 驗證通過！${RESET}"
         echo "此腳本的數位簽章有效，確認是由以下金鑰持有者簽署："
         echo -e "${CYAN}${signer}${RESET}"
@@ -4512,12 +4514,9 @@ verify_script_integrity() {
     else
         echo -e "${RED}[✗] 驗證失敗！${RESET}"
         echo "此腳本的數位簽章無效或與內容不符。"
-        echo "這可能意味著："
-        echo "  - 腳本內容已被修改。"
-        echo "  - 腳本並非來自官方發布管道。"
+        echo "這可能意味著腳本內容已被修改，或並非來自官方發布管道。"
         echo -e "\n${YELLOW}GPG 原始輸出以供除錯：${RESET}"
-        # 為了更清晰，只顯示與簽章相關的關鍵輸出
-        echo "$gpg_output" | grep -E "gpg: Signature made|Good signature|BAD signature"
+        echo "$gpg_output" | grep -E "gpg:|signature|Good|BAD"
     fi
 
     # 清理臨時檔案和目錄
