@@ -47,14 +47,21 @@
 #                                                                              #
 ################################################################################
 
-
+############################################
 # 腳本設定
-SCRIPT_VERSION="v2.6.1" # <<< 版本號更新
+############################################
+SCRIPT_VERSION="v2.6.1-beta.1" # <<< 版本號更新
+
+############################################
+# ★★★ 新增：使用者同意書版本號 ★★★
+# 當您修改同意書內容時，請務必增加此版本號 (例如：1.0 -> 1.1)
+############################################
+AGREEMENT_VERSION="1.0" 
+
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
-SCRIPT_UPDATE_DATE="2025-06-24" # 請根據實際情況修改此日期
-############################################
+SCRIPT_UPDATE_DATE="2025-06-25" # 請根據實際情況修改此日期
 
 # ... 其他設定 ...
 TARGET_DATE="2025-07-11" # <<< 新增：設定您的目標日期
@@ -199,7 +206,7 @@ log_message() {
 
 ############################################
 # 儲存設定檔 (包含所有設定)
-# 版本：V2.2 - 新增更新渠道及使用者同意標記
+# 版本：V2.3 - 引入同意書版本號
 ############################################
 save_config() {
     if command -v log_message &> /dev/null && [ -n "$LOG_FILE" ]; then
@@ -247,10 +254,10 @@ save_config() {
     echo "SYNC_BWLIMIT=\"${SYNC_BWLIMIT:-0}\"" >> "$CONFIG_FILE" && \
     echo "" >> "$CONFIG_FILE" && \
     
-    # ★★★ 新增區塊：儲存使用者同意狀態 ★★★
+    # --- 使用者同意狀態 ---
     echo "# --- User Agreement Status ---" >> "$CONFIG_FILE" && \
-    echo "# This indicates the user has agreed to the terms of use." >> "$CONFIG_FILE" && \
-    echo "TERMS_AGREED=\"${TERMS_AGREED:-false}\"" >> "$CONFIG_FILE"
+    echo "# Records the version of the terms the user has agreed to." >> "$CONFIG_FILE" && \
+    echo "AGREED_TERMS_VERSION=\"${AGREED_TERMS_VERSION:-}\"" >> "$CONFIG_FILE"
 
     if [ $? -eq 0 ]; then
         if command -v log_message &> /dev/null && [ -n "$LOG_FILE" ]; then
@@ -337,17 +344,19 @@ _send_termux_notification() {
 
 ################################################################################
 # 載入設定檔 (包含所有設定，並提供預設值)
-# 版本：V3.4 - 新增更新渠道選項及使用者同意標記
+# 版本：V3.5 - 引入同意書版本號
 ################################################################################
 load_config() {
     # --- 為所有可配置變數設定初始預設值 ---
+    # 這些值會在設定檔不存在、不可讀或設定檔中缺少對應條目時使用。
+
     # 常規設定預設值
     THREADS="${THREADS:-4}"
     local default_dl_path_platform_base="${DOWNLOAD_PATH_DEFAULT:-$HOME/media_processor_downloads_default}"
     DOWNLOAD_PATH="${DOWNLOAD_PATH:-${default_dl_path_platform_base}}"
     COLOR_ENABLED="${COLOR_ENABLED:-true}"
     PYTHON_CONVERTER_VERSION="${PYTHON_CONVERTER_VERSION:-1.0.0}"
-    UPDATE_CHANNEL="${UPDATE_CHANNEL:-stable}"
+    UPDATE_CHANNEL="${UPDATE_CHANNEL:-stable}" # 預設為穩定渠道
 
     # 終端日誌級別顯示預設值
     TERMINAL_LOG_SHOW_INFO="${TERMINAL_LOG_SHOW_INFO:-true}"
@@ -366,13 +375,13 @@ load_config() {
     SYNC_SSH_KEY_PATH_NEW_PHONE="${SYNC_SSH_KEY_PATH_NEW_PHONE:-}"
     SYNC_VIDEO_EXTENSIONS="${SYNC_VIDEO_EXTENSIONS:-mp4,mov,mkv,webm,avi,flv,wmv}"
     SYNC_PHOTO_EXTENSIONS="${SYNC_PHOTO_EXTENSIONS:-jpg,jpeg,png,heic,gif,webp,bmp,tif,tiff,raw,dng}"
-    SYNC_PROGRESS_STYLE="${SYNC_PROGRESS_STYLE:-default}"
-    SYNC_BWLIMIT="${SYNC_BWLIMIT:-0}"
-    
-    # ★★★ 新增區塊：使用者同意標記預設值 ★★★
-    TERMS_AGREED="${TERMS_AGREED:-false}"
+    SYNC_PROGRESS_STYLE="${SYNC_PROGRESS_STYLE:-default}" # 'default' 或 'total'
+    SYNC_BWLIMIT="${SYNC_BWLIMIT:-0}" # 0 為不限制
 
-    # --- 記錄用於比較的初始值 (僅在此函數內使用) ---
+    # 使用者同意狀態預設值
+    AGREED_TERMS_VERSION=""
+
+    # --- 記錄用於比較的初始值 (僅在此函數內使用，用於設定檔值無效時的回退) ---
     local initial_threads="$THREADS"
     local initial_dl_path="$DOWNLOAD_PATH"
     local initial_color="$COLOR_ENABLED"
@@ -394,8 +403,8 @@ load_config() {
     local initial_sync_photo_extensions="$SYNC_PHOTO_EXTENSIONS"
     local initial_sync_progress_style="$SYNC_PROGRESS_STYLE"
     local initial_sync_bwlimit="$SYNC_BWLIMIT"
-    # ★★★ 新增區塊：記錄同意標記的初始值 ★★★
-    local initial_terms_agreed="$TERMS_AGREED"
+    local initial_agreed_terms_version="$AGREED_TERMS_VERSION"
+
 
     # --- 開始從設定檔讀取 ---
     if [ -f "$CONFIG_FILE" ] && [ -r "$CONFIG_FILE" ]; then
@@ -422,16 +431,21 @@ load_config() {
                             if (( var_value >= ${MIN_THREADS:-1} && var_value <= ${MAX_THREADS:-8} )); then
                                 THREADS="$var_value"
                             else
-                                echo "載入設定警告: THREADS ('$var_value') 無效或超出範圍，使用預設 '$initial_threads'。" >&2; THREADS="$initial_threads"
+                                echo "載入設定警告: THREADS ('$var_value') 無效或超出範圍，使用預設 '$initial_threads'。" >&2
+                                THREADS="$initial_threads"
                             fi
                         else
-                            echo "載入設定警告: THREADS ('$var_value') 非有效數字，使用預設 '$initial_threads'。" >&2; THREADS="$initial_threads"
+                            echo "載入設定警告: THREADS ('$var_value') 非有效數字，使用預設 '$initial_threads'。" >&2
+                            THREADS="$initial_threads"
                         fi
                         ;;
                     "DOWNLOAD_PATH") DOWNLOAD_PATH="$var_value" ;;
-                    "COLOR_ENABLED") if [[ "$var_value" == "true" || "$var_value" == "false" ]]; then COLOR_ENABLED="$var_value"; else COLOR_ENABLED="$initial_color"; echo "載入設定警告: COLOR_ENABLED ('$var_value') 無效，使用預設 '$initial_color'。" >&2; fi ;;
-                    "PYTHON_CONVERTER_VERSION") if [ -n "$var_value" ]; then PYTHON_CONVERTER_VERSION="$var_value"; else PYTHON_CONVERTER_VERSION="$initial_py_ver"; echo "載入設定提示: PYTHON_CONVERTER_VERSION 為空，使用預設 '$initial_py_ver'。" >&2; fi ;;
-                    "UPDATE_CHANNEL") if [[ "$var_value" == "stable" || "$var_value" == "beta" ]]; then UPDATE_CHANNEL="$var_value"; else UPDATE_CHANNEL="$initial_update_channel"; echo "載入設定警告: UPDATE_CHANNEL ('$var_value') 無效，使用預設 '$initial_update_channel'。" >&2; fi ;;
+                    "COLOR_ENABLED")
+                        if [[ "$var_value" == "true" || "$var_value" == "false" ]]; then COLOR_ENABLED="$var_value"; else COLOR_ENABLED="$initial_color"; echo "載入設定警告: COLOR_ENABLED ('$var_value') 無效，使用預設 '$initial_color'。" >&2; fi ;;
+                    "PYTHON_CONVERTER_VERSION")
+                        if [ -n "$var_value" ]; then PYTHON_CONVERTER_VERSION="$var_value"; else PYTHON_CONVERTER_VERSION="$initial_py_ver"; echo "載入設定提示: PYTHON_CONVERTER_VERSION 為空，使用預設 '$initial_py_ver'。" >&2; fi ;;
+                    "UPDATE_CHANNEL")
+                        if [[ "$var_value" == "stable" || "$var_value" == "beta" ]]; then UPDATE_CHANNEL="$var_value"; else UPDATE_CHANNEL="$initial_update_channel"; echo "載入設定警告: UPDATE_CHANNEL ('$var_value') 無效，使用預設 '$initial_update_channel'。" >&2; fi ;;
                         
                     "TERMINAL_LOG_SHOW_INFO") if [[ "$var_value" == "true" || "$var_value" == "false" ]]; then TERMINAL_LOG_SHOW_INFO="$var_value"; else TERMINAL_LOG_SHOW_INFO="$initial_show_info"; fi ;;
                     "TERMINAL_LOG_SHOW_WARNING") if [[ "$var_value" == "true" || "$var_value" == "false" ]]; then TERMINAL_LOG_SHOW_WARNING="$var_value"; else TERMINAL_LOG_SHOW_WARNING="$initial_show_warning"; fi ;;
@@ -448,12 +462,16 @@ load_config() {
                     "SYNC_SSH_KEY_PATH_NEW_PHONE") SYNC_SSH_KEY_PATH_NEW_PHONE="$var_value" ;;
                     "SYNC_VIDEO_EXTENSIONS") SYNC_VIDEO_EXTENSIONS="$var_value" ;;
                     "SYNC_PHOTO_EXTENSIONS") SYNC_PHOTO_EXTENSIONS="$var_value" ;;
-                    "SYNC_PROGRESS_STYLE") if [[ "$var_value" == "default" || "$var_value" == "total" ]]; then SYNC_PROGRESS_STYLE="$var_value"; else SYNC_PROGRESS_STYLE="$initial_sync_progress_style"; echo "載入設定警告: SYNC_PROGRESS_STYLE ('$var_value') 無效，使用預設 '$initial_sync_progress_style'。" >&2; fi ;;
-                    "SYNC_BWLIMIT") if [[ "$var_value" =~ ^[0-9]+$ ]]; then SYNC_BWLIMIT="$var_value"; else SYNC_BWLIMIT="$initial_sync_bwlimit"; echo "載入設定警告: SYNC_BWLIMIT ('$var_value') 非有效數字，使用預設 '$initial_sync_bwlimit'。" >&2; fi ;;
                     
-                    # ★★★ 新增區塊：讀取使用者同意狀態 ★★★
-                    "TERMS_AGREED") if [[ "$var_value" == "true" || "$var_value" == "false" ]]; then TERMS_AGREED="$var_value"; else TERMS_AGREED="$initial_terms_agreed"; fi ;;
+                    "SYNC_PROGRESS_STYLE")
+                        if [[ "$var_value" == "default" || "$var_value" == "total" ]]; then SYNC_PROGRESS_STYLE="$var_value"; else SYNC_PROGRESS_STYLE="$initial_sync_progress_style"; echo "載入設定警告: SYNC_PROGRESS_STYLE ('$var_value') 無效，使用預設 '$initial_sync_progress_style'。" >&2; fi ;;
+                    "SYNC_BWLIMIT")
+                        if [[ "$var_value" =~ ^[0-9]+$ ]]; then SYNC_BWLIMIT="$var_value"; else SYNC_BWLIMIT="$initial_sync_bwlimit"; echo "載入設定警告: SYNC_BWLIMIT ('$var_value') 非有效數字，使用預設 '$initial_sync_bwlimit'。" >&2; fi ;;
                         
+                    "AGREED_TERMS_VERSION")
+                        AGREED_TERMS_VERSION="$var_value"
+                        ;;
+
                     *)
                         # 忽略未知變數
                         ;;
@@ -511,8 +529,7 @@ load_config() {
         log_message "DEBUG" "load_config: SYNC_PROGRESS_STYLE='$SYNC_PROGRESS_STYLE'"
         log_message "DEBUG" "load_config: SYNC_BWLIMIT='$SYNC_BWLIMIT' KB/s"
         log_message "DEBUG" "load_config: UPDATE_CHANNEL='$UPDATE_CHANNEL'"
-        # ★★★ 新增區塊：記錄同意狀態的載入值 ★★★
-        log_message "DEBUG" "load_config: TERMS_AGREED='$TERMS_AGREED'"
+        log_message "DEBUG" "load_config: AGREED_TERMS_VERSION='${AGREED_TERMS_VERSION}'"
     else
         echo "提示: log_message 函數未定義，部分設定載入訊息將不會寫入日誌。" >&2
     fi
@@ -4508,99 +4525,129 @@ main_menu() {
 ############################################
 
 ######################################################################
-# 新增：處理首次運行同意條款 (v2.2 - 修正顏色顯示)
-# Handles the first-run terms of service agreement.
+# 新增：處理首次運行同意條款 (v3.0 - 引入版本號檢查)
+# Handles the first-run terms of service agreement with versioning.
 ######################################################################
 handle_first_run_agreement() {
-    # 檢查 TERMS_AGREED 變數是否為 "true"
-    if [[ "${TERMS_AGREED}" == "true" ]]; then
-        log_message "DEBUG" "使用者已同意條款，跳過首次運行同意程序。"
+    # 比較腳本定義的當前條款版本與設定檔中已同意的版本
+    if [[ "${AGREED_TERMS_VERSION}" == "${AGREEMENT_VERSION}" ]]; then
+        log_message "DEBUG" "使用者已同意版本 ${AGREEMENT_VERSION} 的條款，跳過同意程序。"
         return 0
+    fi
+    
+    # 如果版本不匹配或從未同意過，則顯示同意書
+    if [[ -n "${AGREED_TERMS_VERSION}" ]]; then
+        # 這種情況是使用者同意過舊版，現在需要同意新版
+        echo -e "${YELLOW}======================================================"
+        echo -e "  軟體使用條款已更新，請您重新閱讀並同意。"
+        echo -e "======================================================${RESET}"
+        sleep 3
     fi
 
     clear
     
-    # ★★★ 核心修正 ★★★
-    # 使用 'echo -e' 命令並將其輸出通過管道傳遞給 'less -R'
-    # 這樣可以確保顏色代碼被正確解釋
     echo -e "
 ${CYAN}=======================================================================${RESET}
-             ${BOLD}整合式影音處理平台 (IAVPP)${RESET}
+                     ${BOLD}整合式影音處理平台 (IAVPP)${RESET}
            ${YELLOW}使 用 同 意 事 項 書 (User Consent Agreement)${RESET}
 ${CYAN}=======================================================================${RESET}
 ${YELLOW}
-使用者於下載、安裝、執行或以其他方式利用「整合式影音處理平台」
-(以下稱「本軟體」) 前，應審慎閱讀並完全同意本同意事項書之全部
-內容。倘使用者不同意全部或部分內容，應立即停止下載或使用本軟體。
+在您下載、安裝或使用「整合式影音處理平台」(以下稱「本軟體」) 前，
+請仔細閱讀並同意本同意書的所有內容。如果您不同意任何條款，請不要
+下載或使用本軟體。
 ${RESET}
 ---
 
 ${WHITE}${BOLD}一、定義${RESET}
-1. ${BOLD}本軟體${RESET}：指由 adeend-co 發佈之「整合式影音處理平台」及其相關
-   原始程式碼、文件、版本控制歷史及後續更新。
-2. ${BOLD}著作權人${RESET}：指本軟體之著作權所有人 adeend-co。
-3. ${BOLD}被授權人 / 使用者${RESET}：指任何下載、安裝、執行或以其他方式利用
-   本軟體之自然人或法人。
+(1) ${BOLD}本軟體${RESET}：指由 adeend-co 開發發布之「整合式影音處理平台」，包含
+    其程式碼、文件及所有後續更新。
+(2) ${BOLD}著作權人 (我們)${RESET}：指本軟體的著作權所有者 adeend-co。
+(3) ${BOLD}使用者 (您)${RESET}：指任何下載、安裝、執行或以其他任何方式使用本軟體
+    的個人或組織。
 
-${WHITE}${BOLD}二、同意與接受${RESET}
-使用者自下載、安裝或使用本軟體起，即表示已閱讀、瞭解並同意受
-本同意事項書及其後修訂版本之拘束。
+${WHITE}${BOLD}二、使用者資格${RESET}
+(1) 您必須年滿 18 歲且具備完全行為能力，始得使用本軟體。
+(2) 若您未滿 18 歲，必須在您的法定代理人 (如父母或監護人) 閱讀
+    並同意本同意書後，始得使用本軟體。
+(3) 若您代表法人或組織使用本軟體，您聲明並保證您有權代表該組織
+    接受本同意書之條款。
 
-${WHITE}${BOLD}三、授權範圍${RESET}
-1. 本軟體依「創用 CC 姓名標示–非商業性–相同方式分享 4.0 國際」
-   (CC BY-NC-SA 4.0) 授權條款提供。
-2. 被授權人得依前開授權條款進行重製、散布、改作，惟須：
-   - 遵守姓名標示義務；
-   - 僅作非商業性利用；
-   - 於改作後以相同或相容授權條款散布。
+${WHITE}${BOLD}三、同意與接受${RESET}
+當您開始下載、安裝或使用本軟體，就代表您已經完整閱讀、了解並同
+意遵守本同意書的所有條款，包含未來的修訂版本。
 
-${WHITE}${BOLD}四、使用者義務${RESET}
-1. ${BOLD}法令遵循${RESET}：使用者應遵守中華民國著作權法及其行為所在地相關
-   智慧財產權、電腦犯罪及通訊傳播等法規。
-2. ${BOLD}合法來源${RESET}：僅得處理本人已合法取得之影音及相關資料，不得
-   藉由本軟體侵害第三人權益。
-3. ${BOLD}資訊安全${RESET}：使用者應自行維護系統與資料安全，並避免散布惡意
-   程式碼。
-4. ${BOLD}誠實標示${RESET}：散布或公開改作版本時，應明確標示原著作權人、
-   授權條款及變更內容。
+${WHITE}${BOLD}四、授權範圍${RESET}
+(1) 本軟體採用「創用 CC 姓名標示–非商業性–相同方式分享 4.0 國際」
+    (CC BY-NC-SA 4.0) 授權條款。
+(2) 根據此條款，您可以自由地複製、分享與修改本軟體，但您必須遵
+    守以下三個條件：
+    a) ${BOLD}姓名標示${RESET}：清楚標示原作者 (adeend-co) 的姓名。
+    b) ${BOLD}非商業性${RESET}：禁止將本軟體或其修改版本用於任何商業目的。
+    c) ${BOLD}相同方式分享${RESET}：如果您修改了本軟體並重新發布，您的修改版本
+       也必須採用相同或相容的授權條款。
+(3) ${BOLD}相容授權條款認定${RESET}：前述「相容授權條款」係指 Creative Commons
+    官方認可之兼容授權，詳細說明請參閱 Creative Commons 官方
+    網站 (creativecommons.org) 之相關說明文件。
+(4) ${BOLD}授權條款原文優先原則${RESET}：本軟體採用之 CC BY-NC-SA 4.0 授權
+    條款，如中文版本與英文原文產生歧義或衝突，以英文原文為準。
 
-${WHITE}${BOLD}五、禁止行為${RESET}
-1. 將本軟體或其衍生著作用於任何直接或間接營利目的。
-2. 以本軟體進行侵害第三人著作權、肖像權、隱私權或其他權利之行為。
+${WHITE}${BOLD}五、您的義務${RESET}
+(1) ${BOLD}遵守法律${RESET}：您承諾會遵守中華民國及您所在地所有相關法律，特別
+    是著作權法。
+(2) ${BOLD}使用合法來源的資料${RESET}：您保證只會用本軟體處理您已合法取得的
+    影音資料，絕不侵害他人權益。
+(3) ${BOLD}確保資訊安全${RESET}：您應自行負責維護電腦系統與資料的安全。
+(4) ${BOLD}誠實標示${RESET}：如果您分享或公開您修改過的版本，應清楚註明原作者、
+    授權條款及您所做的變更。
 
-${WHITE}${BOLD}六、智慧財產權${RESET}
-除依 CC BY-NC-SA 4.0 授權範圍所允許者外，本軟體之一切權利仍為
-著作權人所有。
+${WHITE}${BOLD}六、禁止行為${RESET}
+(1) 禁止將本軟體或其衍生創作，用於任何直接或間接的商業、營利活動。
+(2) 本軟體僅限於個人、非商業性學術研究或教育目的使用。禁止利用本軟體
+    從事任何侵害他人著作權、肖像權、隱私權或其他受法律保障之權利行為。
 
-${WHITE}${BOLD}七、免責聲明與責任限制${RESET}
-1. 本軟體係依「現狀」提供，著作權人對本軟體不負任何明示或默示
-   之保證，包括但不限於適售性、特定目的適用性及未侵害第三人權
-   利之保證。
-2. 著作權人對於使用或無法使用本軟體所生之任何直接、間接、附隨、
-   衍生或懲罰性損害，均不負任何賠償責任。
-3. 使用本軟體所產生之全部風險與法律責任，概由使用者自行承擔。
+${WHITE}${BOLD}七、智慧財產權${RESET}
+除了 CC BY-NC-SA 4.0 授權條款所允許的範圍外，本軟體的所有權利，
+包含著作權與其他智慧財產權，仍然全部屬於著作權人 (adeend-co)。
 
-${WHITE}${BOLD}八、第三人權益${RESET}
-若使用者於利用本軟體之過程涉及第三人著作或資料，應自負取得授權
-之責任，並使著作權人免於任何第三人主張。
+${WHITE}${BOLD}八、免責聲明與責任限制 (重要條款)${RESET}
+(1) 本軟體是依「現狀」(As-Is) 提供，這代表我們不提供任何形式的明
+    示或默示保證，例如我們不保證軟體沒有錯誤、能夠滿足您的特定
+    需求，或不會侵害他人權利。
+(2) 在法律允許的最大範圍內，對於您因使用 (或無法使用) 本軟體而
+    造成的任何損失，我們均不負賠償責任。包括但不限於，以舉例而
+    非限縮：資料遺失、利潤損失、業務中斷、商業機會喪失或任何其
+    他直接、間接、附隨、衍生或懲罰性損害。
+(3) 使用本軟體的所有風險與法律責任，完全由您個人承擔。
 
-${WHITE}${BOLD}九、準據法與管轄${RESET}
-本同意事項書之解釋與適用，以中華民國法律為準據法。
+${WHITE}${BOLD}九、第三人權益${RESET}
+如果您在使用本軟體的過程中，會處理到他人的著作或資料，您必須自
+行負責取得合法授權，並保證著作權人不會因此遭受任何來自第三方的
+索賠或訴訟。
 
-${WHITE}${BOLD}十、條款修訂${RESET}
-著作權人得不定期修訂本同意事項書；修訂後版本將公布於官方儲存庫
-頁面。使用者續行使用本軟體，視為同意受修訂後條款之拘束。
+${WHITE}${BOLD}十、準據法與管轄法院${RESET}
+(1) 本同意書的解釋與適用，以中華民國法律為準據法。
+(2) 雙方同意，若因本同意書產生任何爭議，以【臺灣高雄地方法院】
+    為第一審管轄法院。
 
-${WHITE}${BOLD}十一、其他${RESET}
-本同意事項書任何條款被法院或有權機關裁定無效時，不影響其他條款
-之效力。
----
+${WHITE}${BOLD}十一、條款修訂${RESET}
+我們可能隨時修訂本同意書，最新版本將公布於官方儲存庫頁面。若您
+在條款修訂後繼續使用本軟體，即代表您同意並接受新版條款。
+
+${WHITE}${BOLD}十二、其他條款${RESET}
+(1) 如果本同意書的任何條款被法院認定為無效，其他條款的效力不受
+    影響，仍然有效。
+(2) 當您開始使用本軟體，即代表您已詳細閱讀、完全理解並同意遵守
+    上述所有條款。
+
+${CYAN}---
+2025年06月25日
+adeend-co
+---${RESET}
 ${YELLOW}${BOLD}
 請使用方向鍵或滑鼠滾輪閱讀全文。閱讀完畢後，請按 'q' 鍵退出。
 ${RESET}
 " | less -R --mouse --wheel-lines=3
 
-    # 後續同意邏輯不變
     echo ""
     echo -e "${YELLOW}${BOLD}您已閱讀完畢「使用同意事項書」。${RESET}"
 
@@ -4609,15 +4656,11 @@ ${RESET}
         read -p "若您完全理解並同意上述所有條款，請輸入「agree」以繼續： " user_agreement
         
         if [[ "$(echo "$user_agreement" | tr '[:upper:]' '[:lower:]')" == "agree" ]]; then
-            TERMS_AGREED="true" 
+            # 設定全域變數，以便後續的 save_config 可以儲存它
+            AGREED_TERMS_VERSION="${AGREEMENT_VERSION}"
             
-            if ! mkdir -p "$(dirname "$CONFIG_FILE")"; then
-                echo -e "${RED}錯誤：無法創建設定檔目錄！請檢查權限。腳本無法繼續。${RESET}" >&2
-                exit 1
-            fi
-            echo "" >> "$CONFIG_FILE"
-            echo "# --- User Agreement Status (v2.2) ---" >> "$CONFIG_FILE"
-            echo "TERMS_AGREED=\"true\"" >> "$CONFIG_FILE"
+            # 立即儲存設定，確保版本號被寫入
+            save_config
 
             echo ""
             echo -e "${GREEN}感謝您的同意。正在繼續啟動腳本...${RESET}"
