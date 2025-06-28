@@ -50,18 +50,18 @@
 ############################################
 # 腳本設定
 ############################################
-SCRIPT_VERSION="v2.6.4" # <<< 版本號更新
+SCRIPT_VERSION="v2.6.5" # <<< 版本號更新
 
 ############################################
 # ★★★ 新增：使用者同意書版本號 ★★★
 # 當您修改同意書內容時，請務必增加此版本號 (例如：1.0 -> 1.1)
 ############################################
-AGREEMENT_VERSION="1.3" 
+AGREEMENT_VERSION="1.4" 
 
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
-SCRIPT_UPDATE_DATE="2025-06-27" # 請根據實際情況修改此日期
+SCRIPT_UPDATE_DATE="2025-06-28" # 請根據實際情況修改此日期
 
 # ... 其他設定 ...
 TARGET_DATE="2025-07-11" # <<< 新增：設定您的目標日期
@@ -4525,8 +4525,9 @@ main_menu() {
 ############################################
 
 ######################################################################
-# 新增：處理首次運行同意條款 (v3.2 - 對應 v1.3 版同意書)
-# Handles the first-run terms of service agreement with versioning.
+# 新增：處理首次運行同意條款 (v4.0 - 分層式條款與二次確認)
+# Handles the first-run terms of service agreement with versioning,
+# layering, and double confirmation.
 ######################################################################
 handle_first_run_agreement() {
     # 比較腳本定義的當前條款版本與設定檔中已同意的版本
@@ -4535,28 +4536,18 @@ handle_first_run_agreement() {
         return 0
     fi
     
-    if [[ -n "${AGREED_TERMS_VERSION}" ]]; then
-        echo -e "${YELLOW}======================================================"
-        echo -e "  軟體使用條款已更新，請您重新閱讀並同意。"
-        echo -e "  (您之前同意的版本: ${AGREED_TERMS_VERSION}，目前最新版本: ${AGREEMENT_VERSION})"
-        echo -e "======================================================${RESET}"
-        sleep 4
-    fi
-
-    clear
-    
-    echo -e "
+    # 內部輔助函數，用於顯示詳細條款
+    _display_full_terms() {
+        clear
+        echo -e "
 ${CYAN}=======================================================================${RESET}
                      ${BOLD}整合式影音處理平台 (IAVPP)${RESET}
-           ${YELLOW}使 用 同 意 事 項 書 (User Consent Agreement)${RESET}
+         ${YELLOW}詳 細 使 用 同 意 事 項 書 (Full User Consent Agreement)${RESET}
 ${CYAN}=======================================================================${RESET}
 ${YELLOW}
-在您下載、安裝或使用「整合式影音處理平台」(以下稱「本軟體」) 前，
-請仔細閱讀並同意本同意書的所有內容。如果您不同意任何條款，請不要
-下載或使用本軟體。
+本文件為「整合式影音處理平台」之完整、詳細使用條款。
 ${RESET}
 ---
-
 ${WHITE}${BOLD}一、定義${RESET}
 (1) ${BOLD}本軟體${RESET}：指由 adeend-co 開發發布之「整合式影音處理平台」，包含
     其程式碼、文件及所有後續更新。
@@ -4666,7 +4657,7 @@ ${WHITE}${BOLD}十三、其他條款${RESET}
     上述所有條款。
 
 ${CYAN}---
-2025年06月27日
+2025年06月28日
 adeend-co
 條款版本：v${AGREEMENT_VERSION}
 ---${RESET}
@@ -4674,34 +4665,114 @@ ${YELLOW}${BOLD}
 請使用方向鍵或滑鼠滾輪閱讀全文。閱讀完畢後，請按 'q' 鍵退出。
 ${RESET}
 " | less -R --mouse --wheel-lines=3
+        read -p "您已閱讀完畢詳細條款，按 Enter 鍵返回主同意畫面..."
+    }
 
-    echo ""
-    echo -e "${YELLOW}${BOLD}您已閱讀完畢「使用同意事項書」。${RESET}"
-
-    local user_agreement=""
+    # 主循環，直到使用者做出決定 (同意或退出)
     while true; do
-        read -p "若您完全理解並同意上述所有條款，請輸入「agree」以繼續： " user_agreement
-        
-        if [[ "$(echo "$user_agreement" | tr '[:upper:]' '[:lower:]')" == "agree" ]]; then
-            # 設定全域變數，以便後續的 save_config 可以儲存它
-            AGREED_TERMS_VERSION="${AGREEMENT_VERSION}"
-            
-            # 立即儲存設定，確保版本號被寫入
-            save_config
-
-            echo ""
-            echo -e "${GREEN}感謝您的同意。正在繼續啟動腳本...${RESET}"
-            sleep 1
-            break
-        else
-            echo ""
-            echo -e "${RED}輸入錯誤或您未同意條款。腳本無法繼續，即將退出。${RESET}"
-            sleep 3
-            exit 1
+        clear
+        if [[ -n "${AGREED_TERMS_VERSION}" ]]; then
+            echo -e "${YELLOW}======================================================================="
+            echo -e "      軟體使用條款已更新，請您重新閱讀並同意 (版本 ${AGREEMENT_VERSION})。"
+            echo -e "=======================================================================${RESET}"
         fi
+        
+        # 顯示簡易版條款
+        echo -e "
+${CYAN}-----------------------------------------------------------------------${RESET}
+                ${BOLD}整合式影音處理平台 (IAVPP)${RESET}
+                      ${WHITE}主要使用條款 (版本 ${AGREEMENT_VERSION})${RESET}
+${CYAN}-----------------------------------------------------------------------${RESET}
+${WHITE}${BOLD}一、本條款之定義與效力${RESET}
+(1) 本文件為「整合式影音處理平台」之正式使用條款（簡要版）。
+(2) 使用本軟體即表示您已閱讀、理解並同意本條款及對應詳細版條款。
+
+${WHITE}${BOLD}二、軟體定義與授權方式${RESET}
+(1) 本軟體採用「創用 CC BY-NC-SA 4.0」授權。
+(2) 您可自由使用、修改及分享，但須：
+    • 標示原作者 (adeend-co)
+    • 僅限非商業用途
+    • 修改後須採用相同授權
+
+${WHITE}${BOLD}三、使用限制${RESET}
+(1) 禁止用於任何商業、營利活動。
+(2) 僅限個人、學術研究或教育用途。
+(3) 須遵守相關法律，不得侵害他人權利。
+
+${WHITE}${BOLD}四、資料安全與隱私${RESET}
+(1) 您的資料完全屬於您，我們無法取得。
+(2) 本軟體完全在您的電腦上運作，無資料外傳。
+(3) 您須自行負責資料備份與系統安全。
+
+${WHITE}${BOLD}五、免責聲明${RESET}
+(1) 本軟體依「現狀」提供，不提供任何保證。
+(2) 我們不對任何損失負責，包括資料遺失、利潤損失等。
+(3) 使用風險與法律責任由您自行承擔。
+
+${WHITE}${BOLD}六、法律適用與管轄${RESET}
+(1) 準據法：中華民國法律。
+(2) 管轄法院：臺灣高雄地方法院。
+
+${YELLOW}${BOLD}八、生效聲明${RESET}
+當您下載、安裝或使用本軟體，即表示您已閱讀並完全同意
+「主要使用條款 v${AGREEMENT_VERSION}」及「詳細使用條款 v${AGREEMENT_VERSION}」的所有內容。
+${CYAN}-----------------------------------------------------------------------${RESET}
+"
+        # 顯示選項
+        echo -e "${YELLOW}請選擇：${RESET}"
+        echo -e "  1) ${GREEN}我已閱讀並同意上述所有條款${RESET}"
+        echo -e "  2) ${CYAN}查閱詳細使用條款${RESET}"
+        echo -e "  0) ${RED}我不同意，退出軟體${RESET}"
+        
+        local choice
+        read -p "請輸入您的選擇 (0-2)：" choice
+
+        case "$choice" in
+            1)
+                # ★★★ 二次確認機制 ★★★
+                clear
+                echo -e "${YELLOW}--- 請再次確認 ---${RESET}"
+                echo ""
+                echo -e "您即將同意「整合式影音處理平台 v${AGREEMENT_VERSION}」的使用條款。"
+                echo -e "這表示您理解並接受所有相關的權利、義務與風險。"
+                echo ""
+                read -p "確定要同意並繼續使用嗎？ (y/n): " confirm
+                
+                if [[ "$(echo "$confirm" | tr '[:upper:]' '[:lower:]')" == "y" ]]; then
+                    # 使用者最終同意
+                    AGREED_TERMS_VERSION="${AGREEMENT_VERSION}"
+                    save_config
+                    echo ""
+                    echo -e "${GREEN}感謝您的同意。正在繼續啟動腳本...${RESET}"
+                    sleep 1
+                    clear
+                    return 0 # 成功同意，退出函數
+                else
+                    # 使用者在二次確認時取消
+                    echo ""
+                    echo -e "${YELLOW}已取消同意。返回上一層選項...${RESET}"
+                    sleep 2
+                    # 繼續外層 while 循環，重新顯示簡易條款和選項
+                fi
+                ;;
+            2)
+                # 調用內部函數顯示詳細條款
+                _display_full_terms
+                # 顯示完畢後，會自動返回並重新顯示簡易條款介面
+                ;;
+            0)
+                echo ""
+                echo -e "${RED}您選擇了不同意條款。軟體即將退出...${RESET}"
+                sleep 3
+                exit 0 # 正常退出碼
+                ;;
+            *)
+                echo ""
+                echo -e "${RED}無效的選項，請重新輸入。${RESET}"
+                sleep 2
+                ;;
+        esac
     done
-    
-    clear
 }
 
 ####################################################################
