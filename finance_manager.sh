@@ -16,7 +16,7 @@
 # 腳本設定
 ############################################
 SCRIPT_VERSION="v1.0.2"
-SCRIPT_UPDATE_DATE="2025-06-28"
+SCRIPT_UPDATE_DATE="2025-06-29"
 
 # --- 使用者設定檔與資料檔路徑 ---
 CONFIG_FILE="$HOME/.pfm_rc"
