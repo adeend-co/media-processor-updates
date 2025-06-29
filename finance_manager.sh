@@ -15,7 +15,7 @@
 ############################################
 # 腳本設定
 ############################################
-SCRIPT_VERSION="v1.0.1"
+SCRIPT_VERSION="v1.0.2"
 SCRIPT_UPDATE_DATE="2025-06-28"
 
 # --- 使用者設定檔與資料檔路徑 ---
@@ -389,6 +389,11 @@ check_environment() {
 ############################################
 main_menu() {
     while true; do
+        # --- ▼▼▼ 在此處新增修改 ▼▼▼ ---
+        # 在每次迴圈開始時強制應用顏色設定，確保顏色變數總是有效的
+        apply_color_settings
+        # --- ▲▲▲ 修改結束 ▲▲▲ ---
+
         clear
         local balance
         balance=$(calculate_balance)
