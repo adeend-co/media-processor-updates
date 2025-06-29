@@ -15,7 +15,7 @@
 ############################################
 # 腳本設定
 ############################################
-SCRIPT_VERSION="v1.2.3"
+SCRIPT_VERSION="v1.2.4"
 SCRIPT_UPDATE_DATE="2025-06-29"
 
 PYTHON_PIE_CHART_SCRIPT_PATH="$(dirname "$0")/create_pie_chart.py"
@@ -391,7 +391,7 @@ EOF
     read -p "按 Enter 返回..."
 }
 
-# 檢查環境依賴 (v1.5 - 修正 matplotlib 套件名稱)
+# 檢查環境依賴 (v1.6 - 新增中文字體檢查，提供完整指令)
 check_environment() {
     local pkg_missing=()
     local python_exec=""
@@ -416,12 +416,21 @@ check_environment() {
         pkg_missing+=("python")
     fi
 
-    # 只有在找到 Python 的情況下，才檢查 matplotlib 的存在
+    # 只有在找到 Python 的情況下，才檢查 Python 相關的依賴
     if [ -n "$python_exec" ]; then
+        # 檢查 matplotlib 套件
         if ! "$python_exec" -c "import matplotlib" &> /dev/null; then
-            # --- ▼▼▼ 核心修改：使用正確的套件名稱 'matplotlib' ▼▼▼ ---
             pkg_missing+=("matplotlib")
         fi
+
+        # --- ▼▼▼ 核心修改：新增中文字體檢查 ▼▼▼ ---
+        # 檢查 Noto Sans CJK 字體檔是否存在
+        # 這是 'pkg install noto-fonts-cjk' 會安裝的核心檔案之一
+        local font_check_path="/data/data/com.termux/files/usr/share/fonts/TTF/NotoSansCJKjp-Regular.otf"
+        if [ ! -f "$font_check_path" ]; then
+            pkg_missing+=("noto-fonts-cjk")
+        fi
+        # --- ▲▲▲ 修改結束 ▲▲▲ ---
     fi
 
     if [ ${#pkg_missing[@]} -gt 0 ]; then
@@ -432,12 +441,14 @@ check_environment() {
         done
 
         echo -e "\n${CYAN}您可以執行以下【單一完整指令】來安裝所有必需品：${RESET}"
-
-        # 生成一個統一的、適用於 Termux 的安裝指令
         echo -e "${GREEN}  pkg install ${pkg_missing[*]}${RESET}"
         
+        # 根據缺少的套件給出更詳細的提示
         if [[ " ${pkg_missing[*]} " =~ " matplotlib " ]]; then
-            echo -e "\n${YELLOW}提示：'matplotlib' 套件較大，且會安裝大量依賴，請耐心等候。${RESET}"
+            echo -e "\n${YELLOW}提示：'matplotlib' 套件較大，用於繪製圓餅圖，請耐心等候安裝。${RESET}"
+        fi
+        if [[ " ${pkg_missing[*]} " =~ " noto-fonts-cjk " ]]; then
+            echo -e "\n${YELLOW}提示：'noto-fonts-cjk' 套件是【必需的】，用於在圖表中正確顯示【中文字】。${RESET}"
         fi
         
         read -p "按 Enter 繼續..."
