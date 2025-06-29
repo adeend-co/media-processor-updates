@@ -15,7 +15,7 @@
 ############################################
 # 腳本設定
 ############################################
-SCRIPT_VERSION="v1.1.2"
+SCRIPT_VERSION="v1.1.3"
 SCRIPT_UPDATE_DATE="2025-06-29"
 
 # --- 使用者設定檔與資料檔路徑 ---
@@ -33,13 +33,14 @@ COLOR_ENABLED=true
 ############################################
 # 顏色與日誌 (框架代碼)
 ############################################
+# 顏色與日誌 (v1.1 - 使用 export 提升為環境變數)
 apply_color_settings() {
     if [ "$COLOR_ENABLED" = true ]; then
-        RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'
-        BLUE='\033[0;34m'; PURPLE='\033[0;35m'; CYAN='\033[0;36m'
-        WHITE='\033[0;37m'; BOLD='\033[1m'; RESET='\033[0m'
+        export RED='\033[0;31m'; export GREEN='\033[0;32m'; export YELLOW='\033[0;33m'
+        export BLUE='\033[0;34m'; export PURPLE='\033[0;35m'; export CYAN='\033[0;36m'
+        export WHITE='\033[0;37m'; export BOLD='\033[1m'; export RESET='\033[0m'
     else
-        RED=''; GREEN=''; YELLOW=''; BLUE=''; PURPLE=''; CYAN=''; WHITE=''; BOLD=''; RESET=''
+        export RED=''; export GREEN=''; export YELLOW=''; export BLUE=''; export PURPLE=''; export CYAN=''; export WHITE=''; export BOLD=''; export RESET=''
     fi
 }
 
@@ -417,18 +418,15 @@ check_environment() {
 }
 
 ############################################
-# 主選單與主程式 (v1.3 - 模仿主腳本邏輯)
+# 主選單與主程式 (v1.4 - 最終顏色穩定版)
 ############################################
 main_menu() {
     while true; do
-        # --- ▼▼▼ 核心修改 1：確保顏色在繪製前生效 ▼▼▼ ---
-        # 在每次迴圈開始、清屏之前，就應用顏色設定
-        apply_color_settings
-        
         clear
         local balance
         balance=$(calculate_balance)
         
+        # 直接使用全域的顏色變數，無需在迴圈內做任何處理
         echo -e "${CYAN}====== ${BOLD}個人財務管理器 ${SCRIPT_VERSION}${RESET}${CYAN} ======${RESET}"
         printf "${WHITE}當前餘額: ${GREEN}${CURRENCY} %.2f${RESET}\n\n" "$balance"
         
@@ -444,13 +442,14 @@ main_menu() {
         echo "----------------------------------"
         read -p "請選擇操作: " choice
 
-        # --- ▼▼▼ 核心修改 2：簡化 case 區塊 ▼▼▼ ---
         case $choice in
             1) add_transaction "expense" ;;
             2) add_transaction "income" ;;
             3) list_recent ;;
             4) generate_visual_report ;;
             0)
+                # 清理螢幕再退出，介面更乾淨
+                clear
                 echo -e "${GREEN}感謝使用，正在返回...${RESET}"
                 sleep 1
                 exit 0
@@ -462,19 +461,20 @@ main_menu() {
 }
 
 main() {
-    # --- ▼▼▼ 在此處新增修改 ▼▼▼ ---
     # 解析從主腳本傳來的參數
     for arg in "$@"; do
         case $arg in
             --color=*)
-            # 從參數中提取值 (true 或 false)
             COLOR_ENABLED="${arg#*=}"
-            shift # 消耗掉這個參數
+            shift
             ;;
         esac
     done
-    # --- ▲▲▲ 修改結束 ▲▲▲ ---
-
+    
+    # --- ▼▼▼ 核心修改：在所有邏輯開始前，設定全域環境變數 ▼▼▼ ---
+    # 這樣設定的顏色變數在整個腳本執行期間，包括所有子功能和迴圈中都有效
+    apply_color_settings
+    
     # 確保資料目錄和檔案存在
     mkdir -p "$DATA_DIR"
     if [ ! -f "$DATA_FILE" ]; then
@@ -487,7 +487,11 @@ main() {
 
     log_message "INFO" "PFM 腳本啟動 (版本: $SCRIPT_VERSION, 顏色狀態: $COLOR_ENABLED)"
     
+    # 載入設定檔，可能會覆蓋 COLOR_ENABLED，所以需要再次應用
     load_config
+    apply_color_settings # 再次呼叫以防設定檔有不同設定
+
+    # 執行環境檢查和主選單
     check_environment
     main_menu
 }
