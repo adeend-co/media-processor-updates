@@ -15,7 +15,7 @@
 ############################################
 # 腳本設定
 ############################################
-SCRIPT_VERSION="v1.1.0"
+SCRIPT_VERSION="v1.1.1"
 SCRIPT_UPDATE_DATE="2025-06-29"
 
 # --- 使用者設定檔與資料檔路徑 ---
@@ -152,7 +152,7 @@ prompt_add_new_category() {
     fi
 }
 
-# 主要的交易新增流程 (重構為選單式，並優化金額輸入體驗)
+# 主要的交易新增流程 (v1.2 - 優化UI並兼容無tput環境)
 add_transaction() {
     local type="$1" # "expense" or "income"
     local title="支出"
@@ -162,50 +162,52 @@ add_transaction() {
         categories_str="$INCOME_CATEGORIES"
     fi
 
+    # --- ▼▼▼ 在此處新增修改 ▼▼▼ ---
+    # 檢查 tput 是否可用，決定UI模式
+    local tput_enabled=false
+    if command -v tput &> /dev/null; then
+        tput_enabled=true
+    fi
+    # --- ▲▲▲ 修改結束 ▲▲▲ ---
+
     clear
     echo -e "${CYAN}--- 新增一筆${title} ---${RESET}"
 
     local amount category date_input description
     
-    # --- ▼▼▼ 在此處新增修改 ▼▼▼ ---
-    # 1. 金額 (優化輸入體驗)
-    local error_message=""
-    while true; do
-        # 清理之前的錯誤訊息（如果有的話）
-        if [ -n "$error_message" ]; then
-            tput rc # 回到儲存的位置
-            tput ed # 清除從游標到螢幕結尾的內容
-        fi
+    # 1. 金額 (根據 tput 可用性選擇不同UI)
+    if $tput_enabled; then
+        # --- 使用 tput 的優化UI ---
+        local error_message=""
+        while true; do
+            if [ -n "$error_message" ]; then
+                tput rc; tput ed
+                echo -e "${RED}${error_message}${RESET}"; sleep 1.5; tput rc; tput ed
+            fi
+            tput sc
+            read -p "[1/4] 請輸入金額: " amount
+            if [[ "$amount" =~ ^[0-9]+(\.[0-9]+)?$ ]] && (( $(echo "$amount > 0" | bc -l) )); then
+                error_message=""
+                tput rc; tput ed
+                echo -e "[1/4] 請輸入金額: ${GREEN}$amount${RESET}"
+                break
+            else
+                error_message="錯誤：請輸入有效的正數金額。"
+            fi
+        done
+    else
+        # --- 不使用 tput 的降級UI ---
+        while true; do
+            read -p "[1/4] 請輸入金額: " amount
+            if [[ "$amount" =~ ^[0-9]+(\.[0-9]+)?$ ]] && (( $(echo "$amount > 0" | bc -l) )); then
+                break
+            else
+                echo -e "${RED}錯誤：請輸入有效的正數金額。${RESET}"
+            fi
+        done
+    fi
 
-        # 顯示任何累積的錯誤訊息
-        if [ -n "$error_message" ]; then
-            echo -e "${RED}${error_message}${RESET}"
-            sleep 1.5
-            tput rc
-            tput ed
-        fi
-
-        # 儲存當前游標位置
-        tput sc
-
-        read -p "[1/4] 請輸入金額: " amount
-        
-        # 驗證輸入
-        if [[ "$amount" =~ ^[0-9]+(\.[0-9]+)?$ ]] && (( $(echo "$amount > 0" | bc -l) )); then
-            # 輸入正確，清除可能的錯誤訊息並跳出迴圈
-            error_message=""
-            tput rc
-            tput ed
-            echo -e "[1/4] 請輸入金額: ${GREEN}$amount${RESET}" # 在原地顯示正確的輸入
-            break
-        else
-            # 輸入錯誤，設定錯誤訊息以便下次迴圈顯示
-            error_message="錯誤：請輸入有效的正數金額。"
-        fi
-    done
-    # --- ▲▲▲ 修改結束 ▲▲▲ ---
-
-    # 2. 類別 (重構為選單選擇)
+    # 2. 類別 (流程不變，已是選單式)
     local chosen_category=""
     while true; do
         clear
@@ -229,11 +231,9 @@ add_transaction() {
             read -p "請輸入新的類別名稱: " new_category_name
             if [ -n "$new_category_name" ]; then
                 if echo ",$categories_str," | grep -q ",$new_category_name,"; then
-                    echo -e "${YELLOW}警告：類別 '$new_category_name' 已存在。${RESET}"
-                    sleep 2
+                    echo -e "${YELLOW}警告：類別 '$new_category_name' 已存在。${RESET}"; sleep 2
                     continue
                 fi
-
                 chosen_category="$new_category_name"
                 if [ "$type" == "expense" ]; then
                     EXPENSE_CATEGORIES="${EXPENSE_CATEGORIES},${new_category_name}"
@@ -241,15 +241,14 @@ add_transaction() {
                     INCOME_CATEGORIES="${INCOME_CATEGORIES},${new_category_name}"
                 fi
                 save_config
-                echo -e "${GREEN}已新增並選擇 '$new_category_name'。${RESET}"
-                sleep 1
+                echo -e "${GREEN}已新增並選擇 '$new_category_name'。${RESET}"; sleep 1
                 break
             else
                 echo -e "${RED}類別名稱不能為空。${RESET}"; sleep 1
             fi
         elif [ "$cat_choice" == "0" ]; then
             echo -e "${YELLOW}已取消操作。${RESET}"; sleep 1
-            return 1
+            return 1 # 取消返回
         else
             echo -e "${RED}無效選項。${RESET}"; sleep 1
         fi
@@ -261,12 +260,10 @@ add_transaction() {
         if [ -z "$date_input" ]; then
             date_input="today"
         fi
-        
         local parsed_date
         parsed_date=$(date -d "$date_input" "+%Y-%m-%d" 2>/dev/null)
         if [ $? -eq 0 ]; then
-            date_input="$parsed_date"
-            break
+            date_input="$parsed_date"; break
         else
             echo -e "${RED}錯誤：無法識別的日期格式。請嘗試 YYYY-MM-DD, MM-DD, 或 'yesterday'。${RESET}"
         fi
@@ -290,10 +287,8 @@ add_transaction() {
         local id=$(get_next_id)
         local timestamp=$(date -d "$date_input" "+%s")
         local safe_description=$(echo "$description" | sed 's/"/""/g')
-
         local new_record="$id,$timestamp,$date_input,$type,$chosen_category,$amount,\"$safe_description\""
         echo "$new_record" >> "$DATA_FILE"
-        
         log_message "INFO" "新增紀錄: $new_record"
         echo -e "\n${GREEN}紀錄已儲存！ (ID: $id)${RESET}"
     else
@@ -418,7 +413,7 @@ EOF
     read -p "按 Enter 返回..."
 }
 
-# 檢查環境依賴
+# 檢查環境依賴 (v1.1 - 新增 tput 檢查)
 check_environment() {
     local missing_tools=()
     echo -e "${CYAN}正在檢查環境依賴...${RESET}"
@@ -431,14 +426,25 @@ check_environment() {
     if ! command -v bc &> /dev/null; then
         missing_tools+=("bc")
     fi
+    # --- ▼▼▼ 在此處新增修改 ▼▼▼ ---
+    # 檢查 tput (優化UI體驗需要)
+    if ! command -v tput &> /dev/null; then
+        missing_tools+=("ncurses-utils") # 在 Termux/Debian 中，tput 包含在 ncurses-utils 套件裡
+    fi
+    # --- ▲▲▲ 修改結束 ▲▲▲ ---
     
     if [ ${#missing_tools[@]} -gt 0 ]; then
-        echo -e "${RED}警告：缺少以下工具，部分功能可能無法使用：${RESET}"
+        echo -e "${RED}警告：缺少以下工具，部分功能或UI體驗可能受影響：${RESET}"
         for tool in "${missing_tools[@]}"; do
-            echo -e "${YELLOW}  - $tool${RESET}"
+            local reason=""
+            if [ "$tool" == "ncurses-utils" ]; then reason="(提供 tput 命令，用於優化輸入介面)"; fi
+            if [ "$tool" == "gnuplot" ]; then reason="(用於生成視覺化圖表)"; fi
+            if [ "$tool" == "bc" ]; then reason="(用於精確計算金額)"; fi
+            echo -e "${YELLOW}  - $tool ${CYAN}${reason}${RESET}"
         done
-        echo -e "${CYAN}您可以嘗試使用套件管理器安裝 (如: pkg install ${missing_tools[*]})。${RESET}"
-        sleep 3
+        echo -e "${CYAN}您可以嘗試使用套件管理器安裝。例如在 Termux 中執行:${RESET}"
+        echo -e "${GREEN}  pkg install ${missing_tools[*]}${RESET}"
+        read -p "按 Enter 繼續..."
     else
         echo -e "${GREEN}環境依賴檢查通過。${RESET}"
         sleep 1
@@ -446,18 +452,16 @@ check_environment() {
 }
 
 ############################################
-# 主選單與主程式
+# 主選單與主程式 (v1.2 - 終極穩定版)
 ############################################
 main_menu() {
     while true; do
-        # --- ▼▼▼ 在此處新增修改 ▼▼▼ ---
-        # 在每次迴圈開始時強制應用顏色設定，確保顏色變數總是有效的
-        apply_color_settings
-        # --- ▲▲▲ 修改結束 ▲▲▲ ---
-
+        # 這裡只負責計算和顯示，不處理顏色
         clear
         local balance
         balance=$(calculate_balance)
+        
+        # 顯示時直接使用顏色變數
         echo -e "${CYAN}====== ${BOLD}個人財務管理器 ${SCRIPT_VERSION}${RESET}${CYAN} ======${RESET}"
         printf "${WHITE}當前餘額: ${GREEN}${CURRENCY} %.2f${RESET}\n\n" "$balance"
         
@@ -468,12 +472,21 @@ main_menu() {
         echo -e "${YELLOW}[ 查詢與報告 ]${RESET}"
         echo "  3. 查詢最近紀錄"
         echo "  4. ${PURPLE}生成視覺化報告 (需 gnuplot)${RESET}"
-        # echo "  5. 自訂條件搜尋" # 預留功能
         echo ""
         echo "  0. ${RED}退出並返回主啟動器${RESET}"
         echo "----------------------------------"
         read -p "請選擇操作: " choice
 
+        # --- ▼▼▼ 核心修改：中央分發器 ▼▼▼ ---
+        # 在執行任何動作前，先準備好環境
+        
+        # 1. 應用顏色設定，確保子功能有顏色可用
+        apply_color_settings
+        
+        # 2. 清理主選單介面，為子功能準備乾淨的畫布
+        clear
+
+        # 3. 根據選擇執行對應功能
         case $choice in
             1) add_transaction "expense" ;;
             2) add_transaction "income" ;;
@@ -485,8 +498,10 @@ main_menu() {
                 exit 0
                 ;;
             *)
+                # 對於無效選項，顯示提示後，迴圈會自動重繪主選單
                 echo -e "${RED}無效選項 '$choice'${RESET}"; sleep 1 ;;
         esac
+        # --- ▲▲▲ 修改結束 ▲▲▲ ---
     done
 }
 
