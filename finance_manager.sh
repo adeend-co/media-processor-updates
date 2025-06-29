@@ -15,7 +15,7 @@
 ############################################
 # 腳本設定
 ############################################
-SCRIPT_VERSION="v1.2.0"
+SCRIPT_VERSION="v1.2.1"
 SCRIPT_UPDATE_DATE="2025-06-29"
 
 PYTHON_PIE_CHART_SCRIPT_PATH="$(dirname "$0")/create_pie_chart.py"
@@ -391,34 +391,70 @@ EOF
     read -p "按 Enter 返回..."
 }
 
-# 檢查環境依賴 (v1.2 - 新增 python/matplotlib 檢查)
+# 檢查環境依賴 (v1.3 - 動態生成完整的安裝指令)
 check_environment() {
-    local missing_items=()
+    local pkg_missing=()
+    local pip_missing=()
     local python_exec=""
     echo -e "${CYAN}正在檢查環境依賴...${RESET}"
     
-    # 檢查 bc
-    if ! command -v bc &> /dev/null; then missing_items+=("bc"); fi
-
-    # 檢查 Python
-    if command -v python3 &> /dev/null; then python_exec="python3"; elif command -v python &> /dev/null; then python_exec="python"; else missing_items+=("python"); fi
+    # 檢查系統套件: bc (用於金額計算)
+    if ! command -v bc &> /dev/null; then
+        pkg_missing+=("bc")
+    fi
     
-    # 如果找到 Python，檢查 matplotlib
+    # 檢查系統套件: gnuplot (用於長條圖)
+    if ! command -v gnuplot &> /dev/null; then
+        pkg_missing+=("gnuplot")
+    fi
+    
+    # 檢查 Python 主程式
+    if command -v python3 &> /dev/null; then
+        python_exec="python3"
+    elif command -v python &> /dev/null; then
+        python_exec="python"
+    else
+        # 如果連 python 都沒有，將其加入系統套件列表
+        pkg_missing+=("python")
+    fi
+
+    # 只有在找到 Python 的情況下，才檢查 pip 庫
     if [ -n "$python_exec" ]; then
+        # 檢查 Python 庫: matplotlib (用於圓餅圖)
         if ! "$python_exec" -c "import matplotlib" &> /dev/null; then
-            missing_items+=("matplotlib (Python 庫)")
+            pip_missing+=("matplotlib")
         fi
     fi
 
-    if [ ${#missing_items[@]} -gt 0 ]; then
+    # --- ▼▼▼ 核心修改：動態生成安裝指令 ▼▼▼ ---
+    # 檢查是否有任何缺少的項目
+    if [ ${#pkg_missing[@]} -gt 0 ] || [ ${#pip_missing[@]} -gt 0 ]; then
         echo -e "${RED}警告：缺少以下工具或庫，部分功能可能無法使用：${RESET}"
-        for item in "${missing_items[@]}"; do
+        
+        # 合併所有缺少的項目並顯示列表
+        local all_missing=("${pkg_missing[@]}" "${pip_missing[@]}")
+        for item in "${all_missing[@]}"; do
             echo -e "${YELLOW}  - $item${RESET}"
         done
-        echo -e "\n${CYAN}您可以嘗試使用以下命令安裝：${RESET}"
-        if [[ " ${missing_items[*]} " =~ " python " ]]; then echo -e "${GREEN}  pkg install python${RESET}"; fi
-        if [[ " ${missing_items[*]} " =~ " bc " ]]; then echo -e "${GREEN}  pkg install bc${RESET}"; fi
-        if [[ " ${missing_tools[*]} " =~ " matplotlib " ]]; then echo -e "${GREEN}  pip install matplotlib${RESET}"; fi
+
+        echo -e "\n${CYAN}您可以嘗試執行以下一或多個【完整指令】來安裝：${RESET}"
+
+        # 如果有缺少的系統套件，生成 'pkg install' 指令
+        if [ ${#pkg_missing[@]} -gt 0 ]; then
+            # 假設在 Termux 環境，使用 pkg。在其他 Linux 上可擴充此邏輯。
+            echo -e "${GREEN}  pkg install ${pkg_missing[*]}${RESET}"
+        fi
+
+        # 如果有缺少的 Python 庫，生成 'pip install' 指令
+        if [ ${#pip_missing[@]} -gt 0 ]; then
+             local pip_cmd="pip"
+             # 優先使用帶有版本號的 python 來執行 pip，更標準
+             if [ -n "$python_exec" ]; then
+                pip_cmd="$python_exec -m pip"
+             fi
+             echo -e "${GREEN}  ${pip_cmd} install ${pip_missing[*]}${RESET}"
+        fi
+        
         read -p "按 Enter 繼續..."
     else
         echo -e "${GREEN}環境依賴檢查通過。${RESET}"
