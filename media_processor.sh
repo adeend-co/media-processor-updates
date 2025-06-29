@@ -50,7 +50,7 @@
 ############################################
 # 腳本設定
 ############################################
-SCRIPT_VERSION="v2.6.6-beta.2" # <<< 版本號更新
+SCRIPT_VERSION="v2.6.6-beta.3" # <<< 版本號更新
 
 ############################################
 # ★★★ 新增：使用者同意書版本號 ★★★
@@ -4528,7 +4528,6 @@ main_menu() {
             5) utilities_menu ;;
             6) show_about_enhanced ;;
             7)
-                # 取得主腳本所在的目錄
                 local script_dir
                 script_dir=$(dirname "$(realpath "$0")")
                 local finance_script_path="$script_dir/finance_manager.sh"
@@ -4537,17 +4536,15 @@ main_menu() {
                     echo -e "${RED}錯誤：找不到財務管理器腳本 'finance_manager.sh'！${RESET}"
                     echo -e "${YELLOW}請確保它與 'media_processor.sh' 放在同一個目錄下。${RESET}"
                     sleep 3
-                    continue # 返回主選單
+                    continue
                 fi
                 
-                # --- 密碼保護機制 ---
                 local password_hash=""
-                local correct_hash_hex="\x37\x36\x64\x64\x66\x65\x37\x62" # 來自彩蛋的 'adeend' 的 sha256sum 前8碼
+                local correct_hash_hex="\x37\x36\x64\x64\x66\x65\x37\x62"
                 
                 read -s -p "請輸入密碼: " password
-                echo "" # 換行
+                echo ""
                 
-                # 計算輸入密碼的雜湊值
                 password_hash=$(echo -n "$password" | sha256sum | head -c 8)
                 
                 if [[ "$password_hash" == "$(echo -ne "$correct_hash_hex")" ]]; then
@@ -4556,10 +4553,12 @@ main_menu() {
                     sleep 1
                     clear
                     
-                    # 執行外部的財務腳本
-                    "$finance_script_path"
+                    # --- ▼▼▼ 在此處新增修改 ▼▼▼ ---
+                    # 將主腳本的顏色設定作為參數傳遞給財務腳本
+                    # 這樣財務腳本一啟動就能知道是否要啟用顏色
+                    "$finance_script_path" "--color=${COLOR_ENABLED}"
+                    # --- ▲▲▲ 修改結束 ▲▲▲ ---
                     
-                    # 從財務腳本返回後，提示使用者
                     echo -e "\n${CYAN}已從個人財務管理器返回。${RESET}"
                     read -p "按 Enter 返回主選單..."
                 else
