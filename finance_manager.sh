@@ -15,7 +15,7 @@
 ############################################
 # 腳本設定
 ############################################
-SCRIPT_VERSION="v1.2.2"
+SCRIPT_VERSION="v1.2.3"
 SCRIPT_UPDATE_DATE="2025-06-29"
 
 PYTHON_PIE_CHART_SCRIPT_PATH="$(dirname "$0")/create_pie_chart.py"
@@ -391,7 +391,7 @@ EOF
     read -p "按 Enter 返回..."
 }
 
-# 檢查環境依賴 (v1.4 - 使用 pkg 安裝 matplotlib，解決編譯問題)
+# 檢查環境依賴 (v1.5 - 修正 matplotlib 套件名稱)
 check_environment() {
     local pkg_missing=()
     local python_exec=""
@@ -417,12 +417,10 @@ check_environment() {
     fi
 
     # 只有在找到 Python 的情況下，才檢查 matplotlib 的存在
-    # 這次我們依然用 import 來檢查，但安裝方式改為 pkg
     if [ -n "$python_exec" ]; then
         if ! "$python_exec" -c "import matplotlib" &> /dev/null; then
-            # --- ▼▼▼ 核心修改：將 matplotlib 視為系統套件 ▼▼▼ ---
-            # 在 Termux 中，matplotlib 及其所有編譯依賴都由 'python-matplotlib' 套件提供
-            pkg_missing+=("python-matplotlib")
+            # --- ▼▼▼ 核心修改：使用正確的套件名稱 'matplotlib' ▼▼▼ ---
+            pkg_missing+=("matplotlib")
         fi
     fi
 
@@ -436,10 +434,12 @@ check_environment() {
         echo -e "\n${CYAN}您可以執行以下【單一完整指令】來安裝所有必需品：${RESET}"
 
         # 生成一個統一的、適用於 Termux 的安裝指令
-        # 這裡不再需要區分 pkg 和 pip
         echo -e "${GREEN}  pkg install ${pkg_missing[*]}${RESET}"
         
-        echo -e "\n${YELLOW}提示：'python-matplotlib' 套件較大，可能需要一些時間下載和安裝。${RESET}"
+        if [[ " ${pkg_missing[*]} " =~ " matplotlib " ]]; then
+            echo -e "\n${YELLOW}提示：'matplotlib' 套件較大，且會安裝大量依賴，請耐心等候。${RESET}"
+        fi
+        
         read -p "按 Enter 繼續..."
     else
         echo -e "${GREEN}環境依賴檢查通過。${RESET}"
