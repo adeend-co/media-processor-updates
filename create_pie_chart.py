@@ -9,7 +9,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 
 # 腳本版本
-SCRIPT_VERSION = "1.0.0"
+SCRIPT_VERSION = "1.1.0"
 
 def set_chinese_font():
     """
@@ -17,25 +17,33 @@ def set_chinese_font():
     """
     system = platform.system()
     try:
-        if system == 'Darwin':  # macOS
-            plt.rcParams['font.sans-serif'] = ['Arial Unicode MS']
-        elif system == 'Linux':
-            # 優先嘗試尋找 Noto Sans CJK，這是 Termux 和許多現代 Linux 的標配
-            # 如果您安裝了其他字體，請修改下面的列表
-            font_list = ['Noto Sans CJK JP', 'Noto Sans CJK SC', 'WenQuanYi Micro Hei']
-            for font in font_list:
-                try:
-                    matplotlib.font_manager.findfont(font)
-                    plt.rcParams['font.sans-serif'] = [font]
-                    plt.rcParams['axes.unicode_minus'] = False # 解決負號顯示問題
-                    print(f"INFO: Found and set CJK font: {font}", file=sys.stderr)
-                    return
-                except:
-                    continue
-            print("WARNING: CJK font not found. Please install a font like 'noto-fonts-cjk' or 'wqy-microhei'.", file=sys.stderr)
-        # Windows 的處理可以加在這裡，如果需要的話
-        # elif system == 'Windows':
-        #     plt.rcParams['font.sans-serif'] = ['Microsoft YaHei']
+        # 在 Termux/Linux 環境下，優先尋找 Noto Sans CJK 字體
+        # 這是透過 'pkg install noto-fonts-cjk' 安裝的
+        if system == 'Linux' or system == 'Darwin': # Darwin (macOS) 也可能用這個路徑
+            font_path = '/data/data/com.termux/files/usr/share/fonts/TTF/NotoSansCJKjp-Regular.otf'
+            if platform.system() == 'Darwin': # macOS 的標準路徑
+                font_path = '/System/Library/Fonts/STHeiti Medium.ttc'
+
+            # 檢查字體是否存在
+            import os
+            if os.path.exists(font_path):
+                 plt.rcParams['font.sans-serif'] = [matplotlib.font_manager.FontProperties(fname=font_path).get_name()]
+                 plt.rcParams['axes.unicode_minus'] = False
+                 print(f"INFO: Found and set CJK font: {font_path}", file=sys.stderr)
+                 return
+            else:
+                 # 如果預設路徑找不到，再嘗試通用名稱
+                 font_list = ['Noto Sans CJK JP', 'Noto Sans CJK SC', 'WenQuanYi Micro Hei']
+                 for font in font_list:
+                    try:
+                        matplotlib.font_manager.findfont(font)
+                        plt.rcParams['font.sans-serif'] = [font]
+                        plt.rcParams['axes.unicode_minus'] = False
+                        print(f"INFO: Found and set CJK font by name: {font}", file=sys.stderr)
+                        return
+                    except:
+                        continue
+        print("WARNING: CJK font not found. Please install a font like 'noto-fonts-cjk'.", file=sys.stderr)
     except Exception as e:
         print(f"WARNING: An error occurred while setting font: {e}", file=sys.stderr)
 
@@ -68,29 +76,30 @@ def create_pie_chart(data_file, output_file, title):
     # 設置中文字體
     set_chinese_font()
 
-    fig, ax = plt.subplots(figsize=(10, 8))
+    fig, ax = plt.subplots(figsize=(10, 8), subplot_kw=dict(aspect="equal"))
     
-    # 繪製圓餅圖
+    # --- ▼▼▼ 核心修改：關閉陰影，調整樣式 ▼▼▼ ---
     wedges, texts, autotexts = ax.pie(
         sizes, 
-        autopct='%1.1f%%',  # 顯示百分比，保留一位小數
-        startangle=90,      # 從90度角開始繪製
-        shadow=True,
-        pctdistance=0.85,   # 百分比文字離圓心的距離
+        autopct='%1.1f%%',
+        startangle=90,
+        shadow=False,  # 關閉陰影效果，得到乾淨的2D圖表
+        pctdistance=0.8,
+        textprops=dict(color="w") # 將百分比文字預設設為白色
     )
+    # --- ▲▲▲ 修改結束 ▲▲▲ ---
 
-    # 調整圖例和標籤
     ax.legend(wedges, labels,
               title="支出類別",
               loc="center left",
               bbox_to_anchor=(1, 0, 0.5, 1))
 
-    plt.setp(autotexts, size=10, weight="bold", color="white")
+    plt.setp(autotexts, size=10, weight="bold")
     
     ax.set_title(title, size=16, weight="bold")
-    ax.axis('equal')  # 確保圓餅圖是正圓形
-
+    
     try:
+        # 使用 bbox_inches='tight' 來自動裁剪空白邊緣
         plt.savefig(output_file, dpi=150, bbox_inches='tight')
         print(f"SUCCESS: Chart saved to {output_file}")
     except Exception as e:
