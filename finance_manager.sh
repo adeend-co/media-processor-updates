@@ -15,7 +15,7 @@
 ############################################
 # 腳本設定
 ############################################
-SCRIPT_VERSION="v1.1.5"
+SCRIPT_VERSION="v1.1.6"
 SCRIPT_UPDATE_DATE="2025-06-29"
 
 # --- 使用者設定檔與資料檔路徑 ---
@@ -282,7 +282,7 @@ list_recent() {
     read -p "按 Enter 返回..."
 }
 
-# 生成視覺化報告 (v1.2 - 使用從主腳本傳入的統一儲存路徑)
+# 生成視覺化報告 (v1.3 - 智慧判斷是否旋轉X軸標籤)
 generate_visual_report() {
     if ! command -v gnuplot &> /dev/null; then
         echo -e "${RED}錯誤：找不到 'gnuplot' 命令。無法生成圖表。${RESET}"; sleep 3
@@ -294,8 +294,6 @@ generate_visual_report() {
         return 1
     fi
 
-    # --- ▼▼▼ 核心修改：直接使用全域的 REPORT_OUTPUT_PATH 變數 ▼▼▼ ---
-    # 這個變數在 main() 函數中已經被設定好了
     local REPORT_DIR="$REPORT_OUTPUT_PATH"
     mkdir -p "$REPORT_DIR"
     if [ ! -d "$REPORT_DIR" ] || [ ! -w "$REPORT_DIR" ]; then
@@ -305,12 +303,10 @@ generate_visual_report() {
         return 1
     fi
 
-    # 為了避免檔案混亂，我們給報告檔案加上日期和類型的前綴
     local report_file_base="$REPORT_DIR/PFM_Report_$(date +%Y%m%d_%H%M%S)"
     local gnuplot_script="$REPORT_DIR/plot.gp"
     local data_temp_file="$REPORT_DIR/plot_data.tmp"
-    # --- ▲▲▲ 修改結束 ▲▲▲ ---
-
+    
     clear
     echo -e "${CYAN}--- 生成視覺化報告 ---${RESET}"
     echo "1. 本月支出圓餅圖 (長條圖模擬)"
@@ -318,40 +314,61 @@ generate_visual_report() {
     echo "0. 返回"
     read -p "請選擇報告類型: " choice
     
-    local report_file="" # 最終的報告檔名
+    local report_file=""
+    local title_text=""
+    local data_source_cmd=""
+    local category_count=0
 
     case $choice in
         1)
+            title_text="本月支出分佈 ($(date "+%Y-%m"))"
             report_file="${report_file_base}_monthly_expense.png"
-            echo -e "${YELLOW}正在生成本月支出報告...${RESET}"
-            local current_month=$(date "+%Y-%m")
-            awk -F, -v month="$current_month" '$3 ~ month && $4 == "expense" {expenses[$5] += $6} END {for (cat in expenses) print "\"" cat "\"", expenses[cat]}' "$DATA_FILE" > "$data_temp_file"
-            
-            if [ ! -s "$data_temp_file" ]; then
-                 echo -e "${RED}本月沒有支出紀錄。${RESET}"; sleep 2; rm -f "$data_temp_file"; return
-            fi
-
-            cat > "$gnuplot_script" << EOF
-set terminal pngcairo enhanced font "sans,10" size 800,600; set output '$report_file'; set title "本月支出分佈 ($current_month)"; set style data histograms; set style fill solid 1.0; set boxwidth 0.8; set yrange [0:*]; set ylabel "金額 (${CURRENCY})"; set xtics rotate by -45; set grid y; plot '$data_temp_file' using 2:xtic(1) with boxes notitle;
-EOF
+            data_source_cmd="awk -F, -v month=\"$(date "+%Y-%m")\" '\$3 ~ month && \$4 == \"expense\" {expenses[\$5] += \$6} END {for (cat in expenses) print \"\\\"\" cat \"\\\"\", expenses[cat]}' \"$DATA_FILE\" > \"$data_temp_file\""
             ;;
         2)
+            title_text="今年總支出 ($(date "+%Y"))"
             report_file="${report_file_base}_yearly_expense.png"
-            echo -e "${YELLOW}正在生成今年支出報告...${RESET}"
-            local current_year=$(date "+%Y")
-            awk -F, -v year="$current_year" '$3 ~ year && $4 == "expense" {expenses[$5] += $6} END {for (cat in expenses) print "\"" cat "\"", expenses[cat]}' "$DATA_FILE" > "$data_temp_file"
-            
-            if [ ! -s "$data_temp_file" ]; then
-                 echo -e "${RED}今年沒有支出紀錄。${RESET}"; sleep 2; rm -f "$data_temp_file"; return
-            fi
-
-            cat > "$gnuplot_script" << EOF
-set terminal pngcairo enhanced font "sans,10" size 1024,768; set output '$report_file'; set title "今年總支出 ($current_year)"; set style data histograms; set style fill solid 1.0; set boxwidth 0.8; set yrange [0:*]; set ylabel "金額 (${CURRENCY})"; set xtics rotate by -45; set grid y; plot '$data_temp_file' using 2:xtic(1) with boxes notitle;
-EOF
+            data_source_cmd="awk -F, -v year=\"$(date "+%Y")\" '\$3 ~ year && \$4 == \"expense\" {expenses[\$5] += \$6} END {for (cat in expenses) print \"\\\"\" cat \"\\\"\", expenses[cat]}' \"$DATA_FILE\" > \"$data_temp_file\""
             ;;
         0) return ;;
         *) echo -e "${RED}無效選項。${RESET}"; sleep 1; return ;;
     esac
+
+    echo -e "${YELLOW}正在準備資料...${RESET}"
+    eval "$data_source_cmd" # 執行 awk 命令生成資料檔
+    
+    if [ ! -s "$data_temp_file" ]; then
+        echo -e "${RED}查詢範圍內沒有支出紀錄。${RESET}"; sleep 2; rm -f "$data_temp_file"; return
+    fi
+
+    # --- ▼▼▼ 核心修改：智慧判斷是否需要旋轉標籤 ▼▼▼ ---
+    category_count=$(wc -l < "$data_temp_file")
+    local rotate_option=""
+    if [ "$category_count" -gt 4 ]; then
+        # 如果類別超過4個，就加入旋轉選項
+        rotate_option="set xtics rotate by -45"
+        log_message "INFO" "類別數量 ($category_count) > 4，啟用X軸標籤旋轉。"
+    else
+        log_message "INFO" "類別數量 ($category_count) <= 4，禁用X軸標籤旋轉。"
+    fi
+    # --- ▲▲▲ 修改結束 ▲▲▲ ---
+
+    echo -e "${YELLOW}正在生成圖表...${RESET}"
+    # 生成 gnuplot 腳本
+    cat > "$gnuplot_script" <<-EOF
+set terminal pngcairo enhanced font "sans,10" size 1024,768
+set output '$report_file'
+set title "$title_text"
+set style data histograms
+set style fill solid 1.0 border -1
+set boxwidth 0.8
+set yrange [0:*]
+set ylabel "金額 (${CURRENCY})"
+$rotate_option  # 這裡會根據上面的判斷結果，插入旋轉指令或一個空行
+set grid y
+set tics scale 0
+plot '$data_temp_file' using 2:xtic(1) with boxes notitle
+EOF
 
     gnuplot "$gnuplot_script"
     if [ $? -eq 0 ] && [ -f "$report_file" ]; then
