@@ -15,7 +15,7 @@
 ############################################
 # 腳本設定
 ############################################
-SCRIPT_VERSION="v1.1.1"
+SCRIPT_VERSION="v1.1.2"
 SCRIPT_UPDATE_DATE="2025-06-29"
 
 # --- 使用者設定檔與資料檔路徑 ---
@@ -152,9 +152,9 @@ prompt_add_new_category() {
     fi
 }
 
-# 主要的交易新增流程 (v1.2 - 優化UI並兼容無tput環境)
+# 主要的交易新增流程 (v1.3 - 模仿主腳本重繪邏輯，移除tput)
 add_transaction() {
-    local type="$1" # "expense" or "income"
+    local type="$1"
     local title="支出"
     local categories_str="$EXPENSE_CATEGORIES"
     if [ "$type" == "income" ]; then
@@ -162,56 +162,26 @@ add_transaction() {
         categories_str="$INCOME_CATEGORIES"
     fi
 
-    # --- ▼▼▼ 在此處新增修改 ▼▼▼ ---
-    # 檢查 tput 是否可用，決定UI模式
-    local tput_enabled=false
-    if command -v tput &> /dev/null; then
-        tput_enabled=true
-    fi
-    # --- ▲▲▲ 修改結束 ▲▲▲ ---
-
-    clear
-    echo -e "${CYAN}--- 新增一筆${title} ---${RESET}"
-
-    local amount category date_input description
+    # --- ▼▼▼ 核心修改：完全重構輸入流程 ▼▼▼ ---
+    # 每個輸入都是一個獨立的步驟，出錯就返回
     
-    # 1. 金額 (根據 tput 可用性選擇不同UI)
-    if $tput_enabled; then
-        # --- 使用 tput 的優化UI ---
-        local error_message=""
-        while true; do
-            if [ -n "$error_message" ]; then
-                tput rc; tput ed
-                echo -e "${RED}${error_message}${RESET}"; sleep 1.5; tput rc; tput ed
-            fi
-            tput sc
-            read -p "[1/4] 請輸入金額: " amount
-            if [[ "$amount" =~ ^[0-9]+(\.[0-9]+)?$ ]] && (( $(echo "$amount > 0" | bc -l) )); then
-                error_message=""
-                tput rc; tput ed
-                echo -e "[1/4] 請輸入金額: ${GREEN}$amount${RESET}"
-                break
-            else
-                error_message="錯誤：請輸入有效的正數金額。"
-            fi
-        done
-    else
-        # --- 不使用 tput 的降級UI ---
-        while true; do
-            read -p "[1/4] 請輸入金額: " amount
-            if [[ "$amount" =~ ^[0-9]+(\.[0-9]+)?$ ]] && (( $(echo "$amount > 0" | bc -l) )); then
-                break
-            else
-                echo -e "${RED}錯誤：請輸入有效的正數金額。${RESET}"
-            fi
-        done
+    # 步驟 1: 金額
+    clear
+    echo -e "${CYAN}--- 新增一筆${title} (步驟 1/4) ---${RESET}"
+    read -p "請輸入金額: " amount
+    if ! [[ "$amount" =~ ^[0-9]+(\.[0-9]+)?$ ]] || ! (( $(echo "$amount > 0" | bc -l) )); then
+        echo -e "${RED}錯誤：金額無效。操作已取消。${RESET}"
+        sleep 2
+        return # 出錯即返回，由主選單重繪
     fi
 
-    # 2. 類別 (流程不變，已是選單式)
+    # 步驟 2: 類別
     local chosen_category=""
     while true; do
         clear
-        echo -e "${CYAN}--- 請選擇${title}類別 ---${RESET}"
+        echo -e "${CYAN}--- 新增一筆${title} (步驟 2/4) ---${RESET}"
+        echo -e "金額: ${GREEN}${amount}${RESET}\n"
+        echo -e "${YELLOW}請選擇類別：${RESET}"
         IFS=',' read -r -a categories_array <<< "$categories_str"
         local index=1
         for cat in "${categories_array[@]}"; do
@@ -219,8 +189,8 @@ add_transaction() {
             index=$((index + 1))
         done
         echo "-------------------"
-        echo -e "  a) ${YELLOW}新增自訂類別...${RESET}"
-        echo -e "  0) ${RED}取消${RESET}"
+        echo -e "  a) 新增自訂類別..."
+        echo -e "  0) 取消操作"
         
         read -p "請輸入選項: " cat_choice
         
@@ -235,11 +205,7 @@ add_transaction() {
                     continue
                 fi
                 chosen_category="$new_category_name"
-                if [ "$type" == "expense" ]; then
-                    EXPENSE_CATEGORIES="${EXPENSE_CATEGORIES},${new_category_name}"
-                else
-                    INCOME_CATEGORIES="${INCOME_CATEGORIES},${new_category_name}"
-                fi
+                if [ "$type" == "expense" ]; then EXPENSE_CATEGORIES="${EXPENSE_CATEGORIES},${new_category_name}"; else INCOME_CATEGORIES="${INCOME_CATEGORIES},${new_category_name}"; fi
                 save_config
                 echo -e "${GREEN}已新增並選擇 '$new_category_name'。${RESET}"; sleep 1
                 break
@@ -247,32 +213,37 @@ add_transaction() {
                 echo -e "${RED}類別名稱不能為空。${RESET}"; sleep 1
             fi
         elif [ "$cat_choice" == "0" ]; then
-            echo -e "${YELLOW}已取消操作。${RESET}"; sleep 1
-            return 1 # 取消返回
+            echo -e "${YELLOW}操作已取消。${RESET}"; sleep 1
+            return # 取消操作，返回主選單
         else
             echo -e "${RED}無效選項。${RESET}"; sleep 1
         fi
     done
 
-    # 3. 日期 (流程不變)
-    while true; do
-        read -p "[3/4] 日期 [預設: 今天 ($(date '+%Y-%m-%d'))]: " date_input
-        if [ -z "$date_input" ]; then
-            date_input="today"
-        fi
-        local parsed_date
-        parsed_date=$(date -d "$date_input" "+%Y-%m-%d" 2>/dev/null)
-        if [ $? -eq 0 ]; then
-            date_input="$parsed_date"; break
-        else
-            echo -e "${RED}錯誤：無法識別的日期格式。請嘗試 YYYY-MM-DD, MM-DD, 或 'yesterday'。${RESET}"
-        fi
-    done
+    # 步驟 3: 日期
+    clear
+    echo -e "${CYAN}--- 新增一筆${title} (步驟 3/4) ---${RESET}"
+    echo -e "金額: ${GREEN}${amount}${RESET}"
+    echo -e "類別: ${GREEN}${chosen_category}${RESET}\n"
+    read -p "請輸入日期 [預設: 今天 ($(date '+%Y-%m-%d'))]: " date_input
+    if [ -z "$date_input" ]; then date_input="today"; fi
+    local parsed_date
+    parsed_date=$(date -d "$date_input" "+%Y-%m-%d" 2>/dev/null)
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}錯誤：無法識別的日期格式。操作已取消。${RESET}"; sleep 2
+        return # 出錯即返回
+    fi
+    date_input="$parsed_date"
 
-    # 4. 備註 (流程不變)
-    read -p "[4/4] 備註 (可選): " description
+    # 步驟 4: 備註
+    clear
+    echo -e "${CYAN}--- 新增一筆${title} (步驟 4/4) ---${RESET}"
+    echo -e "金額: ${GREEN}${amount}${RESET}"
+    echo -e "類別: ${GREEN}${chosen_category}${RESET}"
+    echo -e "日期: ${GREEN}${date_input}${RESET}\n"
+    read -p "請輸入備註 (可選): " description
 
-    # 確認畫面 (流程不變)
+    # 確認畫面
     clear
     echo -e "${CYAN}--- 請確認紀錄 ---${RESET}"
     echo -e "${WHITE}日期:${RESET} ${GREEN}$date_input${RESET}"
@@ -294,7 +265,7 @@ add_transaction() {
     else
         echo -e "\n${YELLOW}操作已取消。${RESET}"
     fi
-    sleep 1
+    sleep 2 # 增加延遲，讓使用者看到儲存結果
 }
 
 # 查詢最近紀錄
@@ -426,12 +397,6 @@ check_environment() {
     if ! command -v bc &> /dev/null; then
         missing_tools+=("bc")
     fi
-    # --- ▼▼▼ 在此處新增修改 ▼▼▼ ---
-    # 檢查 tput (優化UI體驗需要)
-    if ! command -v tput &> /dev/null; then
-        missing_tools+=("ncurses-utils") # 在 Termux/Debian 中，tput 包含在 ncurses-utils 套件裡
-    fi
-    # --- ▲▲▲ 修改結束 ▲▲▲ ---
     
     if [ ${#missing_tools[@]} -gt 0 ]; then
         echo -e "${RED}警告：缺少以下工具，部分功能或UI體驗可能受影響：${RESET}"
@@ -452,16 +417,18 @@ check_environment() {
 }
 
 ############################################
-# 主選單與主程式 (v1.2 - 終極穩定版)
+# 主選單與主程式 (v1.3 - 模仿主腳本邏輯)
 ############################################
 main_menu() {
     while true; do
-        # 這裡只負責計算和顯示，不處理顏色
+        # --- ▼▼▼ 核心修改 1：確保顏色在繪製前生效 ▼▼▼ ---
+        # 在每次迴圈開始、清屏之前，就應用顏色設定
+        apply_color_settings
+        
         clear
         local balance
         balance=$(calculate_balance)
         
-        # 顯示時直接使用顏色變數
         echo -e "${CYAN}====== ${BOLD}個人財務管理器 ${SCRIPT_VERSION}${RESET}${CYAN} ======${RESET}"
         printf "${WHITE}當前餘額: ${GREEN}${CURRENCY} %.2f${RESET}\n\n" "$balance"
         
@@ -477,16 +444,7 @@ main_menu() {
         echo "----------------------------------"
         read -p "請選擇操作: " choice
 
-        # --- ▼▼▼ 核心修改：中央分發器 ▼▼▼ ---
-        # 在執行任何動作前，先準備好環境
-        
-        # 1. 應用顏色設定，確保子功能有顏色可用
-        apply_color_settings
-        
-        # 2. 清理主選單介面，為子功能準備乾淨的畫布
-        clear
-
-        # 3. 根據選擇執行對應功能
+        # --- ▼▼▼ 核心修改 2：簡化 case 區塊 ▼▼▼ ---
         case $choice in
             1) add_transaction "expense" ;;
             2) add_transaction "income" ;;
@@ -498,10 +456,8 @@ main_menu() {
                 exit 0
                 ;;
             *)
-                # 對於無效選項，顯示提示後，迴圈會自動重繪主選單
                 echo -e "${RED}無效選項 '$choice'${RESET}"; sleep 1 ;;
         esac
-        # --- ▲▲▲ 修改結束 ▲▲▲ ---
     done
 }
 
