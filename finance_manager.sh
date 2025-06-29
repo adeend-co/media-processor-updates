@@ -15,8 +15,10 @@
 ############################################
 # 腳本設定
 ############################################
-SCRIPT_VERSION="v1.1.6"
+SCRIPT_VERSION="v1.2.0"
 SCRIPT_UPDATE_DATE="2025-06-29"
+
+PYTHON_PIE_CHART_SCRIPT_PATH="$(dirname "$0")/create_pie_chart.py"
 
 # --- 使用者設定檔與資料檔路徑 ---
 CONFIG_FILE="$HOME/.pfm_rc"
@@ -282,132 +284,141 @@ list_recent() {
     read -p "按 Enter 返回..."
 }
 
-# 生成視覺化報告 (v1.3 - 智慧判斷是否旋轉X軸標籤)
+# 生成視覺化報告 (v1.6 - 使用 Python 繪製真實圓餅圖)
 generate_visual_report() {
-    if ! command -v gnuplot &> /dev/null; then
-        echo -e "${RED}錯誤：找不到 'gnuplot' 命令。無法生成圖表。${RESET}"; sleep 3
-        return 1
-    fi
-    
-    if [ ! -s "$DATA_FILE" ] || [ $(wc -l < "$DATA_FILE") -le 1 ]; then
-        echo -e "${YELLOW}沒有足夠的資料來生成報告。${RESET}"; sleep 2
-        return 1
-    fi
-
     local REPORT_DIR="$REPORT_OUTPUT_PATH"
     mkdir -p "$REPORT_DIR"
     if [ ! -d "$REPORT_DIR" ] || [ ! -w "$REPORT_DIR" ]; then
-        echo -e "${RED}錯誤：無法創建或寫入報告目錄 '$REPORT_DIR'！${RESET}"
-        echo -e "${YELLOW}請檢查 Termux 儲存權限或主腳本的下載路徑設定。${RESET}"
-        sleep 3
+        echo -e "${RED}錯誤：無法創建或寫入報告目錄 '$REPORT_DIR'！${RESET}"; sleep 3
         return 1
     fi
 
     local report_file_base="$REPORT_DIR/PFM_Report_$(date +%Y%m%d_%H%M%S)"
-    local gnuplot_script="$REPORT_DIR/plot.gp"
-    local data_temp_file="$REPORT_DIR/plot_data.tmp"
+    local raw_data_file="$REPORT_DIR/plot_data_raw.csv" # 改為csv後綴
     
     clear
     echo -e "${CYAN}--- 生成視覺化報告 ---${RESET}"
-    echo "1. 本月支出圓餅圖 (長條圖模擬)"
-    echo "2. 今年支出長條圖"
+    echo "1. 本月支出圓餅圖 (由 Python 生成)"
+    echo "2. 今年總支出長條圖 (由 gnuplot 生成)"
     echo "0. 返回"
     read -p "請選擇報告類型: " choice
     
-    local report_file=""
-    local title_text=""
-    local data_source_cmd=""
-    local category_count=0
-
     case $choice in
-        1)
-            title_text="本月支出分佈 ($(date "+%Y-%m"))"
-            report_file="${report_file_base}_monthly_expense.png"
-            data_source_cmd="awk -F, -v month=\"$(date "+%Y-%m")\" '\$3 ~ month && \$4 == \"expense\" {expenses[\$5] += \$6} END {for (cat in expenses) print \"\\\"\" cat \"\\\"\", expenses[cat]}' \"$DATA_FILE\" > \"$data_temp_file\""
+        1) # 使用 Python 繪製圓餅圖
+            local python_exec=""
+            if command -v python3 &> /dev/null; then python_exec="python3"; elif command -v python &> /dev/null; then python_exec="python"; fi
+
+            if [ -z "$python_exec" ] || [ ! -f "$PYTHON_PIE_CHART_SCRIPT_PATH" ]; then
+                echo -e "${RED}錯誤：找不到 Python 或 'create_pie_chart.py' 腳本！${RESET}"; sleep 3; return 1
+            fi
+            if ! "$python_exec" -c "import matplotlib" &> /dev/null; then
+                 echo -e "${RED}錯誤：缺少 'matplotlib' 庫！${RESET}"; echo -e "${YELLOW}請執行 'pip install matplotlib'。${RESET}"; sleep 3; return 1
+            fi
+
+            local current_month=$(date "+%Y-%m")
+            local title_text="本月支出分佈 ($current_month)"
+            local report_file="${report_file_base}_monthly_pie.png"
+
+            echo -e "${YELLOW}正在準備資料...${RESET}"
+            # awk 的輸出格式改為 "Label,Value"，以符合CSV標準
+            awk -F, -v month="$current_month" '
+                BEGIN {OFS=","}
+                $3 ~ month && $4 == "expense" {
+                    expenses[$5] += $6
+                }
+                END {
+                    for (cat in expenses) {
+                        # 處理標籤中的引號
+                        gsub(/"/, "\"\"", cat);
+                        print "\"" cat "\"", expenses[cat]
+                    }
+                }
+            ' "$DATA_FILE" > "$raw_data_file"
+
+            if [ ! -s "$raw_data_file" ]; then
+                echo -e "${RED}本月沒有支出紀錄。${RESET}"; sleep 2; rm -f "$raw_data_file"; return
+            fi
+
+            echo -e "${YELLOW}正在呼叫 Python 腳本生成圓餅圖...${RESET}"
+            local py_cmd_output
+            py_cmd_output=$("$python_exec" "$PYTHON_PIE_CHART_SCRIPT_PATH" --input "$raw_data_file" --output "$report_file" --title "$title_text")
+            
+            if [ $? -eq 0 ] && [ -f "$report_file" ]; then
+                echo -e "${GREEN}${py_cmd_output}${RESET}"
+                echo -e "${CYAN}正在嘗試自動開啟...${RESET}"
+                if [[ -n "$TERMUX_VERSION" ]]; then termux-open "$report_file"; else xdg-open "$report_file"; fi
+            else
+                echo -e "${RED}Python 腳本執行失敗！請查看錯誤訊息。${RESET}"
+            fi
             ;;
-        2)
-            title_text="今年總支出 ($(date "+%Y"))"
-            report_file="${report_file_base}_yearly_expense.png"
-            data_source_cmd="awk -F, -v year=\"$(date "+%Y")\" '\$3 ~ year && \$4 == \"expense\" {expenses[\$5] += \$6} END {for (cat in expenses) print \"\\\"\" cat \"\\\"\", expenses[cat]}' \"$DATA_FILE\" > \"$data_temp_file\""
+
+        2) # 使用 gnuplot 繪製長條圖 (保留原有功能)
+            if ! command -v gnuplot &> /dev/null; then echo -e "${RED}錯誤：找不到 'gnuplot'。${RESET}"; sleep 3; return 1; fi
+            local final_data_file="$REPORT_DIR/plot_data_final.tmp"
+            local gnuplot_script="$REPORT_DIR/plot.gp"
+            
+            local current_year=$(date "+%Y")
+            local title_text="今年總支出 ($current_year)"
+            local report_file="${report_file_base}_yearly_expense.png"
+
+            echo -e "${YELLOW}正在準備資料...${RESET}"
+            awk -F, -v year="$current_year" '$3 ~ year && $4 == "expense" {expenses[$5] += $6} END {for (cat in expenses) print cat, expenses[cat]}' "$DATA_FILE" > "$raw_data_file"
+
+            if [ ! -s "$raw_data_file" ]; then echo -e "${RED}今年沒有支出紀錄。${RESET}"; sleep 2; rm -f "$raw_data_file"; return; fi
+            
+            > "$final_data_file"
+            while IFS= read -r line; do
+                local label=$(echo "$line" | awk '{print $1}'); local value=$(echo "$line" | awk '{print $2}'); local label_len=$(echo "$label" | awk '{print length($0)}'); local new_label
+                if [ "$label_len" -gt 6 ]; then new_label=$(echo "$label" | awk '{ half = int(length($0)/2); print substr($0, 1, half) "\\n" substr($0, half+1); }'); else new_label="$label"; fi
+                echo "\"$new_label\" $value" >> "$final_data_file"
+            done < "$raw_data_file"
+            
+            local category_count=$(wc -l < "$final_data_file"); local rotate_option=""; local dynamic_width=$((400 + category_count * 80)); if [ "$dynamic_width" -gt 2048 ]; then dynamic_width=2048; fi; if [ "$category_count" -gt 4 ]; then rotate_option="set xtics rotate by -45"; fi
+
+            echo -e "${YELLOW}正在生成長條圖...${RESET}"
+            cat > "$gnuplot_script" <<-EOF
+set terminal pngcairo enhanced font "sans,10" size ${dynamic_width},600; set output '$report_file'; set title "$title_text"; set style data histograms; set style fill solid 1.0 border -1; set boxwidth 0.8; set yrange [0:*]; set ylabel "金額 (${CURRENCY})"; $rotate_option; set grid y; set tics scale 0; set bmargin at screen 0.15; plot '$final_data_file' using 2:xtic(1) with boxes notitle
+EOF
+            gnuplot "$gnuplot_script"; if [ $? -eq 0 ] && [ -f "$report_file" ]; then echo -e "${GREEN}報告已生成: $report_file${RESET}"; echo -e "${CYAN}正在嘗試自動開啟...${RESET}"; if [[ -n "$TERMUX_VERSION" ]]; then termux-open "$report_file"; else xdg-open "$report_file"; fi; else echo -e "${RED}生成報告失敗！${RESET}"; fi
+            rm -f "$final_data_file" "$gnuplot_script"
             ;;
+
         0) return ;;
         *) echo -e "${RED}無效選項。${RESET}"; sleep 1; return ;;
     esac
 
-    echo -e "${YELLOW}正在準備資料...${RESET}"
-    eval "$data_source_cmd" # 執行 awk 命令生成資料檔
-    
-    if [ ! -s "$data_temp_file" ]; then
-        echo -e "${RED}查詢範圍內沒有支出紀錄。${RESET}"; sleep 2; rm -f "$data_temp_file"; return
-    fi
-
-    # --- ▼▼▼ 核心修改：智慧判斷是否需要旋轉標籤 ▼▼▼ ---
-    category_count=$(wc -l < "$data_temp_file")
-    local rotate_option=""
-    if [ "$category_count" -gt 4 ]; then
-        # 如果類別超過4個，就加入旋轉選項
-        rotate_option="set xtics rotate by -45"
-        log_message "INFO" "類別數量 ($category_count) > 4，啟用X軸標籤旋轉。"
-    else
-        log_message "INFO" "類別數量 ($category_count) <= 4，禁用X軸標籤旋轉。"
-    fi
-    # --- ▲▲▲ 修改結束 ▲▲▲ ---
-
-    echo -e "${YELLOW}正在生成圖表...${RESET}"
-    # 生成 gnuplot 腳本
-    cat > "$gnuplot_script" <<-EOF
-set terminal pngcairo enhanced font "sans,10" size 1024,768
-set output '$report_file'
-set title "$title_text"
-set style data histograms
-set style fill solid 1.0 border -1
-set boxwidth 0.8
-set yrange [0:*]
-set ylabel "金額 (${CURRENCY})"
-$rotate_option  # 這裡會根據上面的判斷結果，插入旋轉指令或一個空行
-set grid y
-set tics scale 0
-plot '$data_temp_file' using 2:xtic(1) with boxes notitle
-EOF
-
-    gnuplot "$gnuplot_script"
-    if [ $? -eq 0 ] && [ -f "$report_file" ]; then
-        echo -e "${GREEN}報告已生成: $report_file${RESET}"
-        echo -e "${CYAN}正在嘗試自動開啟...${RESET}"
-        if [[ -n "$TERMUX_VERSION" ]]; then termux-open "$report_file"; elif [[ "$(uname)" == "Darwin" ]]; then open "$report_file"; else xdg-open "$report_file"; fi
-    else
-        echo -e "${RED}生成報告失敗！請檢查 gnuplot 是否已安裝及資料是否正確。${RESET}"
-    fi
-
-    rm -f "$gnuplot_script" "$data_temp_file"
+    rm -f "$raw_data_file"
     read -p "按 Enter 返回..."
 }
 
-# 檢查環境依賴 (v1.1 - 新增 tput 檢查)
+# 檢查環境依賴 (v1.2 - 新增 python/matplotlib 檢查)
 check_environment() {
-    local missing_tools=()
+    local missing_items=()
+    local python_exec=""
     echo -e "${CYAN}正在檢查環境依賴...${RESET}"
     
-    # 檢查 gnuplot (視覺化報告需要)
-    if ! command -v gnuplot &> /dev/null; then
-        missing_tools+=("gnuplot")
-    fi
-    # 檢查 bc (金額計算需要)
-    if ! command -v bc &> /dev/null; then
-        missing_tools+=("bc")
-    fi
+    # 檢查 bc
+    if ! command -v bc &> /dev/null; then missing_items+=("bc"); fi
+
+    # 檢查 Python
+    if command -v python3 &> /dev/null; then python_exec="python3"; elif command -v python &> /dev/null; then python_exec="python"; else missing_items+=("python"); fi
     
-    if [ ${#missing_tools[@]} -gt 0 ]; then
-        echo -e "${RED}警告：缺少以下工具，部分功能或UI體驗可能受影響：${RESET}"
-        for tool in "${missing_tools[@]}"; do
-            local reason=""
-            if [ "$tool" == "ncurses-utils" ]; then reason="(提供 tput 命令，用於優化輸入介面)"; fi
-            if [ "$tool" == "gnuplot" ]; then reason="(用於生成視覺化圖表)"; fi
-            if [ "$tool" == "bc" ]; then reason="(用於精確計算金額)"; fi
-            echo -e "${YELLOW}  - $tool ${CYAN}${reason}${RESET}"
+    # 如果找到 Python，檢查 matplotlib
+    if [ -n "$python_exec" ]; then
+        if ! "$python_exec" -c "import matplotlib" &> /dev/null; then
+            missing_items+=("matplotlib (Python 庫)")
+        fi
+    fi
+
+    if [ ${#missing_items[@]} -gt 0 ]; then
+        echo -e "${RED}警告：缺少以下工具或庫，部分功能可能無法使用：${RESET}"
+        for item in "${missing_items[@]}"; do
+            echo -e "${YELLOW}  - $item${RESET}"
         done
-        echo -e "${CYAN}您可以嘗試使用套件管理器安裝。例如在 Termux 中執行:${RESET}"
-        echo -e "${GREEN}  pkg install ${missing_tools[*]}${RESET}"
+        echo -e "\n${CYAN}您可以嘗試使用以下命令安裝：${RESET}"
+        if [[ " ${missing_items[*]} " =~ " python " ]]; then echo -e "${GREEN}  pkg install python${RESET}"; fi
+        if [[ " ${missing_items[*]} " =~ " bc " ]]; then echo -e "${GREEN}  pkg install bc${RESET}"; fi
+        if [[ " ${missing_tools[*]} " =~ " matplotlib " ]]; then echo -e "${GREEN}  pip install matplotlib${RESET}"; fi
         read -p "按 Enter 繼續..."
     else
         echo -e "${GREEN}環境依賴檢查通過。${RESET}"
