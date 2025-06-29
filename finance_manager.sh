@@ -2,7 +2,7 @@
 
 ################################################################################
 #                                                                              #
-#                         個人財務管理器 (PFM) v1.0                               #
+#                         個人財務管理器 (PFM) v1.1                               #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
@@ -15,7 +15,7 @@
 ############################################
 # 腳本設定
 ############################################
-SCRIPT_VERSION="v1.0.2"
+SCRIPT_VERSION="v1.1.0"
 SCRIPT_UPDATE_DATE="2025-06-29"
 
 # --- 使用者設定檔與資料檔路徑 ---
@@ -152,54 +152,116 @@ prompt_add_new_category() {
     fi
 }
 
-# 主要的交易新增流程
+# 主要的交易新增流程 (重構為選單式，並優化金額輸入體驗)
 add_transaction() {
     local type="$1" # "expense" or "income"
     local title="支出"
-    if [ "$type" == "income" ]; then title="收入"; fi
+    local categories_str="$EXPENSE_CATEGORIES"
+    if [ "$type" == "income" ]; then
+        title="收入"
+        categories_str="$INCOME_CATEGORIES"
+    fi
 
     clear
-    echo -e "${CYAN}--- 新增一筆${title} (按 Enter 使用預設值或跳過) ---${RESET}"
+    echo -e "${CYAN}--- 新增一筆${title} ---${RESET}"
 
     local amount category date_input description
     
-    # 1. 金額
+    # --- ▼▼▼ 在此處新增修改 ▼▼▼ ---
+    # 1. 金額 (優化輸入體驗)
+    local error_message=""
     while true; do
-        read -p "[1/4] 金額: " amount
+        # 清理之前的錯誤訊息（如果有的話）
+        if [ -n "$error_message" ]; then
+            tput rc # 回到儲存的位置
+            tput ed # 清除從游標到螢幕結尾的內容
+        fi
+
+        # 顯示任何累積的錯誤訊息
+        if [ -n "$error_message" ]; then
+            echo -e "${RED}${error_message}${RESET}"
+            sleep 1.5
+            tput rc
+            tput ed
+        fi
+
+        # 儲存當前游標位置
+        tput sc
+
+        read -p "[1/4] 請輸入金額: " amount
+        
+        # 驗證輸入
         if [[ "$amount" =~ ^[0-9]+(\.[0-9]+)?$ ]] && (( $(echo "$amount > 0" | bc -l) )); then
+            # 輸入正確，清除可能的錯誤訊息並跳出迴圈
+            error_message=""
+            tput rc
+            tput ed
+            echo -e "[1/4] 請輸入金額: ${GREEN}$amount${RESET}" # 在原地顯示正確的輸入
             break
         else
-            echo -e "${RED}錯誤：請輸入有效的正數金額。${RESET}"
+            # 輸入錯誤，設定錯誤訊息以便下次迴圈顯示
+            error_message="錯誤：請輸入有效的正數金額。"
         fi
     done
+    # --- ▲▲▲ 修改結束 ▲▲▲ ---
 
-    # 2. 類別
+    # 2. 類別 (重構為選單選擇)
+    local chosen_category=""
     while true; do
-        read -p "[2/4] 類別 (輸入 'ls' 顯示常用列表): " category
-        if [ "$category" == "ls" ]; then
-            display_categories "$type"
-            continue
-        elif [ -n "$category" ]; then
-            # 檢查是否為新類別
-            local categories_str
-            if [ "$type" == "expense" ]; then categories_str="$EXPENSE_CATEGORIES"; else categories_str="$INCOME_CATEGORIES"; fi
-            if ! echo ",$categories_str," | grep -q ",$category,"; then
-                prompt_add_new_category "$category" "$type"
-            fi
+        clear
+        echo -e "${CYAN}--- 請選擇${title}類別 ---${RESET}"
+        IFS=',' read -r -a categories_array <<< "$categories_str"
+        local index=1
+        for cat in "${categories_array[@]}"; do
+            echo -e "  $index) $cat"
+            index=$((index + 1))
+        done
+        echo "-------------------"
+        echo -e "  a) ${YELLOW}新增自訂類別...${RESET}"
+        echo -e "  0) ${RED}取消${RESET}"
+        
+        read -p "請輸入選項: " cat_choice
+        
+        if [[ "$cat_choice" =~ ^[0-9]+$ ]] && [ "$cat_choice" -gt 0 ] && [ "$cat_choice" -le "${#categories_array[@]}" ]; then
+            chosen_category="${categories_array[$((cat_choice - 1))]}"
             break
+        elif [[ "$cat_choice" == "a" ]]; then
+            read -p "請輸入新的類別名稱: " new_category_name
+            if [ -n "$new_category_name" ]; then
+                if echo ",$categories_str," | grep -q ",$new_category_name,"; then
+                    echo -e "${YELLOW}警告：類別 '$new_category_name' 已存在。${RESET}"
+                    sleep 2
+                    continue
+                fi
+
+                chosen_category="$new_category_name"
+                if [ "$type" == "expense" ]; then
+                    EXPENSE_CATEGORIES="${EXPENSE_CATEGORIES},${new_category_name}"
+                else
+                    INCOME_CATEGORIES="${INCOME_CATEGORIES},${new_category_name}"
+                fi
+                save_config
+                echo -e "${GREEN}已新增並選擇 '$new_category_name'。${RESET}"
+                sleep 1
+                break
+            else
+                echo -e "${RED}類別名稱不能為空。${RESET}"; sleep 1
+            fi
+        elif [ "$cat_choice" == "0" ]; then
+            echo -e "${YELLOW}已取消操作。${RESET}"; sleep 1
+            return 1
         else
-            echo -e "${RED}錯誤：類別不能為空。${RESET}"
+            echo -e "${RED}無效選項。${RESET}"; sleep 1
         fi
     done
 
-    # 3. 日期
+    # 3. 日期 (流程不變)
     while true; do
         read -p "[3/4] 日期 [預設: 今天 ($(date '+%Y-%m-%d'))]: " date_input
         if [ -z "$date_input" ]; then
             date_input="today"
         fi
         
-        # 使用 `date -d` 進行強大的日期解析
         local parsed_date
         parsed_date=$(date -d "$date_input" "+%Y-%m-%d" 2>/dev/null)
         if [ $? -eq 0 ]; then
@@ -210,15 +272,15 @@ add_transaction() {
         fi
     done
 
-    # 4. 備註
+    # 4. 備註 (流程不變)
     read -p "[4/4] 備註 (可選): " description
 
-    # 確認畫面
+    # 確認畫面 (流程不變)
     clear
     echo -e "${CYAN}--- 請確認紀錄 ---${RESET}"
     echo -e "${WHITE}日期:${RESET} ${GREEN}$date_input${RESET}"
     echo -e "${WHITE}類型:${RESET} ${GREEN}$title${RESET}"
-    echo -e "${WHITE}類別:${RESET} ${GREEN}$category${RESET}"
+    echo -e "${WHITE}類別:${RESET} ${GREEN}$chosen_category${RESET}"
     echo -e "${WHITE}金額:${RESET} ${GREEN}${CURRENCY}${amount}${RESET}"
     echo -e "${WHITE}備註:${RESET} ${GREEN}${description:-無}${RESET}"
     echo "-------------------"
@@ -227,10 +289,9 @@ add_transaction() {
     if [[ ! "$confirm_save" =~ ^[Nn]$ ]]; then
         local id=$(get_next_id)
         local timestamp=$(date -d "$date_input" "+%s")
-        # 處理備註中的逗號，用引號包起來
         local safe_description=$(echo "$description" | sed 's/"/""/g')
 
-        local new_record="$id,$timestamp,$date_input,$type,$category,$amount,\"$safe_description\""
+        local new_record="$id,$timestamp,$date_input,$type,$chosen_category,$amount,\"$safe_description\""
         echo "$new_record" >> "$DATA_FILE"
         
         log_message "INFO" "新增紀錄: $new_record"
@@ -430,6 +491,19 @@ main_menu() {
 }
 
 main() {
+    # --- ▼▼▼ 在此處新增修改 ▼▼▼ ---
+    # 解析從主腳本傳來的參數
+    for arg in "$@"; do
+        case $arg in
+            --color=*)
+            # 從參數中提取值 (true 或 false)
+            COLOR_ENABLED="${arg#*=}"
+            shift # 消耗掉這個參數
+            ;;
+        esac
+    done
+    # --- ▲▲▲ 修改結束 ▲▲▲ ---
+
     # 確保資料目錄和檔案存在
     mkdir -p "$DATA_DIR"
     if [ ! -f "$DATA_FILE" ]; then
@@ -440,7 +514,7 @@ main() {
     # 確保日誌目錄存在
     mkdir -p "$(dirname "$LOG_FILE")"
 
-    log_message "INFO" "PFM 腳本啟動 (版本: $SCRIPT_VERSION)"
+    log_message "INFO" "PFM 腳本啟動 (版本: $SCRIPT_VERSION, 顏色狀態: $COLOR_ENABLED)"
     
     load_config
     check_environment
