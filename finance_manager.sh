@@ -15,7 +15,7 @@
 ############################################
 # 腳本設定
 ############################################
-SCRIPT_VERSION="v1.2.5"
+SCRIPT_VERSION="v1.2.6"
 SCRIPT_UPDATE_DATE="2025-06-29"
 
 PYTHON_PIE_CHART_SCRIPT_PATH="$(dirname "$0")/create_pie_chart.py"
@@ -391,83 +391,75 @@ EOF
     read -p "按 Enter 返回..."
 }
 
-# 檢查環境依賴 (v2.0 - 實現基於社群驗證的、最可靠的分步安裝指南)
+# 檢查環境依賴 (v2.2 - 修正字體安裝指南以匹配實際的深層目錄結構)
 check_environment() {
     local missing_items=()
     local install_failed=false
     local python_exec=""
     
-    # 預先檢查 Python，因為很多檢查都依賴它
-    if command -v python3 &> /dev/null; then
-        python_exec="python3"
-    elif command -v python &> /dev/null; then
-        python_exec="python"
-    else
-        missing_items+=("python")
-    fi
+    if command -v python3 &> /dev/null; then python_exec="python3"; elif command -v python &> /dev/null; then python_exec="python"; else missing_items+=("python"); fi
 
-    # 檢查其他系統套件
+    # 檢查系統套件
     if ! command -v bc &> /dev/null; then missing_items+=("bc"); fi
     if ! command -v gnuplot &> /dev/null; then missing_items+=("gnuplot"); fi
+    if ! command -v unzip &> /dev/null; then missing_items+=("unzip"); fi
 
-    # 只有在找到 Python 時，才繼續檢查 Python 相關的依賴
     if [ -n "$python_exec" ]; then
         if ! "$python_exec" -c "import numpy" &> /dev/null; then missing_items+=("python-numpy"); fi
         if ! "$python_exec" -c "import PIL" &> /dev/null; then missing_items+=("python-pillow"); fi
         if ! "$python_exec" -c "import matplotlib" &> /dev/null; then missing_items+=("matplotlib"); fi
     fi
     
-    # 檢查字體檔案是否存在
     local font_check_path="$PREFIX/share/fonts/TTF/NotoSansCJK-Regular.otf"
     if [ ! -f "$font_check_path" ]; then
-        missing_items+=("中文字體 (Noto Sans CJK)")
+        missing_items+=("中文字體 (Noto CJK)")
     fi
 
-    # 如果有任何缺少的項目，則顯示安裝指南
     if [ ${#missing_items[@]} -gt 0 ]; then
         install_failed=true
         echo -e "${RED}警告：您的環境缺少以下一或多個必需品：${RESET}"
-        for item in "${missing_items[@]}"; do
-            echo -e "${YELLOW}  - $item${RESET}"
-        done
+        for item in "${missing_items[@]}"; do echo -e "${YELLOW}  - $item${RESET}"; done
         
         echo -e "\n${CYAN}--- 請依照以下指南完成環境設定 ---${RESET}"
         
-        # --- 指南第一部分：安裝 matplotlib 及其依賴 ---
-        if [[ " ${missing_items[*]} " =~ " matplotlib " || " ${missing_items[*]} " =~ " python-numpy " || " ${missing_items[*]} " =~ " python-pillow " ]]; then
-            echo -e "\n${BOLD}1. 安裝 Matplotlib (圓餅圖核心):${RESET}"
-            echo -e "   由於相依性問題，請【依序】執行以下指令："
-            echo -e "${GREEN}   pkg install python-numpy python-pillow"
+        local pkg_tools=()
+        if [[ " ${missing_items[*]} " =~ " bc " ]]; then pkg_tools+=("bc"); fi
+        if [[ " ${missing_items[*]} " =~ " gnuplot " ]]; then pkg_tools+=("gnuplot"); fi
+        if [[ " ${missing_items[*]} " =~ " unzip " ]]; then pkg_tools+=("unzip"); fi
+        if [[ " ${missing_items[*]} " =~ " python-numpy " ]]; then pkg_tools+=("python-numpy"); fi
+        if [[ " ${missing_items[*]} " =~ " python-pillow " ]]; then pkg_tools+=("python-pillow"); fi
+        
+        if [ ${#pkg_tools[@]} -gt 0 ]; then
+            echo -e "\n${BOLD}1. 安裝系統套件:${RESET}"
+            echo -e "   請執行以下指令："
+            echo -e "${GREEN}   pkg install ${pkg_tools[*]}${RESET}"
+        fi
+        
+        if [[ " ${missing_items[*]} " =~ " matplotlib " ]]; then
+            echo -e "\n${BOLD}2. 安裝 Matplotlib (圓餅圖核心):${RESET}"
+            echo -e "   請【依序】執行以下指令："
             echo -e "${GREEN}   pip install contourpy==1.0.7"
             echo -e "${GREEN}   pkg install matplotlib${RESET}"
-            echo -e "${YELLOW}   (如果遇到問題，請先執行 'pkg update && pkg upgrade')'${RESET}"
         fi
 
-        # --- 指南第二部分：安裝其他工具 ---
-        local other_tools=()
-        if [[ " ${missing_items[*]} " =~ " bc " ]]; then other_tools+=("bc"); fi
-        if [[ " ${missing_items[*]} " =~ " gnuplot " ]]; then other_tools+=("gnuplot"); fi
-        if [ ${#other_tools[@]} -gt 0 ]; then
-             echo -e "\n${BOLD}2. 安裝其他工具:${RESET}"
-             echo -e "${GREEN}   pkg install ${other_tools[*]}${RESET}"
-        fi
-
-        # --- 指南第三部分：安裝中文字體 ---
+        # --- ▼▼▼ 核心修改：提供最精確的字體安裝路徑指南 ▼▼▼ ---
         if [[ " ${missing_items[*]} " =~ " 中文字體 " ]]; then
-            echo -e "\n${BOLD}3. 安裝中文字體 (圖表顯示中文的關鍵):${RESET}"
-            echo -e "   Termux 無法自動安裝字體，請手動完成以下三步："
-            echo -e "   ${CYAN}a. 下載字體包:${RESET} 從瀏覽器打開以下網址並下載 Noto Sans CJK 字體包 (選擇 OTF 格式)。"
-            echo -e "      ${PURPLE}https://fonts.google.com/noto/specimen/Noto+Sans+CJK+JP${RESET}"
-            echo -e "   ${CYAN}b. 創建字體目錄:${RESET} 複製並執行以下指令："
-            echo -e "      ${GREEN}mkdir -p \$PREFIX/share/fonts/TTF/${RESET}"
-            echo -e "   ${CYAN}c. 移動字體檔案:${RESET} 假設您下載的檔案位於 Downloads 資料夾，請執行："
-            echo -e "      ${GREEN}mv ~/storage/downloads/NotoSansCJKjp-VariableFont_wght.ttf \$PREFIX/share/fonts/TTF/NotoSansCJKjp-Regular.otf${RESET}"
-            echo -e "      (注意：我們將下載的變體字體檔案重命名為腳本預期的檔名)"
+            echo -e "\n${BOLD}3. 手動安裝中文字體 (圖表顯示中文的關鍵):${RESET}"
+            echo -e "   ${CYAN}a. 下載字體包:${RESET} 從瀏覽器打開以下網址，找到並下載最新的 'NotoSerifCJKtc.zip'。"
+            echo -e "      ${PURPLE}https://github.com/notofonts/noto-cjk/releases${RESET}"
+            echo -e "   ${CYAN}b. 解壓縮並移動檔案:${RESET} 請【依次】複製並執行以下指令："
+            echo -e "      ${GREEN}cd ~/storage/downloads"
+            echo -e "      ${GREEN}unzip *CJKtc.zip"
+            echo -e "      ${GREEN}mkdir -p \$PREFIX/share/fonts/TTF/"
+            echo -e "      ${GREEN}cp 10_NotoSerifCJKtc/OTF/TraditionalChinese/NotoSerifCJKtc-Regular.otf \$PREFIX/share/fonts/TTF/NotoSansCJK-Regular.otf"
+            echo -e "      ${GREEN}cd ~ # 返回家目錄"
+            echo -e "      (提示：如果 'cp' 命令提示檔案不存在，請根據您解壓縮後的實際路徑修改)"
         fi
+        # --- ▲▲▲ 修改結束 ▲▲▲ ---
         
         echo -e "\n${RED}完成以上所有步驟後，請重新啟動本腳本。${RESET}"
         read -p "按 Enter 退出..."
-        exit 1 # 直接退出，強制使用者設定好環境
+        exit 1
     else
         echo -e "${GREEN}環境依賴檢查通過。${RESET}"
         sleep 1
