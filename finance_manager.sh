@@ -15,7 +15,7 @@
 ############################################
 # 腳本設定
 ############################################
-SCRIPT_VERSION="v1.1.4"
+SCRIPT_VERSION="v1.1.5"
 SCRIPT_UPDATE_DATE="2025-06-29"
 
 # --- 使用者設定檔與資料檔路徑 ---
@@ -282,105 +282,86 @@ list_recent() {
     read -p "按 Enter 返回..."
 }
 
-# 生成視覺化報告
+# 生成視覺化報告 (v1.2 - 使用從主腳本傳入的統一儲存路徑)
 generate_visual_report() {
     if ! command -v gnuplot &> /dev/null; then
-        echo -e "${RED}錯誤：找不到 'gnuplot' 命令。無法生成圖表。${RESET}"
-        echo -e "${YELLOW}請先安裝它 (例如：pkg install gnuplot 或 sudo apt install gnuplot)。${RESET}"
-        sleep 3
+        echo -e "${RED}錯誤：找不到 'gnuplot' 命令。無法生成圖表。${RESET}"; sleep 3
         return 1
     fi
     
     if [ ! -s "$DATA_FILE" ] || [ $(wc -l < "$DATA_FILE") -le 1 ]; then
-        echo -e "${YELLOW}沒有足夠的資料來生成報告。${RESET}"
-        sleep 2
+        echo -e "${YELLOW}沒有足夠的資料來生成報告。${RESET}"; sleep 2
         return 1
     fi
 
+    # --- ▼▼▼ 核心修改：直接使用全域的 REPORT_OUTPUT_PATH 變數 ▼▼▼ ---
+    # 這個變數在 main() 函數中已經被設定好了
+    local REPORT_DIR="$REPORT_OUTPUT_PATH"
+    mkdir -p "$REPORT_DIR"
+    if [ ! -d "$REPORT_DIR" ] || [ ! -w "$REPORT_DIR" ]; then
+        echo -e "${RED}錯誤：無法創建或寫入報告目錄 '$REPORT_DIR'！${RESET}"
+        echo -e "${YELLOW}請檢查 Termux 儲存權限或主腳本的下載路徑設定。${RESET}"
+        sleep 3
+        return 1
+    fi
+
+    # 為了避免檔案混亂，我們給報告檔案加上日期和類型的前綴
+    local report_file_base="$REPORT_DIR/PFM_Report_$(date +%Y%m%d_%H%M%S)"
+    local gnuplot_script="$REPORT_DIR/plot.gp"
+    local data_temp_file="$REPORT_DIR/plot_data.tmp"
+    # --- ▲▲▲ 修改結束 ▲▲▲ ---
+
     clear
     echo -e "${CYAN}--- 生成視覺化報告 ---${RESET}"
-    echo "1. 本月支出圓餅圖"
+    echo "1. 本月支出圓餅圖 (長條圖模擬)"
     echo "2. 今年支出長條圖"
     echo "0. 返回"
     read -p "請選擇報告類型: " choice
     
-    local report_file="$DATA_DIR/report.png"
-    local gnuplot_script="$DATA_DIR/plot.gp"
-    local data_temp_file="$DATA_DIR/plot_data.tmp"
+    local report_file="" # 最終的報告檔名
 
     case $choice in
         1)
-            echo -e "${YELLOW}正在生成本月支出圓餅圖...${RESET}"
+            report_file="${report_file_base}_monthly_expense.png"
+            echo -e "${YELLOW}正在生成本月支出報告...${RESET}"
             local current_month=$(date "+%Y-%m")
-            # 使用 awk 提取本月的支出數據並加總
             awk -F, -v month="$current_month" '$3 ~ month && $4 == "expense" {expenses[$5] += $6} END {for (cat in expenses) print "\"" cat "\"", expenses[cat]}' "$DATA_FILE" > "$data_temp_file"
             
             if [ ! -s "$data_temp_file" ]; then
                  echo -e "${RED}本月沒有支出紀錄。${RESET}"; sleep 2; rm -f "$data_temp_file"; return
             fi
 
-            # 生成 gnuplot 腳本來畫圓餅圖 (這是一個簡化版，用長條圖代替)
             cat > "$gnuplot_script" << EOF
-set terminal pngcairo enhanced font "sans,10" size 800,600
-set output '$report_file'
-set title "本月支出分佈 ($current_month)"
-set style data histograms
-set style fill solid 1.0
-set boxwidth 0.8
-set yrange [0:*]
-set ylabel "金額 (${CURRENCY})"
-set xtics rotate by -45
-set grid y
-plot '$data_temp_file' using 2:xtic(1) with boxes notitle
+set terminal pngcairo enhanced font "sans,10" size 800,600; set output '$report_file'; set title "本月支出分佈 ($current_month)"; set style data histograms; set style fill solid 1.0; set boxwidth 0.8; set yrange [0:*]; set ylabel "金額 (${CURRENCY})"; set xtics rotate by -45; set grid y; plot '$data_temp_file' using 2:xtic(1) with boxes notitle;
 EOF
             ;;
         2)
-            echo -e "${YELLOW}正在生成今年支出長條圖...${RESET}"
+            report_file="${report_file_base}_yearly_expense.png"
+            echo -e "${YELLOW}正在生成今年支出報告...${RESET}"
             local current_year=$(date "+%Y")
-            # 提取今年的支出數據
             awk -F, -v year="$current_year" '$3 ~ year && $4 == "expense" {expenses[$5] += $6} END {for (cat in expenses) print "\"" cat "\"", expenses[cat]}' "$DATA_FILE" > "$data_temp_file"
             
             if [ ! -s "$data_temp_file" ]; then
                  echo -e "${RED}今年沒有支出紀錄。${RESET}"; sleep 2; rm -f "$data_temp_file"; return
             fi
 
-            # 生成 gnuplot 腳本
             cat > "$gnuplot_script" << EOF
-set terminal pngcairo enhanced font "sans,10" size 1024,768
-set output '$report_file'
-set title "今年總支出 ($current_year)"
-set style data histograms
-set style fill solid 1.0
-set boxwidth 0.8
-set yrange [0:*]
-set ylabel "金額 (${CURRENCY})"
-set xtics rotate by -45
-set grid y
-plot '$data_temp_file' using 2:xtic(1) with boxes notitle
+set terminal pngcairo enhanced font "sans,10" size 1024,768; set output '$report_file'; set title "今年總支出 ($current_year)"; set style data histograms; set style fill solid 1.0; set boxwidth 0.8; set yrange [0:*]; set ylabel "金額 (${CURRENCY})"; set xtics rotate by -45; set grid y; plot '$data_temp_file' using 2:xtic(1) with boxes notitle;
 EOF
             ;;
         0) return ;;
         *) echo -e "${RED}無效選項。${RESET}"; sleep 1; return ;;
     esac
 
-    # 執行 gnuplot 並開啟報告
     gnuplot "$gnuplot_script"
     if [ $? -eq 0 ] && [ -f "$report_file" ]; then
         echo -e "${GREEN}報告已生成: $report_file${RESET}"
         echo -e "${CYAN}正在嘗試自動開啟...${RESET}"
-        # 跨平台開啟命令
-        if [[ -n "$TERMUX_VERSION" ]]; then
-            termux-open "$report_file"
-        elif [[ "$(uname)" == "Darwin" ]]; then
-            open "$report_file"
-        else
-            xdg-open "$report_file"
-        fi
+        if [[ -n "$TERMUX_VERSION" ]]; then termux-open "$report_file"; elif [[ "$(uname)" == "Darwin" ]]; then open "$report_file"; else xdg-open "$report_file"; fi
     else
         echo -e "${RED}生成報告失敗！請檢查 gnuplot 是否已安裝及資料是否正確。${RESET}"
     fi
 
-    # 清理臨時檔案
     rm -f "$gnuplot_script" "$data_temp_file"
     read -p "按 Enter 返回..."
 }
@@ -461,6 +442,10 @@ main_menu() {
 }
 
 main() {
+    # --- ▼▼▼ 在此處新增修改 ▼▼▼ ---
+    # 為報告輸出路徑設定一個預設值（當獨立運行時使用）
+    REPORT_OUTPUT_PATH="/sdcard/PFM_Reports_Default"
+
     # 解析從主腳本傳來的參數
     for arg in "$@"; do
         case $arg in
@@ -468,30 +453,30 @@ main() {
             COLOR_ENABLED="${arg#*=}"
             shift
             ;;
+            --output-path=*)
+            # 如果收到了主腳本傳來的路徑，就使用它
+            REPORT_OUTPUT_PATH="${arg#*=}"
+            shift
+            ;;
         esac
     done
+    # --- ▲▲▲ 修改結束 ▲▲▲ ---
     
-    # --- ▼▼▼ 核心修改：在所有邏輯開始前，設定全域環境變數 ▼▼▼ ---
-    # 這樣設定的顏色變數在整個腳本執行期間，包括所有子功能和迴圈中都有效
     apply_color_settings
     
-    # 確保資料目錄和檔案存在
     mkdir -p "$DATA_DIR"
     if [ ! -f "$DATA_FILE" ]; then
         echo "ID,Timestamp,Date,Type,Category,Amount,Description" > "$DATA_FILE"
         log_message "INFO" "資料檔不存在，已創建: $DATA_FILE"
     fi
     
-    # 確保日誌目錄存在
     mkdir -p "$(dirname "$LOG_FILE")"
 
-    log_message "INFO" "PFM 腳本啟動 (版本: $SCRIPT_VERSION, 顏色狀態: $COLOR_ENABLED)"
+    log_message "INFO" "PFM 腳本啟動 (版本: $SCRIPT_VERSION, 顏色: $COLOR_ENABLED, 報告路徑: $REPORT_OUTPUT_PATH)"
     
-    # 載入設定檔，可能會覆蓋 COLOR_ENABLED，所以需要再次應用
     load_config
-    apply_color_settings # 再次呼叫以防設定檔有不同設定
-
-    # 執行環境檢查和主選單
+    apply_color_settings
+    
     check_environment
     main_menu
 }
