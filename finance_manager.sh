@@ -15,7 +15,7 @@
 ############################################
 # 腳本設定
 ############################################
-SCRIPT_VERSION="v1.1.3"
+SCRIPT_VERSION="v1.1.4"
 SCRIPT_UPDATE_DATE="2025-06-29"
 
 # --- 使用者設定檔與資料檔路徑 ---
@@ -33,12 +33,12 @@ COLOR_ENABLED=true
 ############################################
 # 顏色與日誌 (框架代碼)
 ############################################
-# 顏色與日誌 (v1.1 - 使用 export 提升為環境變數)
+# 顏色與日誌 (v1.2 - 使用正確的 ANSI-C Quoting)
 apply_color_settings() {
     if [ "$COLOR_ENABLED" = true ]; then
-        export RED='\033[0;31m'; export GREEN='\033[0;32m'; export YELLOW='\033[0;33m'
-        export BLUE='\033[0;34m'; export PURPLE='\033[0;35m'; export CYAN='\033[0;36m'
-        export WHITE='\033[0;37m'; export BOLD='\033[1m'; export RESET='\033[0m'
+        export RED=$'\033[0;31m'; export GREEN=$'\033[0;32m'; export YELLOW=$'\033[0;33m'
+        export BLUE=$'\033[0;34m'; export PURPLE=$'\033[0;35m'; export CYAN=$'\033[0;36m'
+        export WHITE=$'\033[0;37m'; export BOLD=$'\033[1m'; export RESET=$'\033[0m'
     else
         export RED=''; export GREEN=''; export YELLOW=''; export BLUE=''; export PURPLE=''; export CYAN=''; export WHITE=''; export BOLD=''; export RESET=''
     fi
