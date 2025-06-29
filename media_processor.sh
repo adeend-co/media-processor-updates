@@ -50,7 +50,7 @@
 ############################################
 # 腳本設定
 ############################################
-SCRIPT_VERSION="v2.6.6" # <<< 版本號更新
+SCRIPT_VERSION="v2.6.6-beta.1" # <<< 版本號更新
 
 ############################################
 # ★★★ 新增：使用者同意書版本號 ★★★
@@ -4479,11 +4479,12 @@ main_menu() {
         echo -e "---------------------------------------------"
         echo -e " 5. ${BOLD}腳本設定與工具${RESET}"
         echo -e " 6. ${BOLD}關於此工具${RESET}"
+        echo -e " 7. ${PURPLE}${BOLD}啟動個人財務管理器${RESET}"
         echo -e " 0. ${RED}退出腳本${RESET}"
         echo -e "---------------------------------------------"
         read -t 0.1 -N 10000 discard
         local choice
-        read -rp "輸入選項 (0-6): " choice
+        read -rp "輸入選項 (0-7): " choice
         
         local input_hash
         input_hash=$(echo -n "$choice" | tr '[:upper:]' '[:lower:]' | sha256sum | head -c 8)
@@ -4504,6 +4505,47 @@ main_menu() {
             4) perform_sync_to_old_phone ;;
             5) utilities_menu ;;
             6) show_about_enhanced ;;
+            7)
+                # 取得主腳本所在的目錄
+                local script_dir
+                script_dir=$(dirname "$(realpath "$0")")
+                local finance_script_path="$script_dir/finance_manager.sh"
+
+                if [ ! -f "$finance_script_path" ]; then
+                    echo -e "${RED}錯誤：找不到財務管理器腳本 'finance_manager.sh'！${RESET}"
+                    echo -e "${YELLOW}請確保它與 'media_processor.sh' 放在同一個目錄下。${RESET}"
+                    sleep 3
+                    continue # 返回主選單
+                fi
+                
+                # --- 密碼保護機制 ---
+                local password_hash=""
+                local correct_hash_hex="\x37\x36\x64\x64\x66\x65\x37\x62" # 來自彩蛋的 'adeend' 的 sha256sum 前8碼
+                
+                read -s -p "請輸入密碼: " password
+                echo "" # 換行
+                
+                # 計算輸入密碼的雜湊值
+                password_hash=$(echo -n "$password" | sha256sum | head -c 8)
+                
+                if [[ "$password_hash" == "$(echo -ne "$correct_hash_hex")" ]]; then
+                    echo -e "${GREEN}密碼正確！正在啟動個人財務管理器...${RESET}"
+                    log_message "SECURITY" "財務管理器存取成功"
+                    sleep 1
+                    clear
+                    
+                    # 執行外部的財務腳本
+                    "$finance_script_path"
+                    
+                    # 從財務腳本返回後，提示使用者
+                    echo -e "\n${CYAN}已從個人財務管理器返回。${RESET}"
+                    read -p "按 Enter 返回主選單..."
+                else
+                    echo -e "${RED}密碼錯誤！存取被拒絕。${RESET}"
+                    log_message "SECURITY" "財務管理器存取失敗 (密碼錯誤)"
+                    sleep 2
+                fi
+                ;;
             0)
                 echo -e "${GREEN}感謝使用，正在退出...${RESET}"
                 log_message "INFO" "使用者選擇退出。"
