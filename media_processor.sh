@@ -50,7 +50,7 @@
 ############################################
 # 腳本設定
 ############################################
-SCRIPT_VERSION="v2.6.6-beta.1" # <<< 版本號更新
+SCRIPT_VERSION="v2.6.6-beta.2" # <<< 版本號更新
 
 ############################################
 # ★★★ 新增：使用者同意書版本號 ★★★
@@ -61,7 +61,7 @@ AGREEMENT_VERSION="1.4"
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
-SCRIPT_UPDATE_DATE="2025-06-28" # 請根據實際情況修改此日期
+SCRIPT_UPDATE_DATE="2025-06-29" # 請根據實際情況修改此日期
 
 # ... 其他設定 ...
 TARGET_DATE="2025-07-11" # <<< 新增：設定您的目標日期
@@ -690,7 +690,7 @@ spinner() {
 }
 
 ######################################################################
-# 腳本自我更新函數 (v4.3 - 增強版本號顯示)
+# 腳本自我更新函數 (v4.4 - 增強版本號顯示)
 ######################################################################
 auto_update_script() {
     clear
@@ -729,8 +729,6 @@ auto_update_script() {
     
     # 獲取當前版本的可讀名稱
     local current_version_display
-    # git describe --tags --exact-match 會在當前 commit 正好是 tag 時返回 tag 名
-    # 如果不是，--always 會回退到顯示 commit hash
     current_version_display=$(git describe --tags --exact-match "$current_commit_hash" 2>/dev/null || git describe --tags --always "$current_commit_hash" 2>/dev/null || echo "${current_commit_hash:0:7}")
 
     local target_commit_hash=""; local target_version_display=""
@@ -739,7 +737,6 @@ auto_update_script() {
     if [[ "$channel_display" == "beta" ]]; then
         echo -e "${YELLOW}當前為 [預覽版 Beta] 渠道，目標為 main 分支最新提交...${RESET}"
         target_commit_hash=$(git rev-parse @{u})
-        # 獲取目標版本的可讀名稱
         target_version_display=$(git describe --tags --exact-match "$target_commit_hash" 2>/dev/null || git describe --tags --always "$target_commit_hash" 2>/dev/null || echo "預覽版 (${target_commit_hash:0:7})")
     else
         echo -e "${YELLOW}當前為 [穩定版 Stable] 渠道，目標為最新正式發布...${RESET}"
@@ -748,7 +745,6 @@ auto_update_script() {
         local latest_release_json; latest_release_json=$(curl -sL "$api_url")
         if [[ "$(echo "$latest_release_json" | jq -r '.message // ""')" == "Not Found" ]]; then echo -e "${RED}錯誤：無法從 GitHub API 獲取發布資訊！${RESET}"; cd "$original_dir"; return 1; fi
         
-        # 目標版本名直接就是 release tag
         target_version_display=$(echo "$latest_release_json" | jq -r '.tag_name // empty')
         if [ -z "$target_version_display" ]; then echo -e "${RED}錯誤：無法解析最新穩定版的標籤名稱！${RESET}"; cd "$original_dir"; return 1; fi
         
@@ -763,7 +759,6 @@ auto_update_script() {
     echo -e "${CYAN}  - 目標版本: ${WHITE}${target_version_display} (${target_commit_hash:0:7})${RESET}"
     echo -e "${CYAN}--------------------------------------------${RESET}\n"
     
-    # 後續邏輯與 v4.2 完全相同
     if [ "$current_commit_hash" == "$target_commit_hash" ]; then
         echo -e "${GREEN}您的腳本已是 '${channel_display}' 渠道的最新版本。無需任何操作。${RESET}"
         cd "$original_dir"; read -p "按 Enter 返回..."
@@ -790,12 +785,23 @@ auto_update_script() {
         log_message "INFO" "使用者取消了版本變更操作。"; echo -e "${YELLOW}操作已取消。${RESET}"; cd "$original_dir"; read -p "按 Enter 返回..."; return 0
     fi
 
-    # 執行更新、測試、還原 (邏輯不變)
+    # 執行更新、測試、還原
     echo -e "${YELLOW}正在將腳本重設到目標版本 (${target_commit_hash:0:7})...${RESET}"
     if ! git reset --hard "$target_commit_hash" --quiet; then log_message "ERROR" "'git reset --hard' 失敗。"; echo -e "${RED}錯誤：操作失敗！${RESET}"; cd "$original_dir"; return 1; fi
     log_message "SUCCESS" "成功重設到目標版本 $target_version_display ($target_commit_hash)"; echo -e "${GREEN}版本變更完成。${RESET}"
 
-    echo -e "${CYAN}正在校驗核心腳本權限...${RESET}"; chmod +x "$SCRIPT_INSTALL_PATH" "$PYTHON_ESTIMATOR_SCRIPT_PATH" "$PYTHON_SYNC_HELPER_SCRIPT_PATH" 2>/dev/null
+    # --- ▼▼▼ 在此處新增修改 ▼▼▼ ---
+    echo -e "${CYAN}正在校驗所有核心腳本權限...${RESET}";
+    # 原有的權限設定
+    chmod +x "$SCRIPT_INSTALL_PATH" "$PYTHON_ESTIMATOR_SCRIPT_PATH" "$PYTHON_SYNC_HELPER_SCRIPT_PATH" 2>/dev/null
+    # 新增對財務腳本的權限設定
+    # 假設財務腳本與主腳本在同一目錄下
+    local finance_manager_script_in_repo="$SCRIPT_DIR/finance_manager.sh"
+    if [ -f "$finance_manager_script_in_repo" ]; then
+        chmod +x "$finance_manager_script_in_repo" 2>/dev/null
+        echo -e "${GREEN}  > 已確保 'finance_manager.sh' 可執行。${RESET}"
+    fi
+    # --- ▲▲▲ 修改結束 ▲▲▲ ---
 
     local goto_restore=false; local health_check_error_output=""
     echo -e "${CYAN}正在測試新版本腳本...${RESET}"
@@ -810,7 +816,8 @@ auto_update_script() {
     echo -e "\n${RED}--- 操作失敗 ---${RESET}"; echo -e "${RED}新版本腳本未能通過自動化測試。正在自動還原...${RESET}"
     if [ -n "$health_check_error_output" ]; then echo -e "${YELLOW}偵測到的錯誤：\n${PURPLE}$health_check_error_output${RESET}"; fi
     if git reset --hard "$restore_point_hash" --quiet; then
-        chmod +x "$SCRIPT_INSTALL_PATH" 2>/dev/null
+        # 還原後也需要確保所有腳本權限正確
+        chmod +x "$SCRIPT_INSTALL_PATH" "$PYTHON_ESTIMATOR_SCRIPT_PATH" "$PYTHON_SYNC_HELPER_SCRIPT_PATH" "$finance_manager_script_in_repo" 2>/dev/null
         log_message "SUCCESS" "成功還原到舊版本 (commit: ${restore_point_hash:0:7})"; echo -e "${GREEN}還原成功！${RESET}"
     else
         log_message "CRITICAL" "自動還原失敗！"; echo -e "${RED}${BOLD}致命錯誤：自動還原失敗！請手動檢查 Git 倉庫！${RESET}"
@@ -4199,7 +4206,7 @@ view_log() {
 }
 
 ############################################
-# 關於訊息 (v3.4 - 保留全部檢查並更新法律聲明)
+# 關於訊息 (v3.5 - 保留全部檢查並更新法律聲明)
 ############################################
 show_about_enhanced() {
     clear
@@ -4228,6 +4235,21 @@ show_about_enhanced() {
     echo -e "${BOLD}主腳本版本:${RESET}  ${GREEN}${display_version}${RESET}"
     if [ -n "$SCRIPT_UPDATE_DATE" ]; then echo -e "${BOLD}更新日期:${RESET}    ${GREEN}${SCRIPT_UPDATE_DATE}${RESET}"; fi
     
+    # --- ▼▼▼ 在此處新增修改 ▼▼▼ ---
+    # --- 檢測並顯示財務管理器版本 ---
+    local finance_script_path="$SCRIPT_DIR/finance_manager.sh"
+    if [ -f "$finance_script_path" ]; then
+        # 從財務腳本中提取版本號和更新日期
+        local pfm_version=$(grep '^SCRIPT_VERSION=' "$finance_script_path" | head -n 1 | cut -d'"' -f2)
+        local pfm_update_date=$(grep '^SCRIPT_UPDATE_DATE=' "$finance_script_path" | head -n 1 | cut -d'"' -f2)
+
+        if [ -n "$pfm_version" ]; then
+            echo -e "${BOLD}財務管理器版本:${RESET} ${PURPLE}${pfm_version}${RESET}"
+            if [ -n "$pfm_update_date" ]; then echo -e "${BOLD}更新日期:${RESET}    ${PURPLE}${pfm_update_date}${RESET}"; fi
+        fi
+    fi
+    # --- ▲▲▲ 修改結束 ▲▲▲ ---
+
     echo -e "---------------------------------------------"
 
     # --- 腳本組件與環境狀態 (保留並恢復) ---
