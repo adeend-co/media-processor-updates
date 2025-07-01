@@ -1,4 +1,4 @@
-# 整合式多功能應用平台（IAVPP）
+# 整合式多功能應用平台（Integrated Versatile Application Platform）
 
 腳本下載流程：
 -
