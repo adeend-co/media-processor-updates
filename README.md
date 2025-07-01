@@ -1,4 +1,4 @@
-# 整合式多功能應用平台（Integrated Versatile Application Platform）
+# 整合式進階多功能處理平台（Integrated Advanced Versatile Processing Platform）
 
 腳本下載流程：
 -
