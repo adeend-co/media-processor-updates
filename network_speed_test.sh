@@ -14,7 +14,7 @@
 ############################################
 # 腳本設定
 ############################################
-SCRIPT_VERSION="v1.0"
+SCRIPT_VERSION="v1.0.1"
 SCRIPT_UPDATE_DATE="2025-07-12"
 
 # --- 預設值 ---
@@ -117,16 +117,29 @@ perform_speed_test() {
 }
 
 ############################################
-# 生成報告
+# 生成報告 (v1.1 - 使用動態報告路徑)
 ############################################
 generate_report() {
     local num_servers="$1"
-    local report_file="$DEFAULT_REPORT_DIR/NST_Report_$(date +%Y%m%d_%H%M%S).txt"
+    # 使用全域變數 $REPORT_DIR，這個變數可以在 main 函數中被參數覆寫
+    local report_file="$REPORT_DIR/NST_Report_$(date +%Y%m%d_%H%M%S).txt"
+    
+    # 確保報告目錄存在
+    mkdir -p "$REPORT_DIR"
+    if [ ! -w "$REPORT_DIR" ]; then
+        echo -e "${RED}錯誤：報告目錄 '$REPORT_DIR' 不可寫！${RESET}"
+        return 1
+    fi
 
     echo -e "${YELLOW}生成報告中...${RESET}"
+    # 使用 > 將 perform_speed_test 的輸出重定向到檔案
+    # 這裡有個小技巧，用 { ... } 包圍命令，可以將區塊內所有標準輸出都重定向
     {
         echo "網路測速報告 - $(date)"
+        echo "===================================="
         echo "測試伺服器數: $num_servers"
+        echo ""
+        # 直接調用主測速函數，它的輸出會被捕獲
         perform_speed_test "$num_servers"
     } > "$report_file"
 
@@ -175,12 +188,34 @@ main_menu() {
 }
 
 ############################################
-# 主程式
+# 主程式 (v1.1 - 支援從主框架接收參數)
 ############################################
 main() {
+    # --- ▼▼▼ 新增：參數解析邏輯 ▼▼▼ ---
+    # 設定一個可以被覆寫的報告目錄變數
+    REPORT_DIR="$DEFAULT_REPORT_DIR"
+
+    # 遍歷所有傳入的參數
+    for arg in "$@"; do
+        case $arg in
+            --color=*)
+            # 從 "--color=true" 中提取 "true"
+            COLOR_ENABLED="${arg#*=}"
+            shift # 處理完一個參數後，將其移出參數列表
+            ;;
+            --report-dir=*)
+            # 從 "--report-dir=/path/to/dir" 中提取路徑
+            REPORT_DIR="${arg#*=}"
+            shift
+            ;;
+        esac
+    done
+    # --- ▲▲▲ 修改結束 ▲▲▲ ---
+
+    # 後續邏輯保持不變，但它們現在會使用被參數更新過的變數
     apply_color_settings
     check_environment
-    log_message "INFO" "腳本啟動 (版本: $SCRIPT_VERSION)"
+    log_message "INFO" "腳本啟動 (版本: $SCRIPT_VERSION, 顏色: $COLOR_ENABLED, 報告路徑: $REPORT_DIR)"
     main_menu
 }
 
