@@ -50,7 +50,7 @@
 ############################################
 # 腳本設定
 ############################################
-SCRIPT_VERSION="v2.6.6-beta.7" # <<< 版本號更新
+SCRIPT_VERSION="v2.6.6-beta.8" # <<< 版本號更新
 
 ############################################
 # ★★★ 新增：使用者同意書版本號 ★★★
@@ -4206,14 +4206,13 @@ view_log() {
 }
 
 ############################################
-# 關於訊息 (v3.5 - 保留全部檢查並更新法律聲明)
+# 關於訊息 (v3.6 - 新增網路測速工具版本顯示)
 ############################################
 show_about_enhanced() {
     clear
     echo -e "${CYAN}=== 整合式進階多功能處理平台 ===${RESET}"
     echo -e "---------------------------------------------"
 
-    # --- Git 版本信息 (保留) ---
     local git_version_info=""
     if command -v git &> /dev/null && [ -d "$SCRIPT_DIR/.git" ]; then
         local git_tag=$(git -C "$SCRIPT_DIR" describe --tags --abbrev=0 2>/dev/null)
@@ -4235,21 +4234,24 @@ show_about_enhanced() {
     echo -e "${BOLD}主腳本版本:${RESET}  ${GREEN}${display_version}${RESET}"
     if [ -n "$SCRIPT_UPDATE_DATE" ]; then echo -e "${BOLD}更新日期:${RESET}    ${GREEN}${SCRIPT_UPDATE_DATE}${RESET}"; fi
     
-    # --- ▼▼▼ 在此處新增修改 ▼▼▼ ---
-    # --- 檢測並顯示財務管理器版本 ---
+    # --- 顯示財務管理器版本 ---
     local finance_script_path="$SCRIPT_DIR/finance_manager.sh"
     if [ -f "$finance_script_path" ]; then
-        # 從財務腳本中提取版本號和更新日期
         local pfm_version=$(grep '^SCRIPT_VERSION=' "$finance_script_path" | head -n 1 | cut -d'"' -f2)
-        local pfm_update_date=$(grep '^SCRIPT_UPDATE_DATE=' "$finance_script_path" | head -n 1 | cut -d'"' -f2)
-
         if [ -n "$pfm_version" ]; then
             echo -e "${BOLD}財務管理器版本:${RESET} ${PURPLE}${pfm_version}${RESET}"
-            if [ -n "$pfm_update_date" ]; then echo -e "${BOLD}更新日期:${RESET}    ${PURPLE}${pfm_update_date}${RESET}"; fi
+        fi
+    fi
+    
+    # --- ▼▼▼ 新增：顯示網路測速工具版本 ▼▼▼ ---
+    local nst_script_path="$SCRIPT_DIR/network_speed_test.sh"
+    if [ -f "$nst_script_path" ]; then
+        local nst_version=$(grep '^SCRIPT_VERSION=' "$nst_script_path" | head -n 1 | cut -d'"' -f2)
+        if [ -n "$nst_version" ]; then
+            echo -e "${BOLD}網路測速工具版本:${RESET} ${BLUE}${nst_version}${RESET}"
         fi
     fi
     # --- ▲▲▲ 修改結束 ▲▲▲ ---
-
     echo -e "---------------------------------------------"
 
     # --- 腳本組件與環境狀態 (保留並恢復) ---
@@ -4476,15 +4478,14 @@ check_environment() {
 }
 
 ############################################
-# 主選單
+# 主選單 (v5.3 - 整合網路測速工具)
 ############################################
 main_menu() {
     local _oct="\x37\x36\x64\x64\x66\x65\x37\x62"
     local _blob="krvvLlDqfMTbU2WnhXB8I8ZtFvehQN6ZkH60qs4+Q8zgqUju87N++PLPQXnJVu/1pOuj1TLv/BE1ir79A1rEzgBirKR8K7wRdKxqky4+MrTHo7hzlP0e/AaZW9tfw8mkB9Gbx1O4HN1IeyYqLam/DPvIO6Hj9CnuFVOWWQBwRAmAHe4ioYfAVbf0hAgXsaeb2QMnK04jGUpcVf7DEc5af6Myt8adAmvkos99E+uDbNPOqQ9EW+BSrsX1OfChsuIu2zAyC3MS9IjjvB/fpg80hpThZxRkaWdaarAsS7fC6YmDSi0ijPXrZ91gomHbH8bTAJTTRYF+Iz6wCkUQrXMIGrOlEX/QGu4fFiHlnSeBWM8="
 
     _reveal() {
-        local payload="$1"
-        local key_phrase="$2"
+        local payload="$1"; local key_phrase="$2"
         if [ -z "$payload" ] || [ -z "$key_phrase" ] || ! command -v openssl &>/dev/null; then return 1; fi
         echo "$payload" | openssl enc -aes-256-cbc -d -a -nosalt -pbkdf2 -iter 1000 -pass "pass:$key_phrase" 2>/dev/null
     }
@@ -4502,22 +4503,18 @@ main_menu() {
         echo -e " 5. ${BOLD}腳本設定與工具${RESET}"
         echo -e " 6. ${BOLD}關於此工具${RESET}"
         echo -e " 7. ${PURPLE}${BOLD}啟動個人財務管理器${RESET}"
+        # --- ▼▼▼ 新增選項 ▼▼▼ ---
+        echo -e " 8. ${BLUE}${BOLD}啟動網路測速工具${RESET}"
+        # --- ▲▲▲ 修改結束 ▲▲▲ ---
         echo -e " 0. ${RED}退出腳本${RESET}"
         echo -e "---------------------------------------------"
         read -t 0.1 -N 10000 discard
         local choice
-        read -rp "輸入選項 (0-7): " choice
+        read -rp "輸入選項 (0-8): " choice
         
-        local input_hash
-        input_hash=$(echo -n "$choice" | tr '[:upper:]' '[:lower:]' | sha256sum | head -c 8)
-        
+        local input_hash=$(echo -n "$choice" | tr '[:upper:]' '[:lower:]' | sha256sum | head -c 8)
         if [[ "$input_hash" == "$(echo -ne $_oct)" ]]; then
-            clear
-            echo -e "${CYAN}"
-            _reveal "$_blob" "$(echo "$choice" | tr '[:upper:]' '[:lower:]')"
-            echo -e "${RESET}"
-            sleep 5
-            continue
+            clear; echo -e "${CYAN}"; _reveal "$_blob" "$(echo "$choice" | tr '[:upper:]' '[:lower:]')"; echo -e "${RESET}"; sleep 5; continue
         fi
 
         case $choice in
@@ -4527,60 +4524,54 @@ main_menu() {
             4) perform_sync_to_old_phone ;;
             5) utilities_menu ;;
             6) show_about_enhanced ;;
-            7)
-                local script_dir
-                script_dir=$(dirname "$(realpath "$0")")
-                local finance_script_path="$script_dir/finance_manager.sh"
-
+            7) # 財務管理器 (邏輯不變)
+                local finance_script_path="$SCRIPT_DIR/finance_manager.sh"
                 if [ ! -f "$finance_script_path" ]; then
-                    echo -e "${RED}錯誤：找不到財務管理器腳本 'finance_manager.sh'！${RESET}"
-                    echo -e "${YELLOW}請確保它與 'media_processor.sh' 放在同一個目錄下。${RESET}"
+                    echo -e "${RED}錯誤：找不到財務管理器腳本 'finance_manager.sh'！${RESET}"; sleep 3; continue
+                fi
+                local password_hash=""; local correct_hash_hex="\x37\x36\x64\x64\x66\x65\x37\x62"
+                read -s -p "請輸入密碼: " password; echo ""
+                password_hash=$(echo -n "$password" | sha256sum | head -c 8)
+                if [[ "$password_hash" == "$(echo -ne "$correct_hash_hex")" ]]; then
+                    echo -e "${GREEN}密碼正確！正在啟動個人財務管理器...${RESET}"; log_message "SECURITY" "財務管理器存取成功"; sleep 1; clear
+                    "$finance_script_path" "--color=${COLOR_ENABLED}" "--output-path=${DOWNLOAD_PATH}"
+                    echo -e "\n${CYAN}已從個人財務管理器返回。${RESET}"; read -p "按 Enter 返回主選單..."
+                else
+                    echo -e "${RED}密碼錯誤！存取被拒絕。${RESET}"; log_message "SECURITY" "財務管理器存取失敗 (密碼錯誤)"; sleep 2
+                fi
+                ;;
+            # --- ▼▼▼ 新增 Case 邏輯 ▼▼▼ ---
+            8)
+                local nst_script_path="$SCRIPT_DIR/network_speed_test.sh"
+                if [ ! -f "$nst_script_path" ]; then
+                    echo -e "${RED}錯誤：找不到網路測速腳本 'network_speed_test.sh'！${RESET}"
+                    echo -e "${YELLOW}請確保它與主腳本放在同一個目錄下。${RESET}"
                     sleep 3
                     continue
                 fi
                 
-                local password_hash=""
-                local correct_hash_hex="\x37\x36\x64\x64\x66\x65\x37\x62"
+                # 這裡可以使用與財務管理器不同的密碼，或者相同的密碼。為簡單起見，我們用同一個。
+                local password_hash=""; local correct_hash_hex="\x37\x36\x64\x64\x66\x65\x37\x62"
                 
-                read -s -p "請輸入密碼: " password
-                echo ""
-                
+                read -s -p "請輸入密碼: " password; echo ""
                 password_hash=$(echo -n "$password" | sha256sum | head -c 8)
                 
                 if [[ "$password_hash" == "$(echo -ne "$correct_hash_hex")" ]]; then
-                    echo -e "${GREEN}密碼正確！正在啟動個人財務管理器...${RESET}"
-                    log_message "SECURITY" "財務管理器存取成功"
-                    sleep 1
-                    clear
+                    echo -e "${GREEN}密碼正確！正在啟動網路測速工具...${RESET}"; log_message "SECURITY" "網路測速工具存取成功"; sleep 1; clear
                     
-                    # --- ▼▼▼ 在此處新增修改 ▼▼▼ ---
-                    # 將主腳本的顏色設定和下載路徑，都作為參數傳遞給財務腳本
-                    "$finance_script_path" "--color=${COLOR_ENABLED}" "--output-path=${DOWNLOAD_PATH}"
-                    # --- ▲▲▲ 修改結束 ▲▲▲ ---
+                    # 將主腳本的顏色設定和下載路徑（用於報告）傳遞給測速腳本
+                    "$nst_script_path" "--color=${COLOR_ENABLED}" "--report-dir=${DOWNLOAD_PATH}/NST_Reports"
                     
-                    echo -e "\n${CYAN}已從個人財務管理器返回。${RESET}"
-                    read -p "按 Enter 返回主選單..."
+                    echo -e "\n${CYAN}已從網路測速工具返回。${RESET}"; read -p "按 Enter 返回主選單..."
                 else
-                    echo -e "${RED}密碼錯誤！存取被拒絕。${RESET}"
-                    log_message "SECURITY" "財務管理器存取失敗 (密碼錯誤)"
-                    sleep 2
+                    echo -e "${RED}密碼錯誤！存取被拒絕。${RESET}"; log_message "SECURITY" "網路測速工具存取失敗 (密碼錯誤)"; sleep 2
                 fi
                 ;;
+            # --- ▲▲▲ 修改結束 ▲▲▲ ---
             0)
-                echo -e "${GREEN}感謝使用，正在退出...${RESET}"
-                log_message "INFO" "使用者選擇退出。"
-                sleep 1
-                exit 0
-                ;;
+                echo -e "${GREEN}感謝使用，正在退出...${RESET}"; log_message "INFO" "使用者選擇退出。"; sleep 1; exit 0 ;;
             *)
-                if [[ -z "$choice" ]]; then
-                    continue
-                else
-                    echo -e "${RED}無效選項 '$choice'${RESET}"
-                    log_message "WARNING" "主選單輸入無效選項: $choice"
-                    sleep 1
-                fi
-                ;;
+                if [[ -z "$choice" ]]; then continue; else echo -e "${RED}無效選項 '$choice'${RESET}"; log_message "WARNING" "主選單輸入無效選項: $choice"; sleep 1; fi ;;
         esac
     done
 }
