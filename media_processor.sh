@@ -50,7 +50,7 @@
 ############################################
 # 腳本設定
 ############################################
-SCRIPT_VERSION="v2.6.6-beta.8" # <<< 版本號更新
+SCRIPT_VERSION="v2.6.6-beta.9" # <<< 版本號更新
 
 ############################################
 # ★★★ 新增：使用者同意書版本號 ★★★
@@ -690,11 +690,11 @@ spinner() {
 }
 
 ######################################################################
-# 腳本自我更新函數 (v4.4 - 增強版本號顯示)
+# 腳本自我更新函數 (v4.5 - 重構權限校驗，支援多個輔助腳本)
 ######################################################################
 auto_update_script() {
     clear
-    echo -e "${CYAN}--- 使用 Git 檢查腳本更新 (增強顯示 v4.3) ---${RESET}"
+    echo -e "${CYAN}--- 使用 Git 檢查腳本更新 ---${RESET}"
     log_message "INFO" "使用者觸發 Git 腳本更新檢查 (當前渠道: ${UPDATE_CHANNEL:-stable})。"
 
     if ! command -v git &> /dev/null; then log_message "ERROR" "未找到 'git' 命令。"; echo -e "${RED}錯誤：找不到 'git' 命令！${RESET}"; return 1; fi
@@ -703,7 +703,6 @@ auto_update_script() {
     if [ ! -d "$repo_dir/.git" ]; then log_message "ERROR" "目錄 '$repo_dir' 非 Git 倉庫。"; echo -e "${RED}錯誤：目錄 '$repo_dir' 非 Git 倉庫。${RESET}"; return 1; fi
     if ! cd "$repo_dir"; then log_message "ERROR" "無法進入倉庫目錄 '$repo_dir'"; echo -e "${RED}錯誤：無法進入倉庫目錄！${RESET}"; return 1; fi
 
-    # 修正檔案權限追蹤設定
     local core_filemode_setting; core_filemode_setting=$(git config --local --get core.filemode)
     if [[ "$core_filemode_setting" != "false" ]]; then
         echo -e "${YELLOW}偵測到 Git 可能在追蹤檔案權限變化，正在自動修正...${RESET}"
@@ -711,7 +710,6 @@ auto_update_script() {
         sleep 1
     fi
 
-    # 檢查本地更改
     echo -e "${YELLOW}檢查本地是否有未提交的更改...${RESET}"
     if [ -n "$(git status --porcelain)" ]; then
         echo -e "${RED}警告：檢測到本地有更改！${RESET}"; read -r -p "是否放棄本地修改並繼續？(輸入 'yes'): " confirm_force
@@ -721,18 +719,12 @@ auto_update_script() {
          echo -e "${GREEN}本地無未提交更改。${RESET}"
     fi
 
-    # 獲取遠端資訊
     echo -e "${YELLOW}正在從遠端倉庫獲取最新資訊...${RESET}"
     if ! git fetch --all --tags --quiet; then log_message "ERROR" "'git fetch' 失敗。"; echo -e "${RED}錯誤：無法獲取遠端更新！${RESET}"; cd "$original_dir"; return 1; fi
     
     local current_commit_hash=$(git rev-parse @); local restore_point_hash="$current_commit_hash"
-    
-    # 獲取當前版本的可讀名稱
-    local current_version_display
-    current_version_display=$(git describe --tags --exact-match "$current_commit_hash" 2>/dev/null || git describe --tags --always "$current_commit_hash" 2>/dev/null || echo "${current_commit_hash:0:7}")
-
-    local target_commit_hash=""; local target_version_display=""
-    local channel_display="${UPDATE_CHANNEL:-stable}"
+    local current_version_display=$(git describe --tags --exact-match "$current_commit_hash" 2>/dev/null || git describe --tags --always "$current_commit_hash" 2>/dev/null || echo "${current_commit_hash:0:7}")
+    local target_commit_hash=""; local target_version_display=""; local channel_display="${UPDATE_CHANNEL:-stable}"
 
     if [[ "$channel_display" == "beta" ]]; then
         echo -e "${YELLOW}當前為 [預覽版 Beta] 渠道，目標為 main 分支最新提交...${RESET}"
@@ -744,15 +736,12 @@ auto_update_script() {
         local api_url="https://api.github.com/repos/adeend-co/media-processor-updates/releases/latest"
         local latest_release_json; latest_release_json=$(curl -sL "$api_url")
         if [[ "$(echo "$latest_release_json" | jq -r '.message // ""')" == "Not Found" ]]; then echo -e "${RED}錯誤：無法從 GitHub API 獲取發布資訊！${RESET}"; cd "$original_dir"; return 1; fi
-        
         target_version_display=$(echo "$latest_release_json" | jq -r '.tag_name // empty')
         if [ -z "$target_version_display" ]; then echo -e "${RED}錯誤：無法解析最新穩定版的標籤名稱！${RESET}"; cd "$original_dir"; return 1; fi
-        
         target_commit_hash=$(git rev-parse "$target_version_display^{commit}" 2>/dev/null)
         if [ -z "$target_commit_hash" ]; then echo -e "${RED}錯誤：無法將標籤 '$target_version_display' 解析為一個有效的提交！${RESET}"; cd "$original_dir"; return 1; fi
     fi
     
-    # --- 美化的版本狀態顯示 ---
     echo -e "\n${CYAN}------------------- 版本狀態 -------------------${RESET}"
     echo -e "${CYAN}  - 當前渠道: ${GREEN}${channel_display}${RESET}"
     echo -e "${CYAN}  - 當前版本: ${WHITE}${current_version_display} (${current_commit_hash:0:7})${RESET}"
@@ -765,9 +754,8 @@ auto_update_script() {
         return 0
     fi
 
-    local base_commit; base_commit=$(git merge-base "$current_commit_hash" "$target_commit_hash" 2>/dev/null)
+    local base_commit=$(git merge-base "$current_commit_hash" "$target_commit_hash" 2>/dev/null)
     local action_description=""; local confirm_prompt=""
-
     if [ "$base_commit" == "$current_commit_hash" ]; then
         action_description="${GREEN}檢測到新版本！這是一個標準的向前更新。${RESET}"
         confirm_prompt="是否立即【更新】到版本 '${target_version_display}'？ (y/n): "
@@ -779,28 +767,35 @@ auto_update_script() {
         confirm_prompt="是否要【切換】到 '${target_version_display}' 版本？ (y/n): "
     fi
 
-    echo -e "$action_description"
-    read -r -p "$confirm_prompt" confirm_action
+    echo -e "$action_description"; read -r -p "$confirm_prompt" confirm_action
     if [[ ! "$confirm_action" =~ ^[Yy]$ ]]; then
         log_message "INFO" "使用者取消了版本變更操作。"; echo -e "${YELLOW}操作已取消。${RESET}"; cd "$original_dir"; read -p "按 Enter 返回..."; return 0
     fi
 
-    # 執行更新、測試、還原
     echo -e "${YELLOW}正在將腳本重設到目標版本 (${target_commit_hash:0:7})...${RESET}"
     if ! git reset --hard "$target_commit_hash" --quiet; then log_message "ERROR" "'git reset --hard' 失敗。"; echo -e "${RED}錯誤：操作失敗！${RESET}"; cd "$original_dir"; return 1; fi
     log_message "SUCCESS" "成功重設到目標版本 $target_version_display ($target_commit_hash)"; echo -e "${GREEN}版本變更完成。${RESET}"
 
-    # --- ▼▼▼ 在此處新增修改 ▼▼▼ ---
+    # --- ▼▼▼ 核心修改區塊：使用陣列來管理所有需要執行權限的腳本 ▼▼▼ ---
     echo -e "${CYAN}正在校驗所有核心腳本權限...${RESET}";
-    # 原有的權限設定
-    chmod +x "$SCRIPT_INSTALL_PATH" "$PYTHON_ESTIMATOR_SCRIPT_PATH" "$PYTHON_SYNC_HELPER_SCRIPT_PATH" 2>/dev/null
-    # 新增對財務腳本的權限設定
-    # 假設財務腳本與主腳本在同一目錄下
-    local finance_manager_script_in_repo="$SCRIPT_DIR/finance_manager.sh"
-    if [ -f "$finance_manager_script_in_repo" ]; then
-        chmod +x "$finance_manager_script_in_repo" 2>/dev/null
-        echo -e "${GREEN}  > 已確保 'finance_manager.sh' 可執行。${RESET}"
-    fi
+    local all_executable_scripts=(
+        "$SCRIPT_INSTALL_PATH"               # 主腳本
+        "$PYTHON_ESTIMATOR_SCRIPT_PATH"      # Python 大小預估
+        "$PYTHON_SYNC_HELPER_SCRIPT_PATH"    # Python 同步助手
+        "$SCRIPT_DIR/finance_manager.sh"       # 財務管理器
+        "$SCRIPT_DIR/network_speed_test.sh"  # 網路測速工具 (新加入)
+        # 未來若有新腳本，直接在此處增加一行即可
+    )
+    
+    for script_path in "${all_executable_scripts[@]}"; do
+        if [ -f "$script_path" ]; then
+            if chmod +x "$script_path" 2>/dev/null; then
+                echo -e "${GREEN}  > 已確保 '$(basename "$script_path")' 可執行。${RESET}"
+            else
+                echo -e "${RED}  > 警告：無法設定 '$(basename "$script_path")' 的執行權限！${RESET}"
+            fi
+        fi
+    done
     # --- ▲▲▲ 修改結束 ▲▲▲ ---
 
     local goto_restore=false; local health_check_error_output=""
@@ -816,9 +811,14 @@ auto_update_script() {
     echo -e "\n${RED}--- 操作失敗 ---${RESET}"; echo -e "${RED}新版本腳本未能通過自動化測試。正在自動還原...${RESET}"
     if [ -n "$health_check_error_output" ]; then echo -e "${YELLOW}偵測到的錯誤：\n${PURPLE}$health_check_error_output${RESET}"; fi
     if git reset --hard "$restore_point_hash" --quiet; then
-        # 還原後也需要確保所有腳本權限正確
-        chmod +x "$SCRIPT_INSTALL_PATH" "$PYTHON_ESTIMATOR_SCRIPT_PATH" "$PYTHON_SYNC_HELPER_SCRIPT_PATH" "$finance_manager_script_in_repo" 2>/dev/null
-        log_message "SUCCESS" "成功還原到舊版本 (commit: ${restore_point_hash:0:7})"; echo -e "${GREEN}還原成功！${RESET}"
+        # --- ▼▼▼ 還原後也需要重新校驗權限 ▼▼▼ ---
+        echo -e "${CYAN}正在還原腳本權限...${RESET}";
+        for script_path in "${all_executable_scripts[@]}"; do
+            if [ -f "$script_path" ]; then chmod +x "$script_path" 2>/dev/null; fi
+        done
+        echo -e "${GREEN}還原成功！${RESET}"
+        # --- ▲▲▲ 修改結束 ▲▲▲ ---
+        log_message "SUCCESS" "成功還原到舊版本 (commit: ${restore_point_hash:0:7})"
     else
         log_message "CRITICAL" "自動還原失敗！"; echo -e "${RED}${BOLD}致命錯誤：自動還原失敗！請手動檢查 Git 倉庫！${RESET}"
     fi
