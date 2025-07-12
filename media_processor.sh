@@ -50,7 +50,7 @@
 ############################################
 # 腳本設定
 ############################################
-SCRIPT_VERSION="v2.6.6-beta.9" # <<< 版本號更新
+SCRIPT_VERSION="v2.6.6-beta.10" # <<< 版本號更新
 
 ############################################
 # ★★★ 新增：使用者同意書版本號 ★★★
@@ -784,6 +784,7 @@ auto_update_script() {
         "$PYTHON_SYNC_HELPER_SCRIPT_PATH"    # Python 同步助手
         "$SCRIPT_DIR/finance_manager.sh"       # 財務管理器
         "$SCRIPT_DIR/network_speed_test.sh"  # 網路測速工具 (新加入)
+        "$SCRIPT_DIR/finance_calculator.py"  # 進階財務分析與預測器（獨立）
         # 未來若有新腳本，直接在此處增加一行即可
     )
     
