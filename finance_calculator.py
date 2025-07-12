@@ -14,7 +14,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v1.1.1"
+SCRIPT_VERSION = "v1.1.2"
 SCRIPT_UPDATE_DATE = "2025-07-12"
 
 import argparse
@@ -45,11 +45,16 @@ class Colors:
     """管理終端機輸出的 ANSI 顏色代碼"""
     def __init__(self, enabled=True):
         if enabled and sys.stdout.isatty():
-            self.RED = '\033[0;31m'; self.GREEN = '\033[0;32m'; self.YELLOW = '\033[1;33m'
-            self.CYAN = '\033[0;36m'; self.PURPLE = '\033[0;35m'; self.BOLD = '\033[1m'
+            self.RED = '\033[0;31m'
+            self.GREEN = '\033[0;32m'
+            self.YELLOW = '\033[1;33m'
+            self.CYAN = '\033[0;36m'
+            self.PURPLE = '\033[0;35m'
+            self.WHITE = '\033[0;37m'  # <<< 已新增 WHITE 的定義
+            self.BOLD = '\033[1m'
             self.RESET = '\033[0m'
         else:
-            self.RED = self.GREEN = self.YELLOW = self.CYAN = self.PURPLE = self.BOLD = self.RESET = ''
+            self.RED = self.GREEN = self.YELLOW = self.CYAN = self.PURPLE = self.WHITE = self.BOLD = self.RESET = ''
 
 # --- 智慧欄位辨識與資料處理 ---
 def find_column_by_synonyms(df_columns, synonyms):
