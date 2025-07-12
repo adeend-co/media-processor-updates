@@ -15,7 +15,7 @@
 ############################################
 # 腳本設定
 ############################################
-SCRIPT_VERSION="v1.3.0"
+SCRIPT_VERSION="v1.3.1"
 SCRIPT_UPDATE_DATE="2025-07-12"
 
 PYTHON_PIE_CHART_SCRIPT_PATH="$(dirname "$0")/create_pie_chart.py"
@@ -157,90 +157,46 @@ prompt_add_new_category() {
     fi
 }
 
-# 主要的交易新增流程 (v1.3 - 模仿主腳本重繪邏輯，移除tput)
+# 主要的交易新增流程 (v2.0 - 使用快捷鍵選擇類別)
 add_transaction() {
     local type="$1"
     local title="支出"
-    local categories_str="$EXPENSE_CATEGORIES"
     if [ "$type" == "income" ]; then
         title="收入"
-        categories_str="$INCOME_CATEGORIES"
     fi
-
-    # --- ▼▼▼ 核心修改：完全重構輸入流程 ▼▼▼ ---
-    # 每個輸入都是一個獨立的步驟，出錯就返回
     
-    # 步驟 1: 金額
+    # 步驟 1: 金額 (不變)
     clear
     echo -e "${CYAN}--- 新增一筆${title} (步驟 1/4) ---${RESET}"
     read -p "請輸入金額: " amount
     if ! [[ "$amount" =~ ^[0-9]+(\.[0-9]+)?$ ]] || ! (( $(echo "$amount > 0" | bc -l) )); then
-        echo -e "${RED}錯誤：金額無效。操作已取消。${RESET}"
-        sleep 2
-        return # 出錯即返回，由主選單重繪
+        echo -e "${RED}錯誤：金額無效。操作已取消。${RESET}"; sleep 2
+        return
     fi
 
-    # 步驟 2: 類別
-    local chosen_category=""
-    while true; do
-        clear
-        echo -e "${CYAN}--- 新增一筆${title} (步驟 2/4) ---${RESET}"
-        echo -e "金額: ${GREEN}${amount}${RESET}\n"
-        echo -e "${YELLOW}請選擇類別：${RESET}"
-        IFS=',' read -r -a categories_array <<< "$categories_str"
-        local index=1
-        for cat in "${categories_array[@]}"; do
-            echo -e "  $index) $cat"
-            index=$((index + 1))
-        done
-        echo "-------------------"
-        echo -e "  a) 新增自訂類別..."
-        echo -e "  0) 取消操作"
-        
-        read -p "請輸入選項: " cat_choice
-        
-        if [[ "$cat_choice" =~ ^[0-9]+$ ]] && [ "$cat_choice" -gt 0 ] && [ "$cat_choice" -le "${#categories_array[@]}" ]; then
-            chosen_category="${categories_array[$((cat_choice - 1))]}"
-            break
-        elif [[ "$cat_choice" == "a" ]]; then
-            read -p "請輸入新的類別名稱: " new_category_name
-            if [ -n "$new_category_name" ]; then
-                if echo ",$categories_str," | grep -q ",$new_category_name,"; then
-                    echo -e "${YELLOW}警告：類別 '$new_category_name' 已存在。${RESET}"; sleep 2
-                    continue
-                fi
-                chosen_category="$new_category_name"
-                if [ "$type" == "expense" ]; then EXPENSE_CATEGORIES="${EXPENSE_CATEGORIES},${new_category_name}"; else INCOME_CATEGORIES="${INCOME_CATEGORIES},${new_category_name}"; fi
-                save_config
-                echo -e "${GREEN}已新增並選擇 '$new_category_name'。${RESET}"; sleep 1
-                break
-            else
-                echo -e "${RED}類別名稱不能為空。${RESET}"; sleep 1
-            fi
-        elif [ "$cat_choice" == "0" ]; then
-            echo -e "${YELLOW}操作已取消。${RESET}"; sleep 1
-            return # 取消操作，返回主選單
-        else
-            echo -e "${RED}無效選項。${RESET}"; sleep 1
-        fi
-    done
-
-    # 步驟 3: 日期
+    # 步驟 2: 類別 (核心修改)
+    local chosen_category
+    chosen_category=$(select_category "$type" "新增${title}：選擇類別")
+    
+    if [ -z "$chosen_category" ]; then
+        echo -e "${YELLOW}操作已取消。${RESET}"; sleep 1
+        return
+    fi
+    
+    # 步驟 3: 日期 (不變)
     clear
     echo -e "${CYAN}--- 新增一筆${title} (步驟 3/4) ---${RESET}"
     echo -e "金額: ${GREEN}${amount}${RESET}"
     echo -e "類別: ${GREEN}${chosen_category}${RESET}\n"
     read -p "請輸入日期 [預設: 今天 ($(date '+%Y-%m-%d'))]: " date_input
-    if [ -z "$date_input" ]; then date_input="today"; fi
-    local parsed_date
-    parsed_date=$(date -d "$date_input" "+%Y-%m-%d" 2>/dev/null)
+    local parsed_date=$(date -d "${date_input:-today}" "+%Y-%m-%d" 2>/dev/null)
     if [ $? -ne 0 ]; then
         echo -e "${RED}錯誤：無法識別的日期格式。操作已取消。${RESET}"; sleep 2
-        return # 出錯即返回
+        return
     fi
     date_input="$parsed_date"
 
-    # 步驟 4: 備註
+    # 步驟 4: 備註與確認 (不變)
     clear
     echo -e "${CYAN}--- 新增一筆${title} (步驟 4/4) ---${RESET}"
     echo -e "金額: ${GREEN}${amount}${RESET}"
@@ -248,7 +204,6 @@ add_transaction() {
     echo -e "日期: ${GREEN}${date_input}${RESET}\n"
     read -p "請輸入備註 (可選): " description
 
-    # 確認畫面
     clear
     echo -e "${CYAN}--- 請確認紀錄 ---${RESET}"
     echo -e "${WHITE}日期:${RESET} ${GREEN}$date_input${RESET}"
@@ -270,7 +225,7 @@ add_transaction() {
     else
         echo -e "\n${YELLOW}操作已取消。${RESET}"
     fi
-    sleep 2 # 增加延遲，讓使用者看到儲存結果
+    sleep 2
 }
 
 # 生成視覺化報告 (v1.6 - 使用 Python 繪製真實圓餅圖)
@@ -454,6 +409,95 @@ check_environment() {
 ############################################
 # 核心財務功能 (完整優化版)
 ############################################
+# (將此全新函數貼到「核心財務功能」區塊)
+
+############################################
+# 全新核心輔助函數：類別選擇器 (v2.0 - 支援快捷鍵)
+############################################
+select_category() {
+    local type="$1" # "expense" 或 "income"
+    local prompt_message="$2" # 傳入的提示訊息
+    
+    local categories_str
+    if [ "$type" == "expense" ]; then
+        categories_str="$EXPENSE_CATEGORIES"
+    else
+        categories_str="$INCOME_CATEGORIES"
+    fi
+
+    # 將逗號分隔的字串轉換為陣列
+    IFS=',' read -r -a categories_array <<< "$categories_str"
+
+    while true; do
+        clear
+        echo -e "${CYAN}--- ${prompt_message} ---${RESET}"
+        echo -e "${YELLOW}請選擇類別 (使用數字/字母快捷鍵)：${RESET}"
+        
+        # --- 動態生成帶有快捷鍵的選項 ---
+        local keys="123456789abcdefghijklmnopqrstuvwxyz"
+        local key_index=0
+        for i in "${!categories_array[@]}"; do
+            local key="${keys:$key_index:1}"
+            printf "  ${GREEN}%2s)${RESET} %s\n" "$key" "${categories_array[$i]}"
+            key_index=$((key_index + 1))
+        done
+        
+        echo "----------------------------------"
+        echo -e "  ${GREEN}+) ${RESET} 手動輸入或新增類別"
+        echo -e "  ${GREEN}0) ${RESET} 取消操作"
+        
+        read -p "請輸入您的選擇: " choice
+        
+        # --- 處理使用者輸入 ---
+        if [[ "$choice" == "0" ]]; then
+            echo "" # 返回一個空字串表示取消
+            return
+        elif [[ "$choice" == "+" ]]; then
+            read -p "請手動輸入類別名稱: " manual_category
+            if [ -n "$manual_category" ]; then
+                # 檢查這個新類別是否已經在常用列表中
+                if ! echo ",$categories_str," | grep -q ",$manual_category,"; then
+                    prompt_add_new_category "$manual_category" "$type"
+                fi
+                echo "$manual_category" # 返回手動輸入的類別
+                return
+            else
+                echo -e "${RED}類別名稱不能為空。${RESET}"; sleep 1
+            fi
+        else
+            # 遍歷查找對應的快捷鍵
+            key_index=0
+            for i in "${!categories_array[@]}"; do
+                local key="${keys:$key_index:1}"
+                if [[ "$choice" == "$key" ]]; then
+                    echo "${categories_array[$i]}" # 返回選擇的類別
+                    return
+                fi
+                key_index=$((key_index + 1))
+            done
+            
+            # 如果循環結束都沒找到
+            echo -e "${RED}無效的快捷鍵 '$choice'。${RESET}"; sleep 1
+        fi
+    done
+}
+
+# (此函數是 select_category 的輔助，請確保它也在腳本中)
+prompt_add_new_category() {
+    local new_category="$1"
+    local type="$2"
+
+    read -p "類別 '$new_category' 是新的，是否將其加入常用列表？ (Y/n): " confirm
+    if [[ ! "$confirm" =~ ^[Nn]$ ]]; then
+        if [ "$type" == "expense" ]; then
+            EXPENSE_CATEGORIES="${EXPENSE_CATEGORIES},${new_category}"
+        else
+            INCOME_CATEGORIES="${INCOME_CATEGORIES},${new_category}"
+        fi
+        save_config
+        echo -e "${GREEN}已將 '$new_category' 加入常用列表。${RESET}"; sleep 1
+    fi
+}
 # ============================================
 # === 全新功能：交易管理 (編輯與刪除) ===
 # ============================================
@@ -569,15 +613,15 @@ edit_transaction() {
 # ============================================
 # === 全新功能：預算管理系統 ===
 # ============================================
-
-# 管理每月預算
+# 管理每月預算 (v2.0 - 使用快捷鍵選擇類別)
 manage_budget() {
     while true; do
         clear
         echo -e "${CYAN}--- 每月預算管理 ---${RESET}"
+        # (顯示預算的部分不變...)
         echo -e "目前設定的每月支出預算："
         echo "--------------------------------"
-        if [ $(wc -l < "$BUDGET_FILE") -le 1 ]; then
+        if [ $(wc -l < "$BUGET_FILE") -le 1 ]; then
             echo -e "${YELLOW}尚未設定任何預算。${RESET}"
         else
             tail -n +2 "$BUDGET_FILE" | column -t -s,
@@ -590,14 +634,20 @@ manage_budget() {
         read -p "請選擇操作: " choice
 
         case $choice in
-            1)
-                display_categories "expense"
-                read -p "請輸入要設定預算的【支出類別】: " budget_cat
-                if [ -z "$budget_cat" ]; then continue; fi
+            1) # 設定/修改
+                local budget_cat
+                budget_cat=$(select_category "expense" "管理預算：選擇支出類別")
+                
+                if [ -z "$budget_cat" ]; then
+                    echo -e "${YELLOW}操作已取消。${RESET}"; sleep 1
+                    continue
+                fi
+
                 read -p "請輸入 '$budget_cat' 的每月預算金額: " budget_amount
                 if ! [[ "$budget_amount" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
                     echo -e "${RED}錯誤：金額無效。${RESET}"; sleep 2; continue
                 fi
+
                 local temp_budget_file="$DATA_DIR/temp_budget.csv"
                 grep -v "^${budget_cat}," "$BUDGET_FILE" > "$temp_budget_file"
                 echo "${budget_cat},${budget_amount}" >> "$temp_budget_file"
@@ -605,7 +655,7 @@ manage_budget() {
                 log_message "INFO" "設定預算: $budget_cat = $budget_amount"
                 echo -e "${GREEN}預算已更新！${RESET}"; sleep 1
                 ;;
-            2)
+            2) # 移除
                 read -p "請輸入要移除預算的類別名稱: " target_cat
                 if [ -z "$target_cat" ]; then continue; fi
                 if grep -q "^${target_cat}," "$BUDGET_FILE"; then
@@ -628,12 +678,12 @@ manage_budget() {
 # ============================================
 # === 全新功能：週期性交易 ===
 # ============================================
-
-# 管理週期性交易
+# 管理週期性交易 (v2.0 - 使用快捷鍵選擇類別)
 manage_recurring() {
     while true; do
         clear
         echo -e "${CYAN}--- 管理週期性交易 ---${RESET}"
+        # (顯示週期性交易的部分不變...)
         echo "週期性交易會在你每次啟動腳本時自動檢查並記錄。"
         echo "--------------------------------"
         if [ $(wc -l < "$RECURRING_FILE") -le 1 ]; then
@@ -655,7 +705,12 @@ manage_recurring() {
                 read -p "請選擇類型 (1: 支出, 2: 收入): " type_choice
                 local type="expense" && [[ "$type_choice" == "2" ]] && type="income"
                 
-                read -p "請輸入類別 (如: 房租, 手機費): " category
+                local category
+                category=$(select_category "$type" "週期性交易：選擇類別")
+                if [ -z "$category" ]; then
+                    echo -e "${YELLOW}操作已取消。${RESET}"; sleep 1; continue
+                fi
+
                 read -p "請輸入金額: " amount
                 if ! [[ "$amount" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then echo "${RED}金額無效${RESET}"; sleep 2; continue; fi
                 
@@ -668,14 +723,13 @@ manage_recurring() {
                 local next_date=$(date -d "${next_date_input:-today}" "+%Y-%m-%d" 2>/dev/null)
                 if [ $? -ne 0 ]; then echo -e "${RED}日期無效${RESET}"; sleep 2; continue; fi
                 
-                local rec_id=$(get_next_id) # 借用交易ID的邏輯來產生唯一ID
+                local rec_id=$(get_next_id)
                 local safe_desc=$(echo "$description" | sed 's/"/""/g')
                 echo "$rec_id,$type,$category,$amount,\"$safe_desc\",$freq,$next_date" >> "$RECURRING_FILE"
                 log_message "INFO" "新增週期性交易: $rec_id,$type,$category,..."
                 echo -e "${GREEN}週期性交易已新增！${RESET}"; sleep 2
                 ;;
-
-            2) # 刪除
+            2) # 刪除 (不變)
                 read -p "請輸入要刪除的週期性交易 ID: " target_rec_id
                 if ! [[ "$target_rec_id" =~ ^[0-9]+$ ]]; then continue; fi
                 if grep -q "^${target_rec_id}," "$RECURRING_FILE"; then
