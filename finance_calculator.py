@@ -2,22 +2,21 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v1.0              #
+#         進階財務分析與預測器 (Advanced Finance Analyzer) v1.1                     #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
-# 本腳本為一個高度智慧化的獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。     #
-# 它具備互動式路徑輸入、智慧欄位辨識與 Prophet 模型預測等頂級功能。                  #
+# 本腳本為一個高度獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                     #
+# 它具備互動式路徑輸入、智慧欄位辨識與 WMA 模型預測等功能。                                #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v1.0.1"
+SCRIPT_VERSION = "v1.1.0"
 SCRIPT_UPDATE_DATE = "2025-07-12"
 
-import argparse
 import pandas as pd
 from datetime import datetime
 import warnings
@@ -27,8 +26,8 @@ import subprocess
 
 # --- 自動安裝依賴函數 ---
 def install_dependencies():
-    """檢查並安裝缺少的 Python 庫 (pandas, prophet)"""
-    required_packages = ['pandas', 'prophet']
+    """檢查並安裝缺少的 Python 庫 (僅 pandas)"""
+    required_packages = ['pandas']
     for pkg in required_packages:
         try:
             __import__(pkg)
@@ -45,16 +44,11 @@ class Colors:
     """管理終端機輸出的 ANSI 顏色代碼"""
     def __init__(self, enabled=True):
         if enabled and sys.stdout.isatty():
-            self.RED = '\033[0;31m'
-            self.GREEN = '\033[0;32m'
-            self.YELLOW = '\033[1;33m'
-            self.CYAN = '\033[0;36m'
-            self.PURPLE = '\033[0;35m'
-            self.WHITE = '\033[0;37m'  # <<< 已新增 WHITE 的定義
-            self.BOLD = '\033[1m'
+            self.RED = '\033[0;31m'; self.GREEN = '\033[0;32m'; self.YELLOW = '\033[1;33m'
+            self.CYAN = '\033[0;36m'; self.PURPLE = '\033[0;35m'; self.BOLD = '\033[1m'
             self.RESET = '\033[0m'
         else:
-            self.RED = self.GREEN = self.YELLOW = self.CYAN = self.PURPLE = self.WHITE = self.BOLD = self.RESET = ''
+            self.RED = self.GREEN = self.YELLOW = self.CYAN = self.PURPLE = self.BOLD = self.RESET = ''
 
 # --- 智慧欄位辨識與資料處理 ---
 def find_column_by_synonyms(df_columns, synonyms):
@@ -149,7 +143,7 @@ def process_finance_data(file_paths: list, colors: Colors):
 
     return processed_df, "\n".join(warnings_report)
 
-# --- 主要分析與預測函數 ---
+# --- 主要分析與預測函數 (使用 WMA 替代 Prophet) ---
 def analyze_and_predict(file_paths_str: str, no_color: bool):
     colors = Colors(enabled=not no_color)
     file_paths = [path.strip() for path in file_paths_str.split(';')]
@@ -174,7 +168,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     total_expense = expense_df['Amount'].sum()
     net_balance = total_income - total_expense
 
-    # --- 使用 Prophet 進行開銷預測 ---
+    # --- 使用 WMA 進行開銷預測 ---
     predicted_expense_str = "無法預測 (資料不足或錯誤)"
     if not expense_df.empty:
         monthly_expenses = expense_df.set_index('Parsed_Date').resample('M')['Amount'].sum().reset_index()
@@ -182,12 +176,10 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
 
         if len(monthly_expenses) >= 2:
             try:
-                from prophet import Prophet
-                model = Prophet(yearly_seasonality=True, weekly_seasonality=False, daily_seasonality=False)
-                model.fit(monthly_expenses)
-                future = model.make_future_dataframe(periods=1, freq='M')
-                forecast = model.predict(future)
-                predicted_value = forecast['yhat'].iloc[-1]
+                # 取最近3個月 (如果不足則取所有)
+                recent_months = monthly_expenses.tail(3)['y'].values
+                weights = [0.2, 0.3, 0.5] if len(recent_months) == 3 else [1.0 / len(recent_months)] * len(recent_months)
+                predicted_value = sum(value * weight for value, weight in zip(recent_months, weights))
                 predicted_expense_str = f"{predicted_value:,.2f}"
             except Exception:
                 pass
