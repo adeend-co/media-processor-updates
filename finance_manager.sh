@@ -15,7 +15,7 @@
 ############################################
 # 腳本設定
 ############################################
-SCRIPT_VERSION="v1.3.1"
+SCRIPT_VERSION="v1.3.2"
 SCRIPT_UPDATE_DATE="2025-07-12"
 
 PYTHON_PIE_CHART_SCRIPT_PATH="$(dirname "$0")/create_pie_chart.py"
@@ -613,19 +613,24 @@ edit_transaction() {
 # ============================================
 # === 全新功能：預算管理系統 ===
 # ============================================
-# 管理每月預算 (v2.0 - 使用快捷鍵選擇類別)
+# 管理每月預算 (v2.1 - 修正變數名稱並強化判斷式)
 manage_budget() {
     while true; do
         clear
         echo -e "${CYAN}--- 每月預算管理 ---${RESET}"
-        # (顯示預算的部分不變...)
         echo -e "目前設定的每月支出預算："
         echo "--------------------------------"
-        if [ $(wc -l < "$BUGET_FILE") -le 1 ]; then
+        
+        # --- ▼▼▼ 核心修正處 ▼▼▼ ---
+        # 1. 變數名 BUGET_FILE -> BUDGET_FILE
+        # 2. 為命令替換 $(...) 加上雙引號，使其更穩健
+        if [ ! -f "$BUDGET_FILE" ] || [ "$(wc -l < "$BUDGET_FILE")" -le 1 ]; then
             echo -e "${YELLOW}尚未設定任何預算。${RESET}"
         else
             tail -n +2 "$BUDGET_FILE" | column -t -s,
         fi
+        # --- ▲▲▲ 修正結束 ▲▲▲ ---
+
         echo "--------------------------------"
         echo ""
         echo "1. 設定/修改類別預算"
@@ -651,7 +656,10 @@ manage_budget() {
                 local temp_budget_file="$DATA_DIR/temp_budget.csv"
                 grep -v "^${budget_cat}," "$BUDGET_FILE" > "$temp_budget_file"
                 echo "${budget_cat},${budget_amount}" >> "$temp_budget_file"
-                mv "$temp_budget_file" "$BUDGET_FILE"
+                # 使用 sort 確保標頭總是在第一行 (如果檔案變空再新增)
+                (head -n 1 "$temp_budget_file" && tail -n +2 "$temp_budget_file" | sort) > "$BUDGET_FILE"
+                rm -f "$temp_budget_file"
+
                 log_message "INFO" "設定預算: $budget_cat = $budget_amount"
                 echo -e "${GREEN}預算已更新！${RESET}"; sleep 1
                 ;;
@@ -659,8 +667,9 @@ manage_budget() {
                 read -p "請輸入要移除預算的類別名稱: " target_cat
                 if [ -z "$target_cat" ]; then continue; fi
                 if grep -q "^${target_cat}," "$BUDGET_FILE"; then
-                    grep -v "^${target_cat}," "$BUDGET_FILE" > "$DATA_DIR/temp_budget.csv"
-                    mv "$DATA_DIR/temp_budget.csv" "$BUDGET_FILE"
+                    local temp_budget_file="$DATA_DIR/temp_budget.csv"
+                    grep -v "^${target_cat}," "$BUDGET_FILE" > "$temp_budget_file"
+                    mv "$temp_budget_file" "$BUDGET_FILE"
                     log_message "INFO" "移除預算: $target_cat"
                     echo -e "${GREEN}已移除 '$target_cat' 的預算。${RESET}"
                 else
