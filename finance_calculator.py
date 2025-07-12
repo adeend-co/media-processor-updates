@@ -14,9 +14,10 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v1.1.0"
+SCRIPT_VERSION = "v1.1.1"
 SCRIPT_UPDATE_DATE = "2025-07-12"
 
+import argparse
 import pandas as pd
 from datetime import datetime
 import warnings
