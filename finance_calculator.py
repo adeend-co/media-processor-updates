@@ -2,19 +2,19 @@
 
 ################################################################################
 #                                                                              #
-#         進階財務分析與預測器 (Advanced Finance Analyzer) v1.1                     #
+#          進階財務分析與預測器 (Advanced Finance Analyzer) v1.1                    #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
-# 本腳本為一個高度獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                     #
-# 它具備互動式路徑輸入、智慧欄位辨識與 WMA 模型預測等功能。                                #
+# 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
+# 它具備自動格式清理、互動式路徑輸入與 WMA 模型預測等功能。                               #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v1.1.2"
+SCRIPT_VERSION = "v1.0.3"
 SCRIPT_UPDATE_DATE = "2025-07-12"
 
 import argparse
@@ -39,7 +39,7 @@ def install_dependencies():
             except subprocess.CalledProcessError:
                 print(f"錯誤：安裝套件 {pkg} 失敗！請手動執行 'pip install {pkg}'。")
                 sys.exit(1)
-
+                
 # --- 顏色處理類別 ---
 class Colors:
     """管理終端機輸出的 ANSI 顏色代碼"""
@@ -82,6 +82,9 @@ def process_finance_data(file_paths: list, colors: Colors):
 
     master_df = pd.concat(all_dfs, ignore_index=True)
 
+    # --- 核心升級：自動清理欄位名稱前後的空格 ---
+    master_df.columns = master_df.columns.str.strip()
+
     # --- 智慧欄位名稱辨識 ---
     date_col = find_column_by_synonyms(master_df.columns, ['日期', '時間', 'Date', 'time'])
     type_col = find_column_by_synonyms(master_df.columns, ['類型', 'Type', '收支項目', '收支'])
@@ -107,7 +110,8 @@ def process_finance_data(file_paths: list, colors: Colors):
         
         processed_df = pd.concat([income_df, expense_df])
         processed_df.dropna(subset=['Amount'], inplace=True)
-        processed_df = processed_df[pd.to_numeric(processed_df['Amount'], errors='coerce') > 0]
+        processed_df['Amount'] = pd.to_numeric(processed_df['Amount'], errors='coerce')
+        processed_df = processed_df[processed_df['Amount'] > 0]
 
     elif date_col and type_col and amount_col:
         # 結構二：標準的「類型」和「金額」欄位
@@ -132,9 +136,14 @@ def process_finance_data(file_paths: list, colors: Colors):
                     month_missing_count += 1
                     return pd.to_datetime(f"{datetime.now().year}-{s_date.replace('月','-').replace('日','').replace('號','')}")
                 except ValueError: return pd.NaT
-            elif len(s_date) == 4 and s_date.isdigit():
-                 month_missing_count += 1
-                 return pd.to_datetime(f"{datetime.now().year}-{s_date[:2]}-{s_date[2:]}", errors='coerce')
+            elif len(s_date) <= 4 and s_date.replace('.', '', 1).isdigit(): # 處理 701, 7.01 等
+                 s_date = str(int(float(s_date))) # 轉換 701.0 -> 701
+                 if len(s_date) < 3: s_date = '0' * (3-len(s_date)) + s_date # 補零
+                 if len(s_date) > 2:
+                    month_missing_count += 1
+                    month = int(s_date[:-2])
+                    day = int(s_date[-2:])
+                    return pd.to_datetime(f"{datetime.now().year}-{month}-{day}", errors='coerce')
             return pd.NaT
 
     processed_df['Parsed_Date'] = processed_df['Date'].apply(parse_date)
@@ -149,7 +158,7 @@ def process_finance_data(file_paths: list, colors: Colors):
 
     return processed_df, "\n".join(warnings_report)
 
-# --- 主要分析與預測函數 (使用 WMA 替代 Prophet) ---
+# --- 主要分析與預測函數 ---
 def analyze_and_predict(file_paths_str: str, no_color: bool):
     colors = Colors(enabled=not no_color)
     file_paths = [path.strip() for path in file_paths_str.split(';')]
@@ -178,12 +187,10 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     predicted_expense_str = "無法預測 (資料不足或錯誤)"
     if not expense_df.empty:
         monthly_expenses = expense_df.set_index('Parsed_Date').resample('M')['Amount'].sum().reset_index()
-        monthly_expenses.columns = ['ds', 'y']
-
+        
         if len(monthly_expenses) >= 2:
             try:
-                # 取最近3個月 (如果不足則取所有)
-                recent_months = monthly_expenses.tail(3)['y'].values
+                recent_months = monthly_expenses['y'].tail(3).values
                 weights = [0.2, 0.3, 0.5] if len(recent_months) == 3 else [1.0 / len(recent_months)] * len(recent_months)
                 predicted_value = sum(value * weight for value, weight in zip(recent_months, weights))
                 predicted_expense_str = f"{predicted_value:,.2f}"
