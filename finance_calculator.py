@@ -2,22 +2,21 @@
 
 ################################################################################
 #                                                                              #
-#          進階財務分析與預測器 (Advanced Finance Analyzer) v1.1                    #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v9.0              #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
-# 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
-# 它具備自動格式清理、互動式路徑輸入與 WMA 模型預測等功能。                               #
+# 本腳本為一個高度智慧化的獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。     #
+# 它具備自動格式清理、互動式路徑輸入與 WMA 模型預測等頂級功能。                    #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v1.0.3"
+SCRIPT_VERSION = "v9.0"
 SCRIPT_UPDATE_DATE = "2025-07-12"
 
-import argparse
 import pandas as pd
 from datetime import datetime
 import warnings
@@ -39,20 +38,15 @@ def install_dependencies():
             except subprocess.CalledProcessError:
                 print(f"錯誤：安裝套件 {pkg} 失敗！請手動執行 'pip install {pkg}'。")
                 sys.exit(1)
-                
+
 # --- 顏色處理類別 ---
 class Colors:
     """管理終端機輸出的 ANSI 顏色代碼"""
     def __init__(self, enabled=True):
         if enabled and sys.stdout.isatty():
-            self.RED = '\033[0;31m'
-            self.GREEN = '\033[0;32m'
-            self.YELLOW = '\033[1;33m'
-            self.CYAN = '\033[0;36m'
-            self.PURPLE = '\033[0;35m'
-            self.WHITE = '\033[0;37m'  # <<< 已新增 WHITE 的定義
-            self.BOLD = '\033[1m'
-            self.RESET = '\033[0m'
+            self.RED = '\033[0;31m'; self.GREEN = '\033[0;32m'; self.YELLOW = '\033[1;33m'
+            self.CYAN = '\033[0;36m'; self.PURPLE = '\033[0;35m'; self.WHITE = '\033[0;37m'
+            self.BOLD = '\033[1m'; self.RESET = '\033[0m'
         else:
             self.RED = self.GREEN = self.YELLOW = self.CYAN = self.PURPLE = self.WHITE = self.BOLD = self.RESET = ''
 
@@ -158,7 +152,7 @@ def process_finance_data(file_paths: list, colors: Colors):
 
     return processed_df, "\n".join(warnings_report)
 
-# --- 主要分析與預測函數 ---
+# --- 主要分析與預測函數 (使用 WMA 替代 Prophet) ---
 def analyze_and_predict(file_paths_str: str, no_color: bool):
     colors = Colors(enabled=not no_color)
     file_paths = [path.strip() for path in file_paths_str.split(';')]
@@ -186,16 +180,18 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     # --- 使用 WMA 進行開銷預測 ---
     predicted_expense_str = "無法預測 (資料不足或錯誤)"
     if not expense_df.empty:
+        expense_df = expense_df.sort_values('Parsed_Date')  # 確保排序
         monthly_expenses = expense_df.set_index('Parsed_Date').resample('M')['Amount'].sum().reset_index()
-        
+        monthly_expenses['Amount'] = monthly_expenses['Amount'].fillna(0)  # 填充 NaN 為 0
+
         if len(monthly_expenses) >= 2:
             try:
-                recent_months = monthly_expenses['y'].tail(3).values
+                recent_months = monthly_expenses['Amount'].tail(3).values
                 weights = [0.2, 0.3, 0.5] if len(recent_months) == 3 else [1.0 / len(recent_months)] * len(recent_months)
                 predicted_value = sum(value * weight for value, weight in zip(recent_months, weights))
                 predicted_expense_str = f"{predicted_value:,.2f}"
-            except Exception:
-                pass
+            except Exception as e:
+                predicted_expense_str = f"無法預測 (錯誤: {str(e)})"
 
     # --- 輸出最終的簡潔報告 ---
     print(f"\n{colors.CYAN}{colors.BOLD}========== 財務分析與預測報告 =========={colors.RESET}")
