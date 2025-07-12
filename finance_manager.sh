@@ -2,7 +2,7 @@
 
 ################################################################################
 #                                                                              #
-#                         個人財務管理器 (PFM) v1.1                               #
+#                         個人財務管理器 (PFM) v1.3                               #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
@@ -15,7 +15,7 @@
 ############################################
 # 腳本設定
 ############################################
-SCRIPT_VERSION="v1.3.2"
+SCRIPT_VERSION="v1.3.3"
 SCRIPT_UPDATE_DATE="2025-07-12"
 
 PYTHON_PIE_CHART_SCRIPT_PATH="$(dirname "$0")/create_pie_chart.py"
@@ -501,36 +501,31 @@ prompt_add_new_category() {
 # ============================================
 # === 全新功能：交易管理 (編輯與刪除) ===
 # ============================================
-
-# 刪除一筆交易紀錄
+# 刪除一筆交易紀錄 (v2.1 - 使用 grep -F)
 delete_transaction() {
     clear
     read -p "請輸入要刪除的交易 ID (或輸入 0 取消): " target_id
-
     if [[ "$target_id" == "0" ]] || ! [[ "$target_id" =~ ^[0-9]+$ ]]; then
-        echo -e "${YELLOW}操作已取消或輸入無效。${RESET}"; sleep 2
-        return
+        echo -e "${YELLOW}操作已取消或輸入無效。${RESET}"; sleep 2; return
     fi
 
-    local temp_file="$DATA_DIR/temp_transactions.csv"
-    if ! grep -q "^${target_id}," "$DATA_FILE"; then
-        echo -e "${RED}錯誤：找不到 ID 為 ${target_id} 的紀錄。${RESET}"; sleep 2
-        return
+    # --- 修正：使用 grep -F ---
+    if ! grep -F -q "^${target_id}," "$DATA_FILE"; then
+        echo -e "${RED}錯誤：找不到 ID 為 ${target_id} 的紀錄。${RESET}"; sleep 2; return
     fi
     
-    # 顯示要刪除的紀錄供使用者確認
     echo -e "\n${YELLOW}您即將刪除以下紀錄：${RESET}"
-    grep "^${target_id}," "$DATA_FILE" | column -t -s,
+    grep -F "^${target_id}," "$DATA_FILE" | column -t -s,
     echo ""
     read -p "確定要永久刪除嗎？ (y/N): " confirm_delete
     
     if [[ ! "$confirm_delete" =~ ^[Yy]$ ]]; then
-        echo -e "${YELLOW}操作已取消。${RESET}"; sleep 2
-        return
+        echo -e "${YELLOW}操作已取消。${RESET}"; sleep 2; return
     fi
 
-    echo -e "${YELLOW}正在刪除 ID 為 ${target_id} 的紀錄...${RESET}"
-    grep -v "^${target_id}," "$DATA_FILE" > "$temp_file"
+    local temp_file="$DATA_DIR/temp_transactions.csv"
+    grep -F -v "^${target_id}," "$DATA_FILE" > "$temp_file"
+    # --- 修正結束 ---
 
     if mv "$temp_file" "$DATA_FILE"; then
         log_message "INFO" "刪除紀錄: ID=${target_id}"
@@ -542,22 +537,24 @@ delete_transaction() {
     sleep 2
 }
 
-# 編輯一筆交易紀錄
+
+# 編輯一筆交易紀錄 (v2.1 - 使用 grep -F)
 edit_transaction() {
     clear
     read -p "請輸入要編輯的交易 ID (或輸入 0 取消): " target_id
     if [[ "$target_id" == "0" ]] || ! [[ "$target_id" =~ ^[0-9]+$ ]]; then
-        echo -e "${YELLOW}操作已取消或輸入無效。${RESET}"; sleep 2
-        return
+        echo -e "${YELLOW}操作已取消或輸入無效。${RESET}"; sleep 2; return
     fi
 
-    local old_record=$(grep "^${target_id}," "$DATA_FILE")
+    # --- 修正：使用 grep -F ---
+    local old_record=$(grep -F "^${target_id}," "$DATA_FILE")
+    # --- 修正結束 ---
+    
     if [ -z "$old_record" ]; then
-        echo -e "${RED}錯誤：找不到 ID 為 ${target_id} 的紀錄。${RESET}"; sleep 2
-        return
+        echo -e "${RED}錯誤：找不到 ID 為 ${target_id} 的紀錄。${RESET}"; sleep 2; return
     fi
 
-    # 從CSV中解析舊的數值
+    # (後續的編輯邏輯不變...)
     local old_date=$(echo "$old_record" | cut -d, -f3)
     local old_type=$(echo "$old_record" | cut -d, -f4)
     local old_category=$(echo "$old_record" | cut -d, -f5)
@@ -567,40 +564,25 @@ edit_transaction() {
     echo -e "${CYAN}--- 正在編輯 ID: $target_id ---${RESET}"
     echo -e "${YELLOW}提示：直接按 Enter 可保留原值。${RESET}"
 
-    read -p "日期 [原: $old_date]: " new_date
-    new_date=${new_date:-$old_date}
+    read -p "日期 [原: $old_date]: " new_date; new_date=${new_date:-$old_date}
     local parsed_date=$(date -d "$new_date" "+%Y-%m-%d" 2>/dev/null)
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}錯誤：日期格式無效。操作已取消。${RESET}"; sleep 2
-        return
-    fi
+    if [ $? -ne 0 ]; then echo -e "${RED}錯誤：日期格式無效。${RESET}"; sleep 2; return; fi
     new_date="$parsed_date"
     
-    read -p "類別 [原: $old_category]: " new_category
-    new_category=${new_category:-$old_category}
-    
-    read -p "金額 [原: $old_amount]: " new_amount
-    new_amount=${new_amount:-$old_amount}
-    if ! [[ "$new_amount" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
-        echo -e "${RED}錯誤：金額無效。操作已取消。${RESET}"; sleep 2
-        return
-    fi
+    read -p "類別 [原: $old_category]: " new_category; new_category=${new_category:-$old_category}
+    read -p "金額 [原: $old_amount]: " new_amount; new_amount=${new_amount:-$old_amount}
+    if ! [[ "$new_amount" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then echo -e "${RED}錯誤：金額無效。${RESET}"; sleep 2; return; fi
 
-    read -p "備註 [原: $old_description]: " new_description
-    new_description=${new_description:-$old_description}
+    read -p "備註 [原: $old_description]: " new_description; new_description=${new_description:-$old_description}
 
-    # 重新組合紀錄
     local timestamp=$(date -d "$new_date" "+%s")
     local safe_description=$(echo "$new_description" | sed 's/"/""/g')
     local new_record="$target_id,$timestamp,$new_date,$old_type,$new_category,$new_amount,\"$safe_description\""
 
-    echo -e "\n${CYAN}--- 請確認變更 ---${RESET}"
-    echo -e "${WHITE}原紀錄:${RESET} $old_record"
-    echo -e "${WHITE}新紀錄:${RESET} $new_record"
+    echo -e "\n${CYAN}--- 請確認變更 ---${RESET}"; echo -e "${WHITE}原紀錄:${RESET} $old_record"; echo -e "${WHITE}新紀錄:${RESET} $new_record"
     read -p "儲存變更？ (Y/n): " confirm_edit
 
     if [[ ! "$confirm_edit" =~ ^[Nn]$ ]]; then
-        # 使用 sed 原地替換行
         sed -i "/^${target_id},/c\\${new_record}" "$DATA_FILE"
         log_message "INFO" "編輯紀錄 ID=$target_id: $new_record"
         echo -e "${GREEN}紀錄已更新！${RESET}"
@@ -613,24 +595,18 @@ edit_transaction() {
 # ============================================
 # === 全新功能：預算管理系統 ===
 # ============================================
-# 管理每月預算 (v2.1 - 修正變數名稱並強化判斷式)
+# 管理每月預算 (v2.2 - 使用 grep -F 進行純文字比對，修復正則錯誤)
 manage_budget() {
     while true; do
         clear
         echo -e "${CYAN}--- 每月預算管理 ---${RESET}"
         echo -e "目前設定的每月支出預算："
         echo "--------------------------------"
-        
-        # --- ▼▼▼ 核心修正處 ▼▼▼ ---
-        # 1. 變數名 BUGET_FILE -> BUDGET_FILE
-        # 2. 為命令替換 $(...) 加上雙引號，使其更穩健
         if [ ! -f "$BUDGET_FILE" ] || [ "$(wc -l < "$BUDGET_FILE")" -le 1 ]; then
             echo -e "${YELLOW}尚未設定任何預算。${RESET}"
         else
             tail -n +2 "$BUDGET_FILE" | column -t -s,
         fi
-        # --- ▲▲▲ 修正結束 ▲▲▲ ---
-
         echo "--------------------------------"
         echo ""
         echo "1. 設定/修改類別預算"
@@ -644,8 +620,7 @@ manage_budget() {
                 budget_cat=$(select_category "expense" "管理預算：選擇支出類別")
                 
                 if [ -z "$budget_cat" ]; then
-                    echo -e "${YELLOW}操作已取消。${RESET}"; sleep 1
-                    continue
+                    echo -e "${YELLOW}操作已取消。${RESET}"; sleep 1; continue
                 fi
 
                 read -p "請輸入 '$budget_cat' 的每月預算金額: " budget_amount
@@ -654,9 +629,13 @@ manage_budget() {
                 fi
 
                 local temp_budget_file="$DATA_DIR/temp_budget.csv"
-                grep -v "^${budget_cat}," "$BUDGET_FILE" > "$temp_budget_file"
+                # --- ▼▼▼ 核心修正處 ▼▼▼ ---
+                # 使用 grep -F 確保變數被當作純文字，而非正則表達式
+                grep -F -v "${budget_cat}," "$BUDGET_FILE" > "$temp_budget_file"
+                # --- ▲▲▲ 修正結束 ▲▲▲ ---
+
                 echo "${budget_cat},${budget_amount}" >> "$temp_budget_file"
-                # 使用 sort 確保標頭總是在第一行 (如果檔案變空再新增)
+                # 使用 sort 確保標頭總是在第一行
                 (head -n 1 "$temp_budget_file" && tail -n +2 "$temp_budget_file" | sort) > "$BUDGET_FILE"
                 rm -f "$temp_budget_file"
 
@@ -666,10 +645,13 @@ manage_budget() {
             2) # 移除
                 read -p "請輸入要移除預算的類別名稱: " target_cat
                 if [ -z "$target_cat" ]; then continue; fi
-                if grep -q "^${target_cat}," "$BUDGET_FILE"; then
+                
+                # --- ▼▼▼ 核心修正處 ▼▼▼ ---
+                if grep -F -q "${target_cat}," "$BUDGET_FILE"; then
                     local temp_budget_file="$DATA_DIR/temp_budget.csv"
-                    grep -v "^${target_cat}," "$BUDGET_FILE" > "$temp_budget_file"
+                    grep -F -v "${target_cat}," "$BUDGET_FILE" > "$temp_budget_file"
                     mv "$temp_budget_file" "$BUDGET_FILE"
+                # --- ▲▲▲ 修正結束 ▲▲▲ ---
                     log_message "INFO" "移除預算: $target_cat"
                     echo -e "${GREEN}已移除 '$target_cat' 的預算。${RESET}"
                 else
