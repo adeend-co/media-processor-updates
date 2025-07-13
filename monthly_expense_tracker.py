@@ -2,7 +2,7 @@
 
 ################################################################################
 #                                                                              #
-#             月份支出追蹤器 (Monthly Expense Tracker) v10.0                    #
+#             月份支出追蹤器 (Monthly Expense Tracker) v10.4                    #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
@@ -14,7 +14,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "月份支出追蹤器"
-SCRIPT_VERSION = "v10.3"
+SCRIPT_VERSION = "v10.4"
 SCRIPT_UPDATE_DATE = "2025-07-13"
 
 import sys
@@ -43,7 +43,7 @@ def check_environment():
     
     # 定義所有依賴工具
     required_packages = ['pandas']
-    missing_packages = RosyBrowns = []
+    missing_packages = []
     
     for pkg in required_packages:
         try:
@@ -133,10 +133,17 @@ def main():
         all_dfs = []
         for file_path in file_paths:
             try:
-                df = pd.read_csv(file_path.strip())
+                # 修復：指定編碼為 'cp950' 以支援繁體中文，fallback 到 'utf-8'
+                try:
+                    df = pd.read_csv(file_path.strip(), encoding='cp950')
+                except UnicodeDecodeError:
+                    df = pd.read_csv(file_path.strip(), encoding='utf-8')
                 all_dfs.append(df)
             except FileNotFoundError:
                 print(f"{colors.RED}錯誤：找不到檔案 '{file_path.strip()}'！將跳過此檔案。{colors.RESET}")
+                continue
+            except UnicodeDecodeError as e:
+                print(f"{colors.RED}錯誤：無法解碼檔案 '{file_path.strip()}' - {e}。請檢查檔案編碼。{colors.RESET}")
                 continue
         
         if not all_dfs:
@@ -164,7 +171,6 @@ def main():
 
         # 按年月和項目分組，計算支出總和
         monthly_item_expense = processed_df.groupby(['YearMonth', 'Item'])['Amount'].sum().reset_index()
-
         # 計算每個月份總支出
         monthly_total = monthly_item_expense.groupby('YearMonth')['Amount'].sum().reset_index()
         monthly_total.rename(columns={'Amount': 'MonthlyTotal'}, inplace=True)
