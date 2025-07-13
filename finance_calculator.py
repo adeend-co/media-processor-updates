@@ -2,7 +2,7 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v9.16             #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v9.17             #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
@@ -10,12 +10,12 @@
 # 本腳本為一個高度智慧化的獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。     #
 # 它具備自動格式清理、互動式路徑輸入與 EMA 模型預測等頂級功能。                     #
 #                                                                              #
-# 更新：支援移除千分位逗號、寬格式轉換和Big5/CP950編碼。                          #
+# 更新：參考monthly腳本優化寬格式日期解析與數字清理。                             #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v9.16"  # 更新版本以支援千分位逗號移除
+SCRIPT_VERSION = "v9.17"  # 更新版本以優化寬格式處理
 SCRIPT_UPDATE_DATE = "2025-07-13"
 
 import sys
@@ -98,6 +98,33 @@ def main():
                 return col
         return None
 
+    def normalize_date(date_str):
+        """標準化日期為年月格式 (e.g., 2025-01)，支援年月日、月份中文等格式（參考monthly腳本）"""
+        s = str(date_str).strip().replace('月', '').replace('年', '-').replace(' ', '')
+        current_year = datetime.now().year
+        # 處理像 "1月" 或 "1" 的格式
+        if s.isdigit() and len(s) <= 2:
+            month = int(s)
+            return f"{current_year}-{month:02d}"
+        # 處理 "2025-1" 或 "20251"
+        if '-' in s:
+            parts = s.split('-')
+            year = int(parts[0]) if len(parts[0]) == 4 else current_year
+            month = int(parts[1])
+            return f"{year}-{month:02d}"
+        if len(s) >= 5 and s[:4].isdigit():
+            year = int(s[:4])
+            month = int(s[4:])
+            return f"{year}-{month:02d}"
+        # 嘗試解析完整年月日格式 (e.g., 20250713)
+        if s.isdigit() and len(s) == 8:
+            try:
+                dt = datetime.strptime(s, '%Y%m%d')
+                return f"{dt.year}-{dt.month:02d}"
+            except ValueError:
+                pass
+        return None  # 無效日期
+
     def process_finance_data(file_paths: list, colors: Colors):
         """
         讀取、合併、清理並分析來自多個 CSV 檔案的財務資料。支援寬格式轉換和Big5編碼。
@@ -164,21 +191,13 @@ def main():
         # 新增結構三：寬格式（月份為行，多個類型為列）
         elif date_col and len(master_df.columns) > 2:  # 假設有月份欄位且多列
             warnings_report.append(f"{colors.YELLOW}注意：偵測到寬格式（月份行、類型列），已自動轉換為長格式。{colors.RESET}")
-            # 轉換月份為數字（去除'月'字）
-            def convert_month(x):
-                try:
-                    return int(str(x).replace('月', '').strip())
-                except ValueError:
-                    return pd.NA
-            
-            master_df[date_col] = master_df[date_col].apply(convert_month)
-            master_df = master_df.dropna(subset=[date_col])
             
             # 轉換為長格式
             processed_df = master_df.melt(id_vars=[date_col], var_name='Type', value_name='Amount')
             processed_df.dropna(subset=['Amount'], inplace=True)
+            
             # 修復：移除千分位逗號和其他非數字字符
-            processed_df['Amount'] = processed_df['Amount'].astype(str).str.replace(',', '').str.strip()
+            processed_df['Amount'] = processed_df['Amount'].astype(str).str.replace(',', '').str.replace(' ', '').str.strip()
             processed_df['Amount'] = pd.to_numeric(processed_df['Amount'], errors='coerce')
             processed_df = processed_df.dropna(subset=['Amount'])
             processed_df = processed_df[processed_df['Amount'] > 0]
