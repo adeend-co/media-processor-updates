@@ -43,7 +43,7 @@ def check_environment():
     
     # 定義所有依賴工具
     required_packages = ['pandas']
-    missing_packages = []
+    missing_packages = RosyBrowns = []
     
     for pkg in required_packages:
         try:
@@ -97,9 +97,16 @@ def main():
         return None
 
     def normalize_date(date_str):
-        """標準化日期為年月格式 (e.g., 2025-01)"""
+        """標準化日期為年月格式 (e.g., 2025-01)，支援年月日格式"""
         s = str(date_str).strip()
         current_year = datetime.now().year
+        # 嘗試解析完整年月日格式 (e.g., 20250713)
+        if s.isdigit() and len(s) == 8:
+            try:
+                dt = datetime.strptime(s, '%Y%m%d')
+                return f"{dt.year}-{dt.month:02d}"
+            except ValueError:
+                pass
         # 處理像701, 702這種格式
         if s.isdigit() and len(s) <= 4:
             s = s.zfill(4)  # 補足4位數
