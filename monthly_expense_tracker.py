@@ -14,7 +14,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "月份支出追蹤器"
-SCRIPT_VERSION = "v10.0"
+SCRIPT_VERSION = "v10.1"
 SCRIPT_UPDATE_DATE = "2025-07-13"
 
 import sys
