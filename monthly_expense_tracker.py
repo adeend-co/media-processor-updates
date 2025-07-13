@@ -14,7 +14,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "月份支出追蹤器"
-SCRIPT_VERSION = "v10.2"
+SCRIPT_VERSION = "v10.3"
 SCRIPT_UPDATE_DATE = "2025-07-13"
 
 import sys
@@ -43,7 +43,7 @@ def check_environment():
     
     # 定義所有依賴工具
     required_packages = ['pandas']
-    missing_packages = []
+    missing_packages = RosyBrowns = []
     
     for pkg in required_packages:
         try:
@@ -55,14 +55,14 @@ def check_environment():
     
     if missing_packages:
         print(f"\n{colors.RED}環境檢查失敗！缺少以下套件：{', '.join(missing_packages)}{colors.RESET}")
-        print(f"{colors.YELLOW}請執行 'pkg install tur-repo   pkg install python-pandas' (適用於 Termux) 安裝缺少的套件。{colors.RESET}")
+        print(f"{colors.YELLOW}請執行 'pip install {' '.join(missing_packages)}' 安裝缺少的套件。{colors.RESET}")
         sys.exit(1)
     
     print(f"{colors.GREEN}環境檢查通過，所有依賴工具均已安裝。{colors.RESET}")
 
-# --- 自動安裝依賴函數 (優先使用 Termux pkg) ---
+# --- 自動安裝依賴函數 (調整為適合 Termux) ---
 def install_dependencies():
-    """檢查並安裝缺少的 Python 庫 (僅 pandas)，優先適用於 Termux 環境"""
+    """檢查並安裝缺少的 Python 庫 (僅 pandas)，適合 Termux 環境"""
     required_packages = ['pandas']
     for pkg in required_packages:
         try:
@@ -70,20 +70,14 @@ def install_dependencies():
         except ImportError:
             print(f"{colors.YELLOW}提示：正在安裝缺少的必要套件: {pkg}...{colors.RESET}")
             try:
-                # 優先嘗試 Termux pkg 安裝
-                subprocess.check_call(['pkg', 'install', 'tur-repo'])
-                subprocess.check_call(['pkg', 'install', 'python-pandas'])
-                print(f"{colors.GREEN}成功安裝 {pkg} (使用 Termux pkg)。{colors.RESET}")
-            except (subprocess.CalledProcessError, FileNotFoundError):
-                # 若 pkg 失敗（非 Termux 環境或錯誤），回落到 pip
-                print(f"{colors.RED}Termux pkg 安裝 {pkg} 失敗（可能不在 Termux 環境）！{colors.RESET}")
-                try:
-                    subprocess.check_call([sys.executable, '-m', 'pip', 'install', pkg])
-                    print(f"{colors.GREEN}成功安裝 {pkg} (使用 pip)。{colors.RESET}")
-                except subprocess.CalledProcessError:
-                    print(f"{colors.RED}pip 安裝 {pkg} 也失敗！{colors.RESET}")
-                    print(f"{colors.YELLOW}請手動執行 'pkg install tur-repo   pkg install python-pandas' (適用於 Termux) 或 'pip install {pkg}'，並檢查網路/權限。{colors.RESET}")
-                    sys.exit(1)
+                # 先嘗試 pip 安裝
+                subprocess.check_call([sys.executable, '-m', 'pip', 'install', pkg])
+                print(f"{colors.GREEN}成功安裝 {pkg}。{colors.RESET}")
+            except subprocess.CalledProcessError:
+                # 若 pip 失敗，建議 Termux 專屬指令
+                print(f"{colors.RED}pip 安裝 {pkg} 失敗！{colors.RESET}")
+                print(f"{colors.YELLOW}建議：在 Termux 中執行 'pkg install tur-repo' 後再執行 'pkg install python-pandas'，或檢查網路/權限。{colors.RESET}")
+                sys.exit(1)
 
 def main():
     # --- 腳本啟動時立即檢查環境 (顏色已載入) ---
