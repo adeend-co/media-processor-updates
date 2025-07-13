@@ -14,7 +14,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v9.6"  # 更新版本以整合新預測邏輯
+SCRIPT_VERSION = "v9.7"  # 更新版本以強化安裝處理
 SCRIPT_UPDATE_DATE = "2025-07-13"
 
 import argparse
@@ -25,9 +25,8 @@ import sys
 import os
 import subprocess
 import numpy as np  # 用於 EMA 計算
-from scipy.stats import linregress  # 用於線性迴歸和 SARIMA 簡化
 
-# --- 自動安裝依賴函數 (新增 scipy) ---
+# --- 自動安裝依賴函數 (強化錯誤處理) ---
 def install_dependencies():
     """檢查並安裝缺少的 Python 庫 (pandas, numpy, scipy)"""
     required_packages = ['pandas', 'numpy', 'scipy']
@@ -37,10 +36,12 @@ def install_dependencies():
         except ImportError:
             print(f"提示：正在安裝缺少的必要套件: {pkg}...")
             try:
+                subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--upgrade', 'pip', 'setuptools', 'wheel'])
                 subprocess.check_call([sys.executable, '-m', 'pip', 'install', pkg])
                 print(f"成功安裝 {pkg}。")
             except subprocess.CalledProcessError as e:
                 print(f"錯誤：安裝套件 {pkg} 失敗！錯誤碼: {e.returncode}。")
+                print("建議：在 Termux 中執行 'pkg install python-numpy python-scipy' 或檢查網路/權限。")
                 sys.exit(1)
 
 # --- 顏色處理類別 ---
@@ -192,6 +193,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
 
         if num_months >= 24:  # 足夠數據，使用 SARIMA (簡化趨勢模擬)
             try:
+                from scipy.stats import linregress
                 # 簡化 SARIMA：使用線性迴歸模擬趨勢 + 季節調整
                 x = np.arange(len(data))
                 slope, intercept, _, _, _ = linregress(x, data)
@@ -202,6 +204,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 predicted_expense_str = f"無法預測 (錯誤: {str(e)})"
         elif num_months >= 6:  # 中間範圍，使用 Linear Regression
             try:
+                from scipy.stats import linregress
                 x = np.arange(1, num_months + 1)
                 slope, intercept, _, _, _ = linregress(x, data)
                 predicted_value = intercept + slope * (num_months + 1)
