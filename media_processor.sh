@@ -50,7 +50,7 @@
 ############################################
 # 腳本設定
 ############################################
-SCRIPT_VERSION="v2.6.6-beta.12" # <<< 版本號更新
+SCRIPT_VERSION="v2.6.6-beta.13" # <<< 版本號更新
 
 ############################################
 # ★★★ 新增：使用者同意書版本號 ★★★
@@ -3509,7 +3509,7 @@ setup_termux_autostart() {
     clear
     echo -e "${CYAN}--- 設定 Termux 啟動時詢問 ---${RESET}"
     echo -e "${YELLOW}此操作將修改您的 '$HOME/.bashrc' 文件。${RESET}"
-    echo -e "${RED}${BOLD}警告：如果已有 .bashrc 文件，其內容將被覆蓋！${RESET}" # 稍微修改警告語氣
+    echo -e "${RED}${BOLD}警告：如果已有 .bashrc 文件，其內容將被覆蓋！${RESET}"
     echo -e "${YELLOW}如果您有自訂的 .bashrc 設定，請先備份 '${HOME}/.bashrc'。${RESET}"
     echo ""
     read -p "您確定要繼續嗎？ (y/n): " confirm_setup
@@ -3521,27 +3521,34 @@ setup_termux_autostart() {
         return 1
     fi
 
-    # --- 使用腳本內定義的 SCRIPT_INSTALL_PATH ---
-    # 確保這個變數在腳本開頭被正確設定，指向 media_processor.sh 的實際位置
-    local target_script_path="$SCRIPT_INSTALL_PATH"
+    # --- 定義所有需要用到的腳本路徑 ---
+    local main_script_path="$SCRIPT_INSTALL_PATH"
+    local tracker_script_path="$SCRIPT_DIR/monthly_expense_tracker.py"
+    local calculator_script_path="$SCRIPT_DIR/finance_calculator.py"
 
-    # 檢查目標腳本是否存在且可執行
-    if [ ! -f "$target_script_path" ]; then
-        log_message "ERROR" "找不到目標腳本檔案 '$target_script_path'。無法設定自動啟動。"
-        echo -e "${RED}錯誤：找不到腳本檔案 '$target_script_path'！${RESET}"
-        echo -e "${YELLOW}請確保 SCRIPT_INSTALL_PATH 變數指向正確的檔案路徑。${RESET}"
+    # --- 檢查所有目標腳本是否存在且可執行 ---
+    local script_check_ok=true
+    for script in "$main_script_path" "$tracker_script_path" "$calculator_script_path"; do
+        if [ ! -f "$script" ]; then
+            log_message "ERROR" "找不到必要的腳本檔案 '$script'。無法設定自動啟動。"
+            echo -e "${RED}錯誤：找不到腳本檔案 '$script'！${RESET}"
+            script_check_ok=false
+        elif [ ! -x "$script" ]; then
+            echo -e "${YELLOW}警告：腳本檔案 '$script' 沒有執行權限，正在嘗試設定...${RESET}"
+            if ! chmod +x "$script"; then
+                log_message "ERROR" "無法設定 '$script' 的執行權限！"
+                echo -e "${RED}錯誤：無法設定 '$script' 的執行權限！請手動設定。${RESET}"
+                script_check_ok=false
+            else
+                log_message "INFO" "成功設定 '$script' 的執行權限。"
+                echo -e "${GREEN}  > '$script' 權限設定成功。${RESET}"
+            fi
+        fi
+    done
+
+    if ! $script_check_ok; then
+        echo -e "${RED}由於腳本檔案缺失或權限問題，設定程序中止。${RESET}"
         return 1
-    fi
-    if [ ! -x "$target_script_path" ]; then
-         echo -e "${YELLOW}警告：腳本檔案 '$target_script_path' 沒有執行權限，正在嘗試設定...${RESET}"
-         if ! chmod +x "$target_script_path"; then
-              log_message "ERROR" "無法設定 '$target_script_path' 的執行權限！"
-              echo -e "${RED}錯誤：無法設定腳本的執行權限！請手動執行 'chmod +x $target_script_path'。${RESET}"
-              return 1
-         else
-              log_message "INFO" "成功設定 '$target_script_path' 的執行權限。"
-              echo -e "${GREEN}  > 執行權限設定成功。${RESET}"
-         fi
     fi
     # --- 檢查結束 ---
 
@@ -3549,15 +3556,15 @@ setup_termux_autostart() {
     echo -e "${YELLOW}正在寫入設定到 ~/.bashrc ...${RESET}"
 
     # --- 使用 cat 和 EOF 將配置寫入 .bashrc ---
-    # <<< 關鍵修改：alias 後面的路徑使用變數 $target_script_path >>>
 cat > ~/.bashrc << EOF
-# ~/.bashrc - v3 (Dynamic Alias Path)
+# ~/.bashrc - v4 (Multi-script Launcher)
 
-# --- 媒體處理器啟動設定 ---
+# --- 整合式平台啟動設定 ---
 
 # 1. 定義別名 (使用腳本實際安裝路徑)
-#    這個路徑是在運行 setup_termux_autostart 時由 media_processor.sh 腳本提供的
-alias media='$target_script_path' # <<< 使用變數替換硬編碼路徑
+alias media='$main_script_path'
+alias track='$tracker_script_path'
+alias analyze='$calculator_script_path'
 
 # 2. 僅在交互式 Shell 啟動時顯示提示
 if [[ \$- == *i* ]]; then
@@ -3567,49 +3574,55 @@ if [[ \$- == *i* ]]; then
     CLR_YELLOW='\033[1;33m'
     CLR_RED='\033[0;31m'
     CLR_CYAN='\033[0;36m'
+    CLR_PURPLE='\033[0;35m'
+    CLR_BLUE='\033[0;34m'
     # --- 顏色定義結束 ---
 
     echo ""
     echo -e "\${CLR_CYAN}歡迎使用 Termux!\${CLR_RESET}"
-    echo -e "\${CLR_YELLOW}是否要啟動媒體處理器？\${CLR_RESET}"
-    echo -e "1) \${CLR_GREEN}立即啟動\${CLR_RESET}"
-    echo -e "2) \${CLR_YELLOW}稍後啟動 (輸入 'media' 命令啟動)\${CLR_RESET}"
-    echo -e "0) \${CLR_RED}不啟動\${CLR_RESET}"
+    echo -e "\${CLR_YELLOW}是否要啟動平台工具？\${CLR_RESET}"
+    echo -e "1) \${CLR_GREEN}啟動主腳本 (media)\${CLR_RESET}"
+    echo -e "2) \${CLR_PURPLE}啟動月份支出追蹤器 (track)\${CLR_RESET}"
+    echo -e "3) \${CLR_BLUE}啟動進階財務分析與預測器 (analyze)\${CLR_RESET}"
+    echo -e "0) \${CLR_RED}不啟動 (稍後可手動執行)\${CLR_RESET}"
 
     # read 命令
-    read -t 60 -p "請選擇 (0-2) [60秒後自動選 2]: " choice
-    choice=\${choice:-2} # 注意這裡 $choice 前面需要反斜線，防止被外層腳本解析
+    read -t 60 -p "請選擇 (0-3) [60秒後自動選 0]: " choice
+    choice=\${choice:-0}
 
-    case \$choice in # 注意這裡 $choice 前面需要反斜線
+    case \$choice in
         1)
             echo -e "\n\${CLR_GREEN}正在啟動媒體處理器...\${CLR_RESET}"
-            media # 執行別名
+            media
             ;;
         2)
-            echo -e "\n\${CLR_YELLOW}您可以隨時輸入 'media' 命令啟動媒體處理器\${CLR_RESET}"
+            echo -e "\n\${CLR_PURPLE}正在啟動月份支出追蹤器...\${CLR_RESET}"
+            track
+            ;;
+        3)
+            echo -e "\n\${CLR_BLUE}正在啟動進階財務分析與預測器...\${CLR_RESET}"
+            analyze
             ;;
         *)
-            echo -e "\n\${CLR_RED}已取消啟動媒體處理器\${CLR_RESET}"
+            echo -e "\n\${CLR_YELLOW}您可以隨時輸入 'media', 'track' 或 'analyze' 命令啟動對應工具\${CLR_RESET}"
             ;;
     esac
     echo ""
 fi
 
-# --- 媒體處理器啟動設定結束 ---
-
-# (可選) 在此處加入您其他的 .bashrc 自訂內容
+# --- 整合式平台啟動設定結束 ---
 
 EOF
-    # <<< EOF 結束 >>>
+    # --- EOF 結束 ---
 
     # 檢查寫入是否成功
     if [ $? -eq 0 ]; then
-        log_message "SUCCESS" "Termux 啟動設定已成功寫入 ~/.bashrc (使用路徑: $target_script_path)"
+        log_message "SUCCESS" "Termux 啟動設定已成功寫入 ~/.bashrc"
         echo -e "${GREEN}設定成功！${RESET}"
         echo -e "${CYAN}請重新啟動 Termux 或執行 'source ~/.bashrc' 來讓設定生效。${RESET}"
         # 強制重新載入 .bashrc 使別名立即生效
         source ~/.bashrc
-        echo -e "${CYAN}已嘗試重新載入設定，您現在應該可以使用 'media' 命令來執行 '$target_script_path' 了。${RESET}"
+        echo -e "${CYAN}已嘗試重新載入設定，您現在應該可以使用 'media', 'track', 'analyze' 等命令了。${RESET}"
     else
         log_message "ERROR" "寫入 ~/.bashrc 失敗！"
         echo -e "${RED}錯誤：寫入設定失敗！請檢查權限。${RESET}"
