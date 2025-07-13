@@ -14,7 +14,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v1.0.4"
+SCRIPT_VERSION = "v9.2"
 SCRIPT_UPDATE_DATE = "2025-07-13"
 
 import argparse
@@ -154,7 +154,7 @@ def process_finance_data(file_paths: list, colors: Colors):
 
     return processed_df, "\n".join(warnings_report)
 
-# --- 主要分析與預測函數 (使用 WMA 替代 Prophet) ---
+# --- 主要分析與預測函數 (使用 EMA 替代 WMA) ---
 def analyze_and_predict(file_paths_str: str, no_color: bool):
     colors = Colors(enabled=not no_color)
     file_paths = [path.strip() for path in file_paths_str.split(';')]
@@ -179,7 +179,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     total_expense = expense_df['Amount'].sum()
     net_balance = total_income - total_expense
 
-    # --- 使用 WMA 進行開銷預測 ---
+    # --- 使用 EMA 進行開銷預測 ---
     predicted_expense_str = "無法預測 (資料不足或錯誤)"
     if not expense_df.empty:
         expense_df = expense_df.sort_values('Parsed_Date')  # 確保排序
@@ -188,9 +188,9 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
 
         if len(monthly_expenses) >= 2:
             try:
-                recent_months = monthly_expenses['Amount'].tail(3).values
-                weights = [0.2, 0.3, 0.5] if len(recent_months) == 3 else [1.0 / len(recent_months)] * len(recent_months)
-                predicted_value = sum(value * weight for value, weight in zip(recent_months, weights))
+                # EMA 計算
+                ema = monthly_expenses['Amount'].ewm(span=len(monthly_expenses), adjust=False).mean()
+                predicted_value = ema.iloc[-1]  # 最後一個 EMA 值作為預測
                 predicted_expense_str = f"{predicted_value:,.2f}"
             except Exception as e:
                 predicted_expense_str = f"無法預測 (錯誤: {str(e)})"
