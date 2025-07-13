@@ -2,7 +2,7 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v9.19             #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v9.20             #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
@@ -10,12 +10,12 @@
 # 本腳本為一個高度智慧化的獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。     #
 # 它具備自動格式清理、互動式路徑輸入與 EMA 模型預測等頂級功能。                     #
 #                                                                              #
-# 更新：修正讀取CSV的語法錯誤（unterminated string literal）。                   #
+# 更新：寬格式預設全為支出，省略收入/淨餘額顯示。                               #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v9.19"  # 更新版本以修正語法錯誤
+SCRIPT_VERSION = "v9.20"  # 更新版本以處理寬格式支出假設
 SCRIPT_UPDATE_DATE = "2025-07-13"
 
 import sys
@@ -165,6 +165,7 @@ def main():
         warnings_report = []
         processed_df = None
         monthly_expenses = None
+        is_wide_format_expense_only = False  # 標記寬格式（僅支出）
 
         # --- 核心邏輯：處理不同的表格結構 ---
         if date_col and income_col and expense_col:
@@ -189,9 +190,10 @@ def main():
             processed_df = master_df[[date_col, type_col, amount_col]].copy()
             processed_df.rename(columns={date_col: 'Date', type_col: 'Type', amount_col: 'Amount'}, inplace=True)
         
-        # 新增結構三：寬格式（偵測月份/項目排列，直接計算月總額）
+        # 新增結構三：寬格式（偵測月份/項目排列，直接計算月總額，假設全為支出）
         elif date_col and len(master_df.columns) > 2:  # 假設有月份欄位且多列
-            warnings_report.append(f"{colors.YELLOW}注意：偵測到寬格式，已偵測排列並直接計算月總額。{colors.RESET}")
+            warnings_report.append(f"{colors.YELLOW}注意：偵測到寬格式（僅月份與項目），已假設全為支出並計算月總額。{colors.RESET}")
+            is_wide_format_expense_only = True
             
             # 偵測月份是否垂直（在行）或橫排（在列）
             is_vertical_month = master_df[date_col].dropna().str.contains('月|Month', na=False).any() or master_df[date_col].dropna().str.isdigit().all()
@@ -308,9 +310,10 @@ def main():
             print(warnings_report)
             print(f"{colors.YELLOW}--------------------{colors.RESET}")
 
-        # 計算總收入/支出（如果有processed_df）
+        # 計算總支出（如果有processed_df）
         total_income = 0
         total_expense = 0
+        is_wide_format_expense_only = (master_df is None and monthly_expenses is not None)
         if master_df is not None:
             master_df['Amount'] = pd.to_numeric(master_df['Amount'], errors='coerce')
             master_df.dropna(subset=['Type', 'Amount'], inplace=True)
@@ -403,11 +406,13 @@ def main():
 
         # --- 輸出最終的簡潔報告 ---
         print(f"\n{colors.CYAN}{colors.BOLD}========== 財務分析與預測報告 =========={colors.RESET}")
-        print(f"{colors.BOLD}總收入: {colors.GREEN}{total_income:,.2f}{colors.RESET}")
+        if not is_wide_format_expense_only:
+            print(f"{colors.BOLD}總收入: {colors.GREEN}{total_income:,.2f}{colors.RESET}")
         print(f"{colors.BOLD}總支出: {colors.RED}{total_expense:,.2f}{colors.RESET}")
-        print("------------------------------------------")
-        balance_color = colors.GREEN if net_balance >= 0 else colors.RED
-        print(f"{colors.BOLD}淨餘額: {balance_color}{colors.BOLD}{net_balance:,.2f}{colors.RESET}")
+        if not is_wide_format_expense_only:
+            print("------------------------------------------")
+            balance_color = colors.GREEN if net_balance >= 0 else colors.RED
+            print(f"{colors.BOLD}淨餘額: {balance_color}{colors.BOLD}{net_balance:,.2f}{colors.RESET}")
         print(f"\n{colors.PURPLE}{colors.BOLD}>>> 下個月預測總開銷: {predicted_expense_str}{ci_str}{method_used}{colors.RESET}")
         print(f"{colors.CYAN}{colors.BOLD}========================================{colors.RESET}\n")
 
