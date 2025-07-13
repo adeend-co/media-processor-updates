@@ -14,7 +14,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v9.13"  # 更新版本以修復 f-string 未關閉錯誤
+SCRIPT_VERSION = "v9.14"  # 更新版本以支援四階段預測模型
 SCRIPT_UPDATE_DATE = "2025-07-13"
 
 import sys
@@ -199,7 +199,29 @@ def main():
 
         return processed_df, monthly_expenses, "\n".join(warnings_report)
 
-    # --- 主要分析與預測函數 (條件式選擇 SARIMA、Linear Regression 或 EMA) ---
+    # --- 多項式迴歸與信賴區間計算函數 ---
+    def polynomial_regression_with_ci(x, y, degree, predict_x, confidence=0.95):
+        coeffs = np.polyfit(x, y, degree)
+        p = np.poly1d(coeffs)
+        y_pred = p(x)
+        n = len(x)
+        k = degree
+
+        residuals = y - y_pred
+        mse = np.sum(residuals**2) / (n - k - 1)
+
+        y_pred_p = p(predict_x)
+
+        x_mean = np.mean(x)
+        ssx = np.sum((x - x_mean)**2)
+        se = np.sqrt(mse * (1 + 1/n + ((predict_x - x_mean)**2) / ssx))
+        t_val = t.ppf((1 + confidence) / 2, n - k - 1)
+        lower = y_pred_p - t_val * se
+        upper = y_pred_p + t_val * se
+
+        return y_pred_p, lower, upper
+
+    # --- 主要分析與預測函數 (升級為四階段模型) ---
     def analyze_and_predict(file_paths_str: str, no_color: bool):
         colors = Colors(enabled=not no_color)
         file_paths = [path.strip() for path in file_paths_str.split(';')]
@@ -223,7 +245,7 @@ def main():
         total_expense = expense_df['Amount'].sum()
         net_balance = total_income - total_expense
 
-        # --- 條件式預測：根據數據量選擇方法 ---
+        # --- 四階段預測：根據數據量選擇方法 ---
         predicted_expense_str = "無法預測 (資料不足或錯誤)"
         ci_str = ""
         method_used = ""
@@ -231,16 +253,15 @@ def main():
             num_months = len(monthly_expenses)
             data = monthly_expenses['Amount'].values
 
-            if num_months >= 24:  # 足夠數據，使用 SARIMA (簡化趨勢模擬)
+            if num_months >= 24:  # ≥24 個月，使用簡化 SARIMA
                 try:
-                    # 簡化 SARIMA：使用線性迴歸模擬趨勢 + 季節調整
                     x = np.arange(len(data))
                     slope, intercept, _, _, _ = linregress(x, data)
                     predicted_value = intercept + slope * (len(data) + 1)
                     predicted_expense_str = f"{predicted_value:,.2f}"
-                    method_used = " (基於 SARIMA)"
+                    method_used = " (基於簡化 SARIMA)"
 
-                    # 新增：SARIMA 簡化信心區間 (預測值 ± t * SE)
+                    # 基於標準誤差的信心區間
                     residuals = data - (intercept + slope * x)
                     se = np.std(residuals, ddof=1)
                     t_val = 1.96  # 95% 信心水準的近似 t 值
@@ -249,15 +270,25 @@ def main():
                     ci_str = f" [下限：{lower:,.2f}，上限：{upper:,.2f}] (95% 信心)"
                 except Exception as e:
                     predicted_expense_str = f"無法預測 (錯誤: {str(e)})"
-            elif num_months >= 6:  # 中間範圍，使用 Linear Regression
+            elif num_months >= 12:  # 12–23 個月，使用多項式迴歸 (2階)
+                try:
+                    x = np.arange(1, num_months + 1)
+                    degree = 2  # 固定2階避免過擬合
+                    predicted_value, lower, upper = polynomial_regression_with_ci(x, data, degree, num_months + 1)
+                    predicted_expense_str = f"{predicted_value:,.2f}"
+                    method_used = " (基於多項式迴歸)"
+                    ci_str = f" [下限：{lower:,.2f}，上限：{upper:,.2f}] (95% 信心)"
+                except Exception as e:
+                    predicted_expense_str = f"無法預測 (錯誤: {str(e)})"
+            elif num_months >= 6:  # 6–11 個月，使用線性迴歸
                 try:
                     x = np.arange(1, num_months + 1)
                     slope, intercept, _, _, _ = linregress(x, data)
                     predicted_value = intercept + slope * (num_months + 1)
                     predicted_expense_str = f"{predicted_value:,.2f}"
-                    method_used = " (基於 Linear Regression)"
+                    method_used = " (基於線性迴歸)"
 
-                    # 新增：線性迴歸預測區間
+                    # 基於t分佈的預測區間
                     n = len(x)
                     x_mean = np.mean(x)
                     residuals = data - (intercept + slope * x)
@@ -270,14 +301,14 @@ def main():
                     ci_str = f" [下限：{lower:,.2f}，上限：{upper:,.2f}] (95% 信心)"
                 except Exception as e:
                     predicted_expense_str = f"無法預測 (錯誤: {str(e)})"
-            elif num_months >= 2:  # 短期數據，使用 EMA
+            elif num_months >= 2:  # 2–5 個月，使用 EMA
                 try:
                     ema = monthly_expenses['Amount'].ewm(span=num_months, adjust=False).mean()
                     predicted_value = ema.iloc[-1]  # 最後一個 EMA 值作為預測
                     predicted_expense_str = f"{predicted_value:,.2f}"
                     method_used = " (基於 EMA)"
 
-                    # 新增：EMA Bootstrap 信心區間
+                    # EMA Bootstrap 信心區間
                     residuals = monthly_expenses['Amount'] - ema
                     bootstrap_preds = []
                     for _ in range(1000):
