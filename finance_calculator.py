@@ -14,7 +14,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v9.11"  # 更新版本以修正 np 未定義錯誤
+SCRIPT_VERSION = "v9.12"  # 更新版本以修復 monthly_expenses 未定義錯誤
 SCRIPT_UPDATE_DATE = "2025-07-13"
 
 import sys
@@ -111,7 +111,7 @@ def main():
                 continue
         
         if not all_dfs:
-            return None,None, "沒有成功讀取任何資料檔案。"
+            return None, None, "沒有成功讀取任何資料檔案。"
 
         master_df = pd.concat(all_dfs, ignore_index=True)
 
@@ -189,6 +189,14 @@ def main():
         if month_missing_count > 0:
             warnings_report.append(f"{colors.YELLOW}警告：有 {colors.BOLD}{month_missing_count}{colors.RESET} 筆紀錄的日期缺少明確年份，已自動假定為今年。{colors.RESET}")
 
+        # --- 計算每月支出彙總 (修復：在此處定義 monthly_expenses) ---
+        monthly_expenses = None  # 預設值
+        if 'Parsed_Date' in processed_df.columns and 'Amount' in processed_df.columns:
+            expense_df = processed_df[processed_df['Type'].str.lower() == 'expense']
+            if not expense_df.empty:
+                monthly_expenses = expense_df.set_index('Parsed_Date').resample('M')['Amount'].sum().reset_index()
+                monthly_expenses['Amount'] = monthly_expenses['Amount'].fillna(0)
+
         return processed_df, monthly_expenses, "\n".join(warnings_report)
 
     # --- 主要分析與預測函數 (條件式選擇 SARIMA、Linear Regression 或 EMA) ---
@@ -219,10 +227,7 @@ def main():
         predicted_expense_str = "無法預測 (資料不足或錯誤)"
         ci_str = ""
         method_used = ""
-        if not expense_df.empty:
-            expense_df = expense_df.sort_values('Parsed_Date')  # 確保排序
-            monthly_expenses = expense_df.set_index('Parsed_Date').resample('M')['Amount'].sum().reset_index()
-            monthly_expenses['Amount'] = monthly_expenses['Amount'].fillna(0)  # 填充 NaN 為 0
+        if monthly_expenses is not None and not expense_df.empty:
             num_months = len(monthly_expenses)
             data = monthly_expenses['Amount'].values
 
@@ -278,7 +283,7 @@ def main():
                     for _ in range(1000):
                         resampled_residuals = np.random.choice(residuals, size=num_months, replace=True)
                         simulated = ema + resampled_residuals
-                        simulated_ema = simulated.ewm(span=num_months, adjust=False).mean()
+                        simulated_ema = pd.Series(simulated).ewm(span=num_months, adjust=False).mean()
                         bootstrap_preds.append(simulated_ema.iloc[-1])
                     lower = np.percentile(bootstrap_preds, 2.5)
                     upper = np.percentile(bootstrap_preds, 97.5)
@@ -324,8 +329,4 @@ def main():
         print(f"\n{colors.YELLOW}使用者中斷操作。腳本終止。{colors.RESET}")
         sys.exit(0)
     except Exception as e:
-        print(f"\n{colors.RED}腳本執行時發生未預期的錯誤: {e}{colors.RESET}")
-        sys.exit(1)
-
-if __name__ == "__main__":
-    main()
+        print(f"\n{colors.RED
