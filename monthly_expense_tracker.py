@@ -60,19 +60,23 @@ def check_environment():
     
     print(f"{colors.GREEN}環境檢查通過，所有依賴工具均已安裝。{colors.RESET}")
 
-# --- 自動安裝依賴函數 ---
+# --- 自動安裝依賴函數 (調整為適合 Termux) ---
 def install_dependencies():
-    """檢查並安裝缺少的 Python 庫 (僅 pandas)"""
+    """檢查並安裝缺少的 Python 庫 (僅 pandas)，適合 Termux 環境"""
     required_packages = ['pandas']
     for pkg in required_packages:
         try:
             __import__(pkg)
         except ImportError:
-            print(f"提示：正在安裝缺少的必要套件: {pkg}...")
+            print(f"{colors.YELLOW}提示：正在安裝缺少的必要套件: {pkg}...{colors.RESET}")
             try:
-                subprocess.check_call([sys.executable, '-m', 'pip', 'install', pkg], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                # 先嘗試 pip 安裝
+                subprocess.check_call([sys.executable, '-m', 'pip', 'install', pkg])
+                print(f"{colors.GREEN}成功安裝 {pkg}。{colors.RESET}")
             except subprocess.CalledProcessError:
-                print(f"錯誤：安裝套件 {pkg} 失敗！請手動執行 'pip install {pkg}'。")
+                # 若 pip 失敗，建議 Termux 專屬指令
+                print(f"{colors.RED}pip 安裝 {pkg} 失敗！{colors.RESET}")
+                print(f"{colors.YELLOW}建議：在 Termux 中執行 'pkg install tur-repo' 後再執行 'pkg install python-pandas'，或檢查網路/權限。{colors.RESET}")
                 sys.exit(1)
 
 def main():
