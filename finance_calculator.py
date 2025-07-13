@@ -2,7 +2,7 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v9.1              #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v9.16             #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
@@ -10,12 +10,12 @@
 # 本腳本為一個高度智慧化的獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。     #
 # 它具備自動格式清理、互動式路徑輸入與 EMA 模型預測等頂級功能。                     #
 #                                                                              #
-# 更新：支援Windows Excel匯出的Big5/CP950編碼CSV，並自動處理寬格式（月份行、類型列）。 #
+# 更新：支援移除千分位逗號、寬格式轉換和Big5/CP950編碼。                          #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v9.15"  # 更新版本以支援寬格式轉換和編碼修復
+SCRIPT_VERSION = "v9.16"  # 更新版本以支援千分位逗號移除
 SCRIPT_UPDATE_DATE = "2025-07-13"
 
 import sys
@@ -177,6 +177,8 @@ def main():
             # 轉換為長格式
             processed_df = master_df.melt(id_vars=[date_col], var_name='Type', value_name='Amount')
             processed_df.dropna(subset=['Amount'], inplace=True)
+            # 修復：移除千分位逗號和其他非數字字符
+            processed_df['Amount'] = processed_df['Amount'].astype(str).str.replace(',', '').str.strip()
             processed_df['Amount'] = pd.to_numeric(processed_df['Amount'], errors='coerce')
             processed_df = processed_df.dropna(subset=['Amount'])
             processed_df = processed_df[processed_df['Amount'] > 0]
