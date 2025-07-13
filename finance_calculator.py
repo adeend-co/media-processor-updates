@@ -14,7 +14,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v9.4"
+SCRIPT_VERSION = "v9.4"  # 更新版本以追蹤變化
 SCRIPT_UPDATE_DATE = "2025-07-13"
 
 import argparse
@@ -25,9 +25,8 @@ import sys
 import os
 import subprocess
 import numpy as np  # 用於 EMA 計算
-from scipy.stats import linregress  # 用於線性迴歸
 
-# --- 自動安裝依賴函數 ---
+# --- 自動安裝依賴函數 (強化錯誤處理) ---
 def install_dependencies():
     """檢查並安裝缺少的 Python 庫 (pandas, numpy, statsmodels, scipy)"""
     required_packages = ['pandas', 'numpy', 'statsmodels', 'scipy']
@@ -37,9 +36,10 @@ def install_dependencies():
         except ImportError:
             print(f"提示：正在安裝缺少的必要套件: {pkg}...")
             try:
-                subprocess.check_call([sys.executable, '-m', 'pip', 'install', pkg], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            except subprocess.CalledProcessError:
-                print(f"錯誤：安裝套件 {pkg} 失敗！請手動執行 'pip install {pkg}'。")
+                subprocess.check_call([sys.executable, '-m', 'pip', 'install', pkg])
+                print(f"成功安裝 {pkg}。")
+            except subprocess.CalledProcessError as e:
+                print(f"錯誤：安裝套件 {pkg} 失敗！錯誤碼: {e.returncode}。請手動執行 'pip install {pkg}'。")
                 sys.exit(1)
 
 # --- 顏色處理類別 ---
@@ -53,7 +53,7 @@ class Colors:
         else:
             self.RED = self.GREEN = self.YELLOW = self.CYAN = self.PURPLE = self.WHITE = self.BOLD = self.RESET = ''
 
-# --- 智慧欄位辨識與資料處理 ---
+# --- 智慧欄位辨識與資料處理 (維持原樣) ---
 def find_column_by_synonyms(df_columns, synonyms):
     """根據同義詞列表查找欄位名稱"""
     for col in df_columns:
@@ -201,6 +201,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 predicted_expense_str = f"無法預測 (錯誤: {str(e)})"
         elif num_months >= 6:  # 中間範圍，使用 Linear Regression
             try:
+                from scipy.stats import linregress
                 # 線性迴歸：使用時間索引作為 x，金額作為 y
                 x = np.arange(1, num_months + 1)
                 slope, intercept, _, _, _ = linregress(x, monthly_expenses['Amount'])
