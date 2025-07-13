@@ -14,7 +14,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "月份支出追蹤器"
-SCRIPT_VERSION = "v10.5"
+SCRIPT_VERSION = "v10.6"
 SCRIPT_UPDATE_DATE = "2025-07-13"
 
 import sys
@@ -164,6 +164,8 @@ def main():
             date_col = find_column_by_synonyms(master_df.columns, ['月份', '月', 'Month'])
             if not date_col:
                 return None, None, "無法辨識月份欄位，請確認 CSV 有 '月份' 或類似欄位。"
+
+            master_df[date_col] = master_df[date_col].astype(str)
             
             # 忽略可能的總計行
             master_df = master_df[~master_df[date_col].str.contains('合計|總計|Total', na=False)]
