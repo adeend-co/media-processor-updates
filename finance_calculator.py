@@ -87,7 +87,7 @@ def main():
     from datetime import datetime
     import argparse
     import numpy as np  # 用於 EMA 計算
-    from scipy.stats import linregress  # 用於線性迴歸和 SARIMA 簡化
+    from scipy.stats import linregress, t  # 用於線性迴歸和 SARIMA 簡化, t分佈
 
     # --- 智慧欄位辨識與資料處理 ---
     def find_column_by_synonyms(df_columns, synonyms):
@@ -111,7 +111,7 @@ def main():
                 continue
         
         if not all_dfs:
-            return None, "沒有成功讀取任何資料檔案。"
+            return None,None, "沒有成功讀取任何資料檔案。"
 
         master_df = pd.concat(all_dfs, ignore_index=True)
 
@@ -152,7 +152,7 @@ def main():
             processed_df.rename(columns={date_col: 'Date', type_col: 'Type', amount_col: 'Amount'}, inplace=True)
         else:
             missing = [c for c, v in zip(['日期', '類型/金額 或 收入/支出'], [date_col, (type_col and amount_col) or (income_col and expense_col)]) if not v]
-            return None, f"無法辨識的表格結構。缺少必要的欄位：{missing}"
+            return None, None, f"無法辨識的表格結構。缺少必要的欄位：{missing}"
 
         # --- 日期處理與資料品質計數 ---
         month_missing_count = 0
@@ -189,14 +189,14 @@ def main():
         if month_missing_count > 0:
             warnings_report.append(f"{colors.YELLOW}警告：有 {colors.BOLD}{month_missing_count}{colors.RESET} 筆紀錄的日期缺少明確年份，已自動假定為今年。{colors.RESET}")
 
-        return processed_df, "\n".join(warnings_report)
+        return processed_df, monthly_expenses, "\n".join(warnings_report)
 
     # --- 主要分析與預測函數 (條件式選擇 SARIMA、Linear Regression 或 EMA) ---
     def analyze_and_predict(file_paths_str: str, no_color: bool):
         colors = Colors(enabled=not no_color)
         file_paths = [path.strip() for path in file_paths_str.split(';')]
 
-        master_df, warnings_report = process_finance_data(file_paths, colors)
+        master_df, monthly_expenses, warnings_report = process_finance_data(file_paths, colors)
 
         if master_df is None:
             print(f"\n{colors.RED}資料處理失敗：{warnings_report}{colors.RESET}\n")
@@ -217,6 +217,7 @@ def main():
 
         # --- 條件式預測：根據數據量選擇方法 ---
         predicted_expense_str = "無法預測 (資料不足或錯誤)"
+        ci_str = ""
         method_used = ""
         if not expense_df.empty:
             expense_df = expense_df.sort_values('Parsed_Date')  # 確保排序
@@ -233,6 +234,14 @@ def main():
                     predicted_value = intercept + slope * (len(data) + 1)
                     predicted_expense_str = f"{predicted_value:,.2f}"
                     method_used = " (基於 SARIMA)"
+
+                    # 新增：SARIMA 簡化信心區間 (預測值 ± t * SE)
+                    residuals = data - (intercept + slope * x)
+                    se = np.std(residuals, ddof=1)
+                    t_val = 1.96  # 95% 信心水準的近似 t 值
+                    lower = predicted_value - t_val * se
+                    upper = predicted_value + t_val * se
+                    ci_str = f" [下限：{lower:,.2f}，上限：{upper:,.2f}] (95% 信心)"
                 except Exception as e:
                     predicted_expense_str = f"無法預測 (錯誤: {str(e)})"
             elif num_months >= 6:  # 中間範圍，使用 Linear Regression
@@ -242,6 +251,18 @@ def main():
                     predicted_value = intercept + slope * (num_months + 1)
                     predicted_expense_str = f"{predicted_value:,.2f}"
                     method_used = " (基於 Linear Regression)"
+
+                    # 新增：線性迴歸預測區間
+                    n = len(x)
+                    x_mean = np.mean(x)
+                    residuals = data - (intercept + slope * x)
+                    mse = np.sum(residuals**2) / (n - 2)
+                    ssx = np.sum((x - x_mean)**2)
+                    se = np.sqrt(mse * (1 + 1/n + ((num_months + 1) - x_mean)**2 / ssx))
+                    t_val = t.ppf(0.975, n - 2)  # 95% t 值
+                    lower = predicted_value - t_val * se
+                    upper = predicted_value + t_val * se
+                    ci_str = f" [下限：{lower:,.2f}，上限：{upper:,.2f}] (95% 信心)"
                 except Exception as e:
                     predicted_expense_str = f"無法預測 (錯誤: {str(e)})"
             elif num_months >= 2:  # 短期數據，使用 EMA
@@ -250,6 +271,18 @@ def main():
                     predicted_value = ema.iloc[-1]  # 最後一個 EMA 值作為預測
                     predicted_expense_str = f"{predicted_value:,.2f}"
                     method_used = " (基於 EMA)"
+
+                    # 新增：EMA Bootstrap 信心區間
+                    residuals = monthly_expenses['Amount'] - ema
+                    bootstrap_preds = []
+                    for _ in range(1000):
+                        resampled_residuals = np.random.choice(residuals, size=num_months, replace=True)
+                        simulated = ema + resampled_residuals
+                        simulated_ema = simulated.ewm(span=num_months, adjust=False).mean()
+                        bootstrap_preds.append(simulated_ema.iloc[-1])
+                    lower = np.percentile(bootstrap_preds, 2.5)
+                    upper = np.percentile(bootstrap_preds, 97.5)
+                    ci_str = f" [下限：{lower:,.2f}，上限：{upper:,.2f}] (95% 信心)"
                 except Exception as e:
                     predicted_expense_str = f"無法預測 (錯誤: {str(e)})"
 
@@ -260,7 +293,7 @@ def main():
         print("------------------------------------------")
         balance_color = colors.GREEN if net_balance >= 0 else colors.RED
         print(f"{colors.BOLD}淨餘額: {balance_color}{colors.BOLD}{net_balance:,.2f}{colors.RESET}")
-        print(f"\n{colors.PURPLE}{colors.BOLD}>>> 下個月預測總開銷: {predicted_expense_str}{method_used}{colors.RESET}")
+        print(f"\n{colors.PURPLE}{colors.BOLD}>>> 下個月預測總開銷: {predicted_expense_str}{ci_str}{method_used}{colors.RESET}")
         print(f"{colors.CYAN}{colors.BOLD}========================================{colors.RESET}\n")
 
     # --- 腳本入口 ---
