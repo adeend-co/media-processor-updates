@@ -15,7 +15,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v9.22"  # 更新版本以優先UTF-8並自動嘗試編碼
+SCRIPT_VERSION = "v9.23"  # 更新版本以優先UTF-8並自動嘗試編碼
 SCRIPT_UPDATE_DATE = "2025-07-13"
 
 import sys
@@ -197,8 +197,8 @@ def main():
             is_wide_format_expense_only = True
             
             # 偵測月份是否垂直（在行）或橫排（在列）
-            is_vertical_month = master_df[date_col].dropna().str.contains('月|Month', na=False).any() or master_df[date_col].dropna().str.isdigit().all()
-            
+            is_vertical_month = master_df[date_col].dropna().astype(str).str.contains('月|Month', na=False).any() or master_df[date_col].dropna().astype(str).str.isdigit().all()
+
             # 清理所有數字欄位：移除逗號、空白
             for col in master_df.columns:
                 if col != date_col:
