@@ -2,7 +2,7 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v9.20             #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v9.21             #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
@@ -10,12 +10,12 @@
 # 本腳本為一個高度智慧化的獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。     #
 # 它具備自動格式清理、互動式路徑輸入與 EMA 模型預測等頂級功能。                     #
 #                                                                              #
-# 更新：寬格式預設全為支出，省略收入/淨餘額顯示。                               #
+# 更新：優先嘗試UTF-8編碼，自動fallback其他常見編碼以修復讀取錯誤。              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v9.20"  # 更新版本以處理寬格式支出假設
+SCRIPT_VERSION = "v9.21"  # 更新版本以優先UTF-8並自動嘗試編碼
 SCRIPT_UPDATE_DATE = "2025-07-13"
 
 import sys
@@ -130,22 +130,23 @@ def main():
         讀取、合併、清理並分析來自多個 CSV 檔案的財務資料。支援寬格式偵測排列並直接計算月總額。
         """
         all_dfs = []
+        encodings_to_try = ['utf-8', 'utf-8-sig', 'cp950', 'big5', 'gb18030']  # 優先UTF-8
         for file_path in file_paths:
-            try:
-                # 修復：使用'cp950'編碼讀取Windows Excel匯出的CSV
-                df = pd.read_csv(file_path.strip(), encoding='cp950', on_bad_lines='skip')
-                all_dfs.append(df)
-            except UnicodeDecodeError:
-                print(f"{colors.RED}錯誤：檔案 '{file_path.strip()}' 編碼問題！嘗試使用'big5'編碼。{colors.RESET}")
+            loaded = False
+            for enc in encodings_to_try:
                 try:
-                    df = pd.read_csv(file_path.strip(), encoding='big5', on_bad_lines='skip')
+                    df = pd.read_csv(file_path.strip(), encoding=enc, on_bad_lines='skip')
                     all_dfs.append(df)
-                except Exception as e:
-                    print(f"{colors.RED}錯誤：無法讀取檔案 '{file_path.strip()}'！{str(e)}{colors.RESET}")
-                    continue
-            except FileNotFoundError:
-                print(f"{colors.RED}錯誤：找不到檔案 '{file_path.strip()}'！將跳過此檔案。{colors.RESET}")
-                continue
+                    print(f"{colors.GREEN}成功使用編碼 '{enc}' 讀取檔案 '{file_path.strip()}'。{colors.RESET}")
+                    loaded = True
+                    break
+                except UnicodeDecodeError:
+                    print(f"{colors.YELLOW}嘗試編碼 '{enc}' 失敗，正在試下一個...{colors.RESET}")
+                except FileNotFoundError:
+                    print(f"{colors.RED}錯誤：找不到檔案 '{file_path.strip()}'！將跳過此檔案。{colors.RESET}")
+                    break
+            if not loaded:
+                print(f"{colors.RED}錯誤：無法讀取檔案 '{file_path.strip()}'！所有編碼嘗試失敗。{colors.RESET}")
         
         if not all_dfs:
             return None, None, "沒有成功讀取任何資料檔案。"
