@@ -14,17 +14,13 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v9.8"  # 更新版本以加入環境檢查
+SCRIPT_VERSION = "v9.9"  # 更新版本以修正 import 順序
 SCRIPT_UPDATE_DATE = "2025-07-13"
 
-import argparse
-import pandas as pd
-from datetime import datetime
-import warnings
 import sys
 import os
 import subprocess
-import numpy as np  # 用於 EMA 計算
+import warnings
 
 # --- 顏色處理類別 (提前定義並初始化) ---
 class Colors:
@@ -82,186 +78,191 @@ def install_dependencies():
                 print(f"{colors.YELLOW}建議：在 Termux 中執行 'pkg install python-numpy python-scipy' 或檢查網路/權限。{colors.RESET}")
                 sys.exit(1)
 
-# --- 智慧欄位辨識與資料處理 ---
-def find_column_by_synonyms(df_columns, synonyms):
-    """根據同義詞列表查找欄位名稱"""
-    for col in df_columns:
-        if str(col).strip().lower() in [s.lower() for s in synonyms]:
-            return col
-    return None
-
-def process_finance_data(file_paths: list, colors: Colors):
-    """
-    讀取、合併、清理並分析來自多個 CSV 檔案的財務資料。
-    """
-    all_dfs = []
-    for file_path in file_paths:
-        try:
-            df = pd.read_csv(file_path.strip())
-            all_dfs.append(df)
-        except FileNotFoundError:
-            print(f"{colors.RED}錯誤：找不到檔案 '{file_path.strip()}'！將跳過此檔案。{colors.RESET}")
-            continue
-    
-    if not all_dfs:
-        return None, "沒有成功讀取任何資料檔案。"
-
-    master_df = pd.concat(all_dfs, ignore_index=True)
-
-    # --- 核心升級：自動清理欄位名稱前後的空格 ---
-    master_df.columns = master_df.columns.str.strip()
-
-    # --- 智慧欄位名稱辨識 ---
-    date_col = find_column_by_synonyms(master_df.columns, ['日期', '時間', 'Date', 'time'])
-    type_col = find_column_by_synonyms(master_df.columns, ['類型', 'Type', '收支項目', '收支'])
-    amount_col = find_column_by_synonyms(master_df.columns, ['金額', 'Amount', 'amount', '價格'])
-    income_col = find_column_by_synonyms(master_df.columns, ['收入', 'income'])
-    expense_col = find_column_by_synonyms(master_df.columns, ['支出', 'expense'])
-    
-    warnings_report = []
-    processed_df = None
-
-    # --- 核心邏輯：處理不同的表格結構 ---
-    if date_col and income_col and expense_col:
-        # 結構一：偵測到獨立的「收入」和「支出」欄位
-        warnings_report.append(f"{colors.YELLOW}注意：偵測到獨立的『收入』與『支出』欄位，已為您自動合併並區分交易類型。{colors.RESET}")
-        
-        income_df = master_df[[date_col, income_col]].copy()
-        income_df.rename(columns={date_col: 'Date', income_col: 'Amount'}, inplace=True)
-        income_df['Type'] = 'income'
-        
-        expense_df = master_df[[date_col, expense_col]].copy()
-        expense_df.rename(columns={date_col: 'Date', expense_col: 'Amount'}, inplace=True)
-        expense_df['Type'] = 'expense'
-        
-        processed_df = pd.concat([income_df, expense_df])
-        processed_df.dropna(subset=['Amount'], inplace=True)
-        processed_df['Amount'] = pd.to_numeric(processed_df['Amount'], errors='coerce')
-        processed_df = processed_df[processed_df['Amount'] > 0]
-
-    elif date_col and type_col and amount_col:
-        # 結構二：標準的「類型」和「金額」欄位
-        processed_df = master_df[[date_col, type_col, amount_col]].copy()
-        processed_df.rename(columns={date_col: 'Date', type_col: 'Type', amount_col: 'Amount'}, inplace=True)
-    else:
-        missing = [c for c, v in zip(['日期', '類型/金額 或 收入/支出'], [date_col, (type_col and amount_col) or (income_col and expense_col)]) if not v]
-        return None, f"無法辨識的表格結構。缺少必要的欄位：{missing}"
-
-    # --- 日期處理與資料品質計數 ---
-    month_missing_count = 0
-    
-    def parse_date(date_str):
-        nonlocal month_missing_count
-        if pd.isnull(date_str): return pd.NaT
-        try:
-            return pd.to_datetime(str(date_str), errors='raise')
-        except (ValueError, TypeError):
-            s_date = str(date_str).strip()
-            if ('-' in s_date or '/' in s_date or '月' in s_date) and str(datetime.now().year) not in s_date:
-                try:
-                    month_missing_count += 1
-                    return pd.to_datetime(f"{datetime.now().year}-{s_date.replace('月','-').replace('日','').replace('號','')}")
-                except ValueError: return pd.NaT
-            elif len(s_date) <= 4 and s_date.replace('.', '', 1).isdigit(): # 處理 701, 7.01 等
-                 s_date = str(int(float(s_date))) # 轉換 701.0 -> 701
-                 if len(s_date) < 3: s_date = '0' * (3-len(s_date)) + s_date # 補零
-                 if len(s_date) > 2:
-                    month_missing_count += 1
-                    month = int(s_date[:-2])
-                    day = int(s_date[-2:])
-                    return pd.to_datetime(f"{datetime.now().year}-{month}-{day}", errors='coerce')
-            return pd.NaT
-
-    processed_df['Parsed_Date'] = processed_df['Date'].apply(parse_date)
-    processed_df.dropna(subset=['Parsed_Date'], inplace=True)
-    
-    unique_months = processed_df['Parsed_Date'].dt.to_period('M').nunique()
-    
-    if unique_months > 0:
-        warnings_report.append(f"資料時間橫跨 {colors.BOLD}{unique_months}{colors.RESET} 個不同月份。")
-    if month_missing_count > 0:
-        warnings_report.append(f"{colors.YELLOW}警告：有 {colors.BOLD}{month_missing_count}{colors.RESET} 筆紀錄的日期缺少明確年份，已自動假定為今年。{colors.RESET}")
-
-    return processed_df, "\n".join(warnings_report)
-
-# --- 主要分析與預測函數 (條件式選擇 SARIMA、Linear Regression 或 EMA) ---
-def analyze_and_predict(file_paths_str: str, no_color: bool):
-    colors = Colors(enabled=not no_color)
-    file_paths = [path.strip() for path in file_paths_str.split(';')]
-
-    master_df, warnings_report = process_finance_data(file_paths, colors)
-
-    if master_df is None:
-        print(f"\n{colors.RED}資料處理失敗：{warnings_report}{colors.RESET}\n")
-        return
-    if warnings_report:
-        print(f"\n{colors.YELLOW}--- 資料品質摘要 ---{colors.RESET}")
-        print(warnings_report)
-        print(f"{colors.YELLOW}--------------------{colors.RESET}")
-
-    master_df['Amount'] = pd.to_numeric(master_df['Amount'], errors='coerce')
-    master_df.dropna(subset=['Type', 'Amount'], inplace=True)
-    
-    income_df = master_df[master_df['Type'].str.lower() == 'income']
-    expense_df = master_df[master_df['Type'].str.lower() == 'expense']
-    total_income = income_df['Amount'].sum()
-    total_expense = expense_df['Amount'].sum()
-    net_balance = total_income - total_expense
-
-    # --- 條件式預測：根據數據量選擇方法 ---
-    predicted_expense_str = "無法預測 (資料不足或錯誤)"
-    method_used = ""
-    if not expense_df.empty:
-        expense_df = expense_df.sort_values('Parsed_Date')  # 確保排序
-        monthly_expenses = expense_df.set_index('Parsed_Date').resample('M')['Amount'].sum().reset_index()
-        monthly_expenses['Amount'] = monthly_expenses['Amount'].fillna(0)  # 填充 NaN 為 0
-        num_months = len(monthly_expenses)
-        data = monthly_expenses['Amount'].values
-
-        if num_months >= 24:  # 足夠數據，使用 SARIMA (簡化趨勢模擬)
-            try:
-                from scipy.stats import linregress
-                # 簡化 SARIMA：使用線性迴歸模擬趨勢 + 季節調整
-                x = np.arange(len(data))
-                slope, intercept, _, _, _ = linregress(x, data)
-                predicted_value = intercept + slope * (len(data) + 1)
-                predicted_expense_str = f"{predicted_value:,.2f}"
-                method_used = " (基於 SARIMA)"
-            except Exception as e:
-                predicted_expense_str = f"無法預測 (錯誤: {str(e)})"
-        elif num_months >= 6:  # 中間範圍，使用 Linear Regression
-            try:
-                from scipy.stats import linregress
-                x = np.arange(1, num_months + 1)
-                slope, intercept, _, _, _ = linregress(x, data)
-                predicted_value = intercept + slope * (num_months + 1)
-                predicted_expense_str = f"{predicted_value:,.2f}"
-                method_used = " (基於 Linear Regression)"
-            except Exception as e:
-                predicted_expense_str = f"無法預測 (錯誤: {str(e)})"
-        elif num_months >= 2:  # 短期數據，使用 EMA
-            try:
-                ema = monthly_expenses['Amount'].ewm(span=num_months, adjust=False).mean()
-                predicted_value = ema.iloc[-1]  # 最後一個 EMA 值作為預測
-                predicted_expense_str = f"{predicted_value:,.2f}"
-                method_used = " (基於 EMA)"
-            except Exception as e:
-                predicted_expense_str = f"無法預測 (錯誤: {str(e)})"
-
-    # --- 輸出最終的簡潔報告 ---
-    print(f"\n{colors.CYAN}{colors.BOLD}========== 財務分析與預測報告 =========={colors.RESET}")
-    print(f"{colors.BOLD}總收入: {colors.GREEN}{total_income:,.2f}{colors.RESET}")
-    print(f"{colors.BOLD}總支出: {colors.RED}{total_expense:,.2f}{colors.RESET}")
-    print("------------------------------------------")
-    balance_color = colors.GREEN if net_balance >= 0 else colors.RED
-    print(f"{colors.BOLD}淨餘額: {balance_color}{colors.BOLD}{net_balance:,.2f}{colors.RESET}")
-    print(f"\n{colors.PURPLE}{colors.BOLD}>>> 下個月預測總開銷: {predicted_expense_str}{method_used}{colors.RESET}")
-    print(f"{colors.CYAN}{colors.BOLD}========================================{colors.RESET}\n")
-
-if __name__ == "__main__":
+def main():
     # --- 腳本啟動時立即檢查環境 (顏色已載入) ---
     check_environment()
     
+    # --- 載入所有依賴 (檢查通過後) ---
+    import pandas as pd
+    from datetime import datetime
+    import argparse
+    from scipy.stats import linregress  # 用於線性迴歸和 SARIMA 簡化
+
+    # --- 智慧欄位辨識與資料處理 ---
+    def find_column_by_synonyms(df_columns, synonyms):
+        """根據同義詞列表查找欄位名稱"""
+        for col in df_columns:
+            if str(col).strip().lower() in [s.lower() for s in synonyms]:
+                return col
+        return None
+
+    def process_finance_data(file_paths: list, colors: Colors):
+        """
+        讀取、合併、清理並分析來自多個 CSV 檔案的財務資料。
+        """
+        all_dfs = []
+        for file_path in file_paths:
+            try:
+                df = pd.read_csv(file_path.strip())
+                all_dfs.append(df)
+            except FileNotFoundError:
+                print(f"{colors.RED}錯誤：找不到檔案 '{file_path.strip()}'！將跳過此檔案。{colors.RESET}")
+                continue
+        
+        if not all_dfs:
+            return None, "沒有成功讀取任何資料檔案。"
+
+        master_df = pd.concat(all_dfs, ignore_index=True)
+
+        # --- 核心升級：自動清理欄位名稱前後的空格 ---
+        master_df.columns = master_df.columns.str.strip()
+
+        # --- 智慧欄位名稱辨識 ---
+        date_col = find_column_by_synonyms(master_df.columns, ['日期', '時間', 'Date', 'time'])
+        type_col = find_column_by_synonyms(master_df.columns, ['類型', 'Type', '收支項目', '收支'])
+        amount_col = find_column_by_synonyms(master_df.columns, ['金額', 'Amount', 'amount', '價格'])
+        income_col = find_column_by_synonyms(master_df.columns, ['收入', 'income'])
+        expense_col = find_column_by_synonyms(master_df.columns, ['支出', 'expense'])
+        
+        warnings_report = []
+        processed_df = None
+
+        # --- 核心邏輯：處理不同的表格結構 ---
+        if date_col and income_col and expense_col:
+            # 結構一：偵測到獨立的「收入」和「支出」欄位
+            warnings_report.append(f"{colors.YELLOW}注意：偵測到獨立的『收入』與『支出』欄位，已為您自動合併並區分交易類型。{colors.RESET}")
+            
+            income_df = master_df[[date_col, income_col]].copy()
+            income_df.rename(columns={date_col: 'Date', income_col: 'Amount'}, inplace=True)
+            income_df['Type'] = 'income'
+            
+            expense_df = master_df[[date_col, expense_col]].copy()
+            expense_df.rename(columns={date_col: 'Date', expense_col: 'Amount'}, inplace=True)
+            expense_df['Type'] = 'expense'
+            
+            processed_df = pd.concat([income_df, expense_df])
+            processed_df.dropna(subset=['Amount'], inplace=True)
+            processed_df['Amount'] = pd.to_numeric(processed_df['Amount'], errors='coerce')
+            processed_df = processed_df[processed_df['Amount'] > 0]
+
+        elif date_col and type_col and amount_col:
+            # 結構二：標準的「類型」和「金額」欄位
+            processed_df = master_df[[date_col, type_col, amount_col]].copy()
+            processed_df.rename(columns={date_col: 'Date', type_col: 'Type', amount_col: 'Amount'}, inplace=True)
+        else:
+            missing = [c for c, v in zip(['日期', '類型/金額 或 收入/支出'], [date_col, (type_col and amount_col) or (income_col and expense_col)]) if not v]
+            return None, f"無法辨識的表格結構。缺少必要的欄位：{missing}"
+
+        # --- 日期處理與資料品質計數 ---
+        month_missing_count = 0
+        
+        def parse_date(date_str):
+            nonlocal month_missing_count
+            if pd.isnull(date_str): return pd.NaT
+            try:
+                return pd.to_datetime(str(date_str), errors='raise')
+            except (ValueError, TypeError):
+                s_date = str(date_str).strip()
+                if ('-' in s_date or '/' in s_date or '月' in s_date) and str(datetime.now().year) not in s_date:
+                    try:
+                        month_missing_count += 1
+                        return pd.to_datetime(f"{datetime.now().year}-{s_date.replace('月','-').replace('日','').replace('號','')}")
+                    except ValueError: return pd.NaT
+                elif len(s_date) <= 4 and s_date.replace('.', '', 1).isdigit(): # 處理 701, 7.01 等
+                     s_date = str(int(float(s_date))) # 轉換 701.0 -> 701
+                     if len(s_date) < 3: s_date = '0' * (3-len(s_date)) + s_date # 補零
+                     if len(s_date) > 2:
+                        month_missing_count += 1
+                        month = int(s_date[:-2])
+                        day = int(s_date[-2:])
+                        return pd.to_datetime(f"{datetime.now().year}-{month}-{day}", errors='coerce')
+                return pd.NaT
+
+        processed_df['Parsed_Date'] = processed_df['Date'].apply(parse_date)
+        processed_df.dropna(subset=['Parsed_Date'], inplace=True)
+        
+        unique_months = processed_df['Parsed_Date'].dt.to_period('M').nunique()
+        
+        if unique_months > 0:
+            warnings_report.append(f"資料時間橫跨 {colors.BOLD}{unique_months}{colors.RESET} 個不同月份。")
+        if month_missing_count > 0:
+            warnings_report.append(f"{colors.YELLOW}警告：有 {colors.BOLD}{month_missing_count}{colors.RESET} 筆紀錄的日期缺少明確年份，已自動假定為今年。{colors.RESET}")
+
+        return processed_df, "\n".join(warnings_report)
+
+    # --- 主要分析與預測函數 (條件式選擇 SARIMA、Linear Regression 或 EMA) ---
+    def analyze_and_predict(file_paths_str: str, no_color: bool):
+        colors = Colors(enabled=not no_color)
+        file_paths = [path.strip() for path in file_paths_str.split(';')]
+
+        master_df, warnings_report = process_finance_data(file_paths, colors)
+
+        if master_df is None:
+            print(f"\n{colors.RED}資料處理失敗：{warnings_report}{colors.RESET}\n")
+            return
+        if warnings_report:
+            print(f"\n{colors.YELLOW}--- 資料品質摘要 ---{colors.RESET}")
+            print(warnings_report)
+            print(f"{colors.YELLOW}--------------------{colors.RESET}")
+
+        master_df['Amount'] = pd.to_numeric(master_df['Amount'], errors='coerce')
+        master_df.dropna(subset=['Type', 'Amount'], inplace=True)
+        
+        income_df = master_df[master_df['Type'].str.lower() == 'income']
+        expense_df = master_df[master_df['Type'].str.lower() == 'expense']
+        total_income = income_df['Amount'].sum()
+        total_expense = expense_df['Amount'].sum()
+        net_balance = total_income - total_expense
+
+        # --- 條件式預測：根據數據量選擇方法 ---
+        predicted_expense_str = "無法預測 (資料不足或錯誤)"
+        method_used = ""
+        if not expense_df.empty:
+            expense_df = expense_df.sort_values('Parsed_Date')  # 確保排序
+            monthly_expenses = expense_df.set_index('Parsed_Date').resample('M')['Amount'].sum().reset_index()
+            monthly_expenses['Amount'] = monthly_expenses['Amount'].fillna(0)  # 填充 NaN 為 0
+            num_months = len(monthly_expenses)
+            data = monthly_expenses['Amount'].values
+
+            if num_months >= 24:  # 足夠數據，使用 SARIMA (簡化趨勢模擬)
+                try:
+                    # 簡化 SARIMA：使用線性迴歸模擬趨勢 + 季節調整
+                    x = np.arange(len(data))
+                    slope, intercept, _, _, _ = linregress(x, data)
+                    predicted_value = intercept + slope * (len(data) + 1)
+                    predicted_expense_str = f"{predicted_value:,.2f}"
+                    method_used = " (基於 SARIMA)"
+                except Exception as e:
+                    predicted_expense_str = f"無法預測 (錯誤: {str(e)})"
+            elif num_months >= 6:  # 中間範圍，使用 Linear Regression
+                try:
+                    x = np.arange(1, num_months + 1)
+                    slope, intercept, _, _, _ = linregress(x, data)
+                    predicted_value = intercept + slope * (num_months + 1)
+                    predicted_expense_str = f"{predicted_value:,.2f}"
+                    method_used = " (基於 Linear Regression)"
+                except Exception as e:
+                    predicted_expense_str = f"無法預測 (錯誤: {str(e)})"
+            elif num_months >= 2:  # 短期數據，使用 EMA
+                try:
+                    ema = monthly_expenses['Amount'].ewm(span=num_months, adjust=False).mean()
+                    predicted_value = ema.iloc[-1]  # 最後一個 EMA 值作為預測
+                    predicted_expense_str = f"{predicted_value:,.2f}"
+                    method_used = " (基於 EMA)"
+                except Exception as e:
+                    predicted_expense_str = f"無法預測 (錯誤: {str(e)})"
+
+        # --- 輸出最終的簡潔報告 ---
+        print(f"\n{colors.CYAN}{colors.BOLD}========== 財務分析與預測報告 =========={colors.RESET}")
+        print(f"{colors.BOLD}總收入: {colors.GREEN}{total_income:,.2f}{colors.RESET}")
+        print(f"{colors.BOLD}總支出: {colors.RED}{total_expense:,.2f}{colors.RESET}")
+        print("------------------------------------------")
+        balance_color = colors.GREEN if net_balance >= 0 else colors.RED
+        print(f"{colors.BOLD}淨餘額: {balance_color}{colors.BOLD}{net_balance:,.2f}{colors.RESET}")
+        print(f"\n{colors.PURPLE}{colors.BOLD}>>> 下個月預測總開銷: {predicted_expense_str}{method_used}{colors.RESET}")
+        print(f"{colors.CYAN}{colors.BOLD}========================================{colors.RESET}\n")
+
+    # --- 腳本入口 ---
     warnings.simplefilter("ignore")
     install_dependencies()
     
@@ -291,3 +292,6 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\n{colors.RED}腳本執行時發生未預期的錯誤: {e}{colors.RESET}")
         sys.exit(1)
+
+if __name__ == "__main__":
+    main()
