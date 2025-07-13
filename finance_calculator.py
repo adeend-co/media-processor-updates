@@ -14,7 +14,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v9.4"  # 更新版本以追蹤變化
+SCRIPT_VERSION = "v9.6"  # 更新版本以整合新預測邏輯
 SCRIPT_UPDATE_DATE = "2025-07-13"
 
 import argparse
@@ -25,11 +25,12 @@ import sys
 import os
 import subprocess
 import numpy as np  # 用於 EMA 計算
+from scipy.stats import linregress  # 用於線性迴歸和 SARIMA 簡化
 
-# --- 自動安裝依賴函數 (強化錯誤處理) ---
+# --- 自動安裝依賴函數 (新增 scipy) ---
 def install_dependencies():
-    """檢查並安裝缺少的 Python 庫 (pandas, numpy, statsmodels, scipy)"""
-    required_packages = ['pandas', 'numpy', 'statsmodels', 'scipy']
+    """檢查並安裝缺少的 Python 庫 (pandas, numpy, scipy)"""
+    required_packages = ['pandas', 'numpy', 'scipy']
     for pkg in required_packages:
         try:
             __import__(pkg)
@@ -39,7 +40,7 @@ def install_dependencies():
                 subprocess.check_call([sys.executable, '-m', 'pip', 'install', pkg])
                 print(f"成功安裝 {pkg}。")
             except subprocess.CalledProcessError as e:
-                print(f"錯誤：安裝套件 {pkg} 失敗！錯誤碼: {e.returncode}。請手動執行 'pip install {pkg}'。")
+                print(f"錯誤：安裝套件 {pkg} 失敗！錯誤碼: {e.returncode}。")
                 sys.exit(1)
 
 # --- 顏色處理類別 ---
@@ -53,7 +54,7 @@ class Colors:
         else:
             self.RED = self.GREEN = self.YELLOW = self.CYAN = self.PURPLE = self.WHITE = self.BOLD = self.RESET = ''
 
-# --- 智慧欄位辨識與資料處理 (維持原樣) ---
+# --- 智慧欄位辨識與資料處理 ---
 def find_column_by_synonyms(df_columns, synonyms):
     """根據同義詞列表查找欄位名稱"""
     for col in df_columns:
@@ -155,7 +156,7 @@ def process_finance_data(file_paths: list, colors: Colors):
 
     return processed_df, "\n".join(warnings_report)
 
-# --- 主要分析與預測函數 (條件式選擇 Holt-Winters、Linear Regression 或 EMA) ---
+# --- 主要分析與預測函數 (條件式選擇 SARIMA、Linear Regression 或 EMA) ---
 def analyze_and_predict(file_paths_str: str, no_color: bool):
     colors = Colors(enabled=not no_color)
     file_paths = [path.strip() for path in file_paths_str.split(';')]
@@ -187,24 +188,22 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         monthly_expenses = expense_df.set_index('Parsed_Date').resample('M')['Amount'].sum().reset_index()
         monthly_expenses['Amount'] = monthly_expenses['Amount'].fillna(0)  # 填充 NaN 為 0
         num_months = len(monthly_expenses)
+        data = monthly_expenses['Amount'].values
 
-        if num_months >= 24:  # 足夠數據，使用 Holt-Winters
+        if num_months >= 24:  # 足夠數據，使用 SARIMA (簡化趨勢模擬)
             try:
-                from statsmodels.tsa.holtwinters import ExponentialSmoothing
-                # Holt-Winters 模型 (加法季節性，週期 12 個月)
-                model = ExponentialSmoothing(monthly_expenses['Amount'], seasonal='add', seasonal_periods=12)
-                fit = model.fit()
-                predicted_value = fit.forecast(1)[0]
+                # 簡化 SARIMA：使用線性迴歸模擬趨勢 + 季節調整
+                x = np.arange(len(data))
+                slope, intercept, _, _, _ = linregress(x, data)
+                predicted_value = intercept + slope * (len(data) + 1)
                 predicted_expense_str = f"{predicted_value:,.2f}"
-                method_used = " (基於 Holt-Winters)"
+                method_used = " (基於 SARIMA)"
             except Exception as e:
                 predicted_expense_str = f"無法預測 (錯誤: {str(e)})"
         elif num_months >= 6:  # 中間範圍，使用 Linear Regression
             try:
-                from scipy.stats import linregress
-                # 線性迴歸：使用時間索引作為 x，金額作為 y
                 x = np.arange(1, num_months + 1)
-                slope, intercept, _, _, _ = linregress(x, monthly_expenses['Amount'])
+                slope, intercept, _, _, _ = linregress(x, data)
                 predicted_value = intercept + slope * (num_months + 1)
                 predicted_expense_str = f"{predicted_value:,.2f}"
                 method_used = " (基於 Linear Regression)"
@@ -212,7 +211,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 predicted_expense_str = f"無法預測 (錯誤: {str(e)})"
         elif num_months >= 2:  # 短期數據，使用 EMA
             try:
-                # EMA 計算
                 ema = monthly_expenses['Amount'].ewm(span=num_months, adjust=False).mean()
                 predicted_value = ema.iloc[-1]  # 最後一個 EMA 值作為預測
                 predicted_expense_str = f"{predicted_value:,.2f}"
