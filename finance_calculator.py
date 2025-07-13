@@ -14,7 +14,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v9.10"  # 更新版本以修正 np 未定義錯誤
+SCRIPT_VERSION = "v9.11"  # 更新版本以修正 np 未定義錯誤
 SCRIPT_UPDATE_DATE = "2025-07-13"
 
 import sys
