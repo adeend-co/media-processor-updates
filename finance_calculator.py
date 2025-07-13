@@ -2,7 +2,7 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v9.18             #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v9.19             #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
@@ -10,12 +10,12 @@
 # 本腳本為一個高度智慧化的獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。     #
 # 它具備自動格式清理、互動式路徑輸入與 EMA 模型預測等頂級功能。                     #
 #                                                                              #
-# 更新：偵測月份/項目排列（直/橫），直接計算月總額進行預測。                     #
+# 更新：修正讀取CSV的語法錯誤（unterminated string literal）。                   #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v9.18"  # 更新版本以偵測排列並直接計算
+SCRIPT_VERSION = "v9.19"  # 更新版本以修正語法錯誤
 SCRIPT_UPDATE_DATE = "2025-07-13"
 
 import sys
@@ -138,7 +138,9 @@ def main():
             except UnicodeDecodeError:
                 print(f"{colors.RED}錯誤：檔案 '{file_path.strip()}' 編碼問題！嘗試使用'big5'編碼。{colors.RESET}")
                 try:
-                    df = pd.read_csv(file_path.strip(), encoding='big5', on_bad_lines='skip AscertainError as e:
+                    df = pd.read_csv(file_path.strip(), encoding='big5', on_bad_lines='skip')
+                    all_dfs.append(df)
+                except Exception as e:
                     print(f"{colors.RED}錯誤：無法讀取檔案 '{file_path.strip()}'！{str(e)}{colors.RESET}")
                     continue
             except FileNotFoundError:
