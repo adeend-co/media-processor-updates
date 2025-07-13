@@ -8,14 +8,14 @@
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個高度智慧化的獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。     #
-# 它具備自動格式清理、互動式路徑輸入與 WMA 模型預測等頂級功能。                    #
+# 它具備自動格式清理、互動式路徑輸入與 EMA 模型預測等頂級功能。                     #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v9.0"
-SCRIPT_UPDATE_DATE = "2025-07-12"
+SCRIPT_VERSION = "v1.0.4"
+SCRIPT_UPDATE_DATE = "2025-07-13"
 
 import argparse
 import pandas as pd
@@ -24,11 +24,12 @@ import warnings
 import sys
 import os
 import subprocess
+import numpy as np  # 用於 EMA 計算
 
 # --- 自動安裝依賴函數 ---
 def install_dependencies():
-    """檢查並安裝缺少的 Python 庫 (僅 pandas)"""
-    required_packages = ['pandas']
+    """檢查並安裝缺少的 Python 庫 (pandas, numpy)"""
+    required_packages = ['pandas', 'numpy']
     for pkg in required_packages:
         try:
             __import__(pkg)
