@@ -50,7 +50,7 @@
 ############################################
 # 腳本設定
 ############################################
-SCRIPT_VERSION="v2.6.6-beta.10" # <<< 版本號更新
+SCRIPT_VERSION="v2.6.6-beta.11" # <<< 版本號更新
 
 ############################################
 # ★★★ 新增：使用者同意書版本號 ★★★
@@ -61,7 +61,7 @@ AGREEMENT_VERSION="1.6"
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
-SCRIPT_UPDATE_DATE="2025-07-12" # 請根據實際情況修改此日期
+SCRIPT_UPDATE_DATE="2025-07-13" # 請根據實際情況修改此日期
 
 # ... 其他設定 ...
 TARGET_DATE="2025-07-29" # <<< 新增：設定您的目標日期
@@ -779,12 +779,13 @@ auto_update_script() {
     # --- ▼▼▼ 核心修改區塊：使用陣列來管理所有需要執行權限的腳本 ▼▼▼ ---
     echo -e "${CYAN}正在校驗所有核心腳本權限...${RESET}";
     local all_executable_scripts=(
-        "$SCRIPT_INSTALL_PATH"               # 主腳本
-        "$PYTHON_ESTIMATOR_SCRIPT_PATH"      # Python 大小預估
-        "$PYTHON_SYNC_HELPER_SCRIPT_PATH"    # Python 同步助手
-        "$SCRIPT_DIR/finance_manager.sh"       # 財務管理器
-        "$SCRIPT_DIR/network_speed_test.sh"  # 網路測速工具 (新加入)
-        "$SCRIPT_DIR/finance_calculator.py"  # 進階財務分析與預測器（獨立）
+        "$SCRIPT_INSTALL_PATH"                     # 主腳本
+        "$PYTHON_ESTIMATOR_SCRIPT_PATH"            # Python 大小預估
+        "$PYTHON_SYNC_HELPER_SCRIPT_PATH"          # Python 同步助手
+        "$SCRIPT_DIR/finance_manager.sh"           # 財務管理器
+        "$SCRIPT_DIR/network_speed_test.sh"        # 網路測速工具 (新加入)
+        "$SCRIPT_DIR/finance_calculator.py"        # 進階財務分析與預測器（獨立）
+        "$SCRIPT_DIR/monthly_expense_tracker.py"   # 月份支出追蹤器（獨立）
         # 未來若有新腳本，直接在此處增加一行即可
     )
     
