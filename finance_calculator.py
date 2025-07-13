@@ -14,7 +14,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v9.7"  # 更新版本以強化安裝處理
+SCRIPT_VERSION = "v9.8"  # 更新版本以加入環境檢查
 SCRIPT_UPDATE_DATE = "2025-07-13"
 
 import argparse
@@ -26,25 +26,7 @@ import os
 import subprocess
 import numpy as np  # 用於 EMA 計算
 
-# --- 自動安裝依賴函數 (強化錯誤處理) ---
-def install_dependencies():
-    """檢查並安裝缺少的 Python 庫 (pandas, numpy, scipy)"""
-    required_packages = ['pandas', 'numpy', 'scipy']
-    for pkg in required_packages:
-        try:
-            __import__(pkg)
-        except ImportError:
-            print(f"提示：正在安裝缺少的必要套件: {pkg}...")
-            try:
-                subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--upgrade', 'pip', 'setuptools', 'wheel'])
-                subprocess.check_call([sys.executable, '-m', 'pip', 'install', pkg])
-                print(f"成功安裝 {pkg}。")
-            except subprocess.CalledProcessError as e:
-                print(f"錯誤：安裝套件 {pkg} 失敗！錯誤碼: {e.returncode}。")
-                print("建議：在 Termux 中執行 'pkg install python-numpy python-scipy' 或檢查網路/權限。")
-                sys.exit(1)
-
-# --- 顏色處理類別 ---
+# --- 顏色處理類別 (提前定義並初始化) ---
 class Colors:
     """管理終端機輸出的 ANSI 顏色代碼"""
     def __init__(self, enabled=True):
@@ -54,6 +36,51 @@ class Colors:
             self.BOLD = '\033[1m'; self.RESET = '\033[0m'
         else:
             self.RED = self.GREEN = self.YELLOW = self.CYAN = self.PURPLE = self.WHITE = self.BOLD = self.RESET = ''
+
+# --- 提前初始化顏色 (腳本啟動時立即載入) ---
+colors = Colors(enabled=True)  # 假設預設啟用顏色，您可以根據需要調整
+
+# --- 新增：環境檢查函數 (在啟動前檢查所有依賴工具) ---
+def check_environment():
+    """檢查所有依賴工具是否存在"""
+    print(f"{colors.CYAN}正在進行環境檢查...{colors.RESET}")
+    
+    # 定義所有依賴工具
+    required_packages = ['pandas', 'numpy', 'scipy']
+    missing_packages = []
+    
+    for pkg in required_packages:
+        try:
+            __import__(pkg)
+            print(f"{colors.GREEN}  - {pkg} 已安裝。{colors.RESET}")
+        except ImportError:
+            missing_packages.append(pkg)
+            print(f"{colors.RED}  - {pkg} 未安裝！{colors.RESET}")
+    
+    if missing_packages:
+        print(f"\n{colors.RED}環境檢查失敗！缺少以下套件：{', '.join(missing_packages)}{colors.RESET}")
+        print(f"{colors.YELLOW}請執行 'pip install {' '.join(missing_packages)}' 安裝缺少的套件。{colors.RESET}")
+        sys.exit(1)
+    
+    print(f"{colors.GREEN}環境檢查通過，所有依賴工具均已安裝。{colors.RESET}")
+
+# --- 自動安裝依賴函數 (強化錯誤處理) ---
+def install_dependencies():
+    """檢查並安裝缺少的 Python 庫 (pandas, numpy, scipy)"""
+    required_packages = ['pandas', 'numpy', 'scipy']
+    for pkg in required_packages:
+        try:
+            __import__(pkg)
+        except ImportError:
+            print(f"{colors.YELLOW}提示：正在安裝缺少的必要套件: {pkg}...{colors.RESET}")
+            try:
+                subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--upgrade', 'pip', 'setuptools', 'wheel'])
+                subprocess.check_call([sys.executable, '-m', 'pip', 'install', pkg])
+                print(f"{colors.GREEN}成功安裝 {pkg}。{colors.RESET}")
+            except subprocess.CalledProcessError as e:
+                print(f"{colors.RED}錯誤：安裝套件 {pkg} 失敗！錯誤碼: {e.returncode}。{colors.RESET}")
+                print(f"{colors.YELLOW}建議：在 Termux 中執行 'pkg install python-numpy python-scipy' 或檢查網路/權限。{colors.RESET}")
+                sys.exit(1)
 
 # --- 智慧欄位辨識與資料處理 ---
 def find_column_by_synonyms(df_columns, synonyms):
@@ -232,6 +259,9 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     print(f"{colors.CYAN}{colors.BOLD}========================================{colors.RESET}\n")
 
 if __name__ == "__main__":
+    # --- 腳本啟動時立即檢查環境 (顏色已載入) ---
+    check_environment()
+    
     warnings.simplefilter("ignore")
     install_dependencies()
     
