@@ -14,7 +14,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v9.12"  # 更新版本以修復 monthly_expenses 未定義錯誤
+SCRIPT_VERSION = "v9.13"  # 更新版本以修復 f-string 未關閉錯誤
 SCRIPT_UPDATE_DATE = "2025-07-13"
 
 import sys
@@ -329,4 +329,8 @@ def main():
         print(f"\n{colors.YELLOW}使用者中斷操作。腳本終止。{colors.RESET}")
         sys.exit(0)
     except Exception as e:
-        print(f"\n{colors.RED
+        print(f"\n{colors.RED}腳本執行時發生未預期的錯誤: {e}{colors.RESET}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
