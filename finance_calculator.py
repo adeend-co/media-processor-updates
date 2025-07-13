@@ -14,7 +14,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v9.2"
+SCRIPT_VERSION = "v9.4"
 SCRIPT_UPDATE_DATE = "2025-07-13"
 
 import argparse
@@ -25,11 +25,12 @@ import sys
 import os
 import subprocess
 import numpy as np  # 用於 EMA 計算
+from scipy.stats import linregress  # 用於線性迴歸
 
 # --- 自動安裝依賴函數 ---
 def install_dependencies():
-    """檢查並安裝缺少的 Python 庫 (pandas, numpy)"""
-    required_packages = ['pandas', 'numpy']
+    """檢查並安裝缺少的 Python 庫 (pandas, numpy, statsmodels, scipy)"""
+    required_packages = ['pandas', 'numpy', 'statsmodels', 'scipy']
     for pkg in required_packages:
         try:
             __import__(pkg)
@@ -154,7 +155,7 @@ def process_finance_data(file_paths: list, colors: Colors):
 
     return processed_df, "\n".join(warnings_report)
 
-# --- 主要分析與預測函數 (使用 EMA 替代 WMA) ---
+# --- 主要分析與預測函數 (條件式選擇 Holt-Winters、Linear Regression 或 EMA) ---
 def analyze_and_predict(file_paths_str: str, no_color: bool):
     colors = Colors(enabled=not no_color)
     file_paths = [path.strip() for path in file_paths_str.split(';')]
@@ -164,7 +165,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     if master_df is None:
         print(f"\n{colors.RED}資料處理失敗：{warnings_report}{colors.RESET}\n")
         return
-
     if warnings_report:
         print(f"\n{colors.YELLOW}--- 資料品質摘要 ---{colors.RESET}")
         print(warnings_report)
@@ -179,19 +179,43 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     total_expense = expense_df['Amount'].sum()
     net_balance = total_income - total_expense
 
-    # --- 使用 EMA 進行開銷預測 ---
+    # --- 條件式預測：根據數據量選擇方法 ---
     predicted_expense_str = "無法預測 (資料不足或錯誤)"
+    method_used = ""
     if not expense_df.empty:
         expense_df = expense_df.sort_values('Parsed_Date')  # 確保排序
         monthly_expenses = expense_df.set_index('Parsed_Date').resample('M')['Amount'].sum().reset_index()
         monthly_expenses['Amount'] = monthly_expenses['Amount'].fillna(0)  # 填充 NaN 為 0
+        num_months = len(monthly_expenses)
 
-        if len(monthly_expenses) >= 2:
+        if num_months >= 24:  # 足夠數據，使用 Holt-Winters
+            try:
+                from statsmodels.tsa.holtwinters import ExponentialSmoothing
+                # Holt-Winters 模型 (加法季節性，週期 12 個月)
+                model = ExponentialSmoothing(monthly_expenses['Amount'], seasonal='add', seasonal_periods=12)
+                fit = model.fit()
+                predicted_value = fit.forecast(1)[0]
+                predicted_expense_str = f"{predicted_value:,.2f}"
+                method_used = " (基於 Holt-Winters)"
+            except Exception as e:
+                predicted_expense_str = f"無法預測 (錯誤: {str(e)})"
+        elif num_months >= 6:  # 中間範圍，使用 Linear Regression
+            try:
+                # 線性迴歸：使用時間索引作為 x，金額作為 y
+                x = np.arange(1, num_months + 1)
+                slope, intercept, _, _, _ = linregress(x, monthly_expenses['Amount'])
+                predicted_value = intercept + slope * (num_months + 1)
+                predicted_expense_str = f"{predicted_value:,.2f}"
+                method_used = " (基於 Linear Regression)"
+            except Exception as e:
+                predicted_expense_str = f"無法預測 (錯誤: {str(e)})"
+        elif num_months >= 2:  # 短期數據，使用 EMA
             try:
                 # EMA 計算
-                ema = monthly_expenses['Amount'].ewm(span=len(monthly_expenses), adjust=False).mean()
+                ema = monthly_expenses['Amount'].ewm(span=num_months, adjust=False).mean()
                 predicted_value = ema.iloc[-1]  # 最後一個 EMA 值作為預測
                 predicted_expense_str = f"{predicted_value:,.2f}"
+                method_used = " (基於 EMA)"
             except Exception as e:
                 predicted_expense_str = f"無法預測 (錯誤: {str(e)})"
 
@@ -202,7 +226,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     print("------------------------------------------")
     balance_color = colors.GREEN if net_balance >= 0 else colors.RED
     print(f"{colors.BOLD}淨餘額: {balance_color}{colors.BOLD}{net_balance:,.2f}{colors.RESET}")
-    print(f"\n{colors.PURPLE}{colors.BOLD}>>> 下個月預測總開銷: {predicted_expense_str}{colors.RESET}")
+    print(f"\n{colors.PURPLE}{colors.BOLD}>>> 下個月預測總開銷: {predicted_expense_str}{method_used}{colors.RESET}")
     print(f"{colors.CYAN}{colors.BOLD}========================================{colors.RESET}\n")
 
 if __name__ == "__main__":
