@@ -2,7 +2,7 @@
 
 ################################################################################
 #                                                                              #
-#             月份支出追蹤器 (Monthly Expense Tracker) v10.4                    #
+#             月份支出追蹤器 (Monthly Expense Tracker) v10.5                    #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
@@ -14,7 +14,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "月份支出追蹤器"
-SCRIPT_VERSION = "v10.4"
+SCRIPT_VERSION = "v10.5"
 SCRIPT_UPDATE_DATE = "2025-07-13"
 
 import sys
@@ -97,9 +97,23 @@ def main():
         return None
 
     def normalize_date(date_str):
-        """標準化日期為年月格式 (e.g., 2025-01)，支援年月日格式"""
-        s = str(date_str).strip()
+        """標準化日期為年月格式 (e.g., 2025-01)，支援年月日、月份中文等格式"""
+        s = str(date_str).strip().replace('月', '').replace('年', '-').replace(' ', '')
         current_year = datetime.now().year
+        # 處理像 "1月" 或 "1" 的格式
+        if s.isdigit() and len(s) <= 2:
+            month = int(s)
+            return f"{current_year}-{month:02d}"
+        # 處理 "2025-1" 或 "20251"
+        if '-' in s:
+            parts = s.split('-')
+            year = int(parts[0]) if len(parts[0]) == 4 else current_year
+            month = int(parts[1])
+            return f"{year}-{month:02d}"
+        if len(s) >= 5 and s[:4].isdigit():
+            year = int(s[:4])
+            month = int(s[4:])
+            return f"{year}-{month:02d}"
         # 嘗試解析完整年月日格式 (e.g., 20250713)
         if s.isdigit() and len(s) == 8:
             try:
@@ -107,28 +121,12 @@ def main():
                 return f"{dt.year}-{dt.month:02d}"
             except ValueError:
                 pass
-        # 處理像701, 702這種格式
-        if s.isdigit() and len(s) <= 4:
-            s = s.zfill(4)  # 補足4位數
-            month = int(s[:-2])
-            return f"{current_year}-{month:02d}"
-        # 處理像202501、2025年01、2025年01月
-        s = s.replace('年', '-').replace('月', '').replace(' ', '')
-        if len(s) == 6 and s.isdigit():  # 202501
-            year = s[:4]
-            month = s[4:6]
-            return f"{year}-{month}"
-        parts = s.split('-')
-        if len(parts) >= 2:
-            year = parts[0]
-            month = parts[1].zfill(2)
-            return f"{year}-{month}"
         return None  # 無效日期
 
     def process_finance_data(file_paths: list, colors: Colors):
         """
         讀取、合併、清理並分析來自多個 CSV 檔案的財務資料。
-        專注於支出，忽略收入，按月份分組項目。
+        支援寬格式（月份為行，項目為欄）和長格式，專注於支出，按月份分組項目。
         """
         all_dfs = []
         for file_path in file_paths:
@@ -152,19 +150,31 @@ def main():
         master_df = pd.concat(all_dfs, ignore_index=True)
         master_df.columns = master_df.columns.str.strip()
 
-        # 智慧欄位名稱辨識
-        date_col = find_column_by_synonyms(master_df.columns, ['日期', '時間', 'Date', 'time'])
+        # 嘗試辨識長格式
+        date_col = find_column_by_synonyms(master_df.columns, ['日期', '時間', 'Date', 'time', '月份'])
         item_col = find_column_by_synonyms(master_df.columns, ['項目', '類型', 'Type', '收支項目', '收支'])
         amount_col = find_column_by_synonyms(master_df.columns, ['金額', 'Amount', 'amount', '價格', '支出', 'expense'])
         
-        if not (date_col and item_col and amount_col):
-            missing = [c for c, v in zip(['日期', '項目', '金額/支出'], [date_col, item_col, amount_col]) if not v]
-            return None, None, f"無法辨識的表格結構。缺少必要的欄位：{missing}"
-
-        # 只保留相關欄位，並標準化日期
-        processed_df = master_df[[date_col, item_col, amount_col]].copy()
-        processed_df.rename(columns={date_col: 'Date', item_col: 'Item', amount_col: 'Amount'}, inplace=True)
-        processed_df['YearMonth'] = processed_df['Date'].apply(normalize_date)
+        if date_col and item_col and amount_col:
+            # 長格式處理
+            processed_df = master_df[[date_col, item_col, amount_col]].copy()
+            processed_df.rename(columns={date_col: 'YearMonth', item_col: 'Item', amount_col: 'Amount'}, inplace=True)
+        else:
+            # 寬格式處理：假設第一欄為月份，其他為項目
+            date_col = find_column_by_synonyms(master_df.columns, ['月份', '月', 'Month'])
+            if not date_col:
+                return None, None, "無法辨識月份欄位，請確認 CSV 有 '月份' 或類似欄位。"
+            
+            # 忽略可能的總計行
+            master_df = master_df[~master_df[date_col].str.contains('合計|總計|Total', na=False)]
+            
+            # 使用 melt 轉換為長格式
+            item_columns = [col for col in master_df.columns if col != date_col]
+            processed_df = pd.melt(master_df, id_vars=[date_col], value_vars=item_columns, var_name='Item', value_name='Amount')
+            processed_df.rename(columns={date_col: 'YearMonth'}, inplace=True)
+        
+        # 標準化日期並清理資料
+        processed_df['YearMonth'] = processed_df['YearMonth'].apply(normalize_date)
         processed_df = processed_df.dropna(subset=['YearMonth', 'Item', 'Amount'])
         processed_df['Amount'] = pd.to_numeric(processed_df['Amount'], errors='coerce').fillna(0)
         processed_df = processed_df[processed_df['Amount'] > 0]
