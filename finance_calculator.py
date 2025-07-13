@@ -15,7 +15,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v9.21"  # 更新版本以優先UTF-8並自動嘗試編碼
+SCRIPT_VERSION = "v9.22"  # 更新版本以優先UTF-8並自動嘗試編碼
 SCRIPT_UPDATE_DATE = "2025-07-13"
 
 import sys
@@ -405,17 +405,59 @@ def main():
                 except Exception as e:
                     predicted_expense_str = f"無法預測 (錯誤: {str(e)})"
 
-        # --- 輸出最終的簡潔報告 ---
+        # --- 輸出最終的簡潔報告 (已整合波動性分析) ---
         print(f"\n{colors.CYAN}{colors.BOLD}========== 財務分析與預測報告 =========={colors.RESET}")
+        
+        # 處理非寬格式（有收入/支出的情況）
         if not is_wide_format_expense_only:
             print(f"{colors.BOLD}總收入: {colors.GREEN}{total_income:,.2f}{colors.RESET}")
+        
+        # 顯示總支出
         print(f"{colors.BOLD}總支出: {colors.RED}{total_expense:,.2f}{colors.RESET}")
+
+        # --- 【核心升級功能】計算並顯示歷史支出波動性 ---
+        if monthly_expenses is not None and len(monthly_expenses) >= 2:
+            expense_values = monthly_expenses['Amount']
+            expense_std_dev = expense_values.std()
+            expense_mean = expense_values.mean()
+            
+            # 初始化波動性報告文字
+            volatility_report = ""
+
+            # 僅在平均支出大於0時計算變異係數 (CV)，避免除以零的錯誤
+            if expense_mean > 0:
+                expense_cv = (expense_std_dev / expense_mean) * 100
+                
+                # 根據 CV 範圍決定描述文字與顏色，實現您期望的表格功能
+                if expense_cv < 20:
+                    level = "低波動 (高度穩定)"
+                    color = colors.GREEN
+                elif 20 <= expense_cv < 45:
+                    level = "中度波動 (正常範圍)"
+                    color = colors.WHITE
+                elif 45 <= expense_cv < 70:
+                    level = "高波動 (值得注意)"
+                    color = colors.YELLOW
+                else: # expense_cv >= 70
+                    level = "極高波動 (警示訊號)"
+                    color = colors.RED
+                
+                # 組合最終的波動性報告文字
+                volatility_report = f" ({expense_cv:.1f}%, {level})"
+            
+            # 顯示標準差與完整的波動性報告
+            print(f"{colors.BOLD}歷史月均支出波動: {color}{expense_std_dev:,.2f}{volatility_report}{colors.RESET}")
+
+        # 處理非寬格式的淨餘額
         if not is_wide_format_expense_only:
             print("------------------------------------------")
             balance_color = colors.GREEN if net_balance >= 0 else colors.RED
             print(f"{colors.BOLD}淨餘額: {balance_color}{colors.BOLD}{net_balance:,.2f}{colors.RESET}")
+        
+        # 顯示預測結果
         print(f"\n{colors.PURPLE}{colors.BOLD}>>> 下個月預測總開銷: {predicted_expense_str}{ci_str}{method_used}{colors.RESET}")
         print(f"{colors.CYAN}{colors.BOLD}========================================{colors.RESET}\n")
+
 
     # --- 腳本入口 ---
     warnings.simplefilter("ignore")
