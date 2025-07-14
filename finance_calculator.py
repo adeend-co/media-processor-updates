@@ -2,7 +2,7 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v1.0                 #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v1.0                #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
@@ -15,8 +15,8 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v1.0.25"  # 更新版本以優先UTF-8並自動嘗試編碼
-SCRIPT_UPDATE_DATE = "2025-07-14"
+SCRIPT_VERSION = "v1.0.26"  # 更新版本以優先UTF-8並自動嘗試編碼
+SCRIPT_UPDATE_DATE = "2025-07-13"
 
 import sys
 import os
@@ -136,16 +136,10 @@ def main():
             for enc in encodings_to_try:
                 try:
                     df = pd.read_csv(file_path.strip(), encoding=enc, on_bad_lines='skip')
-                    # 新增：移除完全空白行，並清理所有欄位的隱藏空格
-                    df = df.dropna(how='all').reset_index(drop=True)
-                    df = df.applymap(lambda x: x.strip() if isinstance(x, str) else x)  # 清理字符串中的前後空格
-                    df.replace('', np.nan, inplace=True)  # 將空字符串轉為NaN
-                    df = df.dropna(how='all').reset_index(drop=True)  # 再次移除轉換後的空白行
                     all_dfs.append(df)
                     print(f"{colors.GREEN}成功使用編碼 '{enc}' 讀取檔案 '{file_path.strip()}'。{colors.RESET}")
                     loaded = True
                     break
-                    
                 except UnicodeDecodeError:
                     print(f"{colors.YELLOW}嘗試編碼 '{enc}' 失敗，正在試下一個...{colors.RESET}")
                 except FileNotFoundError:
