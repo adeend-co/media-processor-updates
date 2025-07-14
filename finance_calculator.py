@@ -2,26 +2,27 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v1.2                #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v1.3                #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 新增：風險狀態判讀與動態預算建議框架；數據不足時切換到平均支出 + 風險緩衝公式。             #
+# 新增：通膨調整邏輯，使用內建通膨率資料庫，自動計算實質金額並顯示偵測年份資訊。             #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v1.2.0"  # 更新版本：加入數據不足時的替代預算公式
+SCRIPT_VERSION = "v1.3.0"  # 更新版本：加入通膨調整與年份偵測
 SCRIPT_UPDATE_DATE = "2025-07-14"
 
 import sys
 import os
 import subprocess
 import warnings
+from datetime import datetime
 
 # --- 顏色處理類別 (提前定義並初始化) ---
 class Colors:
@@ -37,12 +38,36 @@ class Colors:
 # --- 提前初始化顏色 (腳本啟動時立即載入) ---
 colors = Colors(enabled=True)  # 假設預設啟用顏色，您可以根據需要調整
 
-# --- 新增：環境檢查函數 (在啟動前檢查所有依賴工具) ---
+# --- 新增：內建台灣歷年通膨率 (CPI 年增率) 資料庫 ---
+# 資料來源：主計總處等官方數據，單位為百分比（%）。只需更新未來年份的值。
+INFLATION_RATES = {
+    2019: 0.56,
+    2020: -0.25,
+    2021: 2.10,
+    2022: 2.95,
+    2023: 2.49,
+    2024: 2.18,
+    2025: 1.88,  # 預測值，可更新
+    # 若需新增未來年份，例如：2026: 1.50
+}
+
+# --- 新增：計算累積調整比例的輔助函數 ---
+def calculate_cumulative_factor(year, base_year):
+    """計算從 year 到 base_year 的累積通膨調整比例"""
+    if year == base_year:
+        return 1.0
+    factor = 1.0
+    years = range(year + 1, base_year + 1) if year < base_year else range(base_year + 1, year + 1)
+    for y in years:
+        rate = INFLATION_RATES.get(y, 0.0) / 100  # 轉換為小數
+        factor *= (1 + rate)
+    return factor if year < base_year else 1 / factor
+
+# --- 環境檢查函數 (在啟動前檢查所有依賴工具) ---
 def check_environment():
     """檢查所有依賴工具是否存在"""
     print(f"{colors.CYAN}正在進行環境檢查...{colors.RESET}")
     
-    # 定義所有依賴工具
     required_packages = ['pandas', 'numpy', 'scipy']
     missing_packages = []
     
@@ -85,7 +110,6 @@ def main():
     
     # --- 載入所有依賴 (檢查通過後) ---
     import pandas as pd
-    from datetime import datetime
     import argparse
     import numpy as np  # 用於 EMA 計算及蒙地卡羅模擬
     from scipy.stats import linregress, t  # 用於線性迴歸和 SARIMA 簡化, t分佈
@@ -102,11 +126,9 @@ def main():
         """標準化日期為年月格式 (e.g., 2025-01)，支援年月日、月份中文等格式"""
         s = str(date_str).strip().replace('月', '').replace('年', '-').replace(' ', '')
         current_year = datetime.now().year
-        # 處理像 "1月" 或 "1" 的格式
         if s.isdigit() and len(s) <= 2:
             month = int(s)
             return f"{current_year}-{month:02d}-01"
-        # 處理 "2025-1" 或 "20251"
         if '-' in s:
             parts = s.split('-')
             year = int(parts[0]) if len(parts[0]) == 4 else current_year
@@ -116,7 +138,6 @@ def main():
             year = int(s[:4])
             month = int(s[4:])
             return f"{year}-{month:02d}-01"
-        # 嘗試解析完整年月日格式 (e.g., 20250713)
         if s.isdigit() and len(s) == 8:
             try:
                 dt = datetime.strptime(s, '%Y%m%d')
@@ -128,9 +149,10 @@ def main():
     def process_finance_data(file_paths: list, colors: Colors):
         """
         讀取、合併、清理並分析來自多個 CSV 檔案的財務資料。支援寬格式偵測排列並直接計算月總額。
+        新增：通膨調整，計算實質金額，並偵測年份範圍。
         """
         all_dfs = []
-        encodings_to_try = ['utf-8', 'utf-8-sig', 'cp950', 'big5', 'gb18030']  # 優先UTF-8
+        encodings_to_try = ['utf-8', 'utf-8-sig', 'cp950', 'big5', 'gb18030']
         for file_path in file_paths:
             loaded = False
             for enc in encodings_to_try:
@@ -152,11 +174,8 @@ def main():
             return None, None, "沒有成功讀取任何資料檔案。"
 
         master_df = pd.concat(all_dfs, ignore_index=True)
-
-        # --- 核心升級：自動清理欄位名稱前後的空格 ---
         master_df.columns = master_df.columns.str.strip()
 
-        # --- 智慧欄位名稱辨識 ---
         date_col = find_column_by_synonyms(master_df.columns, ['日期', '時間', 'Date', 'time', '月份'])
         type_col = find_column_by_synonyms(master_df.columns, ['類型', 'Type', '收支項目', '收支'])
         amount_col = find_column_by_synonyms(master_df.columns, ['金額', 'Amount', 'amount', '價格'])
@@ -166,56 +185,40 @@ def main():
         warnings_report = []
         processed_df = None
         monthly_expenses = None
-        is_wide_format_expense_only = False  # 標記寬格式（僅支出）
+        is_wide_format_expense_only = False
 
-        # --- 核心邏輯：處理不同的表格結構 ---
         if date_col and income_col and expense_col:
-            # 結構一：偵測到獨立的「收入」和「支出」欄位
             warnings_report.append(f"{colors.YELLOW}注意：偵測到獨立的『收入』與『支出』欄位，已為您自動合併並區分交易類型。{colors.RESET}")
-            
             income_df = master_df[[date_col, income_col]].copy()
             income_df.rename(columns={date_col: 'Date', income_col: 'Amount'}, inplace=True)
             income_df['Type'] = 'income'
-            
             expense_df = master_df[[date_col, expense_col]].copy()
             expense_df.rename(columns={date_col: 'Date', expense_col: 'Amount'}, inplace=True)
             expense_df['Type'] = 'expense'
-            
             processed_df = pd.concat([income_df, expense_df])
             processed_df.dropna(subset=['Amount'], inplace=True)
             processed_df['Amount'] = pd.to_numeric(processed_df['Amount'], errors='coerce')
             processed_df = processed_df[processed_df['Amount'] > 0]
 
         elif date_col and type_col and amount_col:
-            # 結構二：標準的「類型」和「金額」欄位
             processed_df = master_df[[date_col, type_col, amount_col]].copy()
             processed_df.rename(columns={date_col: 'Date', type_col: 'Type', amount_col: 'Amount'}, inplace=True)
-        
-        # 新增結構三：寬格式（偵測月份/項目排列，直接計算月總額，假設全為支出）
-        elif date_col and len(master_df.columns) > 2:  # 假設有月份欄位且多列
+
+        elif date_col and len(master_df.columns) > 2:
             warnings_report.append(f"{colors.YELLOW}注意：偵測到寬格式（僅月份與項目），已假設全為支出並計算月總額。{colors.RESET}")
             is_wide_format_expense_only = True
-            
-            # 偵測月份是否垂直（在行）或橫排（在列）
             is_vertical_month = master_df[date_col].dropna().astype(str).str.contains('月|Month', na=False).any() or master_df[date_col].dropna().astype(str).str.isdigit().all()
-
-            # 清理所有數字欄位：移除逗號、空白
             for col in master_df.columns:
                 if col != date_col:
                     master_df[col] = master_df[col].astype(str).str.replace(',', '').str.strip()
                     master_df[col] = pd.to_numeric(master_df[col], errors='coerce').fillna(0)
-            
             if is_vertical_month:
-                # 月份垂直（行），項目橫排（列）：加總每行的金額作為月總額
                 master_df['MonthlyAmount'] = master_df.drop(columns=[date_col]).sum(axis=1)
                 monthly_expenses = master_df[[date_col, 'MonthlyAmount']].copy()
                 monthly_expenses.rename(columns={date_col: 'Parsed_Date', 'MonthlyAmount': 'Amount'}, inplace=True)
             else:
-                # 月份橫排（列），項目垂直（行）：加總每列的金額作為月總額
                 monthly_amounts = master_df.drop(columns=[date_col]).sum(axis=0)
                 monthly_expenses = pd.DataFrame({'Parsed_Date': master_df.columns[1:], 'Amount': monthly_amounts.values})
-            
-            # 標準化日期
             monthly_expenses['Parsed_Date'] = monthly_expenses['Parsed_Date'].apply(normalize_date)
             monthly_expenses = monthly_expenses.dropna(subset=['Parsed_Date'])
             monthly_expenses = monthly_expenses[monthly_expenses['Amount'] > 0]
@@ -225,7 +228,6 @@ def main():
             missing = [c for c, v in zip(['日期/月份', '類型/金額 或 收入/支出'], [date_col, (type_col and amount_col) or (income_col and expense_col)]) if not v]
             return None, None, f"無法辨識的表格結構。缺少必要的欄位：{missing}"
 
-        # --- 日期處理與資料品質計數（僅對processed_df，如果存在） ---
         month_missing_count = 0
         if processed_df is not None:
             def parse_date(date_str):
@@ -241,15 +243,14 @@ def main():
                             month_missing_count += 1
                             return pd.to_datetime(f"{current_year}-{s_date.replace('月','-').replace('日','').replace('號','')}")
                         except ValueError: return pd.NaT
-                    elif len(s_date) <= 4 and s_date.replace('.', '', 1).isdigit():  # 處理 701, 7.01 等
-                         s_date = str(int(float(s_date)))  # 轉換 701.0 -> 701
-                         if len(s_date) < 3: s_date = '0' * (3-len(s_date)) + s_date  # 補零
+                    elif len(s_date) <= 4 and s_date.replace('.', '', 1).isdigit():
+                         s_date = str(int(float(s_date)))
+                         if len(s_date) < 3: s_date = '0' * (3-len(s_date)) + s_date
                          if len(s_date) > 2:
                             month_missing_count += 1
                             month = int(s_date[:-2])
                             day = int(s_date[-2:])
                             return pd.to_datetime(f"{current_year}-{month}-{day}", errors='coerce')
-                    # 新增：如果只是月份數字（如1,2,...），假設為當月1日
                     elif s_date.isdigit() and 1 <= int(s_date) <= 12:
                         month_missing_count += 1
                         return pd.to_datetime(f"{current_year}-{int(s_date)}-01", errors='coerce')
@@ -265,12 +266,38 @@ def main():
             if month_missing_count > 0:
                 warnings_report.append(f"{colors.YELLOW}警告：有 {colors.BOLD}{month_missing_count}{colors.RESET} 筆紀錄的日期缺少明確年份，已自動假定為今年。{colors.RESET}")
 
-            # 計算每月支出彙總 (如果有processed_df)
             if 'Parsed_Date' in processed_df.columns and 'Amount' in processed_df.columns:
                 expense_df = processed_df[processed_df['Type'].str.lower() == 'expense']
                 if not expense_df.empty:
                     monthly_expenses = expense_df.set_index('Parsed_Date').resample('M')['Amount'].sum().reset_index()
                     monthly_expenses['Amount'] = monthly_expenses['Amount'].fillna(0)
+
+        # --- 新增：通膨調整與年份偵測 ---
+        base_year = datetime.now().year  # 動態基期：腳本運行當年
+        year_range = set()
+        year_inflation_used = {}
+        if monthly_expenses is not None:
+            monthly_expenses['Year'] = monthly_expenses['Parsed_Date'].dt.year
+            monthly_expenses['Real_Amount'] = 0.0
+            for idx, row in monthly_expenses.iterrows():
+                year = row['Year']
+                if year in INFLATION_RATES:
+                    cum_factor = calculate_cumulative_factor(year, base_year)
+                    monthly_expenses.at[idx, 'Real_Amount'] = row['Amount'] * cum_factor
+                    year_range.add(year)
+                    year_inflation_used[year] = INFLATION_RATES[year]
+                else:
+                    warnings_report.append(f"{colors.YELLOW}警告：年份 {year} 無通膨率數據，使用原始金額。{colors.RESET}")
+                    monthly_expenses.at[idx, 'Real_Amount'] = row['Amount']
+
+            # 年份偵測報告
+            if year_range:
+                min_year = min(year_range)
+                max_year = max(year_range)
+                cross_years = len(year_range) > 1
+                warnings_report.append(f"{colors.GREEN}偵測到年份範圍：{min_year} - {max_year} (是否有跨年份：{'是' if cross_years else '否'})。使用基期年：{base_year}。{colors.RESET}")
+                for y in sorted(year_range):
+                    warnings_report.append(f"  - 年份 {y} 使用通膨率：{year_inflation_used[y]}%")
 
         return processed_df, monthly_expenses, "\n".join(warnings_report)
 
@@ -281,49 +308,33 @@ def main():
         y_pred = p(x)
         n = len(x)
         k = degree
-
         residuals = y - y_pred
         mse = np.sum(residuals**2) / (n - k - 1)
-
         y_pred_p = p(predict_x)
-
         x_mean = np.mean(x)
         ssx = np.sum((x - x_mean)**2)
         se = np.sqrt(mse * (1 + 1/n + ((predict_x - x_mean)**2) / ssx))
         t_val = t.ppf((1 + confidence) / 2, n - k - 1)
         lower = y_pred_p - t_val * se
         upper = y_pred_p + t_val * se
-
         return y_pred_p, lower, upper
 
-    # --- 新增：蒙地卡羅儀表板函式 ---
+    # --- 蒙地卡羅儀表板函式 ---
     def monte_carlo_dashboard(monthly_expense_data, num_simulations=10000):
-        """
-        執行蒙地卡羅模擬，並計算風險儀表板所需的百分位數。
-        """
         if len(monthly_expense_data) < 2:
             return None, None, None
-
-        # 直接基於歷史「月總額」的平均與標準差進行模擬
         mean_expense = np.mean(monthly_expense_data)
         std_expense = np.std(monthly_expense_data)
-
-        # 避免標準差為零或過小導致的錯誤
         if std_expense == 0:
-            std_expense = mean_expense * 0.1 # 假設 10% 的波動
-
-        # 產生一萬次下個月總開銷的模擬結果
+            std_expense = mean_expense * 0.1
         simulated_monthly_totals = np.random.normal(mean_expense, std_expense, num_simulations)
-
-        # 計算儀表板所需的百分位數 (25%, 75%, 95%)
         p25, p75, p95 = np.percentile(simulated_monthly_totals, [25, 75, 95])
-
         return p25, p75, p95
 
-    # --- 新增：風險狀態判讀與預算建議函數 (整合數據不足時的替代公式) ---
+    # --- 風險狀態判讀與預算建議函數 (基於實質金額) ---
     def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly_expenses):
         """
-        根據框架判讀風險狀態，並計算動態預算建議。
+        根據框架判讀風險狀態，並計算動態預算建議（使用實質金額）。
         若數據不足6個月，切換到平均支出 + 風險緩衝公式。
         A: 趨勢預測上限 (upper)
         B: 風險區門檻 (p95)
@@ -331,16 +342,16 @@ def main():
         num_months = len(monthly_expenses) if monthly_expenses is not None else 0
 
         if num_months < 6:
-            # 數據不足時，使用平均支出 + 風險緩衝公式
+            # 數據不足時，使用平均支出 + 風險緩衝公式（基於實質金額）
             if num_months < 2:
                 return "無法判讀 (資料不足2個月)", None, None, 0.0
             # 取最近2-3個月平均（若不足3個月，取所有）
             recent_months = min(3, num_months)
-            recent_avg = np.mean(monthly_expenses['Amount'].values[-recent_months:])
+            recent_avg = np.mean(monthly_expenses['Real_Amount'].values[-recent_months:])
             buffer_factor = 0.15  # 預設15% 風險緩衝係數
             suggested_budget = recent_avg * (1 + buffer_factor)
             status = "數據不足，使用替代公式"
-            description = "基於近期平均支出加上15%風險緩衝，提供穩健預算建議。"
+            description = "基於近期平均實質支出加上15%風險緩衝，提供穩健預算建議。"
             prudence_factor = buffer_factor  # 使用緩衝係數作為等效
             return status, description, suggested_budget, prudence_factor
 
@@ -369,12 +380,12 @@ def main():
             description = "潛在衝擊風險較高。您的主要風險並非來自支出增長，而是偶發性大額開銷，建議確保預備金充足。"
             prudence_factor = 0.0
 
-        # 計算建議預算
+        # 計算建議預算（基於實質金額）
         suggested_budget = predicted_value + (prudence_factor * expense_std_dev)
 
         return status, description, suggested_budget, prudence_factor
 
-    # --- 主要分析與預測函數 (升級為四階段模型 + 蒙地卡羅 + 風險預算建議) ---
+    # --- 主要分析與預測函數 (升級為四階段模型 + 蒙地卡羅 + 風險預算建議 + 通膨調整) ---
     def analyze_and_predict(file_paths_str: str, no_color: bool):
         colors = Colors(enabled=not no_color)
         file_paths = [path.strip() for path in file_paths_str.split(';')]
@@ -392,6 +403,7 @@ def main():
         # 計算總支出（如果有processed_df）
         total_income = 0
         total_expense = 0
+        total_real_expense = 0
         is_wide_format_expense_only = (master_df is None and monthly_expenses is not None)
         if master_df is not None:
             master_df['Amount'] = pd.to_numeric(master_df['Amount'], errors='coerce')
@@ -402,11 +414,12 @@ def main():
             total_income = income_df['Amount'].sum()
             total_expense = expense_df['Amount'].sum()
         elif monthly_expenses is not None:
-            total_expense = monthly_expenses['Amount'].sum()  # 寬格式預設全為支出
+            total_expense = monthly_expenses['Amount'].sum()  # 名目總額
+            total_real_expense = monthly_expenses['Real_Amount'].sum()  # 實質總額
 
         net_balance = total_income - total_expense
 
-        # --- 四階段預測：根據數據量選擇方法 ---
+        # --- 四階段預測：根據數據量選擇方法 (基於實質金額) ---
         predicted_expense_str = "無法預測 (資料不足或錯誤)"
         ci_str = ""
         method_used = ""
@@ -414,7 +427,7 @@ def main():
         predicted_value = None
         if monthly_expenses is not None and len(monthly_expenses) >= 2:
             num_months = len(monthly_expenses)
-            data = monthly_expenses['Amount'].values
+            data = monthly_expenses['Real_Amount'].values  # 使用實質金額進行預測
 
             if num_months >= 24:  # ≥24 個月，使用簡化 SARIMA
                 try:
@@ -466,13 +479,13 @@ def main():
                     predicted_expense_str = f"無法預測 (錯誤: {str(e)})"
             elif num_months >= 2:  # 2–5 個月，使用 EMA
                 try:
-                    ema = monthly_expenses['Amount'].ewm(span=num_months, adjust=False).mean()
+                    ema = monthly_expenses['Real_Amount'].ewm(span=num_months, adjust=False).mean()
                     predicted_value = ema.iloc[-1]  # 最後一個 EMA 值作為預測
                     predicted_expense_str = f"{predicted_value:,.2f}"
                     method_used = " (基於 EMA)"
 
                     # EMA Bootstrap 信心區間
-                    residuals = monthly_expenses['Amount'] - ema
+                    residuals = monthly_expenses['Real_Amount'] - ema
                     bootstrap_preds = []
                     for _ in range(1000):
                         resampled_residuals = np.random.choice(residuals, size=num_months, replace=True)
@@ -485,10 +498,10 @@ def main():
                 except Exception as e:
                     predicted_expense_str = f"無法預測 (錯誤: {str(e)})"
 
-        # --- 歷史支出波動性分析 ---
+        # --- 歷史支出波動性分析 (基於實質金額) ---
         expense_std_dev = None
         if monthly_expenses is not None and len(monthly_expenses) >= 2:
-            expense_values = monthly_expenses['Amount']
+            expense_values = monthly_expenses['Real_Amount']
             expense_std_dev = expense_values.std()
             expense_mean = expense_values.mean()
             
@@ -501,14 +514,14 @@ def main():
                 else: level, color = "極高波動 (警示訊號)", colors.RED
                 volatility_report = f" ({expense_cv:.1f}%, {level})"
 
-        # --- 全新：個人財務風險儀表板 (基於蒙地卡羅) ---
+        # --- 全新：個人財務風險儀表板 (基於蒙地卡羅，使用實質金額) ---
         p25 = None
         p75 = None
         p95 = None
         if monthly_expenses is not None and len(monthly_expenses) >= 2:
-            p25, p75, p95 = monte_carlo_dashboard(monthly_expenses['Amount'].values)
+            p25, p75, p95 = monte_carlo_dashboard(monthly_expenses['Real_Amount'].values)
 
-        # --- 新增：風險狀態與預算建議 ---
+        # --- 新增：風險狀態與預算建議 (基於實質金額) ---
         risk_status, risk_description, suggested_budget, prudence_factor = assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly_expenses)
 
         # --- 輸出最終的簡潔報告 ---
@@ -518,12 +531,14 @@ def main():
         if not is_wide_format_expense_only:
             print(f"{colors.BOLD}總收入: {colors.GREEN}{total_income:,.2f}{colors.RESET}")
         
-        # 顯示總支出
-        print(f"{colors.BOLD}總支出: {colors.RED}{total_expense:,.2f}{colors.RESET}")
+        # 顯示總支出（名目與實質）
+        print(f"{colors.BOLD}總支出 (名目): {colors.RED}{total_expense:,.2f}{colors.RESET}")
+        if total_real_expense > 0:
+            print(f"{colors.BOLD}總支出 (實質，經通膨調整): {colors.RED}{total_real_expense:,.2f}{colors.RESET}")
         
         # 顯示歷史波動
         if expense_std_dev is not None:
-            print(f"{colors.BOLD}歷史月均支出波動: {color}{expense_std_dev:,.2f}{volatility_report}{colors.RESET}")
+            print(f"{colors.BOLD}歷史月均支出波動 (基於實質金額): {color}{expense_std_dev:,.2f}{volatility_report}{colors.RESET}")
         
         # 處理淨餘額
         if not is_wide_format_expense_only:
@@ -531,12 +546,12 @@ def main():
             balance_color = colors.GREEN if net_balance >= 0 else colors.RED
             print(f"{colors.BOLD}淨餘額: {balance_color}{colors.BOLD}{net_balance:,.2f}{colors.RESET}")
         
-        # 顯示傳統預測結果
-        print(f"\n{colors.PURPLE}{colors.BOLD}>>> 下個月趨勢預測: {predicted_expense_str}{ci_str}{method_used}{colors.RESET}")
+        # 顯示傳統預測結果 (基於實質金額)
+        print(f"\n{colors.PURPLE}{colors.BOLD}>>> 下個月趨勢預測 (基於實質金額): {predicted_expense_str}{ci_str}{method_used}{colors.RESET}")
 
-        # 顯示蒙地卡羅儀表板
+        # 顯示蒙地卡羅儀表板 (基於實質金額)
         if p25 is not None:
-            print(f"\n{colors.CYAN}{colors.BOLD}>>> 個人財務風險儀表板 (基於 10,000 次模擬){colors.RESET}")
+            print(f"\n{colors.CYAN}{colors.BOLD}>>> 個人財務風險儀表板 (基於 10,000 次模擬，實質金額){colors.RESET}")
             print(f"{colors.GREEN}--------------------------------------------------{colors.RESET}")
             print(f"{colors.GREEN}  [安全區] {p25:,.0f} ~ {p75:,.0f} 元 (50% 機率){colors.RESET}")
             print(f"{colors.WHITE}    └ 這是您最可能的核心開銷範圍，可作為常規預算。{colors.RESET}")
@@ -548,16 +563,19 @@ def main():
             print(f"{colors.WHITE}    └ 發生極端高額事件，此數值可作為緊急預備金的參考。{colors.RESET}")
             print(f"{colors.GREEN}--------------------------------------------------{colors.RESET}")
 
-        # 新增：綜合預算建議區塊
+        # 新增：綜合預算建議區塊 (基於實質金額)
         if risk_status != "無法判讀 (資料不足)" and risk_status != "無法判讀 (資料不足2個月)":
-            print(f"\n{colors.CYAN}{colors.BOLD}>>> 綜合預算建議{colors.RESET}")
+            print(f"\n{colors.CYAN}{colors.BOLD}>>> 綜合預算建議 (基於實質金額){colors.RESET}")
             print(f"{colors.BOLD}風險狀態: {risk_status}{colors.RESET}")
             print(f"{colors.WHITE}{risk_description}{colors.RESET}")
             print(f"{colors.BOLD}建議下個月預算: {suggested_budget:,.2f} 元{colors.RESET}")
             if predicted_value is not None and expense_std_dev is not None:
                 print(f"{colors.WHITE}    └ 計算依據：趨勢預測中心值 ({predicted_value:,.2f}) + 審慎緩衝區 ({prudence_factor} * {expense_std_dev:,.2f}){colors.RESET}")
             elif "替代公式" in status:
-                print(f"{colors.WHITE}    └ 計算依據：近期平均支出 + 15% 風險緩衝 (適用於數據不足情況)。{colors.RESET}")
+                print(f"{colors.WHITE}    └ 計算依據：近期平均實質支出 + 15% 風險緩衝 (適用於數據不足情況)。{colors.RESET}")
+
+        # 通膨調整說明
+        print(f"\n{colors.WHITE}【註】關於「實質金額」：為了讓不同年份的支出能被公平比較，本報告已將所有歷史數據，統一換算為當前基期年的貨幣價值。這能幫助您在扣除物價上漲的影響後，看清自己真實的消費習慣變化。{colors.RESET}")
 
         print(f"{colors.CYAN}{colors.BOLD}========================================{colors.RESET}\n")
 
@@ -594,4 +612,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
