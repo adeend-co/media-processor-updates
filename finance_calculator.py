@@ -2,20 +2,20 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v1.1                #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v1.2                #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 新增：風險狀態判讀與動態預算建議框架。                                               #
+# 新增：風險狀態判讀與動態預算建議框架；數據不足時切換到平均支出 + 風險緩衝公式。             #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v1.1.1"  # 更新版本：加入風險判讀與預算建議
+SCRIPT_VERSION = "v1.2.0"  # 更新版本：加入數據不足時的替代預算公式
 SCRIPT_UPDATE_DATE = "2025-07-14"
 
 import sys
@@ -320,14 +320,31 @@ def main():
 
         return p25, p75, p95
 
-    # --- 新增：風險狀態判讀與預算建議函數 ---
-    def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev):
+    # --- 新增：風險狀態判讀與預算建議函數 (整合數據不足時的替代公式) ---
+    def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly_expenses):
         """
         根據框架判讀風險狀態，並計算動態預算建議。
+        若數據不足6個月，切換到平均支出 + 風險緩衝公式。
         A: 趨勢預測上限 (upper)
         B: 風險區門檻 (p95)
         """
-        # 如果關鍵數據不足，返回預設值，並包含 prudence_factor 的預設值
+        num_months = len(monthly_expenses) if monthly_expenses is not None else 0
+
+        if num_months < 6:
+            # 數據不足時，使用平均支出 + 風險緩衝公式
+            if num_months < 2:
+                return "無法判讀 (資料不足2個月)", None, None, 0.0
+            # 取最近2-3個月平均（若不足3個月，取所有）
+            recent_months = min(3, num_months)
+            recent_avg = np.mean(monthly_expenses['Amount'].values[-recent_months:])
+            buffer_factor = 0.15  # 預設15% 風險緩衝係數
+            suggested_budget = recent_avg * (1 + buffer_factor)
+            status = "數據不足，使用替代公式"
+            description = "基於近期平均支出加上15%風險緩衝，提供穩健預算建議。"
+            prudence_factor = buffer_factor  # 使用緩衝係數作為等效
+            return status, description, suggested_budget, prudence_factor
+
+        # 正常情況：如果關鍵數據不足，返回預設值
         if p95 is None or expense_std_dev is None or predicted_value is None or upper is None:
             return "無法判讀 (資料不足)", None, None, 0.0
 
@@ -347,7 +364,7 @@ def main():
             status = "趨勢與風險同步"
             description = "財務狀態穩定。您的支出趨勢與歷史波動一致，風險處於可預測的軌道上。"
             prudence_factor = 0.25
-        else: # A < B * 0.85
+        else:
             status = "偶發衝擊主導"
             description = "潛在衝擊風險較高。您的主要風險並非來自支出增長，而是偶發性大額開銷，建議確保預備金充足。"
             prudence_factor = 0.0
@@ -355,9 +372,8 @@ def main():
         # 計算建議預算
         suggested_budget = predicted_value + (prudence_factor * expense_std_dev)
 
-        # *** 修正點：將 prudence_factor 加入返回 Tuple 中 ***
         return status, description, suggested_budget, prudence_factor
-    
+
     # --- 主要分析與預測函數 (升級為四階段模型 + 蒙地卡羅 + 風險預算建議) ---
     def analyze_and_predict(file_paths_str: str, no_color: bool):
         colors = Colors(enabled=not no_color)
@@ -486,13 +502,14 @@ def main():
                 volatility_report = f" ({expense_cv:.1f}%, {level})"
 
         # --- 全新：個人財務風險儀表板 (基於蒙地卡羅) ---
+        p25 = None
+        p75 = None
         p95 = None
         if monthly_expenses is not None and len(monthly_expenses) >= 2:
             p25, p75, p95 = monte_carlo_dashboard(monthly_expenses['Amount'].values)
 
         # --- 新增：風險狀態與預算建議 ---
-        # *** 修正點：接收新返回的 prudence_factor 變數 ***
-        risk_status, risk_description, suggested_budget, prudence_factor = assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev)
+        risk_status, risk_description, suggested_budget, prudence_factor = assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly_expenses)
 
         # --- 輸出最終的簡潔報告 ---
         print(f"\n{colors.CYAN}{colors.BOLD}========== 財務分析與預測報告 =========={colors.RESET}")
@@ -518,7 +535,7 @@ def main():
         print(f"\n{colors.PURPLE}{colors.BOLD}>>> 下個月趨勢預測: {predicted_expense_str}{ci_str}{method_used}{colors.RESET}")
 
         # 顯示蒙地卡羅儀表板
-        if p25 is not None and p75 is not None and p95 is not None:
+        if p25 is not None:
             print(f"\n{colors.CYAN}{colors.BOLD}>>> 個人財務風險儀表板 (基於 10,000 次模擬){colors.RESET}")
             print(f"{colors.GREEN}--------------------------------------------------{colors.RESET}")
             print(f"{colors.GREEN}  [安全區] {p25:,.0f} ~ {p75:,.0f} 元 (50% 機率){colors.RESET}")
@@ -532,14 +549,15 @@ def main():
             print(f"{colors.GREEN}--------------------------------------------------{colors.RESET}")
 
         # 新增：綜合預算建議區塊
-        if risk_status != "無法判讀 (資料不足)":
+        if risk_status != "無法判讀 (資料不足)" and risk_status != "無法判讀 (資料不足2個月)":
             print(f"\n{colors.CYAN}{colors.BOLD}>>> 綜合預算建議{colors.RESET}")
             print(f"{colors.BOLD}風險狀態: {risk_status}{colors.RESET}")
             print(f"{colors.WHITE}{risk_description}{colors.RESET}")
             print(f"{colors.BOLD}建議下個月預算: {suggested_budget:,.2f} 元{colors.RESET}")
-            # 現在 prudence_factor 在此處是可用的
             if predicted_value is not None and expense_std_dev is not None:
                 print(f"{colors.WHITE}    └ 計算依據：趨勢預測中心值 ({predicted_value:,.2f}) + 審慎緩衝區 ({prudence_factor} * {expense_std_dev:,.2f}){colors.RESET}")
+            elif "替代公式" in status:
+                print(f"{colors.WHITE}    └ 計算依據：近期平均支出 + 15% 風險緩衝 (適用於數據不足情況)。{colors.RESET}")
 
         print(f"{colors.CYAN}{colors.BOLD}========================================{colors.RESET}\n")
 
@@ -576,3 +594,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
