@@ -14,7 +14,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "月份支出追蹤器"
-SCRIPT_VERSION = "v1.0.6"
+SCRIPT_VERSION = "v1.0.7"
 SCRIPT_UPDATE_DATE = "2025-07-14"
 
 import sys
@@ -130,19 +130,22 @@ def main():
         """
         all_dfs = []
         for file_path in file_paths:
-            try:
-                # 修復：指定編碼為 'cp950' 以支援繁體中文，fallback 到 'utf-8'
+            df = None
+            encodings = ['utf-8-sig', 'cp950', 'big5', 'utf-8']  # 擴展支援Windows/Excel常見編碼
+            for encoding in encodings:
                 try:
-                    df = pd.read_csv(file_path.strip(), encoding='cp950')
+                    df = pd.read_csv(file_path.strip(), encoding=encoding)
+                    print(f"{colors.GREEN}成功讀取 '{file_path.strip()}' 使用編碼: {encoding}{colors.RESET}")
+                    break
                 except UnicodeDecodeError:
-                    df = pd.read_csv(file_path.strip(), encoding='utf-8')
-                all_dfs.append(df)
-            except FileNotFoundError:
-                print(f"{colors.RED}錯誤：找不到檔案 '{file_path.strip()}'！將跳過此檔案。{colors.RESET}")
+                    continue
+                except FileNotFoundError:
+                    print(f"{colors.RED}錯誤：找不到檔案 '{file_path.strip()}'！將跳過此檔案。{colors.RESET}")
+                    break
+            if df is None:
+                print(f"{colors.RED}錯誤：無法解碼檔案 '{file_path.strip()}' - 請檢查檔案編碼。{colors.RESET}")
                 continue
-            except UnicodeDecodeError as e:
-                print(f"{colors.RED}錯誤：無法解碼檔案 '{file_path.strip()}' - {e}。請檢查檔案編碼。{colors.RESET}")
-                continue
+            all_dfs.append(df)
         
         if not all_dfs:
             return None, None, "沒有成功讀取任何資料檔案。"
@@ -164,7 +167,6 @@ def main():
             date_col = find_column_by_synonyms(master_df.columns, ['月份', '月', 'Month'])
             if not date_col:
                 return None, None, "無法辨識月份欄位，請確認 CSV 有 '月份' 或類似欄位。"
-
             master_df[date_col] = master_df[date_col].astype(str)
             
             # 忽略可能的總計行
