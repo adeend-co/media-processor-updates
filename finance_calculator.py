@@ -15,7 +15,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v1.3.0"  # 更新版本：加入通膨調整與年份偵測
+SCRIPT_VERSION = "v1.3.1"  # 更新版本：加入通膨調整與年份偵測
 SCRIPT_UPDATE_DATE = "2025-07-14"
 
 import sys
@@ -146,7 +146,7 @@ def main():
                 pass
         return None  # 無效日期
 
-    def process_finance_data(file_paths: list, colors: Colors):
+        def process_finance_data(file_paths: list, colors: Colors):
         """
         讀取、合併、清理並分析來自多個 CSV 檔案的財務資料。支援寬格式偵測排列並直接計算月總額。
         新增：通膨調整，計算實質金額，並偵測年份範圍。
@@ -219,7 +219,9 @@ def main():
             else:
                 monthly_amounts = master_df.drop(columns=[date_col]).sum(axis=0)
                 monthly_expenses = pd.DataFrame({'Parsed_Date': master_df.columns[1:], 'Amount': monthly_amounts.values})
+            # 修正點：將 Parsed_Date 轉換為 datetime
             monthly_expenses['Parsed_Date'] = monthly_expenses['Parsed_Date'].apply(normalize_date)
+            monthly_expenses['Parsed_Date'] = pd.to_datetime(monthly_expenses['Parsed_Date'], errors='coerce')
             monthly_expenses = monthly_expenses.dropna(subset=['Parsed_Date'])
             monthly_expenses = monthly_expenses[monthly_expenses['Amount'] > 0]
             monthly_expenses.sort_values('Parsed_Date', inplace=True)
@@ -287,8 +289,10 @@ def main():
                     year_range.add(year)
                     year_inflation_used[year] = INFLATION_RATES[year]
                 else:
-                    warnings_report.append(f"{colors.YELLOW}警告：年份 {year} 無通膨率數據，使用原始金額。{colors.RESET}")
+                    warnings_report.append(f"{colors.YELLOW}警告：年份 {year} 無通膨率數據，使用默認 0% 調整，使用原始金額。{colors.RESET}")
                     monthly_expenses.at[idx, 'Real_Amount'] = row['Amount']
+                    year_range.add(year)
+                    year_inflation_used[year] = 0.0  # 默認值
 
             # 年份偵測報告
             if year_range:
