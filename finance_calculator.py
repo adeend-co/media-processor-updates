@@ -15,7 +15,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v1.1.0"  # 更新版本：加入風險判讀與預算建議
+SCRIPT_VERSION = "v1.1.1"  # 更新版本：加入風險判讀與預算建議
 SCRIPT_UPDATE_DATE = "2025-07-14"
 
 import sys
@@ -327,8 +327,9 @@ def main():
         A: 趨勢預測上限 (upper)
         B: 風險區門檻 (p95)
         """
-        if p95 is None or expense_std_dev is None:
-            return "無法判讀 (資料不足)", None, None
+        # 如果關鍵數據不足，返回預設值，並包含 prudence_factor 的預設值
+        if p95 is None or expense_std_dev is None or predicted_value is None or upper is None:
+            return "無法判讀 (資料不足)", None, None, 0.0
 
         A = upper
         B = p95
@@ -346,7 +347,7 @@ def main():
             status = "趨勢與風險同步"
             description = "財務狀態穩定。您的支出趨勢與歷史波動一致，風險處於可預測的軌道上。"
             prudence_factor = 0.25
-        else:
+        else: # A < B * 0.85
             status = "偶發衝擊主導"
             description = "潛在衝擊風險較高。您的主要風險並非來自支出增長，而是偶發性大額開銷，建議確保預備金充足。"
             prudence_factor = 0.0
@@ -354,8 +355,9 @@ def main():
         # 計算建議預算
         suggested_budget = predicted_value + (prudence_factor * expense_std_dev)
 
-        return status, description, suggested_budget
-
+        # *** 修正點：將 prudence_factor 加入返回 Tuple 中 ***
+        return status, description, suggested_budget, prudence_factor
+    
     # --- 主要分析與預測函數 (升級為四階段模型 + 蒙地卡羅 + 風險預算建議) ---
     def analyze_and_predict(file_paths_str: str, no_color: bool):
         colors = Colors(enabled=not no_color)
@@ -489,7 +491,8 @@ def main():
             p25, p75, p95 = monte_carlo_dashboard(monthly_expenses['Amount'].values)
 
         # --- 新增：風險狀態與預算建議 ---
-        risk_status, risk_description, suggested_budget = assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev)
+        # *** 修正點：接收新返回的 prudence_factor 變數 ***
+        risk_status, risk_description, suggested_budget, prudence_factor = assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev)
 
         # --- 輸出最終的簡潔報告 ---
         print(f"\n{colors.CYAN}{colors.BOLD}========== 財務分析與預測報告 =========={colors.RESET}")
@@ -515,7 +518,7 @@ def main():
         print(f"\n{colors.PURPLE}{colors.BOLD}>>> 下個月趨勢預測: {predicted_expense_str}{ci_str}{method_used}{colors.RESET}")
 
         # 顯示蒙地卡羅儀表板
-        if p25 is not None:
+        if p25 is not None and p75 is not None and p95 is not None:
             print(f"\n{colors.CYAN}{colors.BOLD}>>> 個人財務風險儀表板 (基於 10,000 次模擬){colors.RESET}")
             print(f"{colors.GREEN}--------------------------------------------------{colors.RESET}")
             print(f"{colors.GREEN}  [安全區] {p25:,.0f} ~ {p75:,.0f} 元 (50% 機率){colors.RESET}")
@@ -534,7 +537,9 @@ def main():
             print(f"{colors.BOLD}風險狀態: {risk_status}{colors.RESET}")
             print(f"{colors.WHITE}{risk_description}{colors.RESET}")
             print(f"{colors.BOLD}建議下個月預算: {suggested_budget:,.2f} 元{colors.RESET}")
-            print(f"{colors.WHITE}    └ 計算依據：趨勢預測中心值 ({predicted_value:,.2f}) + 審慎緩衝區 ({prudence_factor} * {expense_std_dev:,.2f}){colors.RESET}")
+            # 現在 prudence_factor 在此處是可用的
+            if predicted_value is not None and expense_std_dev is not None:
+                print(f"{colors.WHITE}    └ 計算依據：趨勢預測中心值 ({predicted_value:,.2f}) + 審慎緩衝區 ({prudence_factor} * {expense_std_dev:,.2f}){colors.RESET}")
 
         print(f"{colors.CYAN}{colors.BOLD}========================================{colors.RESET}\n")
 
