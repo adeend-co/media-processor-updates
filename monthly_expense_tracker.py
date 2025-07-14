@@ -14,7 +14,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "月份支出追蹤器"
-SCRIPT_VERSION = "v1.0.7"
+SCRIPT_VERSION = "v1.0.8"
 SCRIPT_UPDATE_DATE = "2025-07-14"
 
 import sys
@@ -97,14 +97,14 @@ def main():
         return None
 
     def normalize_date(date_str):
-        """標準化日期為年月格式 (e.g., 2025-01)，支援年月日、月份中文等格式"""
-        s = str(date_str).strip().replace('月', '').replace('年', '-').replace(' ', '')
+        """標準化日期為年月格式 (e.g., 2025-01)，支援更多變體"""
+        s = str(date_str).strip().replace('月', '').replace('年', '-').replace(' ', '').replace('/', '-')
         current_year = datetime.now().year
         # 處理像 "1月" 或 "1" 的格式
         if s.isdigit() and len(s) <= 2:
             month = int(s)
             return f"{current_year}-{month:02d}"
-        # 處理 "2025-1" 或 "20251"
+        # 處理 "2025-1" 或 "20251" 或 "2025-07"
         if '-' in s:
             parts = s.split('-')
             year = int(parts[0]) if len(parts[0]) == 4 else current_year
@@ -121,6 +121,12 @@ def main():
                 return f"{dt.year}-{dt.month:02d}"
             except ValueError:
                 pass
+        # 新增：英文月份支援 (e.g., "Jul 2025" -> "2025-07")
+        try:
+            dt = datetime.strptime(s, '%b %Y')
+            return f"{dt.year}-{dt.month:02d}"
+        except ValueError:
+            pass
         return None  # 無效日期
 
     def process_finance_data(file_paths: list, colors: Colors):
@@ -129,48 +135,61 @@ def main():
         支援寬格式（月份為行，項目為欄）和長格式，專注於支出，按月份分組項目。
         """
         all_dfs = []
+        debug_msgs = []  # 新增：收集除錯訊息
         for file_path in file_paths:
             df = None
             encodings = ['utf-8-sig', 'cp950', 'big5', 'utf-8']  # 擴展支援Windows/Excel常見編碼
             for encoding in encodings:
                 try:
                     df = pd.read_csv(file_path.strip(), encoding=encoding)
-                    print(f"{colors.GREEN}成功讀取 '{file_path.strip()}' 使用編碼: {encoding}{colors.RESET}")
+                    debug_msgs.append(f"成功讀取 '{file_path.strip()}' 使用編碼: {encoding}")
+                    print(f"{colors.GREEN}{debug_msgs[-1]}{colors.RESET}")
                     break
                 except UnicodeDecodeError:
                     continue
                 except FileNotFoundError:
-                    print(f"{colors.RED}錯誤：找不到檔案 '{file_path.strip()}'！將跳過此檔案。{colors.RESET}")
+                    msg = f"錯誤：找不到檔案 '{file_path.strip()}'！將跳過此檔案。"
+                    debug_msgs.append(msg)
+                    print(f"{colors.RED}{msg}{colors.RESET}")
                     break
             if df is None:
-                print(f"{colors.RED}錯誤：無法解碼檔案 '{file_path.strip()}' - 請檢查檔案編碼。{colors.RESET}")
+                msg = f"錯誤：無法解碼檔案 '{file_path.strip()}' - 請檢查檔案編碼。"
+                debug_msgs.append(msg)
+                print(f"{colors.RED}{msg}{colors.RESET}")
                 continue
+            # 新增：顯示偵測到的欄位
+            debug_msgs.append(f"檔案 '{file_path.strip()}' 欄位: {list(df.columns)}")
+            print(f"{colors.YELLOW}{debug_msgs[-1]}{colors.RESET}")
             all_dfs.append(df)
         
         if not all_dfs:
-            return None, None, "沒有成功讀取任何資料檔案。"
+            return None, None, "\n".join(debug_msgs) + "\n沒有成功讀取任何資料檔案。"
 
         master_df = pd.concat(all_dfs, ignore_index=True)
         master_df.columns = master_df.columns.str.strip()
 
         # 嘗試辨識長格式
-        date_col = find_column_by_synonyms(master_df.columns, ['日期', '時間', 'Date', 'time', '月份'])
-        item_col = find_column_by_synonyms(master_df.columns, ['項目', '類型', 'Type', '收支項目', '收支'])
-        amount_col = find_column_by_synonyms(master_df.columns, ['金額', 'Amount', 'amount', '價格', '支出', 'expense'])
+        date_col = find_column_by_synonyms(master_df.columns, ['日期', '時間', 'Date', 'time', '月份', 'month', '年月'])
+        item_col = find_column_by_synonyms(master_df.columns, ['項目', '類型', 'Type', '收支項目', '收支', 'item', 'category'])
+        amount_col = find_column_by_synonyms(master_df.columns, ['金額', 'Amount', 'amount', '價格', '支出', 'expense', 'total'])
+        
+        debug_msgs.append(f"偵測到欄位 - 日期: {date_col}, 項目: {item_col}, 金額: {amount_col}")
+        print(f"{colors.YELLOW}{debug_msgs[-1]}{colors.RESET}")
         
         if date_col and item_col and amount_col:
             # 長格式處理
             processed_df = master_df[[date_col, item_col, amount_col]].copy()
             processed_df.rename(columns={date_col: 'YearMonth', item_col: 'Item', amount_col: 'Amount'}, inplace=True)
         else:
-            # 寬格式處理：假設第一欄為月份，其他為項目
-            date_col = find_column_by_synonyms(master_df.columns, ['月份', '月', 'Month'])
+            # 寬格式處理：擴展月份欄位搜尋
+            date_col = find_column_by_synonyms(master_df.columns, ['月份', '月', 'Month', '年月', 'date'])
             if not date_col:
-                return None, None, "無法辨識月份欄位，請確認 CSV 有 '月份' 或類似欄位。"
+                return None, None, "\n".join(debug_msgs) + "\n無法辨識月份欄位，請確認 CSV 有 '月份' 或類似欄位。"
             master_df[date_col] = master_df[date_col].astype(str)
             
-            # 忽略可能的總計行
-            master_df = master_df[~master_df[date_col].str.contains('合計|總計|Total', na=False)]
+            # 忽略可能的總計行或空白行
+            master_df = master_df[~master_df[date_col].str.contains('合計|總計|Total|Summary', na=False, case=False)]
+            master_df = master_df.dropna(how='all')
             
             # 使用 melt 轉換為長格式
             item_columns = [col for col in master_df.columns if col != date_col]
@@ -178,10 +197,18 @@ def main():
             processed_df.rename(columns={date_col: 'YearMonth'}, inplace=True)
         
         # 標準化日期並清理資料
+        original_rows = len(processed_df)
         processed_df['YearMonth'] = processed_df['YearMonth'].apply(normalize_date)
         processed_df = processed_df.dropna(subset=['YearMonth', 'Item', 'Amount'])
         processed_df['Amount'] = pd.to_numeric(processed_df['Amount'], errors='coerce').fillna(0)
         processed_df = processed_df[processed_df['Amount'] > 0]
+        filtered_rows = len(processed_df)
+        
+        debug_msgs.append(f"資料清理：原始行數 {original_rows}，過濾後行數 {filtered_rows} (移除了無效日期/項目/金額或非正值)")
+        print(f"{colors.YELLOW}{debug_msgs[-1]}{colors.RESET}")
+
+        if filtered_rows == 0:
+            return None, None, "\n".join(debug_msgs) + "\n沒有有效數據行，請檢查 CSV 內容。"
 
         # 按年月和項目分組，計算支出總和
         monthly_item_expense = processed_df.groupby(['YearMonth', 'Item'])['Amount'].sum().reset_index()
@@ -198,23 +225,23 @@ def main():
         total_expense = total_expense_by_item['Amount'].sum()
         total_expense_by_item['OverallPercent'] = (total_expense_by_item['Amount'] / total_expense * 100).round(2)
 
-        return merged, total_expense_by_item, ""
+        return merged, total_expense_by_item, "\n".join(debug_msgs)
 
     # --- 主要分析函數 ---
     def analyze_and_predict(file_paths_str: str, no_color: bool):
         colors = Colors(enabled=not no_color)
         file_paths = [path.strip() for path in file_paths_str.split(';')]
 
-        monthly_data, item_summary, warnings_report = process_finance_data(file_paths, colors)
+        monthly_data, item_summary, debug_report = process_finance_data(file_paths, colors)
 
         if monthly_data is None:
-            print(f"\n{colors.RED}資料處理失敗：{warnings_report}{colors.RESET}\n")
+            print(f"\n{colors.RED}資料處理失敗：{debug_report}{colors.RESET}\n")
             return
 
-        if warnings_report:
-            print(f"\n{colors.YELLOW}--- 資料品質摘要 ---{colors.RESET}")
-            print(warnings_report)
-            print(f"{colors.YELLOW}--------------------{colors.RESET}")
+        if debug_report:
+            print(f"\n{colors.YELLOW}--- 除錯摘要 ---{colors.RESET}")
+            print(debug_report)
+            print(f"{colors.YELLOW}----------------{colors.RESET}")
 
         # 輸出報告
         print(f"\n{colors.CYAN}{colors.BOLD}========== 月份項目支出分析報告 =========={colors.RESET}")
