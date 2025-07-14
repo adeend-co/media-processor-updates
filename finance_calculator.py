@@ -2,7 +2,7 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v1.4                #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v1.5                #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
@@ -15,7 +15,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v1.4.0"  # 更新版本：調整 CPI 計算邏輯為數據年基值
+SCRIPT_VERSION = "v1.5.0"  # 更新版本：修正 2019 年錯誤與年份處理
 SCRIPT_UPDATE_DATE = "2025-07-14"
 
 import sys
@@ -51,7 +51,7 @@ INFLATION_RATES = {
     2025: 1.88,
 }
 
-# --- 計算 CPI 指數的輔助函數 ---
+# --- 計算 CPI 指數的輔助函數 (修正版) ---
 def calculate_cpi_values(input_years, inflation_rates):
     if not input_years:
         return {}
@@ -59,17 +59,25 @@ def calculate_cpi_values(input_years, inflation_rates):
     years = sorted(set(input_years) | set(inflation_rates.keys()))
     cpi_values = {}
     cpi_values[base_year] = 100.0
-    for i in range(1, len(years)):
-        prev_year = years[i-1]
-        curr_year = years[i]
-        rate = inflation_rates.get(curr_year, 0.0) / 100
-        cpi_values[curr_year] = cpi_values[prev_year] * (1 + rate)
+    # 向後計算
+    for y in range(base_year + 1, max(years) + 1):
+        prev_cpi = cpi_values.get(y - 1, 100.0)
+        rate = inflation_rates.get(y, 0.0) / 100
+        cpi_values[y] = prev_cpi * (1 + rate)
+    # 向前計算（如果有更早年份）
+    for y in range(base_year - 1, min(years) - 1, -1):
+        next_cpi = cpi_values.get(y + 1, 100.0)
+        rate = inflation_rates.get(y + 1, 0.0) / 100  # 使用下一年的率反推
+        if rate != -1:  # 避免除零
+            cpi_values[y] = next_cpi / (1 + rate)
+        else:
+            cpi_values[y] = next_cpi
     return cpi_values, base_year
 
-# --- 計算實質金額的輔助函數 ---
+# --- 計算實質金額的輔助函數 (修正版) ---
 def adjust_to_real_amount(amount, data_year, target_year, cpi_values):
     if data_year not in cpi_values or target_year not in cpi_values:
-        return amount
+        return amount  # 無數據時返回原始金額
     return amount * (cpi_values[target_year] / cpi_values[data_year])
 
 # --- 環境檢查函數 ---
@@ -141,7 +149,7 @@ def main():
                 pass
         return None
 
-    # --- 資料處理函數 ---
+    # --- 資料處理函數 (修正版) ---
     def process_finance_data(file_paths: list, colors: Colors):
         all_dfs = []
         encodings_to_try = ['utf-8', 'utf-8-sig', 'cp950', 'big5', 'gb18030']
@@ -265,7 +273,7 @@ def main():
                     monthly_expenses = expense_df.set_index('Parsed_Date').resample('M')['Amount'].sum().reset_index()
                     monthly_expenses['Amount'] = monthly_expenses['Amount'].fillna(0)
 
-        # --- 通膨調整與年份偵測 ---
+        # --- 通膨調整與年份偵測 (修正版) ---
         base_year = datetime.now().year  # 目標基期年
         year_range = set()
         year_cpi_used = {}
@@ -273,24 +281,27 @@ def main():
             monthly_expenses['Year'] = monthly_expenses['Parsed_Date'].dt.year
             year_range = set(monthly_expenses['Year'])
             if year_range:
-                cpi_values, cpi_base_year = calculate_cpi_values(year_range, INFLATION_RATES)
-                monthly_expenses['Real_Amount'] = 0.0
-                for idx, row in monthly_expenses.iterrows():
-                    year = row['Year']
-                    monthly_expenses.at[idx, 'Real_Amount'] = adjust_to_real_amount(row['Amount'], year, base_year, cpi_values)
-                    year_cpi_used[year] = cpi_values.get(year, '無數據')
+                try:
+                    cpi_values, cpi_base_year = calculate_cpi_values(year_range, INFLATION_RATES)
+                    monthly_expenses['Real_Amount'] = 0.0
+                    for idx, row in monthly_expenses.iterrows():
+                        year = row['Year']
+                        monthly_expenses.at[idx, 'Real_Amount'] = adjust_to_real_amount(row['Amount'], year, base_year, cpi_values)
+                        year_cpi_used[year] = cpi_values.get(year, '無數據')
 
-                # CPI 基準告知
-                warnings_report.append(f"{colors.GREEN}CPI 基準年份：{cpi_base_year} 年（基於輸入數據最早年份，指數設為 100）。計算到目標年：{base_year} 年。{colors.RESET}")
+                    # CPI 基準告知
+                    warnings_report.append(f"{colors.GREEN}CPI 基準年份：{cpi_base_year} 年（基於輸入數據最早年份，指數設為 100）。計算到目標年：{base_year} 年。{colors.RESET}")
 
-                # 年份偵測報告
-                min_year = min(year_range)
-                max_year = max(year_range)
-                cross_years = len(year_range) > 1
-                warnings_report.append(f"{colors.GREEN}偵測到年份範圍：{min_year} - {max_year} (是否有跨年份：{'是' if cross_years else '否'})。{colors.RESET}")
-                for y in sorted(year_range):
-                    cpi_val = year_cpi_used[y]
-                    warnings_report.append(f"  - 年份 {y} 使用 CPI：{cpi_val:.2f}" if isinstance(cpi_val, float) else f"  - 年份 {y} 使用 CPI：{cpi_val}")
+                    # 年份偵測報告
+                    min_year = min(year_range)
+                    max_year = max(year_range)
+                    cross_years = len(year_range) > 1
+                    warnings_report.append(f"{colors.GREEN}偵測到年份範圍：{min_year} - {max_year} (是否有跨年份：{'是' if cross_years else '否'})。{colors.RESET}")
+                    for y in sorted(year_range):
+                        cpi_val = year_cpi_used[y]
+                        warnings_report.append(f"  - 年份 {y} 使用 CPI：{cpi_val:.2f}" if isinstance(cpi_val, float) else f"  - 年份 {y} 使用 CPI：{cpi_val}")
+                except Exception as e:
+                    warnings_report.append(f"{colors.RED}通膨調整錯誤：{str(e)}。使用原始金額繼續分析。{colors.RESET}")
 
         return processed_df, monthly_expenses, "\n".join(warnings_report)
 
@@ -312,16 +323,28 @@ def main():
         upper = y_pred_p + t_val * se
         return y_pred_p, lower, upper
 
-    # --- 蒙地卡羅儀表板函式 ---
+    # --- 蒙地卡羅儀表板函式 (修正版) ---
     def monte_carlo_dashboard(monthly_expense_data, num_simulations=10000):
+        """
+        執行蒙地卡羅模擬，並計算風險儀表板所需的百分位數。
+        """
         if len(monthly_expense_data) < 2:
             return None, None, None
+
+        # 直接基於歷史「月總額」的平均與標準差進行模擬
         mean_expense = np.mean(monthly_expense_data)
         std_expense = np.std(monthly_expense_data)
+
+        # 避免標準差為零或過小導致的錯誤
         if std_expense == 0:
-            std_expense = mean_expense * 0.1
+            std_expense = mean_expense * 0.1  # 假設 10% 的波動
+
+        # 產生一萬次下個月總開銷的模擬結果
         simulated_monthly_totals = np.random.normal(mean_expense, std_expense, num_simulations)
+
+        # 計算儀表板所需的百分位數 (25%, 75%, 95%)
         p25, p75, p95 = np.percentile(simulated_monthly_totals, [25, 75, 95])
+
         return p25, p75, p95
 
     # --- 風險狀態判讀與預算建議函數 (基於實質金額) ---
