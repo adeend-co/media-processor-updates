@@ -14,7 +14,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v1.0.27"  # 更新版本：加入蒙地卡羅模擬
+SCRIPT_VERSION = "v1.0.28"  # 更新版本：加入蒙地卡羅模擬
 SCRIPT_UPDATE_DATE = "2025-07-14"
 
 import sys
@@ -295,16 +295,29 @@ def main():
 
         return y_pred_p, lower, upper
 
-    # --- 新增：蒙地卡羅模擬函數 ---
-    def monte_carlo_simulation(expense_mean, expense_std, num_simulations=10000, days=30):
-        """使用蒙地卡羅模擬預測下個月開銷分佈"""
-        daily_expenses = np.random.normal(expense_mean / days, expense_std / np.sqrt(days), (num_simulations, days))
-        monthly_simulated = np.sum(daily_expenses, axis=1)
-        sim_mean = np.mean(monthly_simulated)
-        sim_lower = np.percentile(monthly_simulated, 2.5)
-        sim_upper = np.percentile(monthly_simulated, 97.5)
-        risk_prob = np.mean(monthly_simulated > expense_mean) * 100  # 超支機率
-        return sim_mean, sim_lower, sim_upper, risk_prob
+    # --- 新增：蒙地卡羅儀表板函式 ---
+    def monte_carlo_dashboard(monthly_expense_data, num_simulations=10000):
+        """
+        執行蒙地卡羅模擬，並計算風險儀表板所需的百分位數。
+        """
+        if len(monthly_expense_data) < 2:
+            return None, None, None
+
+        # 直接基於歷史「月總額」的平均與標準差進行模擬
+        mean_expense = np.mean(monthly_expense_data)
+        std_expense = np.std(monthly_expense_data)
+
+        # 避免標準差為零或過小導致的錯誤
+        if std_expense == 0:
+            std_expense = mean_expense * 0.1 # 假設 10% 的波動
+
+        # 產生一萬次下個月總開銷的模擬結果
+        simulated_monthly_totals = np.random.normal(mean_expense, std_expense, num_simulations)
+
+        # 計算儀表板所需的百分位數 (25%, 75%, 95%)
+        p25, p75, p95 = np.percentile(simulated_monthly_totals, [25, 75, 95])
+
+        return p25, p75, p95
 
     # --- 主要分析與預測函數 (升級為四階段模型 + 蒙地卡羅模擬) ---
     def analyze_and_predict(file_paths_str: str, no_color: bool):
@@ -415,12 +428,7 @@ def main():
                 except Exception as e:
                     predicted_expense_str = f"無法預測 (錯誤: {str(e)})"
 
-            # --- 新增：蒙地卡羅模擬 (在四階段預測後執行) ---
-            expense_mean = np.mean(data)
-            expense_std = np.std(data)
-            sim_mean, sim_lower, sim_upper, risk_prob = monte_carlo_simulation(expense_mean, expense_std)
-
-        # --- 輸出最終的簡潔報告 (已整合波動性分析) ---
+        # --- 輸出最終的簡潔報告 ---
         print(f"\n{colors.CYAN}{colors.BOLD}========== 財務分析與預測報告 =========={colors.RESET}")
         
         # 處理非寬格式（有收入/支出的情況）
@@ -430,57 +438,49 @@ def main():
         # 顯示總支出
         print(f"{colors.BOLD}總支出: {colors.RED}{total_expense:,.2f}{colors.RESET}")
 
-        # --- 【核心升級功能】計算並顯示歷史支出波動性 ---
+        # --- 歷史支出波動性分析 ---
         if monthly_expenses is not None and len(monthly_expenses) >= 2:
             expense_values = monthly_expenses['Amount']
             expense_std_dev = expense_values.std()
             expense_mean = expense_values.mean()
             
-            # 初始化波動性報告文字
             volatility_report = ""
-
-            # 僅在平均支出大於0時計算變異係數 (CV)，避免除以零的錯誤
             if expense_mean > 0:
                 expense_cv = (expense_std_dev / expense_mean) * 100
-                
-                # 根據 CV 範圍決定描述文字與顏色，實現您期望的表格功能
-                if expense_cv < 20:
-                    level = "低波動 (高度穩定)"
-                    color = colors.GREEN
-                elif 20 <= expense_cv < 45:
-                    level = "中度波動 (正常範圍)"
-                    color = colors.WHITE
-                elif 45 <= expense_cv < 70:
-                    level = "高波動 (值得注意)"
-                    color = colors.YELLOW
-                else: # expense_cv >= 70
-                    level = "極高波動 (警示訊號)"
-                    color = colors.RED
-                
-                # 組合最終的波動性報告文字
+                if expense_cv < 20: level, color = "低波動 (高度穩定)", colors.GREEN
+                elif 20 <= expense_cv < 45: level, color = "中度波動 (正常範圍)", colors.WHITE
+                elif 45 <= expense_cv < 70: level, color = "高波動 (值得注意)", colors.YELLOW
+                else: level, color = "極高波動 (警示訊號)", colors.RED
                 volatility_report = f" ({expense_cv:.1f}%, {level})"
             
-            # 顯示標準差與完整的波動性報告
             print(f"{colors.BOLD}歷史月均支出波動: {color}{expense_std_dev:,.2f}{volatility_report}{colors.RESET}")
         
-        # 處理非寬格式的淨餘額
+        # 處理淨餘額
         if not is_wide_format_expense_only:
             print("------------------------------------------")
             balance_color = colors.GREEN if net_balance >= 0 else colors.RED
             print(f"{colors.BOLD}淨餘額: {balance_color}{colors.BOLD}{net_balance:,.2f}{colors.RESET}")
         
-        # 顯示預測結果
-        print(f"\n{colors.PURPLE}{colors.BOLD}>>> 下個月預測總開銷: {predicted_expense_str}{ci_str}{method_used}{colors.RESET}")
+        # 顯示傳統預測結果
+        print(f"\n{colors.PURPLE}{colors.BOLD}>>> 下個月趨勢預測: {predicted_expense_str}{ci_str}{method_used}{colors.RESET}")
 
-        # --- 新增：輸出蒙地卡羅模擬結果 ---
+        # --- 全新：個人財務風險儀表板 (基於蒙地卡羅) ---
         if monthly_expenses is not None and len(monthly_expenses) >= 2:
-            print(f"\n{colors.PURPLE}{colors.BOLD}>>> 蒙地卡羅模擬結果 (基於 10,000 次模擬):{colors.RESET}")
-            print(f"  - 預測平均開銷: {sim_mean:,.2f}")
-            print(f"  - 95% 信心區間: [{sim_lower:,.2f}, {sim_upper:,.2f}]")
-            print(f"  - 超過歷史平均的風險機率: {risk_prob:.1f}%")
+            p25, p75, p95 = monte_carlo_dashboard(monthly_expenses['Amount'].values)
+            if p25 is not None:
+                print(f"\n{colors.CYAN}{colors.BOLD}>>> 個人財務風險儀表板 (基於 10,000 次模擬){colors.RESET}")
+                print(f"{colors.GREEN}--------------------------------------------------{colors.RESET}")
+                print(f"{colors.GREEN}  [安全區] {p25:,.0f} ~ {p75:,.0f} 元 (50% 機率){colors.RESET}")
+                print(f"{colors.WHITE}    └ 這是您最可能的核心開銷範圍，可作為常規預算。{colors.RESET}")
+                
+                print(f"{colors.YELLOW}  [警戒區] {p75:,.0f} ~ {p95:,.0f} 元 (20% 機率){colors.RESET}")
+                print(f"{colors.WHITE}    └ 發生計畫外消費，提醒您需開始注意非必要支出。{colors.RESET}")
+
+                print(f"{colors.RED}  [風險區] > {p95:,.0f} 元 (5% 機率){colors.RESET}")
+                print(f"{colors.WHITE}    └ 發生極端高額事件，此數值可作為緊急預備金的參考。{colors.RESET}")
+                print(f"{colors.GREEN}--------------------------------------------------{colors.RESET}")
 
         print(f"{colors.CYAN}{colors.BOLD}========================================{colors.RESET}\n")
-
 
     # --- 腳本入口 ---
     warnings.simplefilter("ignore")
