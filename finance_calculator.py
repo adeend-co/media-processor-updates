@@ -2,21 +2,21 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v9.21             #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v1.0                 #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
-# 本腳本為一個高度智慧化的獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。     #
-# 它具備自動格式清理、互動式路徑輸入與 EMA 模型預測等頂級功能。                     #
+# 本腳本為一個高度智慧化的獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。               #
+# 它具備自動格式清理、互動式路徑輸入與 EMA 模型預測等頂級功能。                             #
 #                                                                              #
-# 更新：優先嘗試UTF-8編碼，自動fallback其他常見編碼以修復讀取錯誤。              #
+# 更新：優先嘗試UTF-8編碼，自動fallback其他常見編碼以修復讀取錯誤。                        #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v9.23"  # 更新版本以優先UTF-8並自動嘗試編碼
-SCRIPT_UPDATE_DATE = "2025-07-13"
+SCRIPT_VERSION = "v1.0.24"  # 更新版本以優先UTF-8並自動嘗試編碼
+SCRIPT_UPDATE_DATE = "2025-07-14"
 
 import sys
 import os
@@ -136,10 +136,13 @@ def main():
             for enc in encodings_to_try:
                 try:
                     df = pd.read_csv(file_path.strip(), encoding=enc, on_bad_lines='skip')
+                    # 新增：移除完全空白行
+                    df = df.dropna(how='all').reset_index(drop=True)
                     all_dfs.append(df)
                     print(f"{colors.GREEN}成功使用編碼 '{enc}' 讀取檔案 '{file_path.strip()}'。{colors.RESET}")
                     loaded = True
                     break
+          
                 except UnicodeDecodeError:
                     print(f"{colors.YELLOW}嘗試編碼 '{enc}' 失敗，正在試下一個...{colors.RESET}")
                 except FileNotFoundError:
