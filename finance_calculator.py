@@ -14,8 +14,8 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v1.0.26"  # 更新版本以優先UTF-8並自動嘗試編碼
-SCRIPT_UPDATE_DATE = "2025-07-13"
+SCRIPT_VERSION = "v1.0.27"  # 更新版本：加入蒙地卡羅模擬
+SCRIPT_UPDATE_DATE = "2025-07-14"
 
 import sys
 import os
@@ -86,7 +86,7 @@ def main():
     import pandas as pd
     from datetime import datetime
     import argparse
-    import numpy as np  # 用於 EMA 計算
+    import numpy as np  # 用於 EMA 計算及蒙地卡羅模擬
     from scipy.stats import linregress, t  # 用於線性迴歸和 SARIMA 簡化, t分佈
 
     # --- 智慧欄位辨識與資料處理 ---
@@ -295,7 +295,18 @@ def main():
 
         return y_pred_p, lower, upper
 
-    # --- 主要分析與預測函數 (升級為四階段模型) ---
+    # --- 新增：蒙地卡羅模擬函數 ---
+    def monte_carlo_simulation(expense_mean, expense_std, num_simulations=10000, days=30):
+        """使用蒙地卡羅模擬預測下個月開銷分佈"""
+        daily_expenses = np.random.normal(expense_mean / days, expense_std / np.sqrt(days), (num_simulations, days))
+        monthly_simulated = np.sum(daily_expenses, axis=1)
+        sim_mean = np.mean(monthly_simulated)
+        sim_lower = np.percentile(monthly_simulated, 2.5)
+        sim_upper = np.percentile(monthly_simulated, 97.5)
+        risk_prob = np.mean(monthly_simulated > expense_mean) * 100  # 超支機率
+        return sim_mean, sim_lower, sim_upper, risk_prob
+
+    # --- 主要分析與預測函數 (升級為四階段模型 + 蒙地卡羅模擬) ---
     def analyze_and_predict(file_paths_str: str, no_color: bool):
         colors = Colors(enabled=not no_color)
         file_paths = [path.strip() for path in file_paths_str.split(';')]
@@ -404,6 +415,11 @@ def main():
                 except Exception as e:
                     predicted_expense_str = f"無法預測 (錯誤: {str(e)})"
 
+            # --- 新增：蒙地卡羅模擬 (在四階段預測後執行) ---
+            expense_mean = np.mean(data)
+            expense_std = np.std(data)
+            sim_mean, sim_lower, sim_upper, risk_prob = monte_carlo_simulation(expense_mean, expense_std)
+
         # --- 輸出最終的簡潔報告 (已整合波動性分析) ---
         print(f"\n{colors.CYAN}{colors.BOLD}========== 財務分析與預測報告 =========={colors.RESET}")
         
@@ -446,7 +462,7 @@ def main():
             
             # 顯示標準差與完整的波動性報告
             print(f"{colors.BOLD}歷史月均支出波動: {color}{expense_std_dev:,.2f}{volatility_report}{colors.RESET}")
-
+        
         # 處理非寬格式的淨餘額
         if not is_wide_format_expense_only:
             print("------------------------------------------")
@@ -455,6 +471,14 @@ def main():
         
         # 顯示預測結果
         print(f"\n{colors.PURPLE}{colors.BOLD}>>> 下個月預測總開銷: {predicted_expense_str}{ci_str}{method_used}{colors.RESET}")
+
+        # --- 新增：輸出蒙地卡羅模擬結果 ---
+        if monthly_expenses is not None and len(monthly_expenses) >= 2:
+            print(f"\n{colors.PURPLE}{colors.BOLD}>>> 蒙地卡羅模擬結果 (基於 10,000 次模擬):{colors.RESET}")
+            print(f"  - 預測平均開銷: {sim_mean:,.2f}")
+            print(f"  - 95% 信心區間: [{sim_lower:,.2f}, {sim_upper:,.2f}]")
+            print(f"  - 超過歷史平均的風險機率: {risk_prob:.1f}%")
+
         print(f"{colors.CYAN}{colors.BOLD}========================================{colors.RESET}\n")
 
 
