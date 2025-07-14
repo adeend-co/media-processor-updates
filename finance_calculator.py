@@ -2,20 +2,20 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v1.3                #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v1.4                #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 新增：通膨調整邏輯，使用內建通膨率資料庫，自動計算實質金額並顯示偵測年份資訊。             #
+# 新增：通膨調整邏輯，使用內建通膨率資料庫，自動計算 CPI 並顯示偵測年份資訊。               #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v1.3.1"  # 更新版本：加入通膨調整與年份偵測
+SCRIPT_VERSION = "v1.4.0"  # 更新版本：調整 CPI 計算邏輯為數據年基值
 SCRIPT_UPDATE_DATE = "2025-07-14"
 
 import sys
@@ -23,10 +23,13 @@ import os
 import subprocess
 import warnings
 from datetime import datetime
+import pandas as pd
+import argparse
+import numpy as np
+from scipy.stats import linregress, t
 
-# --- 顏色處理類別 (提前定義並初始化) ---
+# --- 顏色處理類別 ---
 class Colors:
-    """管理終端機輸出的 ANSI 顏色代碼"""
     def __init__(self, enabled=True):
         if enabled and sys.stdout.isatty():
             self.RED = '\033[0;31m'; self.GREEN = '\033[0;32m'; self.YELLOW = '\033[1;33m'
@@ -35,11 +38,9 @@ class Colors:
         else:
             self.RED = self.GREEN = self.YELLOW = self.CYAN = self.PURPLE = self.WHITE = self.BOLD = self.RESET = ''
 
-# --- 提前初始化顏色 (腳本啟動時立即載入) ---
-colors = Colors(enabled=True)  # 假設預設啟用顏色，您可以根據需要調整
+colors = Colors(enabled=True)
 
-# --- 新增：內建台灣歷年通膨率 (CPI 年增率) 資料庫 ---
-# 資料來源：主計總處等官方數據，單位為百分比（%）。只需更新未來年份的值。
+# --- 內建台灣歷年通膨率 (CPI 年增率) 資料庫 ---
 INFLATION_RATES = {
     2019: 0.56,
     2020: -0.25,
@@ -47,30 +48,35 @@ INFLATION_RATES = {
     2022: 2.95,
     2023: 2.49,
     2024: 2.18,
-    2025: 1.88,  # 預測值，可更新
-    # 若需新增未來年份，例如：2026: 1.50
+    2025: 1.88,
 }
 
-# --- 新增：計算累積調整比例的輔助函數 ---
-def calculate_cumulative_factor(year, base_year):
-    """計算從 year 到 base_year 的累積通膨調整比例"""
-    if year == base_year:
-        return 1.0
-    factor = 1.0
-    years = range(year + 1, base_year + 1) if year < base_year else range(base_year + 1, year + 1)
-    for y in years:
-        rate = INFLATION_RATES.get(y, 0.0) / 100  # 轉換為小數
-        factor *= (1 + rate)
-    return factor if year < base_year else 1 / factor
+# --- 計算 CPI 指數的輔助函數 ---
+def calculate_cpi_values(input_years, inflation_rates):
+    if not input_years:
+        return {}
+    base_year = min(input_years)  # 以輸入數據最早年份作為基準
+    years = sorted(set(input_years) | set(inflation_rates.keys()))
+    cpi_values = {}
+    cpi_values[base_year] = 100.0
+    for i in range(1, len(years)):
+        prev_year = years[i-1]
+        curr_year = years[i]
+        rate = inflation_rates.get(curr_year, 0.0) / 100
+        cpi_values[curr_year] = cpi_values[prev_year] * (1 + rate)
+    return cpi_values, base_year
 
-# --- 環境檢查函數 (在啟動前檢查所有依賴工具) ---
+# --- 計算實質金額的輔助函數 ---
+def adjust_to_real_amount(amount, data_year, target_year, cpi_values):
+    if data_year not in cpi_values or target_year not in cpi_values:
+        return amount
+    return amount * (cpi_values[target_year] / cpi_values[data_year])
+
+# --- 環境檢查函數 ---
 def check_environment():
-    """檢查所有依賴工具是否存在"""
     print(f"{colors.CYAN}正在進行環境檢查...{colors.RESET}")
-    
     required_packages = ['pandas', 'numpy', 'scipy']
     missing_packages = []
-    
     for pkg in required_packages:
         try:
             __import__(pkg)
@@ -78,17 +84,14 @@ def check_environment():
         except ImportError:
             missing_packages.append(pkg)
             print(f"{colors.RED}  - {pkg} 未安裝！{colors.RESET}")
-    
     if missing_packages:
         print(f"\n{colors.RED}環境檢查失敗！缺少以下套件：{', '.join(missing_packages)}{colors.RESET}")
         print(f"{colors.YELLOW}請執行 'pip install {' '.join(missing_packages)}' 安裝缺少的套件。{colors.RESET}")
         sys.exit(1)
-    
     print(f"{colors.GREEN}環境檢查通過，所有依賴工具均已安裝。{colors.RESET}")
 
-# --- 自動安裝依賴函數 (強化錯誤處理) ---
+# --- 自動安裝依賴函數 ---
 def install_dependencies():
-    """檢查並安裝缺少的 Python 庫 (pandas, numpy, scipy)"""
     required_packages = ['pandas', 'numpy', 'scipy']
     for pkg in required_packages:
         try:
@@ -101,29 +104,21 @@ def install_dependencies():
                 print(f"{colors.GREEN}成功安裝 {pkg}。{colors.RESET}")
             except subprocess.CalledProcessError as e:
                 print(f"{colors.RED}錯誤：安裝套件 {pkg} 失敗！錯誤碼: {e.returncode}。{colors.RESET}")
-                print(f"{colors.YELLOW}建議：在 Termux 中執行 'pkg install python-numpy python-scipy' 或檢查網路/權限。{colors.RESET}")
                 sys.exit(1)
 
 def main():
-    # --- 腳本啟動時立即檢查環境 (顏色已載入) ---
     check_environment()
-    
-    # --- 載入所有依賴 (檢查通過後) ---
-    import pandas as pd
-    import argparse
-    import numpy as np  # 用於 EMA 計算及蒙地卡羅模擬
-    from scipy.stats import linregress, t  # 用於線性迴歸和 SARIMA 簡化, t分佈
+    install_dependencies()
 
-    # --- 智慧欄位辨識與資料處理 ---
+    # --- 智慧欄位辨識 ---
     def find_column_by_synonyms(df_columns, synonyms):
-        """根據同義詞列表查找欄位名稱"""
         for col in df_columns:
             if str(col).strip().lower() in [s.lower() for s in synonyms]:
                 return col
         return None
 
+    # --- 日期標準化 ---
     def normalize_date(date_str):
-        """標準化日期為年月格式 (e.g., 2025-01)，支援年月日、月份中文等格式"""
         s = str(date_str).strip().replace('月', '').replace('年', '-').replace(' ', '')
         current_year = datetime.now().year
         if s.isdigit() and len(s) <= 2:
@@ -144,13 +139,10 @@ def main():
                 return dt.strftime("%Y-%m-%d")
             except ValueError:
                 pass
-        return None  # 無效日期
+        return None
 
+    # --- 資料處理函數 ---
     def process_finance_data(file_paths: list, colors: Colors):
-        """
-        讀取、合併、清理並分析來自多個 CSV 檔案的財務資料。支援寬格式偵測排列並直接計算月總額。
-        新增：通膨調整，計算實質金額，並偵測年份範圍。
-        """
         all_dfs = []
         encodings_to_try = ['utf-8', 'utf-8-sig', 'cp950', 'big5', 'gb18030']
         for file_path in file_paths:
@@ -219,7 +211,6 @@ def main():
             else:
                 monthly_amounts = master_df.drop(columns=[date_col]).sum(axis=0)
                 monthly_expenses = pd.DataFrame({'Parsed_Date': master_df.columns[1:], 'Amount': monthly_amounts.values})
-            # 修正點：將 Parsed_Date 轉換為 datetime
             monthly_expenses['Parsed_Date'] = monthly_expenses['Parsed_Date'].apply(normalize_date)
             monthly_expenses['Parsed_Date'] = pd.to_datetime(monthly_expenses['Parsed_Date'], errors='coerce')
             monthly_expenses = monthly_expenses.dropna(subset=['Parsed_Date'])
@@ -274,34 +265,32 @@ def main():
                     monthly_expenses = expense_df.set_index('Parsed_Date').resample('M')['Amount'].sum().reset_index()
                     monthly_expenses['Amount'] = monthly_expenses['Amount'].fillna(0)
 
-        # --- 新增：通膨調整與年份偵測 ---
-        base_year = datetime.now().year  # 動態基期：腳本運行當年
+        # --- 通膨調整與年份偵測 ---
+        base_year = datetime.now().year  # 目標基期年
         year_range = set()
-        year_inflation_used = {}
+        year_cpi_used = {}
         if monthly_expenses is not None:
             monthly_expenses['Year'] = monthly_expenses['Parsed_Date'].dt.year
-            monthly_expenses['Real_Amount'] = 0.0
-            for idx, row in monthly_expenses.iterrows():
-                year = row['Year']
-                if year in INFLATION_RATES:
-                    cum_factor = calculate_cumulative_factor(year, base_year)
-                    monthly_expenses.at[idx, 'Real_Amount'] = row['Amount'] * cum_factor
-                    year_range.add(year)
-                    year_inflation_used[year] = INFLATION_RATES[year]
-                else:
-                    warnings_report.append(f"{colors.YELLOW}警告：年份 {year} 無通膨率數據，使用默認 0% 調整，使用原始金額。{colors.RESET}")
-                    monthly_expenses.at[idx, 'Real_Amount'] = row['Amount']
-                    year_range.add(year)
-                    year_inflation_used[year] = 0.0  # 默認值
-
-            # 年份偵測報告
+            year_range = set(monthly_expenses['Year'])
             if year_range:
+                cpi_values, cpi_base_year = calculate_cpi_values(year_range, INFLATION_RATES)
+                monthly_expenses['Real_Amount'] = 0.0
+                for idx, row in monthly_expenses.iterrows():
+                    year = row['Year']
+                    monthly_expenses.at[idx, 'Real_Amount'] = adjust_to_real_amount(row['Amount'], year, base_year, cpi_values)
+                    year_cpi_used[year] = cpi_values.get(year, '無數據')
+
+                # CPI 基準告知
+                warnings_report.append(f"{colors.GREEN}CPI 基準年份：{cpi_base_year} 年（基於輸入數據最早年份，指數設為 100）。計算到目標年：{base_year} 年。{colors.RESET}")
+
+                # 年份偵測報告
                 min_year = min(year_range)
                 max_year = max(year_range)
                 cross_years = len(year_range) > 1
-                warnings_report.append(f"{colors.GREEN}偵測到年份範圍：{min_year} - {max_year} (是否有跨年份：{'是' if cross_years else '否'})。使用基期年：{base_year}。{colors.RESET}")
+                warnings_report.append(f"{colors.GREEN}偵測到年份範圍：{min_year} - {max_year} (是否有跨年份：{'是' if cross_years else '否'})。{colors.RESET}")
                 for y in sorted(year_range):
-                    warnings_report.append(f"  - 年份 {y} 使用通膨率：{year_inflation_used[y]}%")
+                    cpi_val = year_cpi_used[y]
+                    warnings_report.append(f"  - 年份 {y} 使用 CPI：{cpi_val:.2f}" if isinstance(cpi_val, float) else f"  - 年份 {y} 使用 CPI：{cpi_val}")
 
         return processed_df, monthly_expenses, "\n".join(warnings_report)
 
@@ -585,7 +574,6 @@ def main():
 
     # --- 腳本入口 ---
     warnings.simplefilter("ignore")
-    install_dependencies()
     
     parser = argparse.ArgumentParser(description="進階財務分析與預測器")
     parser.add_argument('--no-color', action='store_true', help="禁用彩色輸出。")
