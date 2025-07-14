@@ -146,7 +146,7 @@ def main():
                 pass
         return None  # 無效日期
 
-        def process_finance_data(file_paths: list, colors: Colors):
+    def process_finance_data(file_paths: list, colors: Colors):
         """
         讀取、合併、清理並分析來自多個 CSV 檔案的財務資料。支援寬格式偵測排列並直接計算月總額。
         新增：通膨調整，計算實質金額，並偵測年份範圍。
