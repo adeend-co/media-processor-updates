@@ -15,7 +15,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v1.8.6"  # 更新版本：自動檢測與條件應用
+SCRIPT_VERSION = "v1.8.7"  # 更新版本：自動檢測與條件應用
 SCRIPT_UPDATE_DATE = "2025-07-15"
 
 import sys
@@ -493,6 +493,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
 
     # --- 計算從資料最後月份到目標月份的步數 ---
     steps_ahead = 1  # 預設為下一步
+    step_warning = ""
     if monthly_expenses is not None and not monthly_expenses.empty:
         last_date = monthly_expenses['Parsed_Date'].max()
         last_period = last_date.to_period('M')
@@ -501,11 +502,8 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         if steps_ahead <= 0:
             warnings_report += f"\n{colors.YELLOW}警告：目標月份 {target_month_str} 已過期或已在資料中，預測可能不準確。{colors.RESET}"
             steps_ahead = 1  # 強制預測下一步
-
-    # --- 新增：超過12步警告，但不停止計算 ---
-    max_steps = 12
-    if steps_ahead > max_steps:
-        warnings_report += f"\n{colors.YELLOW}警告：預測步數 {steps_ahead} 超過建議最大值 {max_steps}，預測不準確風險增加，但計算將繼續。{colors.RESET}"
+        if steps_ahead > 12:
+            step_warning = f"{colors.YELLOW}警告：預測步數超過12 ({steps_ahead})，遠期預測不確定性增加，但計算繼續進行。{colors.RESET}"
 
     # --- 四階段預測：根據數據量選擇方法 (基於實質金額，調整為直接-遞歸混合多步預測) ---
     predicted_expense_str = "無法預測 (資料不足或錯誤)"
@@ -517,73 +515,102 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         num_months = len(monthly_expenses)
         data = analysis_data  # 使用去季節化或原始數據
 
-        if num_months >= 24:  # ≥24 個月，使用簡化 SARIMA 作為基礎，應用直接-遞歸混合
+        if num_months >= 24:  # ≥24 個月，使用簡化 SARIMA 作為基底，應用直接-遞歸混合
             try:
                 x = np.arange(len(data))
                 slope, intercept, _, _, _ = linregress(x, data)
-                # 遞歸預測第一步
-                predicted_value = intercept + slope * (len(data))
-                # 直接模型調整後續步驟（示意：每步調整基於前一步，減少誤差累積）
-                preds = [predicted_value]
-                for step in range(2, steps_ahead + 1):
-                    adjustment = (steps_ahead - step + 1) * 0.05 * predicted_value  # 模擬直接調整
-                    pred_step = predicted_value + adjustment
-                    preds.append(pred_step)
-                predicted_value = preds[-1]  # 使用最後一步作為中心值
+                # 遞歸部分：初始化預測
+                predictions = []
+                prev_pred = data[-1]  # 最後觀測值作為起點
+                for step in range(1, steps_ahead + 1):
+                    # 直接部分：為每個步驟計算獨立預測，納入先前預測
+                    current_x = len(data) + step - 1
+                    pred = intercept + slope * current_x + (0.5 * (prev_pred - data[-1]))  # 混合調整
+                    predictions.append(pred)
+                    prev_pred = pred
+                predicted_value = predictions[-1]  # 最後一步作為中心值
                 predicted_expense_str = f"{predicted_value:,.2f}"
-                method_used = " (基於簡化 SARIMA 與直接-遞歸混合)"
 
-                # 基於標準誤差的信心區間（簡化多步）
+                # 基於標準誤差的信心區間（簡化多步，強制下限為0）
                 residuals = data - (intercept + slope * x)
                 se = np.std(residuals, ddof=1) * np.sqrt(steps_ahead)  # 粗略調整多步不確定性
                 t_val = 1.96  # 95% 信心水準的近似 t 值
-                lower = predicted_value - t_val * se
+                lower = max(0, predicted_value - t_val * se)  # 避免負值
                 upper = predicted_value + t_val * se
                 ci_str = f" [下限：{lower:,.2f}，上限：{upper:,.2f}] (95% 信心)"
             except Exception as e:
                 predicted_expense_str = f"無法預測 (錯誤: {str(e)})"
-        elif num_months >= 12:  # 12–23 個月，使用多項式迴歸 (2階)
+        elif num_months >= 12:  # 12–23 個月，使用多項式迴歸 (2階)，應用混合
             try:
                 x = np.arange(1, num_months + 1)
                 degree = 2  # 固定2階避免過擬合
-                predicted_value, lower, upper = polynomial_regression_with_ci(x, data, degree, num_months + steps_ahead)
+                coeffs = np.polyfit(x, data, degree)
+                p = np.poly1d(coeffs)
+                # 遞歸部分：初始化預測
+                predictions = []
+                prev_pred = data[-1]
+                for step in range(1, steps_ahead + 1):
+                    predict_x = num_months + step
+                    pred = p(predict_x) + (0.3 * (prev_pred - data[-1]))  # 混合調整
+                    predictions.append(pred)
+                    prev_pred = pred
+                predicted_value = predictions[-1]
                 predicted_expense_str = f"{predicted_value:,.2f}"
-                method_used = " (基於多項式迴歸)"
+
+                # 信心區間（強制下限為0）
+                y_pred = p(x)
+                n = len(x)
+                residuals = data - y_pred
+                mse = np.sum(residuals**2) / (n - degree - 1)
+                se = np.sqrt(mse * (1 + 1/n)) * np.sqrt(steps_ahead)
+                t_val = t.ppf(0.975, n - degree - 1)
+                lower = max(0, predicted_value - t_val * se)
+                upper = predicted_value + t_val * se
                 ci_str = f" [下限：{lower:,.2f}，上限：{upper:,.2f}] (95% 信心)"
             except Exception as e:
                 predicted_expense_str = f"無法預測 (錯誤: {str(e)})"
-        elif num_months >= 6:  # 6–11 個月，使用線性迴歸
+        elif num_months >= 6:  # 6–11 個月，使用線性迴歸，應用混合
             try:
                 x = np.arange(1, num_months + 1)
                 slope, intercept, _, _, _ = linregress(x, data)
-                predicted_value = intercept + slope * (num_months + steps_ahead)
+                # 遞歸部分：初始化預測
+                predictions = []
+                prev_pred = data[-1]
+                for step in range(1, steps_ahead + 1):
+                    predict_x = num_months + step
+                    pred = intercept + slope * predict_x + (0.4 * (prev_pred - data[-1]))  # 混合調整
+                    predictions.append(pred)
+                    prev_pred = pred
+                predicted_value = predictions[-1]
                 predicted_expense_str = f"{predicted_value:,.2f}"
-                method_used = " (基於線性迴歸)"
 
-                # 基於t分佈的預測區間（調整為多步）
+                # 信心區間（強制下限為0）
                 n = len(x)
                 x_mean = np.mean(x)
                 residuals = data - (intercept + slope * x)
                 mse = np.sum(residuals**2) / (n - 2)
                 ssx = np.sum((x - x_mean)**2)
-                predict_x = num_months + steps_ahead
-                se = np.sqrt(mse * (1 + 1/n + ((predict_x - x_mean)**2) / ssx)) * np.sqrt(steps_ahead)  # 粗略調整
-                t_val = t.ppf(0.975, n - 2)  # 95% t 值
-                lower = predicted_value - t_val * se
+                se = np.sqrt(mse * (1 + 1/n + ((num_months + steps_ahead) - x_mean)**2 / ssx)) * np.sqrt(steps_ahead)
+                t_val = t.ppf(0.975, n - 2)
+                lower = max(0, predicted_value - t_val * se)
                 upper = predicted_value + t_val * se
                 ci_str = f" [下限：{lower:,.2f}，上限：{upper:,.2f}] (95% 信心)"
             except Exception as e:
                 predicted_expense_str = f"無法預測 (錯誤: {str(e)})"
-        elif num_months >= 2:  # 2–5 個月，使用 EMA
+        elif num_months >= 2:  # 2–5 個月，使用 EMA，應用混合
             try:
                 ema = monthly_expenses['Real_Amount'].ewm(span=num_months, adjust=False).mean()
-                predicted_value = ema.iloc[-1]  # 基於最後 EMA，簡化多步為重複最後值（EMA 不適合遠期）
-                for _ in range(steps_ahead - 1):
-                    predicted_value = ema.iloc[-1]  # 簡易延伸（可改進）
+                # 遞歸部分：初始化預測
+                predictions = []
+                prev_pred = ema.iloc[-1]
+                for step in range(1, steps_ahead + 1):
+                    pred = prev_pred  # EMA 簡易延伸
+                    predictions.append(pred)
+                    prev_pred = pred
+                predicted_value = predictions[-1]
                 predicted_expense_str = f"{predicted_value:,.2f}"
-                method_used = " (基於 EMA)"
 
-                # EMA Bootstrap 信心區間
+                # EMA Bootstrap 信心區間（強制下限為0）
                 residuals = monthly_expenses['Real_Amount'] - ema
                 bootstrap_preds = []
                 for _ in range(1000):
@@ -591,7 +618,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                     simulated = ema + resampled_residuals
                     simulated_ema = pd.Series(simulated).ewm(span=num_months, adjust=False).mean()
                     bootstrap_preds.append(simulated_ema.iloc[-1])
-                lower = np.percentile(bootstrap_preds, 2.5)
+                lower = max(0, np.percentile(bootstrap_preds, 2.5))
                 upper = np.percentile(bootstrap_preds, 97.5)
                 ci_str = f" [下限：{lower:,.2f}，上限：{upper:,.2f}] (95% 信心)"
             except Exception as e:
@@ -667,7 +694,9 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     print(f"  - {seasonal_note}")
     print(f"  - {mc_note}")
     print(f"  - 預測目標月份: {target_month_str} (基於目前時間，距離資料最後月份 {steps_ahead - 1} 個月)")
-    print(f"  - 使用方法: 直接-遞歸混合 (結合遞歸依賴與直接調整，適合多步預測)")
+    print(f"  - 使用策略: 直接-遞歸混合 (結合獨立模型與先前預測輸入)")
+    if step_warning:
+        print(step_warning)
 
     # 顯示蒙地卡羅儀表板 (基於實質金額)
     if p25 is not None:
