@@ -2,21 +2,21 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v1.5                #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v1.6                #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 新增：通膨調整邏輯，使用內建通膨率資料庫，自動計算 CPI 並顯示偵測年份資訊。               #
+# 新增：季節性分解與優化蒙地卡羅模擬（自舉法）。                                      #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v1.5.0"  # 更新版本：修正 2019 年錯誤與年份處理
-SCRIPT_UPDATE_DATE = "2025-07-14"
+SCRIPT_VERSION = "v1.6.0"  # 更新版本：加入季節性分解與優化蒙地卡羅
+SCRIPT_UPDATE_DATE = "2025-07-15"
 
 import sys
 import os
@@ -51,33 +51,25 @@ INFLATION_RATES = {
     2025: 1.88,
 }
 
-# --- 計算 CPI 指數的輔助函數 (修正版) ---
+# --- 計算 CPI 指數的輔助函數 ---
 def calculate_cpi_values(input_years, inflation_rates):
     if not input_years:
         return {}
-    base_year = min(input_years)  # 以輸入數據最早年份作為基準
+    base_year = min(input_years)
     years = sorted(set(input_years) | set(inflation_rates.keys()))
     cpi_values = {}
     cpi_values[base_year] = 100.0
-    # 向後計算
-    for y in range(base_year + 1, max(years) + 1):
-        prev_cpi = cpi_values.get(y - 1, 100.0)
-        rate = inflation_rates.get(y, 0.0) / 100
-        cpi_values[y] = prev_cpi * (1 + rate)
-    # 向前計算（如果有更早年份）
-    for y in range(base_year - 1, min(years) - 1, -1):
-        next_cpi = cpi_values.get(y + 1, 100.0)
-        rate = inflation_rates.get(y + 1, 0.0) / 100  # 使用下一年的率反推
-        if rate != -1:  # 避免除零
-            cpi_values[y] = next_cpi / (1 + rate)
-        else:
-            cpi_values[y] = next_cpi
+    for i in range(1, len(years)):
+        prev_year = years[i-1]
+        curr_year = years[i]
+        rate = inflation_rates.get(curr_year, 0.0) / 100
+        cpi_values[curr_year] = cpi_values[prev_year] * (1 + rate)
     return cpi_values, base_year
 
-# --- 計算實質金額的輔助函數 (修正版) ---
+# --- 計算實質金額的輔助函數 ---
 def adjust_to_real_amount(amount, data_year, target_year, cpi_values):
     if data_year not in cpi_values or target_year not in cpi_values:
-        return amount  # 無數據時返回原始金額
+        return amount
     return amount * (cpi_values[target_year] / cpi_values[data_year])
 
 # --- 環境檢查函數 ---
@@ -149,7 +141,7 @@ def main():
                 pass
         return None
 
-    # --- 資料處理函數 (修正版) ---
+    # --- 資料處理函數 ---
     def process_finance_data(file_paths: list, colors: Colors):
         all_dfs = []
         encodings_to_try = ['utf-8', 'utf-8-sig', 'cp950', 'big5', 'gb18030']
@@ -305,103 +297,36 @@ def main():
 
         return processed_df, monthly_expenses, "\n".join(warnings_report)
 
-    # --- 多項式迴歸與信賴區間計算函數 ---
-    def polynomial_regression_with_ci(x, y, degree, predict_x, confidence=0.95):
-        coeffs = np.polyfit(x, y, degree)
-        p = np.poly1d(coeffs)
-        y_pred = p(x)
-        n = len(x)
-        k = degree
-        residuals = y - y_pred
-        mse = np.sum(residuals**2) / (n - k - 1)
-        y_pred_p = p(predict_x)
-        x_mean = np.mean(x)
-        ssx = np.sum((x - x_mean)**2)
-        se = np.sqrt(mse * (1 + 1/n + ((predict_x - x_mean)**2) / ssx))
-        t_val = t.ppf((1 + confidence) / 2, n - k - 1)
-        lower = y_pred_p - t_val * se
-        upper = y_pred_p + t_val * se
-        return y_pred_p, lower, upper
+    # --- 季節性分解函數 ---
+    def seasonal_decomposition(monthly_expenses):
+        if len(monthly_expenses) < 24:
+            return None, "數據不足 24 個月，无法进行季节性分解。"
+        monthly_expenses['Month'] = monthly_expenses['Parsed_Date'].dt.month
+        monthly_avg = monthly_expenses.groupby('Month')['Amount'].mean()
+        overall_avg = monthly_expenses['Amount'].mean()
+        seasonal_indices = monthly_avg / overall_avg
+        deseasonalized = monthly_expenses.copy()
+        deseasonalized['Deseasonalized_Amount'] = deseasonalized.apply(lambda row: row['Amount'] / seasonal_indices[row['Month']], axis=1)
+        return deseasonalized, seasonal_indices
 
-    # --- 蒙地卡羅儀表板函式 (修正版) ---
-    def monte_carlo_dashboard(monthly_expense_data, num_simulations=10000):
-        """
-        執行蒙地卡羅模擬，並計算風險儀表板所需的百分位數。
-        """
-        if len(monthly_expense_data) < 2:
-            return None, None, None
-
-        # 直接基於歷史「月總額」的平均與標準差進行模擬
-        mean_expense = np.mean(monthly_expense_data)
-        std_expense = np.std(monthly_expense_data)
-
-        # 避免標準差為零或過小導致的錯誤
-        if std_expense == 0:
-            std_expense = mean_expense * 0.1  # 假設 10% 的波動
-
-        # 產生一萬次下個月總開銷的模擬結果
-        simulated_monthly_totals = np.random.normal(mean_expense, std_expense, num_simulations)
-
-        # 計算儀表板所需的百分位數 (25%, 75%, 95%)
-        p25, p75, p95 = np.percentile(simulated_monthly_totals, [25, 75, 95])
-
+    # --- 優化蒙地卡羅模擬 (使用自舉法) ---
+    def optimized_monte_carlo(monthly_expenses, predicted_value, num_simulations=10000):
+        if len(monthly_expenses) < 24:
+            return None, None, None, "數據不足 24 個月，无法进行优化蒙地卡罗模拟。"
+        # 計算歷史殘差
+        x = np.arange(1, len(monthly_expenses) + 1)
+        slope, intercept, _, _, _ = linregress(x, monthly_expenses['Amount'])
+        trend = intercept + slope * x
+        residuals = monthly_expenses['Amount'] - trend
+        # 自舉抽樣
+        simulated = []
+        for _ in range(num_simulations):
+            sampled_residual = np.random.choice(residuals, size=1)[0]
+            simulated.append(predicted_value + sampled_residual)
+        p25, p75, p95 = np.percentile(simulated, [25, 75, 95])
         return p25, p75, p95
 
-    # --- 風險狀態判讀與預算建議函數 (基於實質金額) ---
-    def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly_expenses):
-        """
-        根據框架判讀風險狀態，並計算動態預算建議（使用實質金額）。
-        若數據不足6個月，切換到平均支出 + 風險緩衝公式。
-        A: 趨勢預測上限 (upper)
-        B: 風險區門檻 (p95)
-        """
-        num_months = len(monthly_expenses) if monthly_expenses is not None else 0
-
-        if num_months < 6:
-            # 數據不足時，使用平均支出 + 風險緩衝公式（基於實質金額）
-            if num_months < 2:
-                return "無法判讀 (資料不足2個月)", None, None, 0.0
-            # 取最近2-3個月平均（若不足3個月，取所有）
-            recent_months = min(3, num_months)
-            recent_avg = np.mean(monthly_expenses['Real_Amount'].values[-recent_months:])
-            buffer_factor = 0.15  # 預設15% 風險緩衝係數
-            suggested_budget = recent_avg * (1 + buffer_factor)
-            status = "數據不足，使用替代公式"
-            description = "基於近期平均實質支出加上15%風險緩衝，提供穩健預算建議。"
-            prudence_factor = buffer_factor  # 使用緩衝係數作為等效
-            return status, description, suggested_budget, prudence_factor
-
-        # 正常情況：如果關鍵數據不足，返回預設值
-        if p95 is None or expense_std_dev is None or predicted_value is None or upper is None:
-            return "無法判讀 (資料不足)", None, None, 0.0
-
-        A = upper
-        B = p95
-
-        # 判讀風險狀態
-        if A > B * 1.075:
-            status = "風險顯著升溫"
-            description = "支出趨勢顯著加速。您的支出增長趨勢非常強勁，未來的潛在風險可能已超越歷史經驗，需要高度警惕。"
-            prudence_factor = 1.0
-        elif B < A <= B * 1.075:
-            status = "風險溫和增長"
-            description = "支出趨勢微幅上揚。您的消費習慣可能正在改變，值得密切觀察，以防支出持續擴大。"
-            prudence_factor = 0.5
-        elif B * 0.85 <= A <= B:
-            status = "趨勢與風險同步"
-            description = "財務狀態穩定。您的支出趨勢與歷史波動一致，風險處於可預測的軌道上。"
-            prudence_factor = 0.25
-        else:
-            status = "偶發衝擊主導"
-            description = "潛在衝擊風險較高。您的主要風險並非來自支出增長，而是偶發性大額開銷，建議確保預備金充足。"
-            prudence_factor = 0.0
-
-        # 計算建議預算（基於實質金額）
-        suggested_budget = predicted_value + (prudence_factor * expense_std_dev)
-
-        return status, description, suggested_budget, prudence_factor
-
-    # --- 主要分析與預測函數 (升級為四階段模型 + 蒙地卡羅 + 風險預算建議 + 通膨調整) ---
+    # --- 主要分析與預測函數 ---
     def analyze_and_predict(file_paths_str: str, no_color: bool):
         colors = Colors(enabled=not no_color)
         file_paths = [path.strip() for path in file_paths_str.split(';')]
@@ -416,7 +341,7 @@ def main():
             print(warnings_report)
             print(f"{colors.YELLOW}--------------------{colors.RESET}")
 
-        # 計算總支出（如果有processed_df）
+        # 計算總支出
         total_income = 0
         total_expense = 0
         total_real_expense = 0
@@ -424,26 +349,33 @@ def main():
         if master_df is not None:
             master_df['Amount'] = pd.to_numeric(master_df['Amount'], errors='coerce')
             master_df.dropna(subset=['Type', 'Amount'], inplace=True)
-            
             income_df = master_df[master_df['Type'].str.lower() == 'income']
             expense_df = master_df[master_df['Type'].str.lower() == 'expense']
             total_income = income_df['Amount'].sum()
             total_expense = expense_df['Amount'].sum()
         elif monthly_expenses is not None:
-            total_expense = monthly_expenses['Amount'].sum()  # 名目總額
-            total_real_expense = monthly_expenses['Real_Amount'].sum()  # 實質總額
+            total_expense = monthly_expenses['Amount'].sum()
+            total_real_expense = monthly_expenses['Real_Amount'].sum()
 
         net_balance = total_income - total_expense
 
-        # --- 四階段預測：根據數據量選擇方法 (基於實質金額) ---
+        # --- 季節性分解 ---
+        deseasonalized, seasonal_indices = seasonal_decomposition(monthly_expenses)
+        if deseasonalized is None:
+            warnings_report.append(f"{colors.YELLOW}{seasonal_indices}{colors.RESET}")
+            data_for_prediction = monthly_expenses['Amount'].values if monthly_expenses is not None else []
+        else:
+            data_for_prediction = deseasonalized['Deseasonalized_Amount'].values
+
+        # --- 四階段預測：根據數據量選擇方法 (基於去季節化數據) ---
         predicted_expense_str = "無法預測 (資料不足或錯誤)"
         ci_str = ""
         method_used = ""
-        upper = None  # 用於風險判讀
+        upper = None
         predicted_value = None
         if monthly_expenses is not None and len(monthly_expenses) >= 2:
             num_months = len(monthly_expenses)
-            data = monthly_expenses['Real_Amount'].values  # 使用實質金額進行預測
+            data = data_for_prediction  # 使用去季節化數據
 
             if num_months >= 24:  # ≥24 個月，使用簡化 SARIMA
                 try:
@@ -495,13 +427,13 @@ def main():
                     predicted_expense_str = f"無法預測 (錯誤: {str(e)})"
             elif num_months >= 2:  # 2–5 個月，使用 EMA
                 try:
-                    ema = monthly_expenses['Real_Amount'].ewm(span=num_months, adjust=False).mean()
+                    ema = pd.Series(data).ewm(span=num_months, adjust=False).mean()
                     predicted_value = ema.iloc[-1]  # 最後一個 EMA 值作為預測
                     predicted_expense_str = f"{predicted_value:,.2f}"
                     method_used = " (基於 EMA)"
 
                     # EMA Bootstrap 信心區間
-                    residuals = monthly_expenses['Real_Amount'] - ema
+                    residuals = data - ema
                     bootstrap_preds = []
                     for _ in range(1000):
                         resampled_residuals = np.random.choice(residuals, size=num_months, replace=True)
@@ -513,6 +445,16 @@ def main():
                     ci_str = f" [下限：{lower:,.2f}，上限：{upper:,.2f}] (95% 信心)"
                 except Exception as e:
                     predicted_expense_str = f"無法預測 (錯誤: {str(e)})"
+
+            # 還原季節性（如果適用）
+            if seasonal_indices is not None:
+                next_month = (monthly_expenses['Parsed_Date'].dt.month.iloc[-1] % 12) + 1
+                seasonal_factor = seasonal_indices.get(next_month, 1.0)
+                predicted_value *= seasonal_factor
+                lower *= seasonal_factor
+                upper *= seasonal_factor
+                predicted_expense_str = f"{predicted_value:,.2f}"
+                ci_str = f" [下限：{lower:,.2f}，上限：{upper:,.2f}] (95% 信心，已還原季節性)"
 
         # --- 歷史支出波動性分析 (基於實質金額) ---
         expense_std_dev = None
@@ -530,12 +472,16 @@ def main():
                 else: level, color = "極高波動 (警示訊號)", colors.RED
                 volatility_report = f" ({expense_cv:.1f}%, {level})"
 
-        # --- 全新：個人財務風險儀表板 (基於蒙地卡羅，使用實質金額) ---
+        # --- 優化蒙地卡羅模擬 (使用自舉法) ---
         p25 = None
         p75 = None
         p95 = None
         if monthly_expenses is not None and len(monthly_expenses) >= 2:
-            p25, p75, p95 = monte_carlo_dashboard(monthly_expenses['Real_Amount'].values)
+            p25, p75, p95, sim_message = optimized_monte_carlo(monthly_expenses, predicted_value)
+            if sim_message:
+                warnings_report.append(f"{colors.YELLOW}{sim_message}{colors.RESET}")
+            else:
+                p25, p75, p95 = monte_carlo_dashboard(monthly_expenses['Real_Amount'].values)  # 回退基本模式
 
         # --- 新增：風險狀態與預算建議 (基於實質金額) ---
         risk_status, risk_description, suggested_budget, prudence_factor = assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly_expenses)
@@ -565,9 +511,9 @@ def main():
         # 顯示傳統預測結果 (基於實質金額)
         print(f"\n{colors.PURPLE}{colors.BOLD}>>> 下個月趨勢預測 (基於實質金額): {predicted_expense_str}{ci_str}{method_used}{colors.RESET}")
 
-        # 顯示蒙地卡羅儀表板 (基於實質金額)
+        # 顯示蒙地卡羅儀表板
         if p25 is not None:
-            print(f"\n{colors.CYAN}{colors.BOLD}>>> 個人財務風險儀表板 (基於 10,000 次模擬，實質金額){colors.RESET}")
+            print(f"\n{colors.CYAN}{colors.BOLD}>>> 個人財務風險儀表板 (基於 10,000 次模擬){colors.RESET}")
             print(f"{colors.GREEN}--------------------------------------------------{colors.RESET}")
             print(f"{colors.GREEN}  [安全區] {p25:,.0f} ~ {p75:,.0f} 元 (50% 機率){colors.RESET}")
             print(f"{colors.WHITE}    └ 這是您最可能的核心開銷範圍，可作為常規預算。{colors.RESET}")
@@ -579,20 +525,17 @@ def main():
             print(f"{colors.WHITE}    └ 發生極端高額事件，此數值可作為緊急預備金的參考。{colors.RESET}")
             print(f"{colors.GREEN}--------------------------------------------------{colors.RESET}")
 
-        # 新增：綜合預算建議區塊 (基於實質金額)
-        if risk_status != "無法判讀 (資料不足)" and risk_status != "無法判讀 (資料不足2個月)":
-            print(f"\n{colors.CYAN}{colors.BOLD}>>> 綜合預算建議 (基於實質金額){colors.RESET}")
+        # 新增：綜合預算建議區塊
+        if risk_status != "無法判讀 (資料不足)":
+            print(f"\n{colors.CYAN}{colors.BOLD}>>> 綜合預算建議{colors.RESET}")
             print(f"{colors.BOLD}風險狀態: {risk_status}{colors.RESET}")
             print(f"{colors.WHITE}{risk_description}{colors.RESET}")
             print(f"{colors.BOLD}建議下個月預算: {suggested_budget:,.2f} 元{colors.RESET}")
-            if predicted_value is not None and expense_std_dev is not None:
-                print(f"{colors.WHITE}    └ 計算依據：趨勢預測中心值 ({predicted_value:,.2f}) + 審慎緩衝區 ({prudence_factor} * {expense_std_dev:,.2f}){colors.RESET}")
-            elif "替代公式" in status:
-                print(f"{colors.WHITE}    └ 計算依據：近期平均實質支出 + 15% 風險緩衝 (適用於數據不足情況)。{colors.RESET}")
+            print(f"{colors.WHITE}    └ 計算依據：趨勢預測中心值 ({predicted_value:,.2f}) + 審慎緩衝區 ({prudence_factor} * {expense_std_dev:,.2f}){colors.RESET}")
 
         # 通膨調整說明
         print(f"\n{colors.WHITE}【註】關於「實質金額」：為了讓不同年份的支出能被公平比較，本報告已將所有歷史數據，統一換算為當前基期年的貨幣價值。這能幫助您在扣除物價上漲的影響後，看清自己真實的消費習慣變化。{colors.RESET}")
-
+        
         print(f"{colors.CYAN}{colors.BOLD}========================================{colors.RESET}\n")
 
     # --- 腳本入口 ---
@@ -609,13 +552,11 @@ def main():
     print(f"{colors.WHITE}更新日期: {SCRIPT_UPDATE_DATE}{colors.RESET}")
     
     try:
-        # --- 全新互動式輸入 ---
         file_paths_str = input(f"\n{colors.YELLOW}請貼上一個或多個以分號(;)區隔的 CSV 檔案路徑: {colors.RESET}")
         if not file_paths_str.strip():
             print(f"\n{colors.RED}錯誤：未提供任何檔案路徑。腳本終止。{colors.RESET}")
             sys.exit(1)
         
-        # --- 呼叫主函數 ---
         analyze_and_predict(file_paths_str, args.no_color)
 
     except KeyboardInterrupt:
