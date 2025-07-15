@@ -15,7 +15,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v1.8.7"  # 更新版本：自動檢測與條件應用
+SCRIPT_VERSION = "v1.8.8"  # 更新版本：自動檢測與條件應用
 SCRIPT_UPDATE_DATE = "2025-07-15"
 
 import sys
@@ -27,6 +27,7 @@ import pandas as pd
 import argparse
 import numpy as np
 from scipy.stats import linregress, t
+from scipy.stats import skew, kurtosis
 
 # --- 顏色處理類別 ---
 class Colors:
@@ -373,13 +374,12 @@ def monte_carlo_dashboard(monthly_expense_data, num_simulations=10000):
 
     return p25, p75, p95
 
-# --- 風險狀態判讀與預算建議函數 (基於實質金額) ---
+# --- 風險狀態判讀與預算建議函數 (升級版，基於實質金額) ---
 def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly_expenses):
     """
     根據框架判讀風險狀態，並計算動態預算建議（使用實質金額）。
     若數據不足6個月，切換到平均支出 + 風險緩衝公式。
-    A: 趨勢預測上限 (upper)
-    B: 風險區門檻 (p95)
+    升級：整合殘差分析、波動趨勢分析與多因子計分系統。
     """
     num_months = len(monthly_expenses) if monthly_expenses is not None else 0
 
@@ -404,28 +404,76 @@ def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly
     A = upper
     B = p95
 
-    # 判讀風險狀態
+    # --- 新增：計算殘差（預測誤差） ---
+    # 假設使用線性迴歸計算趨勢（可根據實際模型調整）
+    x = np.arange(num_months)
+    slope, intercept, _, _, _ = linregress(x, monthly_expenses['Real_Amount'].values)
+    trend = intercept + slope * x
+    residuals = monthly_expenses['Real_Amount'].values - trend
+
+    # 計算偏態與峰態
+    res_skew = skew(residuals)
+    res_kurt = kurtosis(residuals)
+
+    # --- 新增：波動性趨勢分析 ---
+    half_point = num_months // 2
+    early_data = monthly_expenses['Real_Amount'].values[:half_point]
+    late_data = monthly_expenses['Real_Amount'].values[half_point:]
+    
+    early_cv = np.std(early_data) / np.mean(early_data) if np.mean(early_data) != 0 else 0
+    late_cv = np.std(late_data) / np.mean(late_data) if np.mean(late_data) != 0 else 0
+    cv_increase = late_cv > early_cv * 1.2  # 後期CV明顯大於前期（閾值1.2，可調整）
+
+    # --- 新增：多因子計分系統 ---
+    trend_score = 0
+    shock_score = 0
+
+    # 現有方法：趨勢 vs. 衝擊
     if A > B * 1.075:
+        trend_score += 2
+    elif B > A:
+        shock_score += 2
+
+    # 新方法：誤差偏態
+    if res_skew > 1:
+        shock_score += 1
+
+    # 新方法：波動趨勢
+    if cv_increase:
+        trend_score += 1  # 不穩定屬趨勢惡化
+
+    # 新方法：誤差峰態
+    if res_kurt > 3:
+        shock_score += 1
+
+    # 最終診斷
+    if trend_score > shock_score + 1:
         status = "風險顯著升溫"
         description = "支出趨勢顯著加速。您的支出增長趨勢非常強勁，未來的潛在風險可能已超越歷史經驗，需要高度警惕。"
         prudence_factor = 1.0
-    elif B < A <= B * 1.075:
-        status = "風險溫和增長"
-        description = "支出趨勢微幅上揚。您的消費習慣可能正在改變，值得密切觀察，以防支出持續擴大。"
-        prudence_factor = 0.5
-    elif B * 0.85 <= A <= B:
-        status = "趨勢與風險同步"
-        description = "財務狀態穩定。您的支出趨勢與歷史波動一致，風險處於可預測的軌道上。"
-        prudence_factor = 0.25
-    else:
+    elif shock_score > trend_score + 1:
         status = "偶發衝擊主導"
         description = "潛在衝擊風險較高。您的主要風險並非來自支出增長，而是偶發性大額開銷，建議確保預備金充足。"
         prudence_factor = 0.0
+    elif abs(trend_score - shock_score) <= 1:
+        if trend_score >= 2 or shock_score >= 2:
+            status = "趨勢與風險同步"
+            description = "財務狀態穩定。您的支出趨勢與歷史波動一致，風險處於可預測的軌道上。"
+            prudence_factor = 0.25
+        else:
+            status = "風險溫和增長"
+            description = "支出趨勢微幅上揚。您的消費習慣可能正在改變，值得密切觀察，以防支出持續擴大。"
+            prudence_factor = 0.5
+    else:
+        status = "不穩定性增長"
+        description = "您的財務波動性正在增加，消費行為變得難以預測，需優先穩定支出模式。"
+        prudence_factor = 0.75  # 新狀態的緩衝係數
 
     # 計算建議預算（基於實質金額）
     suggested_budget = predicted_value + (prudence_factor * expense_std_dev)
 
     return status, description, suggested_budget, prudence_factor
+
 
 # --- 主要分析與預測函數 (升級為四階段模型 + 蒙地卡羅 + 風險預算建議 + 通膨調整) ---
 def analyze_and_predict(file_paths_str: str, no_color: bool):
