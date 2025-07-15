@@ -15,7 +15,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v1.8.4"  # 更新版本：自動檢測與條件應用
+SCRIPT_VERSION = "v1.8.5"  # 更新版本：自動檢測與條件應用
 SCRIPT_UPDATE_DATE = "2025-07-15"
 
 import sys
@@ -478,7 +478,31 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
 
     net_balance = total_income - total_expense
 
-    # --- 四階段預測：根據數據量選擇方法 (基於實質金額) ---
+    # --- 取得目前時間的下一個月（目標預測月份） ---
+    from datetime import datetime
+    now = datetime.now()
+    current_year = now.year
+    current_month = now.month
+    if current_month == 12:
+        target_month = 1
+        target_year = current_year + 1
+    else:
+        target_month = current_month + 1
+        target_year = current_year
+    target_month_str = f"{target_year}-{target_month:02d}"
+
+    # --- 計算從資料最後月份到目標月份的步數 ---
+    steps_ahead = 1  # 預設為下一步
+    if monthly_expenses is not None and not monthly_expenses.empty:
+        last_date = monthly_expenses['Parsed_Date'].max()
+        last_period = last_date.to_period('M')
+        target_period = pd.Period(target_month_str, freq='M')
+        steps_ahead = (target_period - last_period).n + 1  # +1 因為是預測下一步
+        if steps_ahead <= 0:
+            warnings_report += f"\n{colors.YELLOW}警告：目標月份 {target_month_str} 已過期或已在資料中，預測可能不準確。{colors.RESET}"
+            steps_ahead = 1  # 強制預測下一步
+
+    # --- 四階段預測：根據數據量選擇方法 (基於實質金額，調整為多步預測) ---
     predicted_expense_str = "無法預測 (資料不足或錯誤)"
     ci_str = ""
     method_used = ""
@@ -492,13 +516,13 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             try:
                 x = np.arange(len(data))
                 slope, intercept, _, _, _ = linregress(x, data)
-                predicted_value = intercept + slope * (len(data) + 1)
+                predicted_value = intercept + slope * (len(data) + steps_ahead - 1)  # 調整為多步
                 predicted_expense_str = f"{predicted_value:,.2f}"
                 method_used = " (基於簡化 SARIMA)"
 
-                # 基於標準誤差的信心區間
+                # 基於標準誤差的信心區間（簡化多步）
                 residuals = data - (intercept + slope * x)
-                se = np.std(residuals, ddof=1)
+                se = np.std(residuals, ddof=1) * np.sqrt(steps_ahead)  # 粗略調整多步不確定性
                 t_val = 1.96  # 95% 信心水準的近似 t 值
                 lower = predicted_value - t_val * se
                 upper = predicted_value + t_val * se
@@ -509,7 +533,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             try:
                 x = np.arange(1, num_months + 1)
                 degree = 2  # 固定2階避免過擬合
-                predicted_value, lower, upper = polynomial_regression_with_ci(x, data, degree, num_months + 1)
+                predicted_value, lower, upper = polynomial_regression_with_ci(x, data, degree, num_months + steps_ahead)
                 predicted_expense_str = f"{predicted_value:,.2f}"
                 method_used = " (基於多項式迴歸)"
                 ci_str = f" [下限：{lower:,.2f}，上限：{upper:,.2f}] (95% 信心)"
@@ -519,17 +543,18 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             try:
                 x = np.arange(1, num_months + 1)
                 slope, intercept, _, _, _ = linregress(x, data)
-                predicted_value = intercept + slope * (num_months + 1)
+                predicted_value = intercept + slope * (num_months + steps_ahead)
                 predicted_expense_str = f"{predicted_value:,.2f}"
                 method_used = " (基於線性迴歸)"
 
-                # 基於t分佈的預測區間
+                # 基於t分佈的預測區間（調整為多步）
                 n = len(x)
                 x_mean = np.mean(x)
                 residuals = data - (intercept + slope * x)
                 mse = np.sum(residuals**2) / (n - 2)
                 ssx = np.sum((x - x_mean)**2)
-                se = np.sqrt(mse * (1 + 1/n + ((num_months + 1) - x_mean)**2 / ssx))
+                predict_x = num_months + steps_ahead
+                se = np.sqrt(mse * (1 + 1/n + ((predict_x - x_mean)**2) / ssx)) * np.sqrt(steps_ahead)  # 粗略調整
                 t_val = t.ppf(0.975, n - 2)  # 95% t 值
                 lower = predicted_value - t_val * se
                 upper = predicted_value + t_val * se
@@ -539,7 +564,9 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         elif num_months >= 2:  # 2–5 個月，使用 EMA
             try:
                 ema = monthly_expenses['Real_Amount'].ewm(span=num_months, adjust=False).mean()
-                predicted_value = ema.iloc[-1]  # 最後一個 EMA 值作為預測
+                predicted_value = ema.iloc[-1]  # 基於最後 EMA，簡化多步為重複最後值（EMA 不適合遠期）
+                for _ in range(steps_ahead - 1):
+                    predicted_value = ema.iloc[-1]  # 簡易延伸（可改進）
                 predicted_expense_str = f"{predicted_value:,.2f}"
                 method_used = " (基於 EMA)"
 
@@ -555,12 +582,11 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 upper = np.percentile(bootstrap_preds, 97.5)
                 ci_str = f" [下限：{lower:,.2f}，上限：{upper:,.2f}] (95% 信心)"
             except Exception as e:
-                predicted_expense_str = f"無法預測 (錯誤: {str(e)})"
+                predicted_expense_str = f"無法預測 (錯誤: {str(e))}"
 
-    # 還原季節性（如果有）
+    # 還原季節性（如果有，使用目標月份）
     if used_seasonal and predicted_value is not None:
-        next_month = (monthly_expenses['Parsed_Date'].dt.month.max() % 12) + 1
-        seasonal_factor = seasonal_indices.get(next_month, 1.0)
+        seasonal_factor = seasonal_indices.get(target_month, 1.0)
         predicted_value *= seasonal_factor
         predicted_expense_str = f"{predicted_value:,.2f} (已還原季節性)"
 
@@ -620,13 +646,14 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         print(f"{colors.BOLD}淨餘額: {balance_color}{colors.BOLD}{net_balance:,.2f}{colors.RESET}")
     
     # 顯示傳統預測結果 (基於實質金額)
-    print(f"\n{colors.PURPLE}{colors.BOLD}>>> 下個月趨勢預測 (基於實質金額): {predicted_expense_str}{ci_str}{method_used}{colors.RESET}")
+    print(f"\n{colors.PURPLE}{colors.BOLD}>>> {target_month_str} 趨勢預測 (基於實質金額): {predicted_expense_str}{ci_str}{method_used}{colors.RESET}")
 
     # 新增：預測方法摘要（告知使用者進階功能使用情況）
     print(f"\n{colors.CYAN}{colors.BOLD}>>> 預測方法摘要{colors.RESET}")
     print(f"  - 資料月份數: {num_unique_months}")
     print(f"  - {seasonal_note}")
     print(f"  - {mc_note}")
+    print(f"  - 預測目標月份: {target_month_str} (基於目前時間，距離資料最後月份 {steps_ahead - 1} 個月)")
 
     # 顯示蒙地卡羅儀表板 (基於實質金額)
     if p25 is not None:
@@ -647,7 +674,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         print(f"\n{colors.CYAN}{colors.BOLD}>>> 綜合預算建議 (基於實質金額){colors.RESET}")
         print(f"{colors.BOLD}風險狀態: {risk_status}{colors.RESET}")
         print(f"{colors.WHITE}{risk_description}{colors.RESET}")
-        print(f"{colors.BOLD}建議下個月預算: {suggested_budget:,.2f} 元{colors.RESET}")
+        print(f"{colors.BOLD}建議 {target_month_str} 預算: {suggested_budget:,.2f} 元{colors.RESET}")
         if predicted_value is not None and expense_std_dev is not None:
             print(f"{colors.WHITE}    └ 計算依據：趨勢預測中心值 ({predicted_value:,.2f}) + 審慎緩衝區 ({prudence_factor} * {expense_std_dev:,.2f}){colors.RESET}")
         elif "替代公式" in risk_status:
