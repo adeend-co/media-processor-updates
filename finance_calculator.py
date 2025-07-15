@@ -2,20 +2,20 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v1.8.3              #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v1.8.4              #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新：整合季節性分解與優化蒙地卡羅模擬（自舉法），並修正函數範圍錯誤。                   #
+# 更新：新增自動檢測月份數，條件應用季節性分解與優化蒙地卡羅模擬，並告知使用者。           #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v1.8.3"  # 更新版本：整合季節性與自舉法
+SCRIPT_VERSION = "v1.8.4"  # 更新版本：自動檢測與條件應用
 SCRIPT_UPDATE_DATE = "2025-07-15"
 
 import sys
@@ -442,11 +442,20 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         print(warnings_report)
         print(f"{colors.YELLOW}--------------------{colors.RESET}")
 
-    # --- 季節性分解整合 ---
-    if monthly_expenses is not None and len(monthly_expenses) >= 12:  # 至少一年數據
+    # --- 自動檢測月份數 ---
+    num_unique_months = 0
+    if monthly_expenses is not None:
+        num_unique_months = monthly_expenses['Parsed_Date'].dt.to_period('M').nunique()
+
+    # --- 季節性分解整合 (條件應用) ---
+    used_seasonal = False
+    seasonal_note = "未使用季節性分解（資料月份不足 24 個月）。"
+    if monthly_expenses is not None and num_unique_months >= 24:
         deseasonalized, seasonal_indices = seasonal_decomposition(monthly_expenses)
         # 使用去季節化數據進行後續分析
         analysis_data = deseasonalized['Deseasonalized'].values
+        used_seasonal = True
+        seasonal_note = "已使用季節性分解（資料月份足夠）。"
     else:
         analysis_data = monthly_expenses['Real_Amount'].values if monthly_expenses is not None else None
 
@@ -549,7 +558,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 predicted_expense_str = f"無法預測 (錯誤: {str(e)})"
 
     # 還原季節性（如果有）
-    if 'deseasonalized' in locals() and predicted_value is not None:
+    if used_seasonal and predicted_value is not None:
         next_month = (monthly_expenses['Parsed_Date'].dt.month.max() % 12) + 1
         seasonal_factor = seasonal_indices.get(next_month, 1.0)
         predicted_value *= seasonal_factor
@@ -575,9 +584,13 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     p25 = None
     p75 = None
     p95 = None
+    used_optimized_mc = False
+    mc_note = "未使用優化蒙地卡羅模擬（資料月份不足 24 個月，使用標準版）。"
     if monthly_expenses is not None and len(monthly_expenses) >= 2:
-        if len(monthly_expenses) >= 24:
+        if num_unique_months >= 24:
             p25, p75, p95 = optimized_monte_carlo(monthly_expenses, predicted_value)
+            used_optimized_mc = True
+            mc_note = "已使用優化蒙地卡羅模擬（自舉法，資料月份足夠）。"
         else:
             p25, p75, p95 = monte_carlo_dashboard(monthly_expenses['Real_Amount'].values)
 
@@ -609,6 +622,12 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     # 顯示傳統預測結果 (基於實質金額)
     print(f"\n{colors.PURPLE}{colors.BOLD}>>> 下個月趨勢預測 (基於實質金額): {predicted_expense_str}{ci_str}{method_used}{colors.RESET}")
 
+    # 新增：預測方法摘要（告知使用者進階功能使用情況）
+    print(f"\n{colors.CYAN}{colors.BOLD}>>> 預測方法摘要{colors.RESET}")
+    print(f"  - 資料月份數: {num_unique_months}")
+    print(f"  - {seasonal_note}")
+    print(f"  - {mc_note}")
+
     # 顯示蒙地卡羅儀表板 (基於實質金額)
     if p25 is not None:
         print(f"\n{colors.CYAN}{colors.BOLD}>>> 個人財務風險儀表板 (基於 10,000 次模擬，實質金額){colors.RESET}")
@@ -631,7 +650,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         print(f"{colors.BOLD}建議下個月預算: {suggested_budget:,.2f} 元{colors.RESET}")
         if predicted_value is not None and expense_std_dev is not None:
             print(f"{colors.WHITE}    └ 計算依據：趨勢預測中心值 ({predicted_value:,.2f}) + 審慎緩衝區 ({prudence_factor} * {expense_std_dev:,.2f}){colors.RESET}")
-        elif "替代公式" in status:
+        elif "替代公式" in risk_status:
             print(f"{colors.WHITE}    └ 計算依據：近期平均實質支出 + 15% 風險緩衝 (適用於數據不足情況)。{colors.RESET}")
 
     # 通膨調整說明
@@ -672,3 +691,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+                                                                         
