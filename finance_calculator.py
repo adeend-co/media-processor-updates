@@ -2,7 +2,7 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v1.8.9              #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v1.8.10              #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
@@ -15,7 +15,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v1.8.9"  # 更新版本：自動檢測與條件應用
+SCRIPT_VERSION = "v1.8.10"  # 更新版本：自動檢測與條件應用
 SCRIPT_UPDATE_DATE = "2025-07-15"
 
 import sys
@@ -542,6 +542,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     method_used = " (基於直接-遞歸混合)"
     upper = None  # 用於風險判讀
     predicted_value = None
+    historical_mape = None  # 新增：歷史 MAPE 值
     if monthly_expenses is not None and len(monthly_expenses) >= 2:
         num_months = len(monthly_expenses)
         data = analysis_data  # 使用去季節化或原始數據
@@ -569,6 +570,12 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 lower = max(0, predicted_value - t_val * se)  # 避免負值
                 upper = predicted_value + t_val * se
                 ci_str = f" [下限：{lower:,.2f}，上限：{upper:,.2f}] (95% 信心)"
+
+                # 新增：計算歷史 MAPE（使用線性迴歸回測）
+                historical_pred = intercept + slope * x
+                mask = data != 0
+                if np.sum(mask) > 0:
+                    historical_mape = np.mean(np.abs((data[mask] - historical_pred[mask]) / data[mask])) * 100
             except Exception as e:
                 predicted_expense_str = f"無法預測 (錯誤: {str(e)})"
         elif num_months >= 12:  # 12–23 個月，使用多項式迴歸 (2階)，應用混合
@@ -598,6 +605,12 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 lower = max(0, predicted_value - t_val * se)
                 upper = predicted_value + t_val * se
                 ci_str = f" [下限：{lower:,.2f}，上限：{upper:,.2f}] (95% 信心)"
+
+                # 新增：計算歷史 MAPE（使用多項式迴歸回測）
+                historical_pred = p(x)
+                mask = data != 0
+                if np.sum(mask) > 0:
+                    historical_mape = np.mean(np.abs((data[mask] - historical_pred[mask]) / data[mask])) * 100
             except Exception as e:
                 predicted_expense_str = f"無法預測 (錯誤: {str(e)})"
         elif num_months >= 6:  # 6–11 個月，使用線性迴歸，應用混合
@@ -626,6 +639,12 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 lower = max(0, predicted_value - t_val * se)
                 upper = predicted_value + t_val * se
                 ci_str = f" [下限：{lower:,.2f}，上限：{upper:,.2f}] (95% 信心)"
+
+                # 新增：計算歷史 MAPE（使用線性迴歸回測）
+                historical_pred = intercept + slope * x
+                mask = data != 0
+                if np.sum(mask) > 0:
+                    historical_mape = np.mean(np.abs((data[mask] - historical_pred[mask]) / data[mask])) * 100
             except Exception as e:
                 predicted_expense_str = f"無法預測 (錯誤: {str(e)})"
         elif num_months >= 2:  # 2–5 個月，使用 EMA，應用混合
@@ -652,6 +671,12 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 lower = max(0, np.percentile(bootstrap_preds, 2.5))
                 upper = np.percentile(bootstrap_preds, 97.5)
                 ci_str = f" [下限：{lower:,.2f}，上限：{upper:,.2f}] (95% 信心)"
+
+                # 新增：計算歷史 MAPE（使用 EMA 回測）
+                historical_pred = ema.values
+                mask = monthly_expenses['Real_Amount'].values != 0
+                if np.sum(mask) > 0:
+                    historical_mape = np.mean(np.abs((monthly_expenses['Real_Amount'].values[mask] - historical_pred[mask]) / monthly_expenses['Real_Amount'].values[mask])) * 100
             except Exception as e:
                 predicted_expense_str = f"無法預測 (錯誤: {str(e)})"
 
@@ -718,6 +743,9 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     
     # 顯示傳統預測結果 (基於實質金額)
     print(f"\n{colors.PURPLE}{colors.BOLD}>>> {target_month_str} 趨勢預測 (基於實質金額): {predicted_expense_str}{ci_str}{method_used}{colors.RESET}")
+    if historical_mape is not None:
+        print(f"{colors.WHITE}歷史回測準確度 (MAPE): {historical_mape:.2f}%{colors.RESET}")
+        print(f"{colors.WHITE}    └ 註：此準確度代表預測模型在您過去的數據上，平均的預測誤差百分比。{colors.RESET}")
 
     # 新增：預測方法摘要（告知使用者進階功能使用情況）
     print(f"\n{colors.CYAN}{colors.BOLD}>>> 預測方法摘要{colors.RESET}")
