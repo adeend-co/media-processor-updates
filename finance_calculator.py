@@ -582,7 +582,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 upper = np.percentile(bootstrap_preds, 97.5)
                 ci_str = f" [下限：{lower:,.2f}，上限：{upper:,.2f}] (95% 信心)"
             except Exception as e:
-                predicted_expense_str = f"無法預測 (錯誤: {str(e))}"
+                predicted_expense_str = f"無法預測 (錯誤: {str(e)})"
 
     # 還原季節性（如果有，使用目標月份）
     if used_seasonal and predicted_value is not None:
