@@ -2,20 +2,20 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v1.8.1              #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v1.8.3              #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新：修正函數範圍錯誤，整合季節性分解與優化蒙地卡羅模擬（自舉法）。                       #
+# 更新：整合季節性分解與優化蒙地卡羅模擬（自舉法），並修正函數範圍錯誤。                   #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v1.8.2"  # 更新版本：修正函數範圍錯誤
+SCRIPT_VERSION = "v1.8.3"  # 更新版本：整合季節性與自舉法
 SCRIPT_UPDATE_DATE = "2025-07-15"
 
 import sys
@@ -166,7 +166,6 @@ def process_finance_data(file_paths, colors):
     
     if not all_dfs:
         return None, None, "沒有成功讀取任何資料檔案。"
-
     master_df = pd.concat(all_dfs, ignore_index=True)
     master_df.columns = master_df.columns.str.strip()
     date_col = find_column_by_synonyms(master_df.columns, ['日期', '時間', 'Date', 'time', '月份'])
@@ -299,7 +298,7 @@ def process_finance_data(file_paths, colors):
 
     return processed_df, monthly_expenses, "\n".join(warnings_report)
 
-# --- 新增：季節性分解函數 ---
+# --- 季節性分解函數 (整合說明中的方法) ---
 def seasonal_decomposition(monthly_expenses):
     # 計算季節性指數
     monthly_expenses['Month'] = monthly_expenses['Parsed_Date'].dt.month
@@ -313,7 +312,7 @@ def seasonal_decomposition(monthly_expenses):
     
     return deseasonalized, seasonal_indices
 
-# --- 新增：優化蒙地卡羅模擬（自舉法） ---
+# --- 優化蒙地卡羅模擬（自舉法，整合說明中的方法） ---
 def optimized_monte_carlo(monthly_expenses, predicted_value, num_simulations=10000):
     # 計算歷史殘差（使用線性迴歸擬合趨勢）
     x = np.arange(len(monthly_expenses))
@@ -443,6 +442,14 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         print(warnings_report)
         print(f"{colors.YELLOW}--------------------{colors.RESET}")
 
+    # --- 季節性分解整合 ---
+    if monthly_expenses is not None and len(monthly_expenses) >= 12:  # 至少一年數據
+        deseasonalized, seasonal_indices = seasonal_decomposition(monthly_expenses)
+        # 使用去季節化數據進行後續分析
+        analysis_data = deseasonalized['Deseasonalized'].values
+    else:
+        analysis_data = monthly_expenses['Real_Amount'].values if monthly_expenses is not None else None
+
     # 計算總支出（如果有processed_df）
     total_income = 0
     total_expense = 0
@@ -470,7 +477,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     predicted_value = None
     if monthly_expenses is not None and len(monthly_expenses) >= 2:
         num_months = len(monthly_expenses)
-        data = monthly_expenses['Real_Amount'].values  # 使用實質金額進行預測
+        data = analysis_data  # 使用去季節化或原始數據
 
         if num_months >= 24:  # ≥24 個月，使用簡化 SARIMA
             try:
@@ -540,6 +547,13 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 ci_str = f" [下限：{lower:,.2f}，上限：{upper:,.2f}] (95% 信心)"
             except Exception as e:
                 predicted_expense_str = f"無法預測 (錯誤: {str(e)})"
+
+    # 還原季節性（如果有）
+    if 'deseasonalized' in locals() and predicted_value is not None:
+        next_month = (monthly_expenses['Parsed_Date'].dt.month.max() % 12) + 1
+        seasonal_factor = seasonal_indices.get(next_month, 1.0)
+        predicted_value *= seasonal_factor
+        predicted_expense_str = f"{predicted_value:,.2f} (已還原季節性)"
 
     # --- 歷史支出波動性分析 (基於實質金額) ---
     expense_std_dev = None
