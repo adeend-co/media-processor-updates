@@ -15,7 +15,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v1.8.1"  # 更新版本：修正函數範圍錯誤
+SCRIPT_VERSION = "v1.8.2"  # 更新版本：修正函數範圍錯誤
 SCRIPT_UPDATE_DATE = "2025-07-15"
 
 import sys
@@ -626,34 +626,35 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     print(f"{colors.CYAN}{colors.BOLD}========================================{colors.RESET}\n")
 
 # --- 腳本入口 ---
-warnings.simplefilter("ignore")
+def main():
+    warnings.simplefilter("ignore")
 
-parser = argparse.ArgumentParser(description="進階財務分析與預測器")
-parser.add_argument('--no-color', action='store_true', help="禁用彩色輸出。")
-args = parser.parse_args()
+    parser = argparse.ArgumentParser(description="進階財務分析與預測器")
+    parser.add_argument('--no-color', action='store_true', help="禁用彩色輸出。")
+    args = parser.parse_args()
 
-colors = Colors(enabled=not args.no_color)
+    colors = Colors(enabled=not args.no_color)
 
-# --- 顯示腳本標題與版本資訊 ---
-print(f"{colors.CYAN}====== {colors.BOLD}{SCRIPT_NAME} {SCRIPT_VERSION}{colors.RESET}{colors.CYAN} ======{colors.RESET}")
-print(f"{colors.WHITE}更新日期: {SCRIPT_UPDATE_DATE}{colors.RESET}")
+    # --- 顯示腳本標題與版本資訊 ---
+    print(f"{colors.CYAN}====== {colors.BOLD}{SCRIPT_NAME} {SCRIPT_VERSION}{colors.RESET}{colors.CYAN} ======{colors.RESET}")
+    print(f"{colors.WHITE}更新日期: {SCRIPT_UPDATE_DATE}{colors.RESET}")
 
-try:
-    # --- 全新互動式輸入 ---
-    file_paths_str = input(f"\n{colors.YELLOW}請貼上一個或多個以分號(;)區隔的 CSV 檔案路徑: {colors.RESET}")
-    if not file_paths_str.strip():
-        print(f"\n{colors.RED}錯誤：未提供任何檔案路徑。腳本終止。{colors.RESET}")
+    try:
+        # --- 全新互動式輸入 ---
+        file_paths_str = input(f"\n{colors.YELLOW}請貼上一個或多個以分號(;)區隔的 CSV 檔案路徑: {colors.RESET}")
+        if not file_paths_str.strip():
+            print(f"\n{colors.RED}錯誤：未提供任何檔案路徑。腳本終止。{colors.RESET}")
+            sys.exit(1)
+        
+        # --- 呼叫主函數 ---
+        analyze_and_predict(file_paths_str, args.no_color)
+
+    except KeyboardInterrupt:
+        print(f"\n{colors.YELLOW}使用者中斷操作。腳本終止。{colors.RESET}")
+        sys.exit(0)
+    except Exception as e:
+        print(f"\n{colors.RED}腳本執行時發生未預期的錯誤: {e}{colors.RESET}")
         sys.exit(1)
-    
-    # --- 呼叫主函數 ---
-    analyze_and_predict(file_paths_str, args.no_color)
-
-except KeyboardInterrupt:
-    print(f"\n{colors.YELLOW}使用者中斷操作。腳本終止。{colors.RESET}")
-    sys.exit(0)
-except Exception as e:
-    print(f"\n{colors.RED}腳本執行時發生未預期的錯誤: {e}{colors.RESET}")
-    sys.exit(1)
 
 if __name__ == "__main__":
     main()
