@@ -2,7 +2,7 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v1.8.11              #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v1.8.12              #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
@@ -15,8 +15,8 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v1.8.11"  # 更新版本：自動檢測與條件應用
-SCRIPT_UPDATE_DATE = "2025-07-15"
+SCRIPT_VERSION = "v1.8.12"  # 更新版本：自動檢測與條件應用
+SCRIPT_UPDATE_DATE = "2025-07-16"
 
 import sys
 import os
@@ -375,13 +375,13 @@ def monte_carlo_dashboard(monthly_expense_data, num_simulations=10000):
     return p25, p75, p95
 
 # --- 風險狀態判讀與預算建議函數 (升級版，基於實質金額) ---
-def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly_expenses):
+def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly_expenses, p25, p75):
     """
     根據框架判讀風險狀態，並計算動態預算建議（使用實質金額）。
-    若數據不足6個月，切換到平均支出 + 風險緩衝公式。
-    升級：整合殘差分析、波動趨勢分析與多因子計分系統，並返回計分細節。
+    升級：整合風險係數矩陣、數據長度檢查和新預算公式。
     """
     num_months = len(monthly_expenses) if monthly_expenses is not None else 0
+    num_unique_months = monthly_expenses['Parsed_Date'].dt.to_period('M').nunique() if monthly_expenses is not None else 0
 
     if num_months < 6:
         if num_months < 2:
@@ -395,7 +395,7 @@ def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly
         prudence_factor = buffer_factor
         return status, description, suggested_budget, prudence_factor, 0, 0
 
-    if p95 is None or expense_std_dev is None or predicted_value is None or upper is None:
+    if p95 is None or expense_std_dev is None or predicted_value is None or upper is None or p75 is None:
         return "無法判讀 (資料不足)", None, None, 0.0, 0, 0
 
     A = upper
@@ -440,23 +440,54 @@ def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly
     if trend_score > shock_score + 1:
         status = "風險顯著升溫"
         description = "支出趨勢顯著加速。您的支出增長趨勢非常強勁，未來的潛在風險可能已超越歷史經驗，需要高度警惕。"
-        prudence_factor = 1.0
     elif shock_score > trend_score + 1:
         status = "偶發衝擊主導"
         description = "潛在衝擊風險較高。您的主要風險並非來自支出增長，而是偶發性大額開銷，建議確保預備金充足。"
-        prudence_factor = 0.0
     elif abs(trend_score - shock_score) <= 1:
         status = "趨勢與衝擊混合"
         description = "趨勢風險與衝擊風險同時存在。您的財務狀況有增長趨勢，也易受偶發事件影響，建議平衡預算與預備金。"
-        prudence_factor = 0.5  # 中間值
     else:
         status = "不穩定性增長"
         description = "您的財務波動性正在增加，消費行為變得難以預測，需優先穩定支出模式。"
-        prudence_factor = 0.75
 
-    suggested_budget = predicted_value + (prudence_factor * expense_std_dev)
+    # 新增：風險係數矩陣
+    if trend_score <= 1:
+        trend_level = 'low'
+    elif trend_score == 2:
+        trend_level = 'medium'
+    else:
+        trend_level = 'high'
 
-    return status, description, suggested_budget, prudence_factor, trend_score, shock_score
+    if shock_score <= 1:
+        shock_level = 'low'
+    elif shock_score <= 3:
+        shock_level = 'medium'
+    else:
+        shock_level = 'high'
+
+    risk_matrix = {
+        'low': {'low': 0.30, 'medium': 0.50, 'high': 0.75},
+        'medium': {'low': 0.50, 'medium': 0.75, 'high': 1.00},
+        'high': {'low': 0.75, 'medium': 1.00, 'high': 1.25}
+    }
+    risk_coefficient = risk_matrix.get(trend_level, {}).get(shock_level, 0.5)  # 預設0.5
+
+    # 新增：數據長度檢查並計算建議預算
+    if num_unique_months >= 24:
+        data_reliability = "高度可靠"
+        suggested_budget = p75 + (risk_coefficient * (p95 - p75))
+        prudence_factor = risk_coefficient  # 使用風險係數
+    elif num_unique_months >= 12:
+        data_reliability = "中度可靠"
+        suggested_budget = p75 + (risk_coefficient * (p95 - p75))
+        prudence_factor = risk_coefficient
+    else:
+        data_reliability = "低度可靠 - 使用原始公式"
+        suggested_budget = predicted_value + (0.5 * expense_std_dev)  # 回歸原始公式
+        prudence_factor = 0.5
+        description += " (數據不足12個月，使用原始預算公式)"
+
+    return status, description, suggested_budget, prudence_factor, trend_score, shock_score, data_reliability, risk_coefficient
 
 # --- 主要分析與預測函數 (升級為四階段模型 + 蒙地卡羅 + 風險預算建議 + 通膨調整) ---
 def analyze_and_predict(file_paths_str: str, no_color: bool):
@@ -554,27 +585,23 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             try:
                 x = np.arange(len(data))
                 slope, intercept, _, _, _ = linregress(x, data)
-                # 遞歸部分：初始化預測
                 predictions = []
-                prev_pred = data[-1]  # 最後觀測值作為起點
+                prev_pred = data[-1]
                 for step in range(1, steps_ahead + 1):
-                    # 直接部分：為每個步驟計算獨立預測，納入先前預測
                     current_x = len(data) + step - 1
-                    pred = intercept + slope * current_x + (0.5 * (prev_pred - data[-1]))  # 混合調整
+                    pred = intercept + slope * current_x + (0.5 * (prev_pred - data[-1]))
                     predictions.append(pred)
                     prev_pred = pred
-                predicted_value = predictions[-1]  # 最後一步作為中心值
+                predicted_value = predictions[-1]
                 predicted_expense_str = f"{predicted_value:,.2f}"
 
-                # 基於標準誤差的信心區間（簡化多步，強制下限為0）
                 residuals = data - (intercept + slope * x)
-                se = np.std(residuals, ddof=1) * np.sqrt(steps_ahead)  # 粗略調整多步不確定性
-                t_val = 1.96  # 95% 信心水準的近似 t 值
-                lower = max(0, predicted_value - t_val * se)  # 避免負值
+                se = np.std(residuals, ddof=1) * np.sqrt(steps_ahead)
+                t_val = 1.96
+                lower = max(0, predicted_value - t_val * se)
                 upper = predicted_value + t_val * se
                 ci_str = f" [下限：{lower:,.2f}，上限：{upper:,.2f}] (95% 信心)"
 
-                # 新增：計算歷史指標（使用線性迴歸回測）
                 historical_pred = intercept + slope * x
                 historical_mae = np.mean(np.abs(data - historical_pred))
                 historical_rmse = np.sqrt(np.mean((data - historical_pred) ** 2))
@@ -591,21 +618,19 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         elif num_months >= 12:  # 12–23 個月，使用多項式迴歸 (2階)，應用混合
             try:
                 x = np.arange(1, num_months + 1)
-                degree = 2  # 固定2階避免過擬合
+                degree = 2
                 coeffs = np.polyfit(x, data, degree)
                 p = np.poly1d(coeffs)
-                # 遞歸部分：初始化預測
                 predictions = []
                 prev_pred = data[-1]
                 for step in range(1, steps_ahead + 1):
                     predict_x = num_months + step
-                    pred = p(predict_x) + (0.3 * (prev_pred - data[-1]))  # 混合調整
+                    pred = p(predict_x) + (0.3 * (prev_pred - data[-1]))
                     predictions.append(pred)
                     prev_pred = pred
                 predicted_value = predictions[-1]
                 predicted_expense_str = f"{predicted_value:,.2f}"
 
-                # 信心區間（強制下限為0）
                 y_pred = p(x)
                 n = len(x)
                 residuals = data - y_pred
@@ -616,7 +641,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 upper = predicted_value + t_val * se
                 ci_str = f" [下限：{lower:,.2f}，上限：{upper:,.2f}] (95% 信心)"
 
-                # 新增：計算歷史指標（使用多項式迴歸回測）
                 historical_pred = p(x)
                 historical_mae = np.mean(np.abs(data - historical_pred))
                 historical_rmse = np.sqrt(np.mean((data - historical_pred) ** 2))
@@ -634,18 +658,16 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             try:
                 x = np.arange(1, num_months + 1)
                 slope, intercept, _, _, _ = linregress(x, data)
-                # 遞歸部分：初始化預測
                 predictions = []
                 prev_pred = data[-1]
                 for step in range(1, steps_ahead + 1):
                     predict_x = num_months + step
-                    pred = intercept + slope * predict_x + (0.4 * (prev_pred - data[-1]))  # 混合調整
+                    pred = intercept + slope * predict_x + (0.4 * (prev_pred - data[-1]))
                     predictions.append(pred)
                     prev_pred = pred
                 predicted_value = predictions[-1]
                 predicted_expense_str = f"{predicted_value:,.2f}"
 
-                # 信心區間（強制下限為0）
                 n = len(x)
                 x_mean = np.mean(x)
                 residuals = data - (intercept + slope * x)
@@ -657,7 +679,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 upper = predicted_value + t_val * se
                 ci_str = f" [下限：{lower:,.2f}，上限：{upper:,.2f}] (95% 信心)"
 
-                # 新增：計算歷史指標（使用線性迴歸回測）
                 historical_pred = intercept + slope * x
                 historical_mae = np.mean(np.abs(data - historical_pred))
                 historical_rmse = np.sqrt(np.mean((data - historical_pred) ** 2))
@@ -674,17 +695,15 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         elif num_months >= 2:  # 2–5 個月，使用 EMA，應用混合
             try:
                 ema = monthly_expenses['Real_Amount'].ewm(span=num_months, adjust=False).mean()
-                # 遞歸部分：初始化預測
                 predictions = []
                 prev_pred = ema.iloc[-1]
                 for step in range(1, steps_ahead + 1):
-                    pred = prev_pred  # EMA 簡易延伸
+                    pred = prev_pred
                     predictions.append(pred)
                     prev_pred = pred
                 predicted_value = predictions[-1]
                 predicted_expense_str = f"{predicted_value:,.2f}"
 
-                # EMA Bootstrap 信心區間（強制下限為0）
                 residuals = monthly_expenses['Real_Amount'] - ema
                 bootstrap_preds = []
                 for _ in range(1000):
@@ -696,7 +715,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 upper = np.percentile(bootstrap_preds, 97.5)
                 ci_str = f" [下限：{lower:,.2f}，上限：{upper:,.2f}] (95% 信心)"
 
-                # 新增：計算歷史指標（使用 EMA 回測）
                 historical_pred = ema.values
                 historical_mae = np.mean(np.abs(monthly_expenses['Real_Amount'].values - historical_pred))
                 historical_rmse = np.sqrt(np.mean((monthly_expenses['Real_Amount'].values - historical_pred) ** 2))
@@ -748,25 +766,21 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             p25, p75, p95 = monte_carlo_dashboard(monthly_expenses['Real_Amount'].values)
 
     # --- 新增：風險狀態與預算建議 (基於實質金額) ---
-    risk_status, risk_description, suggested_budget, prudence_factor, trend_score, shock_score = assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly_expenses)
+    risk_status, risk_description, suggested_budget, prudence_factor, trend_score, shock_score, data_reliability, risk_coefficient = assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly_expenses, p25, p75)
 
     # --- 輸出最終的簡潔報告 ---
     print(f"\n{colors.CYAN}{colors.BOLD}========== 財務分析與預測報告 =========={colors.RESET}")
     
-    # 處理非寬格式（有收入/支出的情況）
     if not is_wide_format_expense_only:
         print(f"{colors.BOLD}總收入: {colors.GREEN}{total_income:,.2f}{colors.RESET}")
     
-    # 顯示總支出（名目與實質）
     print(f"{colors.BOLD}總支出 (名目): {colors.RED}{total_expense:,.2f}{colors.RESET}")
     if total_real_expense > 0:
         print(f"{colors.BOLD}總支出 (實質，經通膨調整): {colors.RED}{total_real_expense:,.2f}{colors.RESET}")
     
-    # 顯示歷史波動
     if expense_std_dev is not None:
         print(f"{colors.BOLD}歷史月均支出波動 (基於實質金額): {color}{expense_std_dev:,.2f}{volatility_report}{colors.RESET}")
     
-    # 處理淨餘額
     if not is_wide_format_expense_only:
         print("------------------------------------------")
         balance_color = colors.GREEN if net_balance >= 0 else colors.RED
@@ -812,12 +826,14 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         print(f"\n{colors.CYAN}{colors.BOLD}>>> 綜合預算建議 (基於實質金額){colors.RESET}")
         print(f"{colors.BOLD}風險狀態: {risk_status}{colors.RESET}")
         print(f"{colors.WHITE}{risk_description}{colors.RESET}")
+        print(f"{colors.BOLD}數據可靠性: {data_reliability}{colors.RESET}")
+        print(f"{colors.BOLD}動態風險係數: {risk_coefficient:.2f}{colors.RESET}")
         print(f"{colors.BOLD}建議 {target_month_str} 預算: {suggested_budget:,.2f} 元{colors.RESET}")
-        if predicted_value is not None and expense_std_dev is not None:
-            print(f"{colors.WHITE}    └ 計算依據：趨勢預測中心值 ({predicted_value:,.2f}) + 審慎緩衝區 ({prudence_factor} * {expense_std_dev:,.2f}){colors.RESET}")
-        elif "替代公式" in risk_status:
-            print(f"{colors.WHITE}    └ 計算依據：近期平均實質支出 + 15% 風險緩衝 (適用於數據不足情況)。{colors.RESET}")
-        
+        if "原始公式" in data_reliability:
+            print(f"{colors.WHITE}    └ 計算依據：趨勢預測中心值 ({predicted_value:,.2f}) + 審慎緩衝區 (0.5 * {expense_std_dev:,.2f}){colors.RESET}")
+        elif p75 is not None and p95 is not None:
+            print(f"{colors.WHITE}    └ 計算依據：p75 ({p75:,.2f}) + (風險係數 {risk_coefficient:.2f} * (p95 - p75)){colors.RESET}")
+
         # 新增：顯示多因子計分細節
         print(f"\n{colors.WHITE}>>> 多因子計分細節（透明度說明）{colors.RESET}")
         print(f"  - 趨勢風險得分: {trend_score}")
