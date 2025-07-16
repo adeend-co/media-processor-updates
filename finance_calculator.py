@@ -781,7 +781,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         print("------------------------------------------")
         balance_color = colors.GREEN if net_balance >= 0 else colors.RED
         print(f"{colors.BOLD}淨餘額: {balance_color}{colors.BOLD}{net_balance:,.2f}{colors.RESET}")
-    
+
     # 顯示傳統預測結果 (基於實質金額)
     print(f"\n{colors.PURPLE}{colors.BOLD}>>> {target_month_str} 趨勢預測 (基於實質金額): {predicted_expense_str}{ci_str}{method_used}{colors.RESET}")
     if historical_mae is not None:
@@ -821,7 +821,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     if risk_status and "無法判讀" not in risk_status:
         print(f"\n{colors.CYAN}{colors.BOLD}>>> 綜合預算建議{colors.RESET}")
         print(f"{colors.BOLD}風險狀態: {risk_status}{colors.RESET}")
-        print(f"{colors.WHITE}{description}{colors.RESET}")
+        print(f"{colors.WHITE}{risk_description}{colors.RESET}")
         if data_reliability: print(f"{colors.BOLD}數據可靠性: {data_reliability}{colors.RESET}")
         
         # 顯示動態係數 (僅在適用時)
@@ -831,17 +831,16 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         if suggested_budget is not None:
             print(f"{colors.BOLD}建議 {target_month_str} 預算: {suggested_budget:,.2f} 元{colors.RESET}")
 
-            # 修正：根據數據可靠性顯示正確的三種計算依據之一
+            # 根據數據可靠性顯示正確的三種計算依據之一
             if data_reliability and ("高度可靠" in data_reliability or "中度可靠" in data_reliability):
                 if error_buffer is not None:
                     risk_buffer_val = suggested_budget - error_buffer
                     print(f"{colors.WHITE}    └ 計算依據：風險緩衝 ({risk_buffer_val:,.2f}) + 模型誤差緩衝 ({error_buffer:,.2f}){colors.RESET}")
             elif data_reliability and "原始公式" in data_reliability:
                 if predicted_value is not None and expense_std_dev is not None and prudence_factor is not None:
-                     print(f"{colors.WHITE}    └ 計算依據：趨勢預測 ({predicted_value:,.2f}) + 審慎緩衝 ({prudence_factor * expense_std_dev:,.2f}){colors.RESET}")
+                    print(f"{colors.WHITE}    └ 計算依據：趨勢預測 ({predicted_value:,.2f}) + 審慎緩衝 ({prudence_factor * expense_std_dev:,.2f}){colors.RESET}")
             elif data_reliability and "替代公式" in data_reliability:
-                 print(f"{colors.WHITE}    └ 計算依據：近期平均支出 + 15% 固定緩衝。{colors.RESET}")
-
+                print(f"{colors.WHITE}    └ 計算依據：近期平均支出 + 15% 固定緩衝。{colors.RESET}")
 
         if trend_score is not None and shock_score is not None:
             print(f"\n{colors.WHITE}>>> 多因子計分細節（透明度說明）{colors.RESET}")
@@ -853,7 +852,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     print(f"\n{colors.WHITE}【註】關於「實質金額」：為了讓不同年份的支出能被公平比較，本報告已將所有歷史數據，統一換算為當前基期年的貨幣價值。這能幫助您在扣除物價上漲的影響後，看清自己真實的消費習慣變化。{colors.RESET}")
 
     print(f"{colors.CYAN}{colors.BOLD}========================================{colors.RESET}\n")
-                                                                           
+
 # --- 腳本入口 ---
 def main():
     warnings.simplefilter("ignore")
