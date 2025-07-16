@@ -863,9 +863,12 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             print(f"{colors.BOLD}動態風險係數: {risk_coefficient:.2f}{colors.RESET}")
         print(f"{colors.BOLD}建議 {target_month_str} 預算: {suggested_budget:,.2f} 元{colors.RESET}")
 
-        if "原始公式" in data_reliability:
+        # 修正：根據數據可靠性顯示正確計算依據
+        if "使用原始公式" in data_reliability or "替代公式" in risk_status:
             if predicted_value is not None and expense_std_dev is not None:
-                print(f"{colors.WHITE}    └ 計算依據：趨勢預測中心值 ({predicted_value:,.2f}) + 審慎緩衝區 (0.5 * {expense_std_dev:,.2f}){colors.RESET}")
+                print(f"{colors.WHITE}    └ 計算依據：趨勢預測中心值 ({predicted_value:,.2f}) + 審慎緩衝區 ({prudence_factor} * {expense_std_dev:,.2f}){colors.RESET}")
+            else:
+                print(f"{colors.WHITE}    └ 計算依據：近期平均實質支出 + 15% 風險緩衝 (適用於數據不足情況)。{colors.RESET}")
         elif p75 is not None and p95 is not None and risk_coefficient is not None:
             print(f"{colors.WHITE}    └ 計算依據：p75 ({p75:,.2f}) + (風險係數 {risk_coefficient:.2f} * (p95 - p75)){colors.RESET}")
 
