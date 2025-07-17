@@ -2,7 +2,7 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v1.8.17              #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v1.8.18              #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
@@ -15,7 +15,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v1.8.17"  # 更新版本：自動檢測與條件應用
+SCRIPT_VERSION = "v1.8.18"  # 更新版本：自動檢測與條件應用
 SCRIPT_UPDATE_DATE = "2025-07-17"
 
 import sys
@@ -144,17 +144,16 @@ def normalize_date(date_str):
             pass
     return None
 
-# --- 資料處理函數 (完整修正版，確保淨餘額計算) ---
+# --- 資料處理函數 (解決標準收支格式月度聚合問題) ---
 def process_finance_data(file_paths, colors):
     processed_monthly_data_list = []
-    all_processed_dfs = []  # 用於儲存所有處理後的標準格式資料
+    all_processed_dfs = []
     warnings_report = []
     encodings_to_try = ['utf-8', 'utf-8-sig', 'cp950', 'big5', 'gb18030']
     
     total_income = 0.0
     total_expense = 0.0
 
-    # 階段一：逐一讀取、辨識、並處理每個檔案
     for file_path in file_paths:
         file_path = file_path.strip()
         df = None
@@ -187,11 +186,10 @@ def process_finance_data(file_paths, colors):
             warnings_report.append(f"{colors.RED}警告：檔案 '{file_path}' 缺少日期欄位，已跳過。{colors.RESET}")
             continue
 
-        # --- 智慧結構判斷與處理 ---
         processed_df = None
         monthly_df = None
         
-        # 格式 A: 標準收支格式 (日期, 收入, 支出) - 如 IMG_0644.jpg
+        # 格式 A: 標準收支格式 (日期, 收入, 支出)
         if income_col and expense_col:
             warnings_report.append(f"  └ 判斷為【標準收支格式】，處理收入與支出資料。")
             
@@ -205,7 +203,7 @@ def process_finance_data(file_paths, colors):
             total_income += file_income
             total_expense += file_expense
             
-            # 建立標準格式的 processed_df (用於原本腳本的後續處理)
+            # 建立標準格式的 processed_df
             income_df = df[[date_col, income_col]].copy()
             income_df.rename(columns={date_col: 'Date', income_col: 'Amount'}, inplace=True)
             income_df['Type'] = 'income'
@@ -218,15 +216,79 @@ def process_finance_data(file_paths, colors):
             
             processed_df = pd.concat([income_df, expense_df], ignore_index=True)
             
-            # 建立月度支出資料 (只包含支出)
+            # *** 關鍵修正：建立月度支出資料 ***
             if not expense_df.empty:
-                expense_df_copy = expense_df.copy()
-                expense_df_copy['Parsed_Date'] = expense_df_copy['Date'].apply(normalize_date)
-                expense_df_copy['Parsed_Date'] = pd.to_datetime(expense_df_copy['Parsed_Date'], errors='coerce')
-                expense_df_copy.dropna(subset=['Parsed_Date'], inplace=True)
-                monthly_df = expense_df_copy.set_index('Parsed_Date').resample('M')['Amount'].sum().reset_index()
+                expense_df_temp = expense_df.copy()
                 
-        # 格式 B: 僅收入格式
+                # 強化日期解析 - 支援多種格式
+                def robust_date_parse(date_str):
+                    if pd.isnull(date_str):
+                        return pd.NaT
+                    
+                    date_str = str(date_str).strip()
+                    current_year = datetime.now().year
+                    
+                    # 嘗試多種日期格式
+                    formats_to_try = [
+                        '%Y-%m-%d', '%Y/%m/%d', '%Y%m%d',
+                        '%m-%d', '%m/%d', 
+                        '%Y-%m', '%Y/%m',
+                        '%m月%d日', '%m月%d號', '%m月',
+                        '%Y年%m月%d日', '%Y年%m月'
+                    ]
+                    
+                    for fmt in formats_to_try:
+                        try:
+                            parsed = pd.to_datetime(date_str, format=fmt)
+                            # 如果沒有年份，補上當前年份
+                            if parsed.year == 1900:
+                                parsed = parsed.replace(year=current_year)
+                            return parsed
+                        except:
+                            continue
+                    
+                    # 嘗試自動解析
+                    try:
+                        parsed = pd.to_datetime(date_str, errors='coerce')
+                        if pd.notna(parsed):
+                            # 如果年份太舊，可能是格式問題，補上當前年份
+                            if parsed.year < 2000:
+                                parsed = parsed.replace(year=current_year)
+                            return parsed
+                    except:
+                        pass
+                    
+                    # 如果是純數字（如月份）
+                    if date_str.isdigit():
+                        month = int(date_str)
+                        if 1 <= month <= 12:
+                            return pd.to_datetime(f"{current_year}-{month:02d}-01")
+                    
+                    return pd.NaT
+                
+                expense_df_temp['Parsed_Date'] = expense_df_temp['Date'].apply(robust_date_parse)
+                
+                # 移除無法解析的日期
+                before_count = len(expense_df_temp)
+                expense_df_temp = expense_df_temp.dropna(subset=['Parsed_Date'])
+                after_count = len(expense_df_temp)
+                
+                if before_count > after_count:
+                    warnings_report.append(f"  └ 警告：{before_count - after_count} 筆資料的日期無法解析，已移除。")
+                
+                if not expense_df_temp.empty:
+                    # 按月聚合支出資料
+                    monthly_df = expense_df_temp.set_index('Parsed_Date').resample('M')['Amount'].sum().reset_index()
+                    monthly_df = monthly_df[monthly_df['Amount'] > 0]  # 移除零支出月份
+                    
+                    if not monthly_df.empty:
+                        warnings_report.append(f"  └ 成功建立 {len(monthly_df)} 個月的月度支出資料。")
+                    else:
+                        warnings_report.append(f"  └ 警告：聚合後無有效月度支出資料。")
+                else:
+                    warnings_report.append(f"  └ 警告：日期解析後無有效支出資料。")
+                    
+        # 其他格式處理保持不變...
         elif income_col and not expense_col:
             warnings_report.append(f"  └ 判斷為【僅收入格式】，處理收入資料。")
             df[income_col] = pd.to_numeric(df[income_col].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
@@ -238,7 +300,6 @@ def process_finance_data(file_paths, colors):
             income_df['Type'] = 'income'
             processed_df = income_df[income_df['Amount'] > 0]
             
-        # 格式 C: 僅支出格式
         elif expense_col and not income_col:
             warnings_report.append(f"  └ 判斷為【僅支出格式】，處理支出資料。")
             df[expense_col] = pd.to_numeric(df[expense_col].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
@@ -250,15 +311,14 @@ def process_finance_data(file_paths, colors):
             expense_df['Type'] = 'expense'
             processed_df = expense_df[expense_df['Amount'] > 0]
             
-            # 建立月度支出資料
+            # 建立月度支出資料（使用相同的強化日期解析）
             if not processed_df.empty:
                 processed_df_copy = processed_df.copy()
-                processed_df_copy['Parsed_Date'] = processed_df_copy['Date'].apply(normalize_date)
-                processed_df_copy['Parsed_Date'] = pd.to_datetime(processed_df_copy['Parsed_Date'], errors='coerce')
+                processed_df_copy['Parsed_Date'] = processed_df_copy['Date'].apply(robust_date_parse)
                 processed_df_copy.dropna(subset=['Parsed_Date'], inplace=True)
-                monthly_df = processed_df_copy.set_index('Parsed_Date').resample('M')['Amount'].sum().reset_index()
-                
-        # 格式 D: 簡易二欄式 (日期, 金額) - 如 IMG_0642.jpg
+                if not processed_df_copy.empty:
+                    monthly_df = processed_df_copy.set_index('Parsed_Date').resample('M')['Amount'].sum().reset_index()
+                    
         elif amount_col and not type_col:
             warnings_report.append(f"  └ 判斷為【簡易二欄式】，假設為支出資料。")
             df[amount_col] = pd.to_numeric(df[amount_col].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
@@ -270,42 +330,38 @@ def process_finance_data(file_paths, colors):
             expense_df['Type'] = 'expense'
             processed_df = expense_df[expense_df['Amount'] > 0]
             
-            # 建立月度支出資料
+            # 建立月度支出資料（使用相同的強化日期解析）
             if not processed_df.empty:
                 processed_df_copy = processed_df.copy()
-                processed_df_copy['Parsed_Date'] = processed_df_copy['Date'].apply(normalize_date)
-                processed_df_copy['Parsed_Date'] = pd.to_datetime(processed_df_copy['Parsed_Date'], errors='coerce')
+                processed_df_copy['Parsed_Date'] = processed_df_copy['Date'].apply(robust_date_parse)
                 processed_df_copy.dropna(subset=['Parsed_Date'], inplace=True)
-                monthly_df = processed_df_copy.set_index('Parsed_Date').resample('M')['Amount'].sum().reset_index()
-                
-        # 格式 E: 寬格式 (月份, 項目1, 項目2...) - 如 IMG_0643.jpg
+                if not processed_df_copy.empty:
+                    monthly_df = processed_df_copy.set_index('Parsed_Date').resample('M')['Amount'].sum().reset_index()
+                    
         elif len(df.columns) > 2:
             numeric_cols = [c for c in df.columns if c != date_col and pd.api.types.is_numeric_dtype(pd.to_numeric(df[c].astype(str).str.replace(',', ''), errors='coerce'))]
             if numeric_cols:
                 warnings_report.append(f"  └ 判斷為【寬格式】，假設為支出資料，將加總所有項目金額。")
                 
-                # 清理並轉換數值
                 for col in numeric_cols:
                     df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
                 
-                # 計算每行總額
                 df['Total_Amount'] = df[numeric_cols].sum(axis=1)
                 file_expense = df['Total_Amount'].sum()
                 total_expense += file_expense
                 
-                # 建立標準格式的 processed_df
                 expense_df = df[[date_col, 'Total_Amount']].copy()
                 expense_df.rename(columns={date_col: 'Date', 'Total_Amount': 'Amount'}, inplace=True)
                 expense_df['Type'] = 'expense'
                 processed_df = expense_df[expense_df['Amount'] > 0]
                 
-                # 建立月度支出資料
+                # 建立月度支出資料（使用相同的強化日期解析）
                 if not processed_df.empty:
                     processed_df_copy = processed_df.copy()
-                    processed_df_copy['Parsed_Date'] = processed_df_copy['Date'].apply(normalize_date)
-                    processed_df_copy['Parsed_Date'] = pd.to_datetime(processed_df_copy['Parsed_Date'], errors='coerce')
+                    processed_df_copy['Parsed_Date'] = processed_df_copy['Date'].apply(robust_date_parse)
                     processed_df_copy.dropna(subset=['Parsed_Date'], inplace=True)
-                    monthly_df = processed_df_copy.set_index('Parsed_Date').resample('M')['Amount'].sum().reset_index()
+                    if not processed_df_copy.empty:
+                        monthly_df = processed_df_copy.set_index('Parsed_Date').resample('M')['Amount'].sum().reset_index()
             else:
                 warnings_report.append(f"{colors.RED}警告：檔案 '{file_path}' 結構無法辨識，已跳過。{colors.RESET}")
                 continue
@@ -324,7 +380,7 @@ def process_finance_data(file_paths, colors):
     if not all_processed_dfs and not processed_monthly_data_list:
         return None, None, "\n".join(warnings_report), total_income, total_expense
 
-    # 合併所有標準格式資料 (用於原本腳本邏輯)
+    # 合併所有標準格式資料
     master_df = None
     if all_processed_dfs:
         master_df = pd.concat(all_processed_dfs, ignore_index=True)
@@ -339,7 +395,7 @@ def process_finance_data(file_paths, colors):
         final_monthly_expenses = final_monthly_expenses.groupby('Parsed_Date')['Amount'].sum().reset_index()
         final_monthly_expenses.sort_values('Parsed_Date', inplace=True)
         
-        # --- 通膨調整與年份偵測 ---
+        # 通膨調整與年份偵測
         base_year = datetime.now().year
         year_range = set(final_monthly_expenses['Parsed_Date'].dt.year)
         if year_range:
