@@ -124,24 +124,44 @@ def find_column_by_synonyms(df_columns, synonyms):
 def normalize_date(date_str):
     s = str(date_str).strip().replace('月', '').replace('年', '-').replace(' ', '')
     current_year = datetime.now().year
-    if s.isdigit() and len(s) <= 2:
-        month = int(s)
-        return f"{current_year}-{month:02d}-01"
+    
+    # 處理純數字月份
+    if s.replace('.', '', 1).isdigit():
+        try:
+            # 安全處理浮點數格式
+            numeric_val = int(float(s))
+            if 1 <= numeric_val <= 12:
+                return f"{current_year}-{numeric_val:02d}-01"
+        except ValueError:
+            pass
+    
+    # 處理帶連字符的日期
     if '-' in s:
         parts = s.split('-')
-        year = int(parts[0]) if len(parts[0]) == 4 else current_year
-        month = int(parts[1])
-        return f"{year}-{month:02d}-01"
+        try:
+            year = int(float(parts[0])) if len(parts[0]) == 4 else current_year
+            month = int(float(parts[1]))
+            return f"{year}-{month:02d}-01"
+        except (ValueError, IndexError):
+            pass
+    
+    # 處理YYYYMM格式
     if len(s) >= 5 and s[:4].isdigit():
-        year = int(s[:4])
-        month = int(s[4:])
-        return f"{year}-{month:02d}-01"
+        try:
+            year = int(s[:4])
+            month = int(float(s[4:]))  # 使用float處理可能的小數
+            return f"{year}-{month:02d}-01"
+        except ValueError:
+            pass
+    
+    # 處理YYYYMMDD格式
     if s.isdigit() and len(s) == 8:
         try:
             dt = datetime.strptime(s, '%Y%m%d')
             return dt.strftime("%Y-%m-%d")
         except ValueError:
             pass
+    
     return None
 
 def process_finance_data_individual(file_path, colors):
@@ -254,8 +274,8 @@ def process_finance_data_multiple(file_paths, colors):
     """
     all_extracted_data = []
     warnings_report = []
-    format_summary = {}  # 新增：格式摘要統計
-    month_missing_count = 0  # 保留原始的月份缺失統計
+    format_summary = {}
+    month_missing_count = 0
     
     # 分別處理每個檔案
     for file_path in file_paths:
@@ -278,7 +298,7 @@ def process_finance_data_multiple(file_paths, colors):
     # 合併所有資料
     combined_df = pd.DataFrame(all_extracted_data)
     
-    # 增強的日期處理（保留原始複雜邏輯）
+    # 修正後的日期處理函數
     def parse_date_enhanced(date_str):
         nonlocal month_missing_count
         if pd.isnull(date_str):
@@ -301,14 +321,30 @@ def process_finance_data_multiple(file_paths, colors):
                         return pd.to_datetime(normalized, errors='coerce')
                     return pd.NaT
             elif len(s_date) <= 4 and s_date.replace('.', '', 1).isdigit():
-                s_date = str(int(float(s_date)))
-                if len(s_date) < 3:
-                    s_date = '0' * (3 - len(s_date)) + s_date
-                if len(s_date) > 2:
-                    month_missing_count += 1
-                    month = int(s_date[:-2])
-                    day = int(s_date[-2:])
-                    return pd.to_datetime(f"{current_year}-{month}-{day}", errors='coerce')
+                # 修正：安全地處理浮點數格式
+                try:
+                    # 先轉為浮點數再轉為整數，避免直接int()轉換帶小數點的字符串
+                    numeric_val = int(float(s_date))
+                    s_date = str(numeric_val)
+                    
+                    if len(s_date) < 3:
+                        s_date = '0' * (3 - len(s_date)) + s_date
+                    
+                    if len(s_date) >= 3:
+                        month_missing_count += 1
+                        # 確保有足夠的字符進行切片
+                        if len(s_date) == 3:
+                            month = int(s_date[0])  # 第一個字符作為月份
+                            day = int(s_date[1:])   # 後兩個字符作為日期
+                        else:
+                            month = int(s_date[:-2])
+                            day = int(s_date[-2:])
+                        
+                        # 驗證月份和日期的合理性
+                        if 1 <= month <= 12 and 1 <= day <= 31:
+                            return pd.to_datetime(f"{current_year}-{month}-{day}", errors='coerce')
+                except (ValueError, IndexError):
+                    pass
             elif s_date.isdigit() and 1 <= int(s_date) <= 12:
                 month_missing_count += 1
                 return pd.to_datetime(f"{current_year}-{int(s_date)}-01", errors='coerce')
@@ -349,7 +385,7 @@ def process_finance_data_multiple(file_paths, colors):
         # 確保創建 Real_Amount 欄位
         monthly_expenses['Real_Amount'] = monthly_expenses['Amount']
     
-    # 進行通膨調整（保留原始邏輯）
+    # 進行通膨調整
     base_year = datetime.now().year
     year_range = set()
     year_cpi_used = {}
