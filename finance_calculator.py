@@ -2,7 +2,7 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v1.8.20              #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v1.8.21              #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
@@ -15,7 +15,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v1.8.20"  # 更新版本：自動檢測與條件應用
+SCRIPT_VERSION = "v1.8.21"  # 更新版本：自動檢測與條件應用
 SCRIPT_UPDATE_DATE = "2025-07-17"
 
 import sys
@@ -494,98 +494,138 @@ def monte_carlo_dashboard(monthly_expense_data, num_simulations=10000):
     return p25, p75, p95
 
 # --- 風險狀態判讀與預算建議函數 (升級版，基於實質金額) ---
-def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly_expenses, p25, p75, historical_wape, historical_rmse):
-    """
-    根據多因子框架判讀風險狀態，並計算結合風險與模型誤差的動態預算建議。
-    - 數據 < 12 個月：回歸使用較基礎、穩健的公式。
-    - 數據 ≥ 12 個月：啟用基於風險儀表板與模型表現的進階預算公式。
-    """
-    num_months = len(monthly_expenses) if monthly_expenses is not None else 0
-    num_unique_months = monthly_expenses['Parsed_Date'].dt.to_period('M').nunique() if monthly_expenses is not None else 0
-
-    # --- 數據嚴重不足 (< 6 個月) 的處理 ---
-    if num_months < 6:
-        if num_months < 2:
-            return "無法判讀 (資料不足2個月)", "資料過少，無法進行風險評估。", None, None, None, None, "極低可靠性", None, None, None
-        
-        # 使用近期平均 + 固定緩衝
-        recent_months = min(3, num_months)
-        recent_avg = np.mean(monthly_expenses['Real_Amount'].values[-recent_months:])
-        buffer_factor = 0.15
-        suggested_budget = recent_avg * (1 + buffer_factor)
-        status = "數據不足，使用替代公式"
-        description = "基於近期平均實質支出加上15%風險緩衝。"
-        return status, description, suggested_budget, buffer_factor, None, None, "低度可靠 - 使用替代公式", None, None, None
-
-    # --- 關鍵數據缺失的處理 ---
-    if p95 is None or expense_std_dev is None or predicted_value is None or upper is None or p75 is None:
-        return "無法判讀 (資料不足)", "關鍵模擬數據缺失，無法進行風險評估。", None, None, None, None, "無法判讀", None, None, None
-
-    # --- 多因子計分系統 ---
-    # 1. 計算殘差以分析偏態與峰態
-    x = np.arange(num_months)
-    slope, intercept, _, _, _ = linregress(x, monthly_expenses['Real_Amount'].values)
-    residuals = monthly_expenses['Real_Amount'].values - (intercept + slope * x)
-    res_skew = skew(residuals)
-    res_kurt = kurtosis(residuals)
-    
-    # 2. 分析波動性趨勢
-    half_point = num_months // 2
-    mean_early = np.mean(monthly_expenses['Real_Amount'].values[:half_point])
-    mean_late = np.mean(monthly_expenses['Real_Amount'].values[half_point:])
-    early_cv = (np.std(monthly_expenses['Real_Amount'].values[:half_point]) / mean_early) if mean_early != 0 else 0
-    late_cv = (np.std(monthly_expenses['Real_Amount'].values[half_point:]) / mean_late) if mean_late != 0 else 0
-    cv_increase = late_cv > early_cv * 1.2
-
-    # 3. 計算趨勢與衝擊風險得分
-    trend_score, shock_score = 0, 0
-    if upper > p95 * 1.075: trend_score += 2
-    elif p95 > upper: shock_score += 2
-    if res_skew > 1: shock_score += 1
-    if cv_increase: trend_score += 1
-    if res_kurt > 3: shock_score += 1
-
-    # --- 風險狀態與描述 ---
-    if trend_score > shock_score + 1:
-        status, description = "風險顯著升溫", "支出趨勢顯著加速，您的潛在風險可能已超越歷史經驗，需要高度警惕。"
-    elif shock_score > trend_score + 1:
-        status, description = "偶發衝擊主導", "您的主要風險並非來自支出趨勢增長，而是偶發性的大額開銷，建議確保預備金充足。"
+def percentile_score(value, p25, p50, p75, p90):
+    if value <= p25:
+        return 1
+    elif value <= p50:
+        return 3
+    elif value <= p75:
+        return 6
+    elif value <= p90:
+        return 8
     else:
-        status, description = "趨勢與衝擊混合", "您的財務狀況同時面臨增長趨勢與偶發事件的影響，建議平衡預算規劃與緊急預備金。"
+        return 10
 
-    # --- 動態風險係數矩陣 (應對未來不確定性) ---
-    risk_matrix = {'low': {'low': 0.30, 'medium': 0.50, 'high': 0.75}, 'medium': {'low': 0.50, 'medium': 0.75, 'high': 1.00}, 'high': {'low': 0.75, 'medium': 1.00, 'high': 1.25}}
-    trend_level = 'low' if trend_score <= 1 else ('medium' if trend_score == 2 else 'high')
-    shock_level = 'low' if shock_score <= 1 else ('medium' if shock_score <= 3 else 'high')
-    risk_coefficient = risk_matrix[trend_level][shock_level]
+def data_reliability_factor(n, n0=18, k=0.2):
+    return 1 / (1 + np.exp(-k * (n - n0)))
 
-    # --- 模型誤差係數 (彌補過去模型準確度) ---
-    error_coefficient = 0.5 # 預設值
-    if historical_wape is not None:
-        if historical_wape < 10: error_coefficient = 0.25
-        elif historical_wape <= 25: error_coefficient = 0.50
-        else: error_coefficient = 0.75
+def compute_trend_factors(data, x):
+    n = len(data)
+    half = n // 2
+    x_early, y_early = x[:half], data[:half]
+    x_late, y_late = x[half:], data[half:]
+    slope_early, _, _, _, _ = linregress(x_early, y_early) if half >= 2 else (0, 0, 0, 0, 0)
+    slope_late, _, _, _, _ = linregress(x_late, y_late) if (n - half) >= 2 else (0, 0, 0, 0, 0)
+    accel = slope_late - slope_early
 
-    # --- 最終預算計算 (根據數據長度決定公式) ---
-    error_buffer = None
-    prudence_factor = None
-    if num_unique_months >= 12:
-        data_reliability = "高度可靠" if num_unique_months >= 24 else "中度可靠"
-        # 數據越可靠，可適度調降誤差係數以減少過度保守
-        if num_unique_months >= 24:
-            error_coefficient = max(0.1, error_coefficient - 0.15)
-        
-        # 進階公式 = 風險緩衝 + 模型誤差緩衝
-        risk_buffer = p75 + (risk_coefficient * (p95 - p75))
-        error_buffer = error_coefficient * historical_rmse if historical_rmse is not None else 0
-        suggested_budget = risk_buffer + error_buffer
-    else: # 數據不足12個月，回歸原始公式
-        data_reliability = "低度可靠 - 使用原始公式"
-        prudence_factor = 0.5 # 設定一個固定的審慎係數
-        suggested_budget = predicted_value + (prudence_factor * expense_std_dev)
-        risk_coefficient, error_coefficient = None, None # 這些係數不適用於原始公式
+    window_short = min(3, n)
+    window_long = min(6, n)
+    ma_short = pd.Series(data).rolling(window=window_short).mean().iloc[-1]
+    ma_long = pd.Series(data).rolling(window=window_long).mean().iloc[-1]
+    crossover = 1 if ma_short > ma_long else 0
 
-    return status, description, suggested_budget, prudence_factor, trend_score, shock_score, data_reliability, risk_coefficient, error_coefficient, error_buffer
+    slope, intercept, _, _, _ = linregress(x, data)
+    trend = intercept + slope * x
+    residuals = data - trend
+    autocorr = np.corrcoef(residuals[:-1], residuals[1:])[0, 1] if n >= 2 else 0
+
+    return accel, crossover, autocorr, residuals
+
+def compute_volatility_factors(data, residuals):
+    n = len(data)
+    rolling_std = pd.Series(data).rolling(window=min(3, n)).std().dropna().values
+    vol_of_vol = np.std(rolling_std) if len(rolling_std) > 0 else 0
+
+    monthly_growth = np.diff(data) / data[:-1] if n >= 2 else np.array([])
+    positive_growth = monthly_growth[monthly_growth > 0]
+    downside_vol = np.std(positive_growth) if len(positive_growth) > 0 else 0
+
+    kurt = kurtosis(residuals) if n > 1 else 0
+    return vol_of_vol, downside_vol, kurt
+
+def compute_shock_factors(data, residuals):
+    n = len(data)
+    avg_expense = np.mean(data) if n > 0 else 0
+    max_shock = np.max(residuals) if n > 0 else 0
+    max_shock_magnitude = max_shock / avg_expense if avg_expense != 0 else 0
+
+    slope, intercept, _, _, _ = linregress(np.arange(n), data)
+    trend = intercept + slope * np.arange(n)
+    count = 0
+    max_count = 0
+    for actual, pred in zip(data, trend):
+        if actual > pred:
+            count += 1
+            max_count = max(max_count, count)
+        else:
+            count = 0
+    return max_shock_magnitude, max_count
+
+def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly_expenses, p25, p75, historical_wape, historical_rmse):
+    if monthly_expenses is None or len(monthly_expenses) < 2:
+        return "無法判讀 (資料不足)", "資料過少，無法進行風險評估。", None, None, None, None, "極低可靠性", None, None, None
+
+    num_months = len(monthly_expenses)
+    data = monthly_expenses['Real_Amount'].values
+    x = np.arange(num_months)
+
+    # 階段一：深度特徵提取
+    accel, crossover, autocorr, residuals = compute_trend_factors(data, x)
+    vol_of_vol, downside_vol, kurt = compute_volatility_factors(data, residuals)
+    max_shock_magnitude, consecutive_shocks = compute_shock_factors(data, residuals)
+
+    # 階段二：指標標準化與評分（使用示例百分位數，您可根據歷史數據調整）
+    trend_scores = {
+        'accel': percentile_score(accel, -0.5, 0, 0.5, 1),
+        'crossover': percentile_score(crossover, 0, 0, 0, 0),  # 二元變數
+        'autocorr': percentile_score(autocorr, -0.5, 0, 0.5, 0.8)
+    }
+    volatility_scores = {
+        'vol_of_vol': percentile_score(vol_of_vol, 0, 0.5, 1, 2),
+        'downside_vol': percentile_score(downside_vol, 0, 0.1, 0.2, 0.5),
+        'kurtosis': percentile_score(kurt, 0, 1, 3, 5)
+    }
+    shock_scores = {
+        'max_shock_magnitude': percentile_score(max_shock_magnitude, 0, 0.1, 0.2, 0.5),
+        'consecutive_shocks': percentile_score(consecutive_shocks, 0, 2, 4, 6)
+    }
+
+    # 階段三：多因子加權聚合
+    trend_score = np.mean(list(trend_scores.values()))
+    volatility_score = np.mean(list(volatility_scores.values()))
+    shock_score = np.mean(list(shock_scores.values()))
+    weights = (0.4, 0.35, 0.25)
+    overall_risk_score = (trend_score * weights[0]) + (volatility_score * weights[1]) + (shock_score * weights[2])
+
+    # 階段四：數據可靠性校準
+    drf = data_reliability_factor(num_months)
+    max_risk_premium = 0.25
+    base_premium = 0.10
+    risk_score_term = (overall_risk_score / 10) * max_risk_premium * drf
+    base_uncertainty_term = base_premium * (1 - drf)
+    dynamic_risk_coefficient = risk_score_term + base_uncertainty_term
+
+    # 風險狀態判讀（基於新分數）
+    if overall_risk_score > 7:
+        status = "高風險"
+        description = "多項因子顯示顯著風險，建議立即審視支出。"
+    elif overall_risk_score > 4:
+        status = "中度風險"
+        description = "風險因子均衡，需監控波動。"
+    else:
+        status = "低風險"
+        description = "整體穩定，但維持警惕。"
+
+    # 預算建議計算（使用動態係數）
+    risk_buffer = p75 + (dynamic_risk_coefficient * (p95 - p75)) if p95 and p75 else 0
+    error_buffer = 0.5 * historical_rmse if historical_rmse else 0
+    suggested_budget = predicted_value + risk_buffer + error_buffer
+
+    data_reliability = "高度可靠" if drf > 0.8 else ("中度可靠" if drf > 0.4 else "低度可靠")
+
+    return (status, description, suggested_budget, dynamic_risk_coefficient, trend_score, shock_score,
+            data_reliability, dynamic_risk_coefficient, 0.5, error_buffer,
+            trend_scores, volatility_scores, shock_scores, overall_risk_score)
 
 # --- 主要分析與預測函數 (升級為四階段模型 + 蒙地卡羅 + 風險預算建議 + 通膨調整) ---
 def analyze_and_predict(file_paths_str: str, no_color: bool):
@@ -887,7 +927,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             p25, p75, p95 = monte_carlo_dashboard(monthly_expenses['Real_Amount'].values)
 
     # --- 新增：風險狀態與預算建議 (基於實質金額) ---
-    risk_status, risk_description, suggested_budget, prudence_factor, trend_score, shock_score, data_reliability, risk_coefficient, error_coefficient, error_buffer = assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly_expenses, p25, p75, historical_wape, historical_rmse)
+    risk_status, risk_description, suggested_budget, prudence_factor, trend_score, shock_score, data_reliability, risk_coefficient, error_coefficient, error_buffer, trend_scores, volatility_scores, shock_scores, overall_score = assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly_expenses, p25, p75, historical_wape, historical_rmse)
 
     # --- 輸出最終的簡潔報告 ---
     print(f"\n{colors.CYAN}{colors.BOLD}========== 財務分析與預測報告 =========={colors.RESET}")
@@ -958,6 +998,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         if risk_coefficient is not None: print(f"{colors.BOLD}動態風險係數: {risk_coefficient:.2f}{colors.RESET}")
         if error_coefficient is not None: print(f"{colors.BOLD}模型誤差係數: {error_coefficient:.2f}{colors.RESET}")
         
+
         if suggested_budget is not None:
             print(f"{colors.BOLD}建議 {target_month_str} 預算: {suggested_budget:,.2f} 元{colors.RESET}")
 
@@ -978,6 +1019,30 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             print(f"  - 衝擊風險得分: {shock_score}")
             print(f"  - 解釋: 得分最高者決定主要狀態；若接近，視為混合狀態。")
 
+        # 新增：詳細風險因子分析報告
+        if trend_scores is not None and volatility_scores is not None and shock_scores is not None:
+            print(f"\n{colors.WHITE}>>> 詳細風險因子分析{colors.RESET}")
+            print(f"{colors.BOLD}總體風險評分: {overall_score:.2f}/10{colors.RESET}")
+            print(f"\n{colors.CYAN}趨勢風險因子:{colors.RESET}")
+            print(f"  - 趨勢加速度: {trend_scores['accel']:.1f}/10")
+            print(f"  - 滾動平均交叉: {trend_scores['crossover']:.1f}/10")
+            print(f"  - 殘差自相關性: {trend_scores['autocorr']:.1f}/10")
+            print(f"  - 趨勢風險得分: {trend_score:.2f}/10")
+            
+            print(f"\n{colors.YELLOW}波動風險因子:{colors.RESET}")
+            print(f"  - 波動的波動性: {volatility_scores['vol_of_vol']:.1f}/10")
+            print(f"  - 下行波動率: {volatility_scores['downside_vol']:.1f}/10")
+            print(f"  - 峰態: {volatility_scores['kurtosis']:.1f}/10")
+            print(f"  - 波動風險得分: {volatility_score:.2f}/10")
+            
+            print(f"\n{colors.RED}衝擊風險因子:{colors.RESET}")
+            print(f"  - 最大衝擊幅度: {shock_scores['max_shock_magnitude']:.1f}/10")
+            print(f"  - 連續正向衝擊: {shock_scores['consecutive_shocks']:.1f}/10")
+            print(f"  - 衝擊風險得分: {shock_score:.2f}/10")
+            
+            print(f"\n{colors.PURPLE}動態風險係數: {risk_coefficient:.3f}{colors.RESET}")
+            print(f"{colors.WHITE}  └ 權重配置: 趨勢(40%) + 波動(35%) + 衝擊(25%){colors.RESET}")
+    
     # 通膨調整說明
     print(f"\n{colors.WHITE}【註】關於「實質金額」：為了讓不同年份的支出能被公平比較，本報告已將所有歷史數據，統一換算為當前基期年的貨幣價值。這能幫助您在扣除物價上漲的影響後，看清自己真實的消費習慣變化。{colors.RESET}")
 
