@@ -144,7 +144,7 @@ def normalize_date(date_str):
             pass
     return None
 
-# --- 資料處理函數 (解決標準收支格式月度聚合問題) ---
+# --- 資料處理函數 (強化日期解析版本) ---
 def process_finance_data(file_paths, colors):
     processed_monthly_data_list = []
     all_processed_dfs = []
@@ -189,6 +189,84 @@ def process_finance_data(file_paths, colors):
         processed_df = None
         monthly_df = None
         
+        # --- 超強化日期解析函數 ---
+        def ultra_robust_date_parse(date_value):
+            if pd.isnull(date_value) or date_value == '':
+                return pd.NaT
+            
+            date_str = str(date_value).strip()
+            current_year = datetime.now().year
+            
+            # 移除常見的非日期字符
+            date_str = date_str.replace('日', '').replace('號', '').replace('/', '-').replace('.', '-')
+            
+            # 處理各種格式
+            try:
+                # 格式1: 數字格式 (如 701, 702, 710等)
+                if date_str.isdigit():
+                    num = int(date_str)
+                    if num >= 101 and num <= 1231:  # 月日格式 (如 701 = 7月1日)
+                        if num <= 12:  # 純月份 (如 7 = 7月)
+                            return pd.to_datetime(f"{current_year}-{num:02d}-01")
+                        else:
+                            month = num // 100 if num >= 100 else num // 10
+                            day = num % 100 if num >= 100 else num % 10
+                            if month == 0: month = num // 10
+                            if day == 0: day = 1
+                            if 1 <= month <= 12 and 1 <= day <= 31:
+                                return pd.to_datetime(f"{current_year}-{month:02d}-{day:02d}")
+                
+                # 格式2: 標準日期格式
+                date_formats = [
+                    '%Y-%m-%d', '%Y/%m/%d', '%Y%m%d',
+                    '%m-%d', '%m/%d', '%m%d',
+                    '%Y-%m', '%Y/%m', '%Y%m',
+                    '%m', '%d'
+                ]
+                
+                for fmt in date_formats:
+                    try:
+                        parsed = pd.to_datetime(date_str, format=fmt)
+                        # 如果沒有年份，補上當前年份
+                        if parsed.year == 1900:
+                            parsed = parsed.replace(year=current_year)
+                        return parsed
+                    except:
+                        continue
+                
+                # 格式3: 嘗試pandas自動解析
+                try:
+                    parsed = pd.to_datetime(date_str, errors='coerce')
+                    if pd.notna(parsed):
+                        if parsed.year < 2000:
+                            parsed = parsed.replace(year=current_year)
+                        return parsed
+                except:
+                    pass
+                
+                # 格式4: 特殊處理三位數 (如 701, 702, 710, 728, 810等)
+                if len(date_str) == 3 and date_str.isdigit():
+                    num = int(date_str)
+                    if num >= 101:
+                        month = num // 100
+                        day = num % 100
+                        if month == 0:
+                            month = int(date_str[0])
+                            day = int(date_str[1:])
+                        if 1 <= month <= 12 and 1 <= day <= 31:
+                            return pd.to_datetime(f"{current_year}-{month:02d}-{day:02d}")
+                
+                # 格式5: 處理兩位數月份
+                if len(date_str) <= 2 and date_str.isdigit():
+                    month = int(date_str)
+                    if 1 <= month <= 12:
+                        return pd.to_datetime(f"{current_year}-{month:02d}-01")
+                
+                return pd.NaT
+                
+            except Exception:
+                return pd.NaT
+        
         # 格式 A: 標準收支格式 (日期, 收入, 支出)
         if income_col and expense_col:
             warnings_report.append(f"  └ 判斷為【標準收支格式】，處理收入與支出資料。")
@@ -220,75 +298,40 @@ def process_finance_data(file_paths, colors):
             if not expense_df.empty:
                 expense_df_temp = expense_df.copy()
                 
-                # 強化日期解析 - 支援多種格式
-                def robust_date_parse(date_str):
-                    if pd.isnull(date_str):
-                        return pd.NaT
-                    
-                    date_str = str(date_str).strip()
-                    current_year = datetime.now().year
-                    
-                    # 嘗試多種日期格式
-                    formats_to_try = [
-                        '%Y-%m-%d', '%Y/%m/%d', '%Y%m%d',
-                        '%m-%d', '%m/%d', 
-                        '%Y-%m', '%Y/%m',
-                        '%m月%d日', '%m月%d號', '%m月',
-                        '%Y年%m月%d日', '%Y年%m月'
-                    ]
-                    
-                    for fmt in formats_to_try:
-                        try:
-                            parsed = pd.to_datetime(date_str, format=fmt)
-                            # 如果沒有年份，補上當前年份
-                            if parsed.year == 1900:
-                                parsed = parsed.replace(year=current_year)
-                            return parsed
-                        except:
-                            continue
-                    
-                    # 嘗試自動解析
-                    try:
-                        parsed = pd.to_datetime(date_str, errors='coerce')
-                        if pd.notna(parsed):
-                            # 如果年份太舊，可能是格式問題，補上當前年份
-                            if parsed.year < 2000:
-                                parsed = parsed.replace(year=current_year)
-                            return parsed
-                    except:
-                        pass
-                    
-                    # 如果是純數字（如月份）
-                    if date_str.isdigit():
-                        month = int(date_str)
-                        if 1 <= month <= 12:
-                            return pd.to_datetime(f"{current_year}-{month:02d}-01")
-                    
-                    return pd.NaT
+                # 使用超強化日期解析
+                expense_df_temp['Parsed_Date'] = expense_df_temp['Date'].apply(ultra_robust_date_parse)
                 
-                expense_df_temp['Parsed_Date'] = expense_df_temp['Date'].apply(robust_date_parse)
-                
-                # 移除無法解析的日期
+                # 統計日期解析情況
                 before_count = len(expense_df_temp)
-                expense_df_temp = expense_df_temp.dropna(subset=['Parsed_Date'])
+                valid_dates = expense_df_temp['Parsed_Date'].notna()
+                expense_df_temp = expense_df_temp[valid_dates]
                 after_count = len(expense_df_temp)
                 
                 if before_count > after_count:
                     warnings_report.append(f"  └ 警告：{before_count - after_count} 筆資料的日期無法解析，已移除。")
                 
                 if not expense_df_temp.empty:
+                    # 顯示日期解析結果的樣本
+                    sample_dates = expense_df_temp['Parsed_Date'].head(3).dt.strftime('%Y-%m-%d').tolist()
+                    warnings_report.append(f"  └ 成功解析日期範例：{', '.join(sample_dates)}")
+                    
                     # 按月聚合支出資料
                     monthly_df = expense_df_temp.set_index('Parsed_Date').resample('M')['Amount'].sum().reset_index()
                     monthly_df = monthly_df[monthly_df['Amount'] > 0]  # 移除零支出月份
                     
                     if not monthly_df.empty:
                         warnings_report.append(f"  └ 成功建立 {len(monthly_df)} 個月的月度支出資料。")
+                        
+                        # 顯示月度聚合結果範例
+                        if len(monthly_df) > 0:
+                            sample_months = monthly_df['Parsed_Date'].head(3).dt.strftime('%Y-%m').tolist()
+                            warnings_report.append(f"  └ 月度聚合範例：{', '.join(sample_months)}")
                     else:
                         warnings_report.append(f"  └ 警告：聚合後無有效月度支出資料。")
                 else:
                     warnings_report.append(f"  └ 警告：日期解析後無有效支出資料。")
                     
-        # 其他格式處理保持不變...
+        # 其他格式處理（簡化版，保持原有邏輯）
         elif income_col and not expense_col:
             warnings_report.append(f"  └ 判斷為【僅收入格式】，處理收入資料。")
             df[income_col] = pd.to_numeric(df[income_col].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
@@ -311,10 +354,10 @@ def process_finance_data(file_paths, colors):
             expense_df['Type'] = 'expense'
             processed_df = expense_df[expense_df['Amount'] > 0]
             
-            # 建立月度支出資料（使用相同的強化日期解析）
+            # 建立月度支出資料
             if not processed_df.empty:
                 processed_df_copy = processed_df.copy()
-                processed_df_copy['Parsed_Date'] = processed_df_copy['Date'].apply(robust_date_parse)
+                processed_df_copy['Parsed_Date'] = processed_df_copy['Date'].apply(ultra_robust_date_parse)
                 processed_df_copy.dropna(subset=['Parsed_Date'], inplace=True)
                 if not processed_df_copy.empty:
                     monthly_df = processed_df_copy.set_index('Parsed_Date').resample('M')['Amount'].sum().reset_index()
@@ -330,10 +373,10 @@ def process_finance_data(file_paths, colors):
             expense_df['Type'] = 'expense'
             processed_df = expense_df[expense_df['Amount'] > 0]
             
-            # 建立月度支出資料（使用相同的強化日期解析）
+            # 建立月度支出資料
             if not processed_df.empty:
                 processed_df_copy = processed_df.copy()
-                processed_df_copy['Parsed_Date'] = processed_df_copy['Date'].apply(robust_date_parse)
+                processed_df_copy['Parsed_Date'] = processed_df_copy['Date'].apply(ultra_robust_date_parse)
                 processed_df_copy.dropna(subset=['Parsed_Date'], inplace=True)
                 if not processed_df_copy.empty:
                     monthly_df = processed_df_copy.set_index('Parsed_Date').resample('M')['Amount'].sum().reset_index()
@@ -355,10 +398,10 @@ def process_finance_data(file_paths, colors):
                 expense_df['Type'] = 'expense'
                 processed_df = expense_df[expense_df['Amount'] > 0]
                 
-                # 建立月度支出資料（使用相同的強化日期解析）
+                # 建立月度支出資料
                 if not processed_df.empty:
                     processed_df_copy = processed_df.copy()
-                    processed_df_copy['Parsed_Date'] = processed_df_copy['Date'].apply(robust_date_parse)
+                    processed_df_copy['Parsed_Date'] = processed_df_copy['Date'].apply(ultra_robust_date_parse)
                     processed_df_copy.dropna(subset=['Parsed_Date'], inplace=True)
                     if not processed_df_copy.empty:
                         monthly_df = processed_df_copy.set_index('Parsed_Date').resample('M')['Amount'].sum().reset_index()
