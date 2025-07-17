@@ -619,29 +619,33 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     else:
         analysis_data = monthly_expenses['Real_Amount'].values if monthly_expenses is not None else None
 
-    # 計算總支出（如果有processed_df）
+    # --- 計算總支出與淨餘額 (修正區塊) ---
     total_income = 0
     total_expense = 0
     total_real_expense = 0
+    
     is_wide_format_expense_only = (master_df is None and monthly_expenses is not None)
-
+    
     if master_df is not None:
         master_df['Amount'] = pd.to_numeric(master_df['Amount'], errors='coerce')
         master_df.dropna(subset=['Type', 'Amount'], inplace=True)
-    
+        
         income_df = master_df[master_df['Type'].str.lower() == 'income']
         expense_df = master_df[master_df['Type'].str.lower() == 'expense']
         total_income = income_df['Amount'].sum()
         total_expense = expense_df['Amount'].sum()
-    
-        # 新增：計算實質總支出（從 monthly_expenses 取得通膨調整後的數據）
+        
+        # 從 monthly_expenses 回填實質總支出
         if monthly_expenses is not None:
             total_real_expense = monthly_expenses['Real_Amount'].sum()
-    
+            
     elif monthly_expenses is not None:
         total_expense = monthly_expenses['Amount'].sum()  # 名目總額
         total_real_expense = monthly_expenses['Real_Amount'].sum()  # 實質總額
 
+    # 將 net_balance 的計算放在 if/elif 區塊之外
+    # 這樣無論是哪種檔案格式，它都一定會被計算
+    net_balance = total_income - total_expense
 
     
     # --- 取得目前時間的下一個月（目標預測月份） ---
