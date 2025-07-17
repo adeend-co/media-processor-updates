@@ -2,7 +2,7 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v1.8.19              #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v1.8.20              #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
@@ -15,7 +15,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v1.8.19"  # 更新版本：自動檢測與條件應用
+SCRIPT_VERSION = "v1.8.20"  # 更新版本：自動檢測與條件應用
 SCRIPT_UPDATE_DATE = "2025-07-17"
 
 import sys
@@ -624,20 +624,26 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     total_expense = 0
     total_real_expense = 0
     is_wide_format_expense_only = (master_df is None and monthly_expenses is not None)
+
     if master_df is not None:
         master_df['Amount'] = pd.to_numeric(master_df['Amount'], errors='coerce')
         master_df.dropna(subset=['Type', 'Amount'], inplace=True)
-        
+    
         income_df = master_df[master_df['Type'].str.lower() == 'income']
         expense_df = master_df[master_df['Type'].str.lower() == 'expense']
         total_income = income_df['Amount'].sum()
         total_expense = expense_df['Amount'].sum()
+    
+        # 新增：計算實質總支出（從 monthly_expenses 取得通膨調整後的數據）
+        if monthly_expenses is not None:
+            total_real_expense = monthly_expenses['Real_Amount'].sum()
+    
     elif monthly_expenses is not None:
         total_expense = monthly_expenses['Amount'].sum()  # 名目總額
         total_real_expense = monthly_expenses['Real_Amount'].sum()  # 實質總額
 
-    net_balance = total_income - total_expense
 
+    
     # --- 取得目前時間的下一個月（目標預測月份） ---
     from datetime import datetime
     now = datetime.now()
@@ -888,9 +894,10 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     
     # 顯示總支出（名目與實質）
     print(f"{colors.BOLD}總支出 (名目): {colors.RED}{total_expense:,.2f}{colors.RESET}")
-    if total_real_expense > 0:
+    # 修正：改為 monthly_expenses 存在就顯示，而不是 total_real_expense > 0
+    if monthly_expenses is not None and len(monthly_expenses) > 0:
         print(f"{colors.BOLD}總支出 (實質，經通膨調整): {colors.RED}{total_real_expense:,.2f}{colors.RESET}")
-    
+
     # 顯示歷史波動
     if expense_std_dev is not None:
         print(f"{colors.BOLD}歷史月均支出波動 (基於實質金額): {color}{expense_std_dev:,.2f}{volatility_report}{colors.RESET}")
@@ -899,7 +906,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     if not is_wide_format_expense_only:
         print("------------------------------------------")
         balance_color = colors.GREEN if net_balance >= 0 else colors.RED
-        print(f"{colors.BOLD}淨餘額: {balance_color}{colors.BOLD}{net_balance:,.2f}{colors.RESET}")
+        print(f"{colors.BOLD}淨餘額（基於名目金額）: {balance_color}{colors.BOLD}{net_balance:,.2f}{colors.RESET}")
 
     # 顯示傳統預測結果 (基於實質金額)
     print(f"\n{colors.PURPLE}{colors.BOLD}>>> {target_month_str} 趨勢預測 (基於實質金額): {predicted_expense_str}{ci_str}{method_used}{colors.RESET}")
