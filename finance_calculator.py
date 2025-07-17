@@ -144,7 +144,33 @@ def normalize_date(date_str):
             pass
     return None
 
-# --- 資料處理函數 (完全重構版：先提取再合併) ---
+# --- 輔助函數：強化日期解析 ---
+def parse_date_robust(date_value):
+    if pd.isnull(date_value):
+        return pd.NaT
+    
+    date_str = str(date_value).strip()
+    current_year = datetime.now().year
+    
+    try:
+        # 嘗試標準解析
+        return pd.to_datetime(date_str, errors='coerce')
+    except:
+        # 處理特殊格式
+        if date_str.isdigit():
+            if len(date_str) <= 2:
+                month = int(date_str)
+                if 1 <= month <= 12:
+                    return pd.to_datetime(f"{current_year}-{month:02d}-01")
+            elif len(date_str) == 3:
+                month = int(date_str[0])
+                day = int(date_str[1:])
+                if 1 <= month <= 12 and 1 <= day <= 31:
+                    return pd.to_datetime(f"{current_year}-{month:02d}-{day:02d}")
+        
+        return pd.NaT
+
+# --- 資料處理函數 (完全修正版：先提取再合併) ---
 def process_finance_data(file_paths, colors):
     processed_monthly_data_list = []
     warnings_report = []
@@ -211,8 +237,8 @@ def process_finance_data(file_paths, colors):
                 expense_data = expense_data[expense_data[expense_col] > 0]
                 
                 if not expense_data.empty:
-                    # 日期解析
-                    expense_data['Parsed_Date'] = expense_data[date_col].apply(lambda x: self._parse_date_robust(x))
+                    # 日期解析 - 修正：移除 self
+                    expense_data['Parsed_Date'] = expense_data[date_col].apply(parse_date_robust)
                     expense_data['Parsed_Date'] = pd.to_datetime(expense_data['Parsed_Date'], errors='coerce')
                     expense_data = expense_data.dropna(subset=['Parsed_Date'])
                     
@@ -233,7 +259,7 @@ def process_finance_data(file_paths, colors):
                 expense_data = expense_data[expense_data[expense_col] > 0]
                 
                 if not expense_data.empty:
-                    expense_data['Parsed_Date'] = expense_data[date_col].apply(lambda x: self._parse_date_robust(x))
+                    expense_data['Parsed_Date'] = expense_data[date_col].apply(parse_date_robust)
                     expense_data['Parsed_Date'] = pd.to_datetime(expense_data['Parsed_Date'], errors='coerce')
                     expense_data = expense_data.dropna(subset=['Parsed_Date'])
                     
@@ -253,7 +279,7 @@ def process_finance_data(file_paths, colors):
                 expense_data = expense_data[expense_data[amount_col] > 0]
                 
                 if not expense_data.empty:
-                    expense_data['Parsed_Date'] = expense_data[date_col].apply(lambda x: self._parse_date_robust(x))
+                    expense_data['Parsed_Date'] = expense_data[date_col].apply(parse_date_robust)
                     expense_data['Parsed_Date'] = pd.to_datetime(expense_data['Parsed_Date'], errors='coerce')
                     expense_data = expense_data.dropna(subset=['Parsed_Date'])
                     
@@ -283,7 +309,7 @@ def process_finance_data(file_paths, colors):
                     expense_data = expense_data[expense_data['Total_Amount'] > 0]
                     
                     if not expense_data.empty:
-                        expense_data['Parsed_Date'] = expense_data[date_col].apply(lambda x: self._parse_date_robust(x))
+                        expense_data['Parsed_Date'] = expense_data[date_col].apply(parse_date_robust)
                         expense_data['Parsed_Date'] = pd.to_datetime(expense_data['Parsed_Date'], errors='coerce')
                         expense_data = expense_data.dropna(subset=['Parsed_Date'])
                         
@@ -341,32 +367,6 @@ def process_finance_data(file_paths, colors):
         warnings_report.append(f"{colors.GREEN}已處理跨檔案收支總計：收入 {total_income:,.2f} 元，支出 {total_expense:,.2f} 元。{colors.RESET}")
     
     return None, final_monthly_expenses, "\n".join(warnings_report), total_income, total_expense
-
-# 輔助函數：強化日期解析
-def _parse_date_robust(date_value):
-    if pd.isnull(date_value):
-        return pd.NaT
-    
-    date_str = str(date_value).strip()
-    current_year = datetime.now().year
-    
-    try:
-        # 嘗試標準解析
-        return pd.to_datetime(date_str, errors='coerce')
-    except:
-        # 處理特殊格式
-        if date_str.isdigit():
-            if len(date_str) <= 2:
-                month = int(date_str)
-                if 1 <= month <= 12:
-                    return pd.to_datetime(f"{current_year}-{month:02d}-01")
-            elif len(date_str) == 3:
-                month = int(date_str[0])
-                day = int(date_str[1:])
-                if 1 <= month <= 12 and 1 <= day <= 31:
-                    return pd.to_datetime(f"{current_year}-{month:02d}-{day:02d}")
-        
-        return pd.NaT
 
 # --- 季節性分解函數 (整合說明中的方法) ---
 def seasonal_decomposition(monthly_expenses):
