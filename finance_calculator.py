@@ -601,15 +601,14 @@ def calculate_historical_factors(data, min_months=12):
             
     return historical_results
 
-def calculate_dynamic_error_coefficient(calibration_results, acf_results, quantile_spread, n_months):
+def calculate_dynamic_error_coefficient(calibration_results, acf_results, quantile_spread):
     """
-    根據三大診斷維度，動態計算模型誤差係數。權重將根據歷史表現自適應調整，但僅在數據月份 >= 12 時觸發。
+    根據三大診斷維度，動態計算模型誤差係數。
     
     Args:
         calibration_results (dict): 模型校準分析的結果。
         acf_results (dict): 殘差自相關性分析的結果。
         quantile_spread (float): 標準化的分位數範圍。
-        n_months (int): 數據的月份數，用於檢查門檻。
 
     Returns:
         float: 動態計算出的模型誤差係數。
@@ -617,7 +616,7 @@ def calculate_dynamic_error_coefficient(calibration_results, acf_results, quanti
     # 1. 校準懲罰 (Calibration Penalty)
     # 計算預測分位數與實際觀測頻率之間的平均絕對誤差百分比
     calibration_errors = [abs(res['observed_freq'] - res['quantile']) for res in calibration_results.values()]
-    calibration_penalty = np.mean(calibration_errors) / 100.0 if calibration_errors else 0.0  # 標準化到 0-1 之間
+    calibration_penalty = np.mean(calibration_errors) / 100.0  # 標準化到 0-1 之間
 
     # 2. 殘差規律懲罰 (Autocorrelation Penalty)
     # 直接使用 Lag-1 的自相關係數絕對值
@@ -627,46 +626,20 @@ def calculate_dynamic_error_coefficient(calibration_results, acf_results, quanti
     # 直接使用傳入的、已標準化的分位數範圍
     uncertainty_factor = quantile_spread
 
-    # 新增：檢查數據月份門檻
-    if n_months >= 12:
-        # 動態調整權重邏輯
-        total_penalty = calibration_penalty + autocorrelation_penalty + uncertainty_factor
-        if total_penalty > 0:
-            # 計算各因子的相對比例，作為權重基礎
-            w_calib_base = calibration_penalty / total_penalty
-            w_acf_base = autocorrelation_penalty / total_penalty
-            w_unc_base = uncertainty_factor / total_penalty
-        else:
-            # 若所有因子為 0，則使用均等權重
-            w_calib_base = w_acf_base = w_unc_base = 1.0 / 3.0
-
-        # 設定總權重和為 2.25（與原始固定權重總和一致），並限制範圍
-        total_weight_target = 2.25
-        w_calib = max(0.5, min(2.0, w_calib_base * total_weight_target))  # 校準權重限制在 [0.5, 2.0]
-        w_acf = max(0.3, min(1.0, w_acf_base * total_weight_target))      # 自相關權重限制在 [0.3, 1.0]
-        w_unc = max(0.2, min(0.75, w_unc_base * total_weight_target))     # 不確定性權重限制在 [0.2, 0.75]
-
-        # 再次調整總和接近 target，若有偏差
-        current_total = w_calib + w_acf + w_unc
-        if current_total != total_weight_target and current_total > 0:
-            scale = total_weight_target / current_total
-            w_calib *= scale
-            w_acf *= scale
-            w_unc *= scale
-    else:
-        # 數據不足 12 個月，使用固定權重
-        w_calib = 1.5
-        w_acf = 0.5
-        w_unc = 0.25
-
-    # 組合所有因子
+    # --- 組合所有因子 ---
+    # 設定基底係數與各因子權重（這些權重可以根據未來表現進行微調）
     base_coefficient = 0.25  # 設定一個最小的基礎誤差緩衝
+    w_calib = 1.5            # 校準不佳的懲罰權重較高
+    w_acf = 0.5              # 自相關性的權重
+    w_unc = 0.25             # 內在不確定性的權重
+
     dynamic_coefficient = base_coefficient + \
                           (w_calib * calibration_penalty) + \
                           (w_acf * autocorrelation_penalty) + \
                           (w_unc * uncertainty_factor)
                           
     # 設定係數的上下限，避免極端情況導致預算建議失效
+    # 係數最高不超過 1.2，最低不低於 base_coefficient
     final_coefficient = np.clip(dynamic_coefficient, base_coefficient, 1.2)
     
     return final_coefficient
