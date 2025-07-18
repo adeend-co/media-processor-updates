@@ -601,7 +601,50 @@ def calculate_historical_factors(data, min_months=12):
             
     return historical_results
 
-def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly_expenses, p25, p75, historical_wape, historical_rmse):
+def calculate_dynamic_error_coefficient(calibration_results, acf_results, quantile_spread):
+    """
+    根據三大診斷維度，動態計算模型誤差係數。
+    
+    Args:
+        calibration_results (dict): 模型校準分析的結果。
+        acf_results (dict): 殘差自相關性分析的結果。
+        quantile_spread (float): 標準化的分位數範圍。
+
+    Returns:
+        float: 動態計算出的模型誤差係數。
+    """
+    # 1. 校準懲罰 (Calibration Penalty)
+    # 計算預測分位數與實際觀測頻率之間的平均絕對誤差百分比
+    calibration_errors = [abs(res['observed_freq'] - res['quantile']) for res in calibration_results.values()]
+    calibration_penalty = np.mean(calibration_errors) / 100.0  # 標準化到 0-1 之間
+
+    # 2. 殘差規律懲罰 (Autocorrelation Penalty)
+    # 直接使用 Lag-1 的自相關係數絕對值
+    autocorrelation_penalty = abs(acf_results.get(1, {}).get('acf', 0))
+
+    # 3. 內在不確定性因子 (Inherent Uncertainty Factor)
+    # 直接使用傳入的、已標準化的分位數範圍
+    uncertainty_factor = quantile_spread
+
+    # --- 組合所有因子 ---
+    # 設定基底係數與各因子權重（這些權重可以根據未來表現進行微調）
+    base_coefficient = 0.25  # 設定一個最小的基礎誤差緩衝
+    w_calib = 1.5            # 校準不佳的懲罰權重較高
+    w_acf = 0.5              # 自相關性的權重
+    w_unc = 0.25             # 內在不確定性的權重
+
+    dynamic_coefficient = base_coefficient + \
+                          (w_calib * calibration_penalty) + \
+                          (w_acf * autocorrelation_penalty) + \
+                          (w_unc * uncertainty_factor)
+                          
+    # 設定係數的上下限，避免極端情況導致預算建議失效
+    # 係數最高不超過 1.2，最低不低於 base_coefficient
+    final_coefficient = np.clip(dynamic_coefficient, base_coefficient, 1.2)
+    
+    return final_coefficient
+
+def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly_expenses, p25, p75, historical_wape, historical_rmse, calibration_results, acf_results, quantile_spread):
     status, description, suggested_budget = None, None, None
     dynamic_risk_coefficient, trend_score, volatility_score, shock_score = None, None, None, None
     data_reliability, error_coefficient, error_buffer = None, None, None
@@ -683,14 +726,23 @@ def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly
     
     data_reliability = "高度可靠" if drf > 0.8 else "中度可靠"
 
+    # 預算建議計算
     if p95 is not None and p75 is not None and predicted_value is not None:
         risk_buffer = p75 + (dynamic_risk_coefficient * (p95 - p75))
-        error_coefficient = 0.5
+        
+        # --- 核心改造：呼叫新函數，動態計算誤差係數 ---
+        if calibration_results and acf_results and quantile_spread is not None:
+            error_coefficient = calculate_dynamic_error_coefficient(calibration_results, acf_results, quantile_spread)
+        else:
+            # 如果診斷數據不足，回退到一個較保守的固定值
+            error_coefficient = 0.5 
+        
         error_buffer = error_coefficient * historical_rmse if historical_rmse else 0
         suggested_budget = risk_buffer + error_buffer
     else:
         suggested_budget = None
 
+    # (此函數的 return 語句保持不變)
     return (status, description, suggested_budget, dynamic_risk_coefficient, trend_score, volatility_score, shock_score,
             data_reliability, error_coefficient, error_buffer, 
             trend_scores, volatility_scores, shock_scores, overall_score, risk_buffer)
@@ -1096,7 +1148,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         else:
             p25, p75, p95 = monte_carlo_dashboard(monthly_expenses['Real_Amount'].values)
 
-    risk_status, risk_description, suggested_budget, dynamic_risk_coefficient, trend_score, volatility_score, shock_score, data_reliability, error_coefficient, error_buffer, trend_scores, volatility_scores, shock_scores, overall_score, risk_buffer = assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly_expenses, p25, p75, historical_wape, historical_rmse)
+    risk_status, risk_description, suggested_budget, dynamic_risk_coefficient, trend_score, volatility_score, shock_score, data_reliability, error_coefficient, error_buffer, trend_scores, volatility_scores, shock_scores, overall_score, risk_buffer = assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly_expenses, p25, p75, historical_wape, historical_rmse, calibration_results=calibration_results_data, acf_results=acf_results_data, quantile_spread=quantile_spread_data)
 
     # --- 新增：模型診斷儀表板 (整合三種方法) ---
     diagnostic_report = ""
