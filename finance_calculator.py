@@ -696,7 +696,7 @@ def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly
 
     # 返回與原函數相同的參數數量和順序（新增 volatility_score）
     return (status, description, suggested_budget, dynamic_risk_coefficient, trend_score, volatility_score, shock_score,
-            data_reliability, dynamic_risk_coefficient, 0.5, error_buffer, 
+            data_reliability, 0.5, error_buffer, 
             trend_scores, volatility_scores, shock_scores, overall_score)
 
 # --- 主要分析與預測函數 (升級為四階段模型 + 蒙地卡羅 + 風險預算建議 + 通膨調整) ---
