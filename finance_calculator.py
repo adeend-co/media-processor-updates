@@ -623,19 +623,19 @@ def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly
     shock_score = None
     
     if monthly_expenses is None or len(monthly_expenses) < 2:
-        return ("無法判讀 (資料不足)", "資料過少，無法進行風險評估。", None, None, None, None, 
-                "極低可靠性", None, None, None, trend_scores, volatility_scores, shock_scores, overall_score)
+        return ("無法判讀 (資料不足)", "資料過少，無法進行風險評估。", None, None, None, None, None, 
+                "極低可靠性", None, None, trend_scores, volatility_scores, shock_scores, overall_score)
 
     num_months = len(monthly_expenses)
     data = monthly_expenses['Real_Amount'].values
     x = np.arange(num_months)
 
-    # 階段一：深度特徵提取
+    # 階段一：深度特徵提取（原邏輯不變）
     accel, crossover, autocorr, residuals = compute_trend_factors(data, x)
     vol_of_vol, downside_vol, kurt = compute_volatility_factors(data, residuals)
     max_shock_magnitude, consecutive_shocks = compute_shock_factors(data, residuals)
 
-    # 階段二：指標標準化與評分（使用示例百分位數）
+    # 階段二：指標標準化與評分（原邏輯不變）
     trend_scores = {
         'accel': percentile_score(accel, -0.5, 0, 0.5, 1),
         'crossover': percentile_score(crossover, 0, 0, 0.5, 1),
@@ -651,14 +651,14 @@ def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly
         'consecutive_shocks': percentile_score(consecutive_shocks, 0, 2, 4, 6)
     }
 
-    # 階段三：多因子加權聚合
+    # 階段三：多因子加權聚合（原邏輯不變）
     trend_score = np.mean(list(trend_scores.values()))
     volatility_score = np.mean(list(volatility_scores.values()))
     shock_score = np.mean(list(shock_scores.values()))
     weights = (0.4, 0.35, 0.25)
     overall_score = (trend_score * weights[0]) + (volatility_score * weights[1]) + (shock_score * weights[2])
 
-    # 階段四：數據可靠性校準
+    # 階段四：數據可靠性校準（原邏輯不變）
     drf = data_reliability_factor(num_months)
     max_risk_premium = 0.25
     base_premium = 0.10
@@ -666,7 +666,7 @@ def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly
     base_uncertainty_term = base_premium * (1 - drf)
     dynamic_risk_coefficient = risk_score_term + base_uncertainty_term
 
-    # 風險狀態判讀
+    # 風險狀態判讀（原邏輯不變）
     if overall_score > 7:
         status = "高風險"
         description = "多項風險因子顯示顯著風險，建議立即審視支出模式。"
@@ -677,16 +677,7 @@ def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly
         status = "低風險"
         description = "整體風險可控，但仍需保持適度警惕。"
 
-    # 預算建議計算
-    if p95 and p75 and predicted_value:
-        risk_buffer = p75 + (dynamic_risk_coefficient * (p95 - p75))
-        error_buffer = 0.5 * historical_rmse if historical_rmse else 0
-        suggested_budget = risk_buffer + error_buffer
-    else:
-        suggested_budget = None
-        error_buffer = None
-
-    # 數據可靠性評估
+    # 數據可靠性評估（原邏輯不變）
     if drf > 0.8:
         data_reliability = "高度可靠"
     elif drf > 0.4:
@@ -694,10 +685,31 @@ def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly
     else:
         data_reliability = "低度可靠"
 
-    # 返回與原函數相同的參數數量和順序（新增 volatility_score）
+    # 修正重點：根據數據可靠性動態選擇預算計算公式
+    suggested_budget = None
+    error_buffer = None
+    risk_buffer = None
+
+    if p95 and p75 and predicted_value:  # 確保必要變數存在
+        if "高度可靠" in data_reliability or "中度可靠" in data_reliability:
+            # 高/中可靠性：使用原風險緩衝 + 模型誤差緩衝
+            risk_buffer = p75 + (dynamic_risk_coefficient * (p95 - p75))
+            error_buffer = 0.5 * historical_rmse if historical_rmse else 0
+            suggested_budget = risk_buffer + error_buffer
+        elif "低度可靠" in data_reliability:
+            # 低可靠性：切換為簡化公式（趨勢預測 + 審慎緩衝）
+            if predicted_value is not None and expense_std_dev is not None:
+                risk_buffer = dynamic_risk_coefficient * expense_std_dev
+                suggested_budget = predicted_value + risk_buffer
+            else:
+                suggested_budget = None  # 數據不足
+        else:
+            suggested_budget = None  # 其他情況
+
+    # 返回（新增 risk_buffer 和 error_buffer 以供輸出使用）
     return (status, description, suggested_budget, dynamic_risk_coefficient, trend_score, volatility_score, shock_score,
             data_reliability, 0.5, error_buffer, 
-            trend_scores, volatility_scores, shock_scores, overall_score)
+            trend_scores, volatility_scores, shock_scores, overall_score, risk_buffer)
 
 # --- 主要分析與預測函數 (升級為四階段模型 + 蒙地卡羅 + 風險預算建議 + 通膨調整) ---
 def analyze_and_predict(file_paths_str: str, no_color: bool):
@@ -999,7 +1011,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             p25, p75, p95 = monte_carlo_dashboard(monthly_expenses['Real_Amount'].values)
 
     # --- 新增：風險狀態與預算建議 (基於實質金額) ---
-    risk_status, risk_description, suggested_budget, dynamic_risk_coefficient, trend_score, volatility_score, shock_score, data_reliability, error_coefficient, error_buffer, trend_scores, volatility_scores, shock_scores, overall_score = assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly_expenses, p25, p75, historical_wape, historical_rmse)
+    risk_status, risk_description, suggested_budget, dynamic_risk_coefficient, trend_score, volatility_score, shock_score, data_reliability, error_coefficient, error_buffer, trend_scores, volatility_scores, shock_scores, overall_score, risk_buffer = assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly_expenses, p25, p75, historical_wape, historical_rmse)
 
     # --- 輸出最終的簡潔報告 ---
     print(f"\n{colors.CYAN}{colors.BOLD}========== 財務分析與預測報告 =========={colors.RESET}")
@@ -1065,31 +1077,26 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         print(f"{colors.BOLD}風險狀態: {risk_status}{colors.RESET}")
         print(f"{colors.WHITE}{risk_description}{colors.RESET}")
         if data_reliability: print(f"{colors.BOLD}數據可靠性: {data_reliability}{colors.RESET}")
-    
-        # 顯示動態係數 (僅在適用時)
+
         if dynamic_risk_coefficient is not None: 
             print(f"{colors.BOLD}動態風險係數: {dynamic_risk_coefficient:.2f}{colors.RESET}")
         if error_coefficient is not None: 
             print(f"{colors.BOLD}模型誤差係數: {error_coefficient:.2f}{colors.RESET}")
-    
+
         if suggested_budget is not None:
             print(f"{colors.BOLD}建議 {target_month_str} 預算: {suggested_budget:,.2f} 元{colors.RESET}")
 
-            # 根據數據可靠性顯示正確的計算依據（擴展低度可靠情況）
-            if data_reliability:
-                if "高度可靠" in data_reliability or "中度可靠" in data_reliability:
-                    if error_buffer is not None:
-                        risk_buffer_val = suggested_budget - error_buffer
-                        print(f"{colors.WHITE}    └ 計算依據：風險緩衝 ({risk_buffer_val:,.2f}) + 模型誤差緩衝 ({error_buffer:,.2f}){colors.RESET}")
-                elif "低度可靠" in data_reliability or "原始公式" in data_reliability:
-                    if predicted_value is not None and expense_std_dev is not None and dynamic_risk_coefficient is not None:
-                        print(f"{colors.WHITE}    └ 計算依據：趨勢預測 ({predicted_value:,.2f}) + 審慎緩衝 ({dynamic_risk_coefficient * expense_std_dev:,.2f}){colors.RESET}")
-                    else:
-                        print(f"{colors.WHITE}    └ 計算依據：近期平均支出 + 基礎風險緩衝（數據不足，使用保守估計）。{colors.RESET}")
-                elif "替代公式" in data_reliability:
-                    print(f"{colors.WHITE}    └ 計算依據：近期平均支出 + 15% 固定緩衝。{colors.RESET}")
+            # 修正：使用變數計算顯示依據，確保數字匹配
+            if "高度可靠" in data_reliability or "中度可靠" in data_reliability:
+                if error_buffer is not None and risk_buffer is not None:
+                    print(f"{colors.WHITE}    └ 計算依據：風險緩衝 ({risk_buffer:,.2f}) + 模型誤差緩衝 ({error_buffer:,.2f}){colors.RESET}")
+            elif "低度可靠" in data_reliability:
+                if predicted_value is not None and risk_buffer is not None:
+                    print(f"{colors.WHITE}    └ 計算依據：趨勢預測 ({predicted_value:,.2f}) + 審慎緩衝 ({risk_buffer:,.2f}){colors.RESET}")
+                else:
+                    print(f"{colors.WHITE}    └ 計算依據：近期平均支出 + 基礎風險緩衝（數據不足，使用保守估計）。{colors.RESET}")
 
-
+  
         if trend_score is not None and shock_score is not None:
             print(f"\n{colors.WHITE}>>> 多因子計分細節（透明度說明）{colors.RESET}")
             print(f"  - 趨勢風險得分: {trend_score}")
