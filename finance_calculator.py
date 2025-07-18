@@ -1066,7 +1066,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         print(f"{colors.WHITE}{risk_description}{colors.RESET}")
         if data_reliability: print(f"{colors.BOLD}數據可靠性: {data_reliability}{colors.RESET}")
     
-    # 顯示動態係數 (僅在適用時)
+        # 顯示動態係數 (僅在適用時)
         if dynamic_risk_coefficient is not None: 
             print(f"{colors.BOLD}動態風險係數: {dynamic_risk_coefficient:.2f}{colors.RESET}")
         if error_coefficient is not None: 
@@ -1082,8 +1082,8 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                         risk_buffer_val = suggested_budget - error_buffer
                         print(f"{colors.WHITE}    └ 計算依據：風險緩衝 ({risk_buffer_val:,.2f}) + 模型誤差緩衝 ({error_buffer:,.2f}){colors.RESET}")
                 elif "低度可靠" in data_reliability or "原始公式" in data_reliability:
-                    if predicted_value is not None and expense_std_dev is not None and prudence_factor is not None:
-                        print(f"{colors.WHITE}    └ 計算依據：趨勢預測 ({predicted_value:,.2f}) + 審慎緩衝 ({prudence_factor * expense_std_dev:,.2f}){colors.RESET}")
+                    if predicted_value is not None and expense_std_dev is not None and dynamic_risk_coefficient is not None:
+                        print(f"{colors.WHITE}    └ 計算依據：趨勢預測 ({predicted_value:,.2f}) + 審慎緩衝 ({dynamic_risk_coefficient * expense_std_dev:,.2f}){colors.RESET}")
                     else:
                         print(f"{colors.WHITE}    └ 計算依據：近期平均支出 + 基礎風險緩衝（數據不足，使用保守估計）。{colors.RESET}")
                 elif "替代公式" in data_reliability:
