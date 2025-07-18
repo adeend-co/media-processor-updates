@@ -855,6 +855,36 @@ def residual_autocorrelation_diagnosis(residuals, n, colors):
     report.append(header_line)
     return "\n".join(report)
 
+def compute_calibration_results(y_true, quantile_preds, quantiles):
+    """計算模型校準結果，返回字典形式。"""
+    calibration_results = {}
+    for q in quantiles:
+        preds = quantile_preds.get(q)
+        if preds is None:
+            continue
+        observed_freq = np.mean(y_true <= preds)
+        calibration_results[q] = {'quantile': q, 'observed_freq': observed_freq}
+    return calibration_results
+
+def compute_acf_results(residuals, n):
+    """計算殘差自相關性結果，返回字典形式。"""
+    sig_boundary = 2 / np.sqrt(n)
+    acf_results = {}
+    for lag in [1, 3, 6, 12]:
+        if len(residuals) <= lag:
+            continue
+        acf = np.corrcoef(residuals[:-lag], residuals[lag:])[0, 1]
+        is_significant = abs(acf) > sig_boundary
+        acf_results[lag] = {'acf': acf, 'is_significant': is_significant}
+    return acf_results
+
+def compute_quantile_spread(p25, p75, predicted_value):
+    """計算標準化的分位數範圍（例如 (P75 - P25) / predicted_value）。"""
+    if predicted_value == 0 or predicted_value is None:
+        return 0.0  # 避免除零
+    spread = (p75 - p25) / predicted_value if p75 is not None and p25 is not None else 0.0
+    return spread  # 標準化到 0-1 範圍（可根據需要調整）
+
 # --- 主要分析與預測函數 (升級版：整合模型診斷儀表板) ---
 def analyze_and_predict(file_paths_str: str, no_color: bool):
     colors = Colors(enabled=not no_color)
@@ -1148,7 +1178,20 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         else:
             p25, p75, p95 = monte_carlo_dashboard(monthly_expenses['Real_Amount'].values)
 
-    risk_status, risk_description, suggested_budget, dynamic_risk_coefficient, trend_score, volatility_score, shock_score, data_reliability, error_coefficient, error_buffer, trend_scores, volatility_scores, shock_scores, overall_score, risk_buffer = assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly_expenses, p25, p75, historical_wape, historical_rmse, calibration_results=calibration_results_data, acf_results=acf_results_data, quantile_spread=quantile_spread_data)
+    # --- 新增：計算模型診斷數據 (用於風險評估) ---
+    calibration_results = {}  # 預設空字典
+    acf_results = {}          # 預設空字典
+    quantile_spread = 0.0     # 預設 0
+    if residuals is not None and len(residuals) >= 2 and historical_pred is not None:
+        # 計算校準結果
+        calibration_results = compute_calibration_results(data, quantile_preds, quantiles)
+        # 計算自相關結果
+        acf_results = compute_acf_results(residuals, num_months)
+        # 計算分位數範圍
+        quantile_spread = compute_quantile_spread(p25, p75, predicted_value)
+
+    # --- 修改：使用計算出的變數呼叫風險評估 ---
+    risk_status, risk_description, suggested_budget, dynamic_risk_coefficient, trend_score, volatility_score, shock_score, data_reliability, error_coefficient, error_buffer, trend_scores, volatility_scores, shock_scores, overall_score, risk_buffer = assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly_expenses, p25, p75, historical_wape, historical_rmse, calibration_results=calibration_results, acf_results=acf_results, quantile_spread=quantile_spread)
 
     # --- 新增：模型診斷儀表板 (整合三種方法) ---
     diagnostic_report = ""
@@ -1278,6 +1321,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     print(f"\n{colors.WHITE}【註】關於「實質金額」：為了讓不同年份的支出能被公平比較，本報告已將所有歷史數據，統一換算為當前基期年的貨幣價值。這能幫助您在扣除物價上漲的影響後，看清自己真實的消費習慣變化。{colors.RESET}")
 
     print(f"{colors.CYAN}{colors.BOLD}========================================{colors.RESET}\n")
+
 
 # --- 腳本入口 (未變更) ---
 def main():
