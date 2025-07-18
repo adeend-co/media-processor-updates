@@ -1108,6 +1108,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             print(f"\n{colors.WHITE}>>> 詳細風險因子分析{colors.RESET}")
             # 修正：使用 :.2f 格式化總體風險評分
             print(f"{colors.BOLD}總體風險評分: {overall_score:.2f}/10{colors.RESET}" if isinstance(overall_score, (int, float)) else f"{colors.BOLD}總體風險評分: {overall_score}{colors.RESET}")
+            print(f"{colors.WHITE}  └ 權重配置: 趨勢(40%) + 波動(35%) + 衝擊(25%){colors.RESET}")
             
             print(f"\n{colors.CYAN}趨勢風險因子:{colors.RESET}")
             print(f"  - 趨勢加速度: {trend_scores['accel']:.1f}/10")
@@ -1130,7 +1131,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             print(f"  - 衝擊風險得分: {shock_score:.2f}/10")
         
             print(f"\n{colors.PURPLE}動態風險係數: {dynamic_risk_coefficient:.3f}{colors.RESET}")
-            print(f"{colors.WHITE}  └ 權重配置: 趨勢(40%) + 波動(35%) + 衝擊(25%){colors.RESET}")
 
     # 通膨調整說明
     print(f"\n{colors.WHITE}【註】關於「實質金額」：為了讓不同年份的支出能被公平比較，本報告已將所有歷史數據，統一換算為當前基期年的貨幣價值。這能幫助您在扣除物價上漲的影響後，看清自己真實的消費習慣變化。{colors.RESET}")
