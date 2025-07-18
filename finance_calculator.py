@@ -694,8 +694,8 @@ def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly
     else:
         data_reliability = "低度可靠"
 
-    # 返回與原函數相同的參數數量和順序
-    return (status, description, suggested_budget, dynamic_risk_coefficient, trend_score, shock_score,
+    # 返回與原函數相同的參數數量和順序（新增 volatility_score）
+    return (status, description, suggested_budget, dynamic_risk_coefficient, trend_score, volatility_score, shock_score,
             data_reliability, dynamic_risk_coefficient, 0.5, error_buffer, 
             trend_scores, volatility_scores, shock_scores, overall_score)
 
