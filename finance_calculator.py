@@ -696,6 +696,27 @@ def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly
             trend_scores, volatility_scores, shock_scores, overall_score, risk_buffer)
 
 # --- 診斷儀表板函數 (v1.9.2 - 整合可自訂寬度設定) ---
+# --- 新增：CJK 字元填充輔助函數 (用於表格對齊) ---
+def pad_cjk(text, total_width, align='left'):
+    """Pads a string to a specific display width, accounting for CJK characters."""
+    try:
+        # 使用 gbk 編碼可以較準確地計算中文字元寬度
+        text_width = len(text.encode('gbk'))
+    except UnicodeEncodeError:
+        # 若 gbk 不支援某些字元，則使用備用方法
+        text_width = sum(2 if '\u4e00' <= char <= '\u9fff' else 1 for char in text)
+    
+    padding = total_width - text_width
+    if padding < 0: padding = 0
+    
+    if align == 'left':
+        return text + ' ' * padding
+    elif align == 'right':
+        return ' ' * padding + text
+    else: # center
+        left_pad = padding // 2
+        right_pad = padding - left_pad
+        return ' ' * left_pad + text + ' ' * right_pad
 
 def quantile_loss(y_true, y_pred, quantile):
     """計算分位數損失的核心數學邏輯。"""
