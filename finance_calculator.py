@@ -1099,8 +1099,8 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
   
         if trend_score is not None and shock_score is not None:
             print(f"\n{colors.WHITE}>>> 多因子計分細節（透明度說明）{colors.RESET}")
-            print(f"  - 趨勢風險得分: {trend_score}")
-            print(f"  - 衝擊風險得分: {shock_score}")
+            print(f"  - 趨勢風險得分: {trend_score:.2f}")
+            print(f"  - 衝擊風險得分: {shock_score:.2f}")
             print(f"  - 解釋: 得分最高者決定主要狀態；若接近，視為混合狀態。")
 
         # 新增：詳細風險因子分析報告
