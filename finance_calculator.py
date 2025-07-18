@@ -1079,67 +1079,59 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         print(f"{colors.WHITE}    └ 當單月支出超過此金額，代表發生僅靠月度預算無法應對的重大財務衝擊，應考慮「動用」您另外儲備的緊急預備金。{colors.RESET}")
         print(f"{colors.GREEN}--------------------------------------------------{colors.RESET}")
 
-    # 新增：月份保守預算建議區塊 (基於實質金額)
+    # --- 新增：月份保守預算建議區塊 (基於實質金額) ---
     if risk_status and "無法判讀" not in risk_status:
         print(f"\n{colors.CYAN}{colors.BOLD}>>> 月份保守預算建議{colors.RESET}")
         print(f"{colors.BOLD}風險狀態: {risk_status}{colors.RESET}")
         print(f"{colors.WHITE}{risk_description}{colors.RESET}")
         if data_reliability: print(f"{colors.BOLD}數據可靠性: {data_reliability}{colors.RESET}")
-
-        if dynamic_risk_coefficient is not None: 
-            print(f"{colors.BOLD}動態風險係數: {dynamic_risk_coefficient:.2f}{colors.RESET}")
-        if error_coefficient is not None: 
-            print(f"{colors.BOLD}模型誤差係數: {error_coefficient:.2f}{colors.RESET}")
-
+    
+        # --- 修正：根據不同模式動態顯示計算依據 ---
         if suggested_budget is not None:
             print(f"{colors.BOLD}建議 {target_month_str} 預算: {suggested_budget:,.2f} 元{colors.RESET}")
 
-            # 修正：使用變數計算顯示依據，確保數字匹配
-            if "高度可靠" in data_reliability or "中度可靠" in data_reliability:
-                if error_buffer is not None and risk_buffer is not None:
-                    print(f"{colors.WHITE}    └ 計算依據：風險緩衝 ({risk_buffer:,.2f}) + 模型誤差緩衝 ({error_buffer:,.2f}){colors.RESET}")
-            elif "低度可靠" in data_reliability:
-                if predicted_value is not None and risk_buffer is not None:
-                    print(f"{colors.WHITE}    └ 計算依據：趨勢預測 ({predicted_value:,.2f}) + 審慎緩衝 ({risk_buffer:,.2f}){colors.RESET}")
-                else:
-                    print(f"{colors.WHITE}    └ 計算依據：近期平均支出 + 基礎風險緩衝（數據不足，使用保守估計）。{colors.RESET}")
+            if data_reliability:
+                # 情況一：數據充足，使用進階公式
+                if "高度可靠" in data_reliability or "中度可靠" in data_reliability:
+                    if error_buffer is not None and risk_buffer is not None:
+                        print(f"{colors.WHITE}    └ 計算依據：風險緩衝 ({risk_buffer:,.2f}) + 模型誤差緩衝 ({error_buffer:,.2f}){colors.RESET}")
+                
+                # 情況二：數據中等，回推至原始公式
+                elif "原始公式" in data_reliability:
+                    if predicted_value is not None and risk_buffer is not None:
+                        print(f"{colors.WHITE}    └ 計算依據：趨勢預測 ({predicted_value:,.2f}) + 審慎緩衝 ({risk_buffer:,.2f}){colors.RESET}")
+                
+                # 情況三：數據嚴重不足，回推至替代公式
+                elif "替代公式" in data_reliability:
+                    print(f"{colors.WHITE}    └ 計算依據：近期平均支出 + 15% 固定緩衝。{colors.RESET}")
 
-  
-        if trend_score is not None and shock_score is not None:
-            print(f"\n{colors.WHITE}>>> 多因子計分細節（透明度說明）{colors.RESET}")
-            print(f"  - 趨勢風險得分: {trend_score:.2f}")
-            print(f"  - 衝擊風險得分: {shock_score:.2f}")
-            print(f"  - 解釋: 得分最高者決定主要狀態；若接近，視為混合狀態。")
+        # --- 新增：僅在數據充足時顯示詳細的風險分析 ---
+        if overall_score is not None:
+            print(f"\n{colors.BOLD}動態風險係數: {dynamic_risk_coefficient:.3f}{colors.RESET}")
+            if error_coefficient is not None: 
+                print(f"{colors.BOLD}模型誤差係數: {error_coefficient:.2f}{colors.RESET}")
 
-        # 新增：詳細風險因子分析報告
-        if trend_scores is not None and volatility_scores is not None and shock_scores is not None:
             print(f"\n{colors.WHITE}>>> 詳細風險因子分析{colors.RESET}")
-            # 修正：使用 :.2f 格式化總體風險評分
-            print(f"{colors.BOLD}總體風險評分: {overall_score:.2f}/10{colors.RESET}" if isinstance(overall_score, (int, float)) else f"{colors.BOLD}總體風險評分: {overall_score}{colors.RESET}")
+            print(f"{colors.BOLD}總體風險評分: {overall_score:.2f}/10{colors.RESET}")
             print(f"{colors.WHITE}  └ 權重配置: 趨勢(40%) + 波動(35%) + 衝擊(25%){colors.RESET}")
             
             print(f"\n{colors.CYAN}趨勢風險因子:{colors.RESET}")
             print(f"  - 趨勢加速度: {trend_scores['accel']:.1f}/10")
             print(f"  - 滾動平均交叉: {trend_scores['crossover']:.1f}/10")
             print(f"  - 殘差自相關性: {trend_scores['autocorr']:.1f}/10")
-            # 修正：使用 :.2f 格式化趨勢風險得分
             print(f"  - 趨勢風險得分: {trend_score:.2f}/10")
         
             print(f"\n{colors.YELLOW}波動風險因子:{colors.RESET}")
             print(f"  - 波動的波動性: {volatility_scores['vol_of_vol']:.1f}/10")
             print(f"  - 下行波動率: {volatility_scores['downside_vol']:.1f}/10")
             print(f"  - 峰態: {volatility_scores['kurtosis']:.1f}/10")
-            # 修正：使用 :.2f 格式化波動風險得分
             print(f"  - 波動風險得分: {volatility_score:.2f}/10")
         
             print(f"\n{colors.RED}衝擊風險因子:{colors.RESET}")
             print(f"  - 最大衝擊幅度: {shock_scores['max_shock_magnitude']:.1f}/10")
             print(f"  - 連續正向衝擊: {shock_scores['consecutive_shocks']:.1f}/10")
-            # 修正：使用 :.2f 格式化衝擊風險得分
             print(f"  - 衝擊風險得分: {shock_score:.2f}/10")
-        
-            print(f"\n{colors.PURPLE}動態風險係數: {dynamic_risk_coefficient:.3f}{colors.RESET}")
-
+    
     # 通膨調整說明
     print(f"\n{colors.WHITE}【註】關於「實質金額」：為了讓不同年份的支出能被公平比較，本報告已將所有歷史數據，統一換算為當前基期年的貨幣價值。這能幫助您在扣除物價上漲的影響後，看清自己真實的消費習慣變化。{colors.RESET}")
 
