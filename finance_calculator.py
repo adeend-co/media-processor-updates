@@ -495,6 +495,7 @@ def monte_carlo_dashboard(monthly_expense_data, num_simulations=10000):
 
 # --- 風險狀態判讀與預算建議函數 (升級版，基於實質金額) ---
 def percentile_score(value, p25, p50, p75, p90):
+    """將數值轉換為0-10的標準分數"""
     if value <= p25:
         return 1
     elif value <= p50:
@@ -507,63 +508,119 @@ def percentile_score(value, p25, p50, p75, p90):
         return 10
 
 def data_reliability_factor(n, n0=18, k=0.2):
+    """計算數據可靠性因子"""
     return 1 / (1 + np.exp(-k * (n - n0)))
 
 def compute_trend_factors(data, x):
+    """計算趨勢風險因子"""
     n = len(data)
     half = n // 2
-    x_early, y_early = x[:half], data[:half]
-    x_late, y_late = x[half:], data[half:]
-    slope_early, _, _, _, _ = linregress(x_early, y_early) if half >= 2 else (0, 0, 0, 0, 0)
-    slope_late, _, _, _, _ = linregress(x_late, y_late) if (n - half) >= 2 else (0, 0, 0, 0, 0)
-    accel = slope_late - slope_early
+    
+    # 趨勢加速度
+    if half >= 2 and (n - half) >= 2:
+        x_early, y_early = x[:half], data[:half]
+        x_late, y_late = x[half:], data[half:]
+        slope_early, _, _, _, _ = linregress(x_early, y_early)
+        slope_late, _, _, _, _ = linregress(x_late, y_late)
+        accel = slope_late - slope_early
+    else:
+        accel = 0
 
+    # 滾動平均交叉
     window_short = min(3, n)
     window_long = min(6, n)
-    ma_short = pd.Series(data).rolling(window=window_short).mean().iloc[-1]
-    ma_long = pd.Series(data).rolling(window=window_long).mean().iloc[-1]
-    crossover = 1 if ma_short > ma_long else 0
+    if n >= window_short and n >= window_long:
+        ma_short = pd.Series(data).rolling(window=window_short).mean().iloc[-1]
+        ma_long = pd.Series(data).rolling(window=window_long).mean().iloc[-1]
+        crossover = 1 if ma_short > ma_long else 0
+    else:
+        crossover = 0
 
-    slope, intercept, _, _, _ = linregress(x, data)
-    trend = intercept + slope * x
-    residuals = data - trend
-    autocorr = np.corrcoef(residuals[:-1], residuals[1:])[0, 1] if n >= 2 else 0
+    # 殘差自相關性
+    if n >= 2:
+        slope, intercept, _, _, _ = linregress(x, data)
+        trend = intercept + slope * x
+        residuals = data - trend
+        if n >= 3:
+            autocorr = np.corrcoef(residuals[:-1], residuals[1:])[0, 1]
+        else:
+            autocorr = 0
+    else:
+        residuals = np.array([0])
+        autocorr = 0
 
     return accel, crossover, autocorr, residuals
 
 def compute_volatility_factors(data, residuals):
+    """計算波動風險因子"""
     n = len(data)
-    rolling_std = pd.Series(data).rolling(window=min(3, n)).std().dropna().values
-    vol_of_vol = np.std(rolling_std) if len(rolling_std) > 0 else 0
+    
+    # 波動的波動性
+    if n >= 3:
+        rolling_std = pd.Series(data).rolling(window=min(3, n)).std().dropna().values
+        vol_of_vol = np.std(rolling_std) if len(rolling_std) > 1 else 0
+    else:
+        vol_of_vol = 0
 
-    monthly_growth = np.diff(data) / data[:-1] if n >= 2 else np.array([])
-    positive_growth = monthly_growth[monthly_growth > 0]
-    downside_vol = np.std(positive_growth) if len(positive_growth) > 0 else 0
+    # 下行波動率
+    if n >= 2:
+        monthly_growth = np.diff(data) / data[:-1]
+        positive_growth = monthly_growth[monthly_growth > 0]
+        downside_vol = np.std(positive_growth) if len(positive_growth) > 1 else 0
+    else:
+        downside_vol = 0
 
-    kurt = kurtosis(residuals) if n > 1 else 0
+    # 峰態
+    kurt = kurtosis(residuals) if len(residuals) > 1 else 0
+    
     return vol_of_vol, downside_vol, kurt
 
 def compute_shock_factors(data, residuals):
+    """計算衝擊風險因子"""
     n = len(data)
-    avg_expense = np.mean(data) if n > 0 else 0
-    max_shock = np.max(residuals) if n > 0 else 0
-    max_shock_magnitude = max_shock / avg_expense if avg_expense != 0 else 0
+    
+    # 最大衝擊幅度
+    if n > 0:
+        avg_expense = np.mean(data)
+        max_shock = np.max(residuals) if len(residuals) > 0 else 0
+        max_shock_magnitude = max_shock / avg_expense if avg_expense != 0 else 0
+    else:
+        max_shock_magnitude = 0
 
-    slope, intercept, _, _, _ = linregress(np.arange(n), data)
-    trend = intercept + slope * np.arange(n)
-    count = 0
-    max_count = 0
-    for actual, pred in zip(data, trend):
-        if actual > pred:
-            count += 1
-            max_count = max(max_count, count)
-        else:
-            count = 0
-    return max_shock_magnitude, max_count
+    # 連續正向衝擊
+    if n >= 2:
+        slope, intercept, _, _, _ = linregress(np.arange(n), data)
+        trend = intercept + slope * np.arange(n)
+        count = 0
+        max_count = 0
+        for actual, pred in zip(data, trend):
+            if actual > pred:
+                count += 1
+                max_count = max(max_count, count)
+            else:
+                count = 0
+        consecutive_shocks = max_count
+    else:
+        consecutive_shocks = 0
+    
+    return max_shock_magnitude, consecutive_shocks
 
 def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly_expenses, p25, p75, historical_wape, historical_rmse):
+    """
+    升級版風險評估函數 - 整合四階段動態風險評分系統
+    """
+    # 初始化所有可能返回的變數
+    trend_scores = None
+    volatility_scores = None  
+    shock_scores = None
+    overall_score = None
+    trend_score = None
+    volatility_score = None
+    shock_score = None
+    
     if monthly_expenses is None or len(monthly_expenses) < 2:
-        return "無法判讀 (資料不足)", "資料過少，無法進行風險評估。", None, None, None, None, "極低可靠性", None, None, None, None, None, None, None
+        return ("無法判讀 (資料不足)", "資料過少，無法進行風險評估。", None, None, None, None, 
+                "極低可靠性", None, None, None, trend_scores, volatility_scores, shock_scores, overall_score)
 
     num_months = len(monthly_expenses)
     data = monthly_expenses['Real_Amount'].values
@@ -574,16 +631,16 @@ def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly
     vol_of_vol, downside_vol, kurt = compute_volatility_factors(data, residuals)
     max_shock_magnitude, consecutive_shocks = compute_shock_factors(data, residuals)
 
-    # 階段二：指標標準化與評分（使用示例百分位數，您可根據歷史數據調整）
+    # 階段二：指標標準化與評分（使用示例百分位數）
     trend_scores = {
         'accel': percentile_score(accel, -0.5, 0, 0.5, 1),
-        'crossover': percentile_score(crossover, 0, 0, 0, 0),  # 二元變數
-        'autocorr': percentile_score(autocorr, -0.5, 0, 0.5, 0.8)
+        'crossover': percentile_score(crossover, 0, 0, 0.5, 1),
+        'autocorr': percentile_score(abs(autocorr), 0, 0.2, 0.5, 0.8)
     }
     volatility_scores = {
         'vol_of_vol': percentile_score(vol_of_vol, 0, 0.5, 1, 2),
         'downside_vol': percentile_score(downside_vol, 0, 0.1, 0.2, 0.5),
-        'kurtosis': percentile_score(kurt, 0, 1, 3, 5)
+        'kurtosis': percentile_score(abs(kurt), 0, 1, 3, 5)
     }
     shock_scores = {
         'max_shock_magnitude': percentile_score(max_shock_magnitude, 0, 0.1, 0.2, 0.5),
@@ -595,38 +652,48 @@ def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly
     volatility_score = np.mean(list(volatility_scores.values()))
     shock_score = np.mean(list(shock_scores.values()))
     weights = (0.4, 0.35, 0.25)
-    overall_risk_score = (trend_score * weights[0]) + (volatility_score * weights[1]) + (shock_score * weights[2])
+    overall_score = (trend_score * weights[0]) + (volatility_score * weights[1]) + (shock_score * weights[2])
 
     # 階段四：數據可靠性校準
     drf = data_reliability_factor(num_months)
     max_risk_premium = 0.25
     base_premium = 0.10
-    risk_score_term = (overall_risk_score / 10) * max_risk_premium * drf
+    risk_score_term = (overall_score / 10) * max_risk_premium * drf
     base_uncertainty_term = base_premium * (1 - drf)
     dynamic_risk_coefficient = risk_score_term + base_uncertainty_term
 
-    # 風險狀態判讀（基於新分數）
-    if overall_risk_score > 7:
+    # 風險狀態判讀
+    if overall_score > 7:
         status = "高風險"
-        description = "多項因子顯示顯著風險，建議立即審視支出。"
-    elif overall_risk_score > 4:
+        description = "多項風險因子顯示顯著風險，建議立即審視支出模式。"
+    elif overall_score > 4:
         status = "中度風險"
-        description = "風險因子均衡，需監控波動。"
+        description = "風險因子處於中等水平，需持續監控財務狀況。"
     else:
         status = "低風險"
-        description = "整體穩定，但維持警惕。"
+        description = "整體風險可控，但仍需保持適度警惕。"
 
-    # 預算建議計算（使用動態係數）
-    risk_buffer = p75 + (dynamic_risk_coefficient * (p95 - p75)) if p95 and p75 else 0
-    error_buffer = 0.5 * historical_rmse if historical_rmse else 0
-    suggested_budget = predicted_value + risk_buffer + error_buffer
+    # 預算建議計算
+    if p95 and p75 and predicted_value:
+        risk_buffer = p75 + (dynamic_risk_coefficient * (p95 - p75))
+        error_buffer = 0.5 * historical_rmse if historical_rmse else 0
+        suggested_budget = risk_buffer + error_buffer
+    else:
+        suggested_budget = None
+        error_buffer = None
 
-    data_reliability = "高度可靠" if drf > 0.8 else ("中度可靠" if drf > 0.4 else "低度可靠")
+    # 數據可靠性評估
+    if drf > 0.8:
+        data_reliability = "高度可靠"
+    elif drf > 0.4:
+        data_reliability = "中度可靠"
+    else:
+        data_reliability = "低度可靠"
 
-    # 修正返回值順序，確保與調用點匹配
-    return (status, description, suggested_budget, None, trend_score, shock_score,
-            data_reliability, dynamic_risk_coefficient, 0.5, error_buffer,
-            trend_scores, volatility_scores, shock_scores, overall_risk_score)
+    # 返回與原函數相同的參數數量和順序
+    return (status, description, suggested_budget, dynamic_risk_coefficient, trend_score, shock_score,
+            data_reliability, dynamic_risk_coefficient, 0.5, error_buffer, 
+            trend_scores, volatility_scores, shock_scores, overall_score)
 
 # --- 主要分析與預測函數 (升級為四階段模型 + 蒙地卡羅 + 風險預算建議 + 通膨調整) ---
 def analyze_and_predict(file_paths_str: str, no_color: bool):
