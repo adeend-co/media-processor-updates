@@ -494,6 +494,10 @@ def monte_carlo_dashboard(monthly_expense_data, num_simulations=10000):
     return p25, p75, p95
 
 # --- 風險狀態判讀與預算建議函數 (升級版，基於實質金額) ---
+import numpy as np
+import pandas as pd
+from scipy.stats import linregress, kurtosis
+
 def percentile_score(value, p25, p50, p75, p90):
     """將數值轉換為0-10的標準分數"""
     if value <= p25:
