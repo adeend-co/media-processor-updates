@@ -609,9 +609,49 @@ def compute_shock_factors(data, residuals):
     
     return max_shock_magnitude, consecutive_shocks
 
+def calculate_historical_factors(data, min_months=12):
+    """
+    計算所有歷史時間窗口的風險因子，以建立個人化的閾值。
+    """
+    n_total = len(data)
+    if n_total < min_months:
+        return None  # 數據太少，無法建立有意義的歷史分佈
+
+    historical_results = {
+        'accel': [], 'crossover': [], 'autocorr': [],
+        'vol_of_vol': [], 'downside_vol': [], 'kurtosis': [],
+        'max_shock_magnitude': [], 'consecutive_shocks': []
+    }
+
+    # 使用擴展窗口，從 min_months 到 n_total
+    for n in range(min_months, n_total + 1):
+        window_data = data[:n]
+        x = np.arange(n)
+        
+        # 提取因子
+        try:
+            accel, crossover, autocorr, residuals = compute_trend_factors(window_data, x)
+            vol_of_vol, downside_vol, kurt = compute_volatility_factors(window_data, residuals)
+            max_shock_magnitude, consecutive_shocks = compute_shock_factors(window_data, residuals)
+
+            # 收集結果
+            historical_results['accel'].append(accel)
+            historical_results['crossover'].append(crossover)
+            historical_results['autocorr'].append(abs(autocorr))
+            historical_results['vol_of_vol'].append(vol_of_vol)
+            historical_results['downside_vol'].append(downside_vol)
+            historical_results['kurtosis'].append(abs(kurt))
+            historical_results['max_shock_magnitude'].append(max_shock_magnitude)
+            historical_results['consecutive_shocks'].append(consecutive_shocks)
+        except Exception:
+            # 如果在歷史計算中出錯（例如數據點太少無法計算斜率），則跳過該點
+            continue
+            
+    return historical_results
+
 def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly_expenses, p25, p75, historical_wape, historical_rmse):
     """
-    升級版風險評估函數 - 整合四階段動態風險評分系統，並內建數據不足時的回推機制
+    升級版風險評估函數 v2.0 - 整合個人化動態閾值、四階段評分與數據不足回推機制
     """
     # --- 初始化所有可能返回的變數，確保返回數量一致 ---
     status, description, suggested_budget = None, None, None
@@ -628,20 +668,19 @@ def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly
     data = monthly_expenses['Real_Amount'].values
     x = np.arange(num_months)
 
-    # --- 新增：數據不足時的回推 (Fallback) 邏輯 ---
+    # --- 數據不足時的回推 (Fallback) 邏輯 ---
     if num_months < 12:
         if num_months < 6:
-            # 數據嚴重不足 (< 6 個月)，使用最安全的「近期平均 + 固定緩衝」
             recent_avg = np.mean(data[-3:])
             buffer_factor = 0.15
             suggested_budget = recent_avg * (1 + buffer_factor)
+            risk_buffer = recent_avg * buffer_factor
             status = "數據不足，使用替代公式"
             description = "基於近期平均實質支出加上15%風險緩衝。"
             data_reliability = "低度可靠 - 替代公式"
         else:
-            # 數據中等 (6-11 個月)，使用「趨勢預測 + 審慎緩衝」
             if predicted_value is not None and expense_std_dev is not None:
-                prudence_factor = 0.5  # 固定審慎係數
+                prudence_factor = 0.5
                 risk_buffer = prudence_factor * expense_std_dev
                 suggested_budget = predicted_value + risk_buffer
                 status = "數據不足，使用原始公式"
@@ -649,31 +688,38 @@ def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly
                 data_reliability = "低度可靠 - 原始公式"
             else:
                 status, description = "無法判讀 (資料不足)", "趨勢預測或波動數據缺失。"
-
-        # 在回推模式下，直接返回，不執行後續複雜分析
         return (status, description, suggested_budget, None, None, None, None, 
                 data_reliability, None, None, None, None, None, None, risk_buffer)
 
     # --- 數據充足 (>= 12 個月)，執行完整的四階段動態風險系統 ---
-    # 階段一：深度特徵提取
-    accel, crossover, autocorr, residuals = compute_trend_factors(data, x)
-    vol_of_vol, downside_vol, kurt = compute_volatility_factors(data, residuals)
-    max_shock_magnitude, consecutive_shocks = compute_shock_factors(data, residuals)
+    # 新增步驟：計算歷史因子分佈以建立個人化閾值
+    historical_factors = calculate_historical_factors(data)
 
-    # 階段二：指標標準化與評分
+    # 階段一：計算當前的深度特徵提取
+    current_accel, current_crossover, current_autocorr, current_residuals = compute_trend_factors(data, x)
+    current_vol_of_vol, current_downside_vol, current_kurt = compute_volatility_factors(data, current_residuals)
+    current_max_shock, current_consecutive_shocks = compute_shock_factors(data, current_residuals)
+
+    # 階段二：指標標準化與評分（使用個人化動態閾值）
+    def get_thresholds(factor_name, default_thresholds):
+        if historical_factors and historical_factors.get(factor_name) and len(historical_factors[factor_name]) > 4:
+            return np.percentile(historical_factors[factor_name], [25, 50, 75, 90])
+        else:
+            return default_thresholds
+
     trend_scores = {
-        'accel': percentile_score(accel, -0.5, 0, 0.5, 1),
-        'crossover': percentile_score(crossover, 0, 0, 0.5, 1),
-        'autocorr': percentile_score(abs(autocorr), 0, 0.2, 0.5, 0.8)
+        'accel': percentile_score(current_accel, *get_thresholds('accel', [-0.5, 0, 0.5, 1])),
+        'crossover': percentile_score(current_crossover, *get_thresholds('crossover', [0, 0, 0.5, 1])),
+        'autocorr': percentile_score(abs(current_autocorr), *get_thresholds('autocorr', [0, 0.2, 0.5, 0.8]))
     }
     volatility_scores = {
-        'vol_of_vol': percentile_score(vol_of_vol, 0, 0.5, 1, 2),
-        'downside_vol': percentile_score(downside_vol, 0, 0.1, 0.2, 0.5),
-        'kurtosis': percentile_score(abs(kurt), 0, 1, 3, 5)
+        'vol_of_vol': percentile_score(current_vol_of_vol, *get_thresholds('vol_of_vol', [0, 0.5, 1, 2])),
+        'downside_vol': percentile_score(current_downside_vol, *get_thresholds('downside_vol', [0, 0.1, 0.2, 0.5])),
+        'kurtosis': percentile_score(abs(current_kurt), *get_thresholds('kurtosis', [0, 1, 3, 5]))
     }
     shock_scores = {
-        'max_shock_magnitude': percentile_score(max_shock_magnitude, 0, 0.1, 0.2, 0.5),
-        'consecutive_shocks': percentile_score(consecutive_shocks, 0, 2, 4, 6)
+        'max_shock_magnitude': percentile_score(current_max_shock, *get_thresholds('max_shock_magnitude', [0, 0.1, 0.2, 0.5])),
+        'consecutive_shocks': percentile_score(current_consecutive_shocks, *get_thresholds('consecutive_shocks', [0, 2, 4, 6]))
     }
 
     # 階段三：多因子加權聚合
@@ -692,24 +738,16 @@ def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly
     dynamic_risk_coefficient = risk_score_term + base_uncertainty_term
 
     # 風險狀態判讀
-    if overall_score > 7:
-        status = "高風險"
-        description = "多項風險因子顯示顯著風險，建議立即審視支出模式。"
-    elif overall_score > 4:
-        status = "中度風險"
-        description = "風險因子處於中等水平，需持續監控財務狀況。"
-    else:
-        status = "低風險"
-        description = "整體風險可控，但仍需保持適度警惕。"
+    if overall_score > 7: status, description = "高風險", "多項風險因子顯示顯著風險，建議立即審視支出模式。"
+    elif overall_score > 4: status, description = "中度風險", "風險因子處於中等水平，需持續監控財務狀況。"
+    else: status, description = "低風險", "整體風險可控，但仍需保持適度警惕。"
     
-    # 數據可靠性評估
     data_reliability = "高度可靠" if drf > 0.8 else "中度可靠"
 
     # 預算建議計算
     if p95 is not None and p75 is not None and predicted_value is not None:
-        # 進階公式：風險緩衝 + 模型誤差緩衝
         risk_buffer = p75 + (dynamic_risk_coefficient * (p95 - p75))
-        error_coefficient = 0.5 # 預設模型誤差係數
+        error_coefficient = 0.5
         error_buffer = error_coefficient * historical_rmse if historical_rmse else 0
         suggested_budget = risk_buffer + error_buffer
     else:
