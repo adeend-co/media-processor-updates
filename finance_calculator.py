@@ -673,21 +673,46 @@ def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly
             data_reliability, error_coefficient, error_buffer, 
             trend_scores, volatility_scores, shock_scores, overall_score, risk_buffer)
 
+# --- 新增：CJK 字元填充輔助函數 (用於表格對齊) ---
+def pad_cjk(text, total_width, align='left'):
+    """Pads a string to a specific display width, accounting for CJK characters."""
+    try:
+        # 使用 gbk 編碼可以較準確地計算中文字元寬度
+        text_width = len(text.encode('gbk'))
+    except UnicodeEncodeError:
+        # 若 gbk 不支援某些字元，則使用備用方法
+        text_width = sum(2 if '\u4e00' <= char <= '\u9fff' else 1 for char in text)
+    
+    padding = total_width - text_width
+    if padding < 0: padding = 0
+    
+    if align == 'left':
+        return text + ' ' * padding
+    elif align == 'right':
+        return ' ' * padding + text
+    else: # center
+        left_pad = padding // 2
+        right_pad = padding - left_pad
+        return ' ' * left_pad + text + ' ' * right_pad
+
 # --- 新增：分位數損失函數 (方法一) ---
 def quantile_loss(y_true, y_pred, quantile):
     errors = y_true - y_pred
     loss = np.mean(np.maximum(quantile * errors, (quantile - 1) * errors))
     return loss
 
-# --- 新增：模型校準分析函數 (方法二) ---
+# --- 新增：模型校準分析函數 (方法二，排版修正版) ---
 def model_calibration_analysis(y_true, quantile_preds, quantiles, colors):
-    calibration_report = [f"{colors.WHITE}>>> 模型校準分析 (誠實度檢驗){colors.RESET}"]
-    calibration_report.append("--------------------------------------------------")
-    calibration_report.append("| 預測分位數 (信心) | 實際觀測頻率 | 評估結果     |")
-    calibration_report.append("|-------------------|--------------|--------------|")
+    report = [f"{colors.WHITE}>>> 模型校準分析 (誠實度檢驗){colors.RESET}"]
+    report.append("|-------------------|----------------|----------------|")
+    report.append(f"| {pad_cjk('預測分位數 (信心)', 17, 'left')} | {'實際觀測頻率'.rjust(12)} | {pad_cjk('評估結果', 12, 'left')} |")
+    report.append("|-------------------|----------------|----------------|")
     
     for q in quantiles:
-        preds = quantile_preds[q]
+        # 安全地獲取預測值，避免 KeyError
+        preds = quantile_preds.get(q)
+        if preds is None: continue
+        
         observed_freq = np.mean(y_true <= preds) * 100
         if abs(observed_freq - q*100) < 5:
             assessment = "非常準確"
@@ -697,37 +722,40 @@ def model_calibration_analysis(y_true, quantile_preds, quantiles, colors):
             assessment = "略微高估風險"
         else:
             assessment = "明顯過於自信"
-        calibration_report.append(f"| {q*100:.0f}% (P{q*100:.0f})         | {observed_freq:.0f}%          | {assessment}     |")
-    
-    calibration_report.append("--------------------------------------------------")
-    return "\n".join(calibration_report)
+            
+        label = f"{q*100:.0f}% (P{q*100:.0f})"
+        freq_str = f"{observed_freq:.0f}%"
+        report.append(f"| {pad_cjk(label, 17, 'left')} | {freq_str.rjust(14)} | {pad_cjk(assessment, 14, 'left')} |")
+        
+    report.append("|-------------------|----------------|----------------|")
+    return "\n".join(report)
 
-# --- 新增：殘差自相關性診斷函數 (方法三) ---
+# --- 新增：殘差自相關性診斷函數 (方法三，排版修正版) ---
 def residual_autocorrelation_diagnosis(residuals, n, colors):
     lags = [1, 3, 6, 12]
     sig_boundary = 2 / np.sqrt(n)
-    acf_report = [f"{colors.WHITE}>>> 殘差診斷 (規律性檢測){colors.RESET}"]
-    acf_report.append(f"(樣本數 N = {n}, 顯著性邊界 ≈ {sig_boundary:.2f})")
-    acf_report.append("----------------------------------------------------")
-    acf_report.append("| 延遲週期 | 自相關係數(ACF) | 是否顯著 | 潛在意義     |")
-    acf_report.append("|----------|-----------------|----------|--------------|")
+    report = [f"{colors.WHITE}>>> 殘差診斷 (規律性檢測){colors.RESET}"]
+    report.append(f"(樣本數 N = {n}, 顯著性邊界 ≈ {sig_boundary:.2f})")
+    report.append("|------------|-----------------|------------|----------------|")
+    report.append(f"| {pad_cjk('延遲週期', 10, 'left')} | {'自相關係數(ACF)'.rjust(15)} | {pad_cjk('是否顯著', 10, 'center')} | {pad_cjk('潛在意義', 14, 'left')} |")
+    report.append("|------------|-----------------|------------|----------------|")
     
     for lag in lags:
-        if len(residuals) > lag:
-            acf = np.corrcoef(residuals[:-lag], residuals[lag:])[0, 1]
-            is_significant = "是" if abs(acf) > sig_boundary else "否"
-            if lag == 1:
-                meaning = "短期慣性誤差" if is_significant == "是" else "無短期規律"
-            elif lag == 3:
-                meaning = "季度性誤差" if is_significant == "是" else "無季度規律"
-            elif lag == 6:
-                meaning = "半年期誤差" if is_significant == "是" else "無半年規律"
-            else:
-                meaning = "年度性誤差" if is_significant == "是" else "無年度規律"
-            acf_report.append(f"| {lag} 個月   | {acf:.2f}            | {is_significant}       | {meaning} |")
-    
-    acf_report.append("----------------------------------------------------")
-    return "\n".join(acf_report)
+        if len(residuals) <= lag: continue
+        
+        acf = np.corrcoef(residuals[:-lag], residuals[lag:])[0, 1]
+        is_significant = "是" if abs(acf) > sig_boundary else "否"
+        
+        if lag == 1: meaning = "短期慣性誤差" if is_significant == "是" else "無短期規律"
+        elif lag == 3: meaning = "季度性規律" if is_significant == "是" else "無季度規律"
+        elif lag == 6: meaning = "半年期規律" if is_significant == "是" else "無半年規律"
+        else: meaning = "年度性規律" if is_significant == "是" else "無年度規律"
+            
+        lag_str = f"{lag} 個月"
+        report.append(f"| {pad_cjk(lag_str, 10, 'left')} | {f'{acf:.2f}'.rjust(15)} | {pad_cjk(is_significant, 10, 'center')} | {pad_cjk(meaning, 14, 'left')} |")
+        
+    report.append("|------------|-----------------|------------|----------------|")
+    return "\n".join(report)
 
 # --- 主要分析與預測函數 (升級版：整合模型診斷儀表板) ---
 def analyze_and_predict(file_paths_str: str, no_color: bool):
