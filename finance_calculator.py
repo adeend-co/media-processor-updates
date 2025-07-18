@@ -651,7 +651,7 @@ def calculate_historical_factors(data, min_months=12):
 
 def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly_expenses, p25, p75, historical_wape, historical_rmse):
     """
-    升級版風險評估函數 v2.1 - 整合個人化動態閾值、四階段評分與數據不足回推機制
+    升級版風險評估函數 v2.2 - 整合個人化動態閾值、動態模型誤差係數、四階段評分與數據不足回推機制
     """
     # --- 初始化所有可能返回的變數，確保返回數量一致 ---
     status, description, suggested_budget = None, None, None
@@ -691,7 +691,7 @@ def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly
         return (status, description, suggested_budget, None, None, None, None, 
                 data_reliability, None, None, None, None, None, None, risk_buffer)
 
-    # --- 數據充足 (>= 12 個月)，執行完整的四階段動態風險系統 ---
+    # --- 數據充足 (>= 12 個月)，執行完整的動態風險系統 ---
     # 步驟一：計算歷史因子分佈以建立個人化閾值
     historical_factors = calculate_historical_factors(data)
 
@@ -702,19 +702,15 @@ def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly
 
     # 步驟三：指標標準化與評分（使用個人化動態閾值）
     def get_thresholds(factor_name, default_thresholds):
-        # 檢查歷史因子是否存在且有足夠的數據點來計算百分位數
         if historical_factors and historical_factors.get(factor_name) and len(historical_factors[factor_name]) > 4:
-            # 如果存在，則動態計算個人化的閾值
             return np.percentile(historical_factors[factor_name], [25, 50, 75, 90])
         else:
-            # 否則，回退到固定的、通用的預設閾值
             return default_thresholds
 
-    # 對適合個人化的指標，使用 get_thresholds 函數動態獲取閾值
     trend_scores = {
         'accel': percentile_score(current_accel, *get_thresholds('accel', [-0.5, 0, 0.5, 1])),
-        'crossover': percentile_score(current_crossover, 0, 0, 0.5, 1), # 維持固定邏輯
-        'autocorr': percentile_score(abs(current_autocorr), 0, 0.2, 0.5, 0.8) # 維持固定閾值
+        'crossover': percentile_score(current_crossover, 0, 0, 0.5, 1),
+        'autocorr': percentile_score(abs(current_autocorr), 0, 0.2, 0.5, 0.8)
     }
     volatility_scores = {
         'vol_of_vol': percentile_score(current_vol_of_vol, *get_thresholds('vol_of_vol', [0, 0.5, 1, 2])),
@@ -723,7 +719,7 @@ def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly
     }
     shock_scores = {
         'max_shock_magnitude': percentile_score(current_max_shock, *get_thresholds('max_shock_magnitude', [0, 0.1, 0.2, 0.5])),
-        'consecutive_shocks': percentile_score(current_consecutive_shocks, 0, 2, 4, 6) # 維持固定閾值
+        'consecutive_shocks': percentile_score(current_consecutive_shocks, 0, 2, 4, 6)
     }
 
     # 步驟四：多因子加權聚合
@@ -741,18 +737,32 @@ def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly
     base_uncertainty_term = base_premium * (1 - drf)
     dynamic_risk_coefficient = risk_score_term + base_uncertainty_term
 
-    # 風險狀態判讀
+    # 步驟六：風險狀態判讀
     if overall_score > 7: status, description = "高風險", "多項風險因子顯示顯著風險，建議立即審視支出模式。"
     elif overall_score > 4: status, description = "中度風險", "風險因子處於中等水平，需持續監控財務狀況。"
     else: status, description = "低風險", "整體風險可控，但仍需保持適度警惕。"
     
     data_reliability = "高度可靠" if drf > 0.8 else "中度可靠"
 
-    # 預算建議計算
+    # 步驟七：預算建議計算 (整合動態模型誤差係數)
     if p95 is not None and p75 is not None and predicted_value is not None:
         risk_buffer = p75 + (dynamic_risk_coefficient * (p95 - p75))
-        error_coefficient = 0.5
-        error_buffer = error_coefficient * historical_rmse if historical_rmse else 0
+        
+        # 整合舊腳本的動態模型誤差係數邏輯
+        error_coefficient = 0.5 # 預設值
+        if historical_wape is not None:
+            if historical_wape < 10:
+                error_coefficient = 0.25
+            elif historical_wape <= 25:
+                error_coefficient = 0.50
+            else:
+                error_coefficient = 0.75
+        
+        # 數據量充足時，給予額外獎勵，減少過度保守
+        if num_months >= 24:
+            error_coefficient = max(0.1, error_coefficient - 0.15)
+        
+        error_buffer = error_coefficient * historical_rmse if historical_rmse is not None else 0
         suggested_budget = risk_buffer + error_buffer
     else:
         suggested_budget = None
