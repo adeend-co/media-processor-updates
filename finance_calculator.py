@@ -2,7 +2,7 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v1.8.21              #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v1.8                 #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
@@ -15,8 +15,8 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v1.8.21"  # 更新版本：自動檢測與條件應用
-SCRIPT_UPDATE_DATE = "2025-07-17"
+SCRIPT_VERSION = "v1.8.22"  # 更新版本：自動檢測與條件應用
+SCRIPT_UPDATE_DATE = "2025-07-18"
 
 import sys
 import os
@@ -563,7 +563,7 @@ def compute_shock_factors(data, residuals):
 
 def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly_expenses, p25, p75, historical_wape, historical_rmse):
     if monthly_expenses is None or len(monthly_expenses) < 2:
-        return "無法判讀 (資料不足)", "資料過少，無法進行風險評估。", None, None, None, None, "極低可靠性", None, None, None
+        return "無法判讀 (資料不足)", "資料過少，無法進行風險評估。", None, None, None, None, "極低可靠性", None, None, None, None, None, None, None
 
     num_months = len(monthly_expenses)
     data = monthly_expenses['Real_Amount'].values
@@ -623,7 +623,8 @@ def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly
 
     data_reliability = "高度可靠" if drf > 0.8 else ("中度可靠" if drf > 0.4 else "低度可靠")
 
-    return (status, description, suggested_budget, dynamic_risk_coefficient, trend_score, shock_score,
+    # 修正返回值順序，確保與調用點匹配
+    return (status, description, suggested_budget, None, trend_score, shock_score,
             data_reliability, dynamic_risk_coefficient, 0.5, error_buffer,
             trend_scores, volatility_scores, shock_scores, overall_risk_score)
 
