@@ -1106,25 +1106,30 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         # 新增：詳細風險因子分析報告
         if trend_scores is not None and volatility_scores is not None and shock_scores is not None:
             print(f"\n{colors.WHITE}>>> 詳細風險因子分析{colors.RESET}")
+            # 修正：使用 :.2f 格式化總體風險評分
             print(f"{colors.BOLD}總體風險評分: {overall_score:.2f}/10{colors.RESET}" if isinstance(overall_score, (int, float)) else f"{colors.BOLD}總體風險評分: {overall_score}{colors.RESET}")
+            
             print(f"\n{colors.CYAN}趨勢風險因子:{colors.RESET}")
-            print(f"  - 趨勢加速度: {trend_scores['accel']:.1f}/10" if isinstance(trend_scores.get('accel'), (int, float)) else f"  - 趨勢加速度: {trend_scores.get('accel')}")
-            print(f"  - 滾動平均交叉: {trend_scores['crossover']:.1f}/10" if isinstance(trend_scores.get('crossover'), (int, float)) else f"  - 滾動平均交叉: {trend_scores.get('crossover')}")
-            print(f"  - 殘差自相關性: {trend_scores['autocorr']:.1f}/10" if isinstance(trend_scores.get('autocorr'), (int, float)) else f"  - 殘差自相關性: {trend_scores.get('autocorr')}")
-            print(f"  - 趨勢風險得分: {trend_score:.2f}/10" if isinstance(trend_score, (int, float)) else f"  - 趨勢風險得分: {trend_score}")
+            print(f"  - 趨勢加速度: {trend_scores['accel']:.1f}/10")
+            print(f"  - 滾動平均交叉: {trend_scores['crossover']:.1f}/10")
+            print(f"  - 殘差自相關性: {trend_scores['autocorr']:.1f}/10")
+            # 修正：使用 :.2f 格式化趨勢風險得分
+            print(f"  - 趨勢風險得分: {trend_score:.2f}/10")
         
             print(f"\n{colors.YELLOW}波動風險因子:{colors.RESET}")
-            print(f"  - 波動的波動性: {volatility_scores['vol_of_vol']:.1f}/10" if isinstance(volatility_scores.get('vol_of_vol'), (int, float)) else f"  - 波動的波動性: {volatility_scores.get('vol_of_vol')}")
-            print(f"  - 下行波動率: {volatility_scores['downside_vol']:.1f}/10" if isinstance(volatility_scores.get('downside_vol'), (int, float)) else f"  - 下行波動率: {volatility_scores.get('downside_vol')}")
-            print(f"  - 峰態: {volatility_scores['kurtosis']:.1f}/10" if isinstance(volatility_scores.get('kurtosis'), (int, float)) else f"  - 峰態: {volatility_scores.get('kurtosis')}")
-            print(f"  - 波動風險得分: {volatility_score:.2f}/10" if isinstance(volatility_score, (int, float)) else f"  - 波動風險得分: {volatility_score}")
+            print(f"  - 波動的波動性: {volatility_scores['vol_of_vol']:.1f}/10")
+            print(f"  - 下行波動率: {volatility_scores['downside_vol']:.1f}/10")
+            print(f"  - 峰態: {volatility_scores['kurtosis']:.1f}/10")
+            # 修正：使用 :.2f 格式化波動風險得分
+            print(f"  - 波動風險得分: {volatility_score:.2f}/10")
         
             print(f"\n{colors.RED}衝擊風險因子:{colors.RESET}")
-            print(f"  - 最大衝擊幅度: {shock_scores['max_shock_magnitude']:.1f}/10" if isinstance(shock_scores.get('max_shock_magnitude'), (int, float)) else f"  - 最大衝擊幅度: {shock_scores.get('max_shock_magnitude')}")
-            print(f"  - 連續正向衝擊: {shock_scores['consecutive_shocks']:.1f}/10" if isinstance(shock_scores.get('consecutive_shocks'), (int, float)) else f"  - 連續正向衝擊: {shock_scores.get('consecutive_shocks')}")
-            print(f"  - 衝擊風險得分: {shock_score:.2f}/10" if isinstance(shock_score, (int, float)) else f"  - 衝擊風險得分: {shock_score}")
+            print(f"  - 最大衝擊幅度: {shock_scores['max_shock_magnitude']:.1f}/10")
+            print(f"  - 連續正向衝擊: {shock_scores['consecutive_shocks']:.1f}/10")
+            # 修正：使用 :.2f 格式化衝擊風險得分
+            print(f"  - 衝擊風險得分: {shock_score:.2f}/10")
         
-            print(f"\n{colors.PURPLE}動態風險係數: {dynamic_risk_coefficient:.3f}{colors.RESET}" if isinstance(dynamic_risk_coefficient, (int, float)) else f"\n{colors.PURPLE}動態風險係數: {dynamic_risk_coefficient}{colors.RESET}")
+            print(f"\n{colors.PURPLE}動態風險係數: {dynamic_risk_coefficient:.3f}{colors.RESET}")
             print(f"{colors.WHITE}  └ 權重配置: 趨勢(40%) + 波動(35%) + 衝擊(25%){colors.RESET}")
 
     # 通膨調整說明
