@@ -1065,16 +1065,17 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         print(f"{colors.BOLD}風險狀態: {risk_status}{colors.RESET}")
         print(f"{colors.WHITE}{risk_description}{colors.RESET}")
         if data_reliability: print(f"{colors.BOLD}數據可靠性: {data_reliability}{colors.RESET}")
-        
+    
         # 顯示動態係數 (僅在適用時)
-        if risk_coefficient is not None: print(f"{colors.BOLD}動態風險係數: {risk_coefficient:.2f}{colors.RESET}")
-        if error_coefficient is not None: print(f"{colors.BOLD}模型誤差係數: {error_coefficient:.2f}{colors.RESET}")
-        
-
+        if dynamic_risk_coefficient is not None: 
+            print(f"{colors.BOLD}動態風險係數: {dynamic_risk_coefficient:.2f}{colors.RESET}")
+        if error_coefficient is not None: 
+            print(f"{colors.BOLD}模型誤差係數: {error_coefficient:.2f}{colors.RESET}")
+    
         if suggested_budget is not None:
             print(f"{colors.BOLD}建議 {target_month_str} 預算: {suggested_budget:,.2f} 元{colors.RESET}")
 
-            # 根據數據可靠性顯示正確的三種計算依據之一
+            # 根據數據可靠性顯示正確的計算依據
             if data_reliability and ("高度可靠" in data_reliability or "中度可靠" in data_reliability):
                 if error_buffer is not None:
                     risk_buffer_val = suggested_budget - error_buffer
@@ -1085,6 +1086,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             elif data_reliability and "替代公式" in data_reliability:
                 print(f"{colors.WHITE}    └ 計算依據：近期平均支出 + 15% 固定緩衝。{colors.RESET}")
 
+        
         if trend_score is not None and shock_score is not None:
             print(f"\n{colors.WHITE}>>> 多因子計分細節（透明度說明）{colors.RESET}")
             print(f"  - 趨勢風險得分: {trend_score}")
