@@ -651,7 +651,7 @@ def calculate_historical_factors(data, min_months=12):
 
 def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly_expenses, p25, p75, historical_wape, historical_rmse):
     """
-    升級版風險評估函數 v2.0 - 整合個人化動態閾值、四階段評分與數據不足回推機制
+    升級版風險評估函數 v2.1 - 整合個人化動態閾值、四階段評分與數據不足回推機制
     """
     # --- 初始化所有可能返回的變數，確保返回數量一致 ---
     status, description, suggested_budget = None, None, None
@@ -692,25 +692,29 @@ def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly
                 data_reliability, None, None, None, None, None, None, risk_buffer)
 
     # --- 數據充足 (>= 12 個月)，執行完整的四階段動態風險系統 ---
-    # 新增步驟：計算歷史因子分佈以建立個人化閾值
+    # 步驟一：計算歷史因子分佈以建立個人化閾值
     historical_factors = calculate_historical_factors(data)
 
-    # 階段一：計算當前的深度特徵提取
+    # 步驟二：計算當前的深度特徵提取
     current_accel, current_crossover, current_autocorr, current_residuals = compute_trend_factors(data, x)
     current_vol_of_vol, current_downside_vol, current_kurt = compute_volatility_factors(data, current_residuals)
     current_max_shock, current_consecutive_shocks = compute_shock_factors(data, current_residuals)
 
-    # 階段二：指標標準化與評分（使用個人化動態閾值）
+    # 步驟三：指標標準化與評分（使用個人化動態閾值）
     def get_thresholds(factor_name, default_thresholds):
+        # 檢查歷史因子是否存在且有足夠的數據點來計算百分位數
         if historical_factors and historical_factors.get(factor_name) and len(historical_factors[factor_name]) > 4:
+            # 如果存在，則動態計算個人化的閾值
             return np.percentile(historical_factors[factor_name], [25, 50, 75, 90])
         else:
+            # 否則，回退到固定的、通用的預設閾值
             return default_thresholds
 
+    # 對適合個人化的指標，使用 get_thresholds 函數動態獲取閾值
     trend_scores = {
         'accel': percentile_score(current_accel, *get_thresholds('accel', [-0.5, 0, 0.5, 1])),
-        'crossover': percentile_score(current_crossover, *get_thresholds('crossover', [0, 0, 0.5, 1])),
-        'autocorr': percentile_score(abs(current_autocorr), *get_thresholds('autocorr', [0, 0.2, 0.5, 0.8]))
+        'crossover': percentile_score(current_crossover, 0, 0, 0.5, 1), # 維持固定邏輯
+        'autocorr': percentile_score(abs(current_autocorr), 0, 0.2, 0.5, 0.8) # 維持固定閾值
     }
     volatility_scores = {
         'vol_of_vol': percentile_score(current_vol_of_vol, *get_thresholds('vol_of_vol', [0, 0.5, 1, 2])),
@@ -719,17 +723,17 @@ def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly
     }
     shock_scores = {
         'max_shock_magnitude': percentile_score(current_max_shock, *get_thresholds('max_shock_magnitude', [0, 0.1, 0.2, 0.5])),
-        'consecutive_shocks': percentile_score(current_consecutive_shocks, *get_thresholds('consecutive_shocks', [0, 2, 4, 6]))
+        'consecutive_shocks': percentile_score(current_consecutive_shocks, 0, 2, 4, 6) # 維持固定閾值
     }
 
-    # 階段三：多因子加權聚合
+    # 步驟四：多因子加權聚合
     trend_score = np.mean(list(trend_scores.values()))
     volatility_score = np.mean(list(volatility_scores.values()))
     shock_score = np.mean(list(shock_scores.values()))
     weights = (0.4, 0.35, 0.25)
     overall_score = (trend_score * weights[0]) + (volatility_score * weights[1]) + (shock_score * weights[2])
 
-    # 階段四：數據可靠性校準
+    # 步驟五：數據可靠性校準
     drf = data_reliability_factor(num_months)
     max_risk_premium = 0.25
     base_premium = 0.10
