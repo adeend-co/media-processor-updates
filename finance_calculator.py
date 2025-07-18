@@ -611,31 +611,56 @@ def compute_shock_factors(data, residuals):
 
 def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly_expenses, p25, p75, historical_wape, historical_rmse):
     """
-    升級版風險評估函數 - 整合四階段動態風險評分系統
+    升級版風險評估函數 - 整合四階段動態風險評分系統，並內建數據不足時的回推機制
     """
-    # 初始化所有可能返回的變數
-    trend_scores = None
-    volatility_scores = None  
-    shock_scores = None
-    overall_score = None
-    trend_score = None
-    volatility_score = None
-    shock_score = None
-    
+    # --- 初始化所有可能返回的變數，確保返回數量一致 ---
+    status, description, suggested_budget = None, None, None
+    dynamic_risk_coefficient, trend_score, volatility_score, shock_score = None, None, None, None
+    data_reliability, error_coefficient, error_buffer = None, None, None
+    trend_scores, volatility_scores, shock_scores, overall_score, risk_buffer = None, None, None, None, None
+
+    # --- 關鍵數據檢查 ---
     if monthly_expenses is None or len(monthly_expenses) < 2:
         return ("無法判讀 (資料不足)", "資料過少，無法進行風險評估。", None, None, None, None, None, 
-                "極低可靠性", None, None, trend_scores, volatility_scores, shock_scores, overall_score)
+                "極低可靠性", None, None, None, None, None, None, None)
 
     num_months = len(monthly_expenses)
     data = monthly_expenses['Real_Amount'].values
     x = np.arange(num_months)
 
-    # 階段一：深度特徵提取（原邏輯不變）
+    # --- 新增：數據不足時的回推 (Fallback) 邏輯 ---
+    if num_months < 12:
+        if num_months < 6:
+            # 數據嚴重不足 (< 6 個月)，使用最安全的「近期平均 + 固定緩衝」
+            recent_avg = np.mean(data[-3:])
+            buffer_factor = 0.15
+            suggested_budget = recent_avg * (1 + buffer_factor)
+            status = "數據不足，使用替代公式"
+            description = "基於近期平均實質支出加上15%風險緩衝。"
+            data_reliability = "低度可靠 - 替代公式"
+        else:
+            # 數據中等 (6-11 個月)，使用「趨勢預測 + 審慎緩衝」
+            if predicted_value is not None and expense_std_dev is not None:
+                prudence_factor = 0.5  # 固定審慎係數
+                risk_buffer = prudence_factor * expense_std_dev
+                suggested_budget = predicted_value + risk_buffer
+                status = "數據不足，使用原始公式"
+                description = "基於趨勢預測加上固定的審慎緩衝。"
+                data_reliability = "低度可靠 - 原始公式"
+            else:
+                status, description = "無法判讀 (資料不足)", "趨勢預測或波動數據缺失。"
+
+        # 在回推模式下，直接返回，不執行後續複雜分析
+        return (status, description, suggested_budget, None, None, None, None, 
+                data_reliability, None, None, None, None, None, None, risk_buffer)
+
+    # --- 數據充足 (>= 12 個月)，執行完整的四階段動態風險系統 ---
+    # 階段一：深度特徵提取
     accel, crossover, autocorr, residuals = compute_trend_factors(data, x)
     vol_of_vol, downside_vol, kurt = compute_volatility_factors(data, residuals)
     max_shock_magnitude, consecutive_shocks = compute_shock_factors(data, residuals)
 
-    # 階段二：指標標準化與評分（原邏輯不變）
+    # 階段二：指標標準化與評分
     trend_scores = {
         'accel': percentile_score(accel, -0.5, 0, 0.5, 1),
         'crossover': percentile_score(crossover, 0, 0, 0.5, 1),
@@ -651,14 +676,14 @@ def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly
         'consecutive_shocks': percentile_score(consecutive_shocks, 0, 2, 4, 6)
     }
 
-    # 階段三：多因子加權聚合（原邏輯不變）
+    # 階段三：多因子加權聚合
     trend_score = np.mean(list(trend_scores.values()))
     volatility_score = np.mean(list(volatility_scores.values()))
     shock_score = np.mean(list(shock_scores.values()))
     weights = (0.4, 0.35, 0.25)
     overall_score = (trend_score * weights[0]) + (volatility_score * weights[1]) + (shock_score * weights[2])
 
-    # 階段四：數據可靠性校準（原邏輯不變）
+    # 階段四：數據可靠性校準
     drf = data_reliability_factor(num_months)
     max_risk_premium = 0.25
     base_premium = 0.10
@@ -666,7 +691,7 @@ def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly
     base_uncertainty_term = base_premium * (1 - drf)
     dynamic_risk_coefficient = risk_score_term + base_uncertainty_term
 
-    # 風險狀態判讀（原邏輯不變）
+    # 風險狀態判讀
     if overall_score > 7:
         status = "高風險"
         description = "多項風險因子顯示顯著風險，建議立即審視支出模式。"
@@ -676,39 +701,22 @@ def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly
     else:
         status = "低風險"
         description = "整體風險可控，但仍需保持適度警惕。"
+    
+    # 數據可靠性評估
+    data_reliability = "高度可靠" if drf > 0.8 else "中度可靠"
 
-    # 數據可靠性評估（原邏輯不變）
-    if drf > 0.8:
-        data_reliability = "高度可靠"
-    elif drf > 0.4:
-        data_reliability = "中度可靠"
+    # 預算建議計算
+    if p95 is not None and p75 is not None and predicted_value is not None:
+        # 進階公式：風險緩衝 + 模型誤差緩衝
+        risk_buffer = p75 + (dynamic_risk_coefficient * (p95 - p75))
+        error_coefficient = 0.5 # 預設模型誤差係數
+        error_buffer = error_coefficient * historical_rmse if historical_rmse else 0
+        suggested_budget = risk_buffer + error_buffer
     else:
-        data_reliability = "低度可靠"
+        suggested_budget = None
 
-    # 修正重點：根據數據可靠性動態選擇預算計算公式
-    suggested_budget = None
-    error_buffer = None
-    risk_buffer = None
-
-    if p95 and p75 and predicted_value:  # 確保必要變數存在
-        if "高度可靠" in data_reliability or "中度可靠" in data_reliability:
-            # 高/中可靠性：使用原風險緩衝 + 模型誤差緩衝
-            risk_buffer = p75 + (dynamic_risk_coefficient * (p95 - p75))
-            error_buffer = 0.5 * historical_rmse if historical_rmse else 0
-            suggested_budget = risk_buffer + error_buffer
-        elif "低度可靠" in data_reliability:
-            # 低可靠性：切換為簡化公式（趨勢預測 + 審慎緩衝）
-            if predicted_value is not None and expense_std_dev is not None:
-                risk_buffer = dynamic_risk_coefficient * expense_std_dev
-                suggested_budget = predicted_value + risk_buffer
-            else:
-                suggested_budget = None  # 數據不足
-        else:
-            suggested_budget = None  # 其他情況
-
-    # 返回（新增 risk_buffer 和 error_buffer 以供輸出使用）
     return (status, description, suggested_budget, dynamic_risk_coefficient, trend_score, volatility_score, shock_score,
-            data_reliability, 0.5, error_buffer, 
+            data_reliability, error_coefficient, error_buffer, 
             trend_scores, volatility_scores, shock_scores, overall_score, risk_buffer)
 
 # --- 主要分析與預測函數 (升級為四階段模型 + 蒙地卡羅 + 風險預算建議 + 通膨調整) ---
