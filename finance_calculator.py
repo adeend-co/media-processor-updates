@@ -651,119 +651,125 @@ def calculate_historical_factors(data, min_months=12):
 
 def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly_expenses, p25, p75, historical_wape, historical_rmse):
     """
-    升級版風險評估函數 v2.3 - 整合個人化動態閾值、動態模型誤差係數、四階段評分、數據不足回推與統一返回結構
+    升級版風險評估函數 v2.2 - 整合個人化動態閾值、動態模型誤差係數、四階段評分與數據不足回推機制
     """
-    # --- 步驟一：初始化所有可能返回的變數，確保返回結構一致 ---
+    # --- 初始化所有可能返回的變數，確保返回數量一致 ---
     status, description, suggested_budget = None, None, None
     dynamic_risk_coefficient, trend_score, volatility_score, shock_score = None, None, None, None
     data_reliability, error_coefficient, error_buffer = None, None, None
-    trend_scores, volatility_scores, shock_scores, overall_score, risk_buffer = {}, {}, {}, None, None
-    # 新增：用於儲存原始計算值的字典
-    raw_factors = {}
+    trend_scores, volatility_scores, shock_scores, overall_score, risk_buffer = None, None, None, None, None
 
-    # --- 步驟二：關鍵數據檢查與回推 (Fallback) 邏輯 ---
+    # --- 關鍵數據檢查 ---
     if monthly_expenses is None or len(monthly_expenses) < 2:
-        return ("無法判讀 (資料不足)", "資料過少。", None, None, None, None, None, "極低可靠性", None, None, {}, {}, {}, None, None, {})
+        return ("無法判讀 (資料不足)", "資料過少，無法進行風險評估。", None, None, None, None, None, 
+                "極低可靠性", None, None, None, None, None, None, None)
 
     num_months = len(monthly_expenses)
     data = monthly_expenses['Real_Amount'].values
     x = np.arange(num_months)
 
+    # --- 數據不足時的回推 (Fallback) 邏輯 ---
     if num_months < 12:
         if num_months < 6:
-            recent_avg = np.mean(data[-3:]) if num_months > 0 else 0
+            recent_avg = np.mean(data[-3:])
             buffer_factor = 0.15
             suggested_budget = recent_avg * (1 + buffer_factor)
             risk_buffer = recent_avg * buffer_factor
-            status, description, data_reliability = "數據不足", "基於近期平均實質支出加上15%固定緩衝。", "低度可靠 - 替代公式"
+            status = "數據不足，使用替代公式"
+            description = "基於近期平均實質支出加上15%風險緩衝。"
+            data_reliability = "低度可靠 - 替代公式"
         else:
             if predicted_value is not None and expense_std_dev is not None:
                 prudence_factor = 0.5
                 risk_buffer = prudence_factor * expense_std_dev
                 suggested_budget = predicted_value + risk_buffer
-                status, description, data_reliability = "數據不足", "基於趨勢預測加上固定的審慎緩衝。", "低度可靠 - 原始公式"
+                status = "數據不足，使用原始公式"
+                description = "基於趨勢預測加上固定的審慎緩衝。"
+                data_reliability = "低度可靠 - 原始公式"
             else:
-                status, description = "無法判讀", "趨勢預測或波動數據缺失。"
-        # 確保返回統一的 16 個變數
-        return (status, description, suggested_budget, None, None, None, None, data_reliability, None, None, {}, {}, {}, None, risk_buffer, {})
+                status, description = "無法判讀 (資料不足)", "趨勢預測或波動數據缺失。"
+        return (status, description, suggested_budget, None, None, None, None, 
+                data_reliability, None, None, None, None, None, None, risk_buffer)
 
     # --- 數據充足 (>= 12 個月)，執行完整的動態風險系統 ---
-    # 步驟三：計算歷史因子分佈以建立個人化閾值
+    # 步驟一：計算歷史因子分佈以建立個人化閾值
     historical_factors = calculate_historical_factors(data)
 
-    # 步驟四：計算當前的深度特徵提取，並儲存原始值
-    raw_factors['accel'], raw_factors['crossover'], raw_factors['autocorr'], current_residuals = compute_trend_factors(data, x)
-    raw_factors['vol_of_vol'], raw_factors['downside_vol'], raw_factors['kurtosis'] = compute_volatility_factors(data, current_residuals)
-    raw_factors['max_shock_magnitude'], raw_factors['consecutive_shocks'] = compute_shock_factors(data, current_residuals)
-    
-    # 絕對值處理
-    raw_factors['autocorr'] = abs(raw_factors['autocorr'])
-    raw_factors['kurtosis'] = abs(raw_factors['kurtosis'])
+    # 步驟二：計算當前的深度特徵提取
+    current_accel, current_crossover, current_autocorr, current_residuals = compute_trend_factors(data, x)
+    current_vol_of_vol, current_downside_vol, current_kurt = compute_volatility_factors(data, current_residuals)
+    current_max_shock, current_consecutive_shocks = compute_shock_factors(data, current_residuals)
 
-    # 步驟五：指標標準化與評分 (程式碼重構，更簡潔)
-    factor_configs = {
-        'trend': {
-            'accel': {'personalize': True, 'defaults': [-0.5, 0, 0.5, 1]},
-            'crossover': {'personalize': False, 'defaults': [0, 0, 0.5, 1]},
-            'autocorr': {'personalize': False, 'defaults': [0, 0.2, 0.5, 0.8]}
-        },
-        'volatility': {
-            'vol_of_vol': {'personalize': True, 'defaults': [0, 0.5, 1, 2]},
-            'downside_vol': {'personalize': True, 'defaults': [0, 0.1, 0.2, 0.5]},
-            'kurtosis': {'personalize': False, 'defaults': [0, 1, 3, 5]}
-        },
-        'shock': {
-            'max_shock_magnitude': {'personalize': True, 'defaults': [0, 0.1, 0.2, 0.5]},
-            'consecutive_shocks': {'personalize': False, 'defaults': [0, 2, 4, 6]}
-        }
+    # 步驟三：指標標準化與評分（使用個人化動態閾值）
+    def get_thresholds(factor_name, default_thresholds):
+        if historical_factors and historical_factors.get(factor_name) and len(historical_factors[factor_name]) > 4:
+            return np.percentile(historical_factors[factor_name], [25, 50, 75, 90])
+        else:
+            return default_thresholds
+
+    trend_scores = {
+        'accel': percentile_score(current_accel, *get_thresholds('accel', [-0.5, 0, 0.5, 1])),
+        'crossover': percentile_score(current_crossover, 0, 0, 0.5, 1),
+        'autocorr': percentile_score(abs(current_autocorr), 0, 0.2, 0.5, 0.8)
     }
-    
-    score_maps = {'trend': trend_scores, 'volatility': volatility_scores, 'shock': shock_scores}
-    for category, factors in factor_configs.items():
-        for factor, config in factors.items():
-            thresholds = config['defaults']
-            if config['personalize'] and historical_factors and historical_factors.get(factor) and len(historical_factors[factor]) > 4:
-                thresholds = np.percentile(historical_factors[factor], [25, 50, 75, 90])
-            score_maps[category][factor] = percentile_score(raw_factors[factor], *thresholds)
+    volatility_scores = {
+        'vol_of_vol': percentile_score(current_vol_of_vol, *get_thresholds('vol_of_vol', [0, 0.5, 1, 2])),
+        'downside_vol': percentile_score(current_downside_vol, *get_thresholds('downside_vol', [0, 0.1, 0.2, 0.5])),
+        'kurtosis': percentile_score(abs(current_kurt), *get_thresholds('kurtosis', [0, 1, 3, 5]))
+    }
+    shock_scores = {
+        'max_shock_magnitude': percentile_score(current_max_shock, *get_thresholds('max_shock_magnitude', [0, 0.1, 0.2, 0.5])),
+        'consecutive_shocks': percentile_score(current_consecutive_shocks, 0, 2, 4, 6)
+    }
 
-    # 步驟六：多因子加權聚合
+    # 步驟四：多因子加權聚合
     trend_score = np.mean(list(trend_scores.values()))
     volatility_score = np.mean(list(volatility_scores.values()))
     shock_score = np.mean(list(shock_scores.values()))
     weights = (0.4, 0.35, 0.25)
     overall_score = (trend_score * weights[0]) + (volatility_score * weights[1]) + (shock_score * weights[2])
 
-    # 步驟七：數據可靠性校準與動態風險係數計算
+    # 步驟五：數據可靠性校準
     drf = data_reliability_factor(num_months)
-    max_risk_premium, base_premium = 0.25, 0.10
+    max_risk_premium = 0.25
+    base_premium = 0.10
     risk_score_term = (overall_score / 10) * max_risk_premium * drf
     base_uncertainty_term = base_premium * (1 - drf)
     dynamic_risk_coefficient = risk_score_term + base_uncertainty_term
 
-    # 步驟八：風險狀態判讀
+    # 步驟六：風險狀態判讀
     if overall_score > 7: status, description = "高風險", "多項風險因子顯示顯著風險，建議立即審視支出模式。"
     elif overall_score > 4: status, description = "中度風險", "風險因子處於中等水平，需持續監控財務狀況。"
     else: status, description = "低風險", "整體風險可控，但仍需保持適度警惕。"
+    
     data_reliability = "高度可靠" if drf > 0.8 else "中度可靠"
 
-    # 步驟九：預算建議計算 (整合動態模型誤差係數)
-    if p95 is not None and p75 is not None:
+    # 步驟七：預算建議計算 (整合動態模型誤差係數)
+    if p95 is not None and p75 is not None and predicted_value is not None:
         risk_buffer = p75 + (dynamic_risk_coefficient * (p95 - p75))
         
-        error_coefficient = 0.5
+        # 整合舊腳本的動態模型誤差係數邏輯
+        error_coefficient = 0.5 # 預設值
         if historical_wape is not None:
-            if historical_wape < 10: error_coefficient = 0.25
-            elif historical_wape <= 25: error_coefficient = 0.50
-            else: error_coefficient = 0.75
+            if historical_wape < 10:
+                error_coefficient = 0.25
+            elif historical_wape <= 25:
+                error_coefficient = 0.50
+            else:
+                error_coefficient = 0.75
         
-        if num_months >= 24: error_coefficient = max(0.1, error_coefficient - 0.15)
+        # 數據量充足時，給予額外獎勵，減少過度保守
+        if num_months >= 24:
+            error_coefficient = max(0.1, error_coefficient - 0.15)
         
         error_buffer = error_coefficient * historical_rmse if historical_rmse is not None else 0
         suggested_budget = risk_buffer + error_buffer
+    else:
+        suggested_budget = None
 
     return (status, description, suggested_budget, dynamic_risk_coefficient, trend_score, volatility_score, shock_score,
             data_reliability, error_coefficient, error_buffer, 
-            trend_scores, volatility_scores, shock_scores, overall_score, risk_buffer, raw_factors)
+            trend_scores, volatility_scores, shock_scores, overall_score, risk_buffer)
 
 # --- 主要分析與預測函數 (升級為四階段模型 + 蒙地卡羅 + 風險預算建議 + 通膨調整) ---
 def analyze_and_predict(file_paths_str: str, no_color: bool):
