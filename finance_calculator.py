@@ -1147,8 +1147,15 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
 
     if used_seasonal and predicted_value is not None:
         seasonal_factor = seasonal_indices.get(target_month, 1.0)
+        # 【修正】將所有相關數值「一起」還原季節性
         predicted_value *= seasonal_factor
+        if lower is not None: lower *= seasonal_factor
+        if upper is not None: upper *= seasonal_factor
         predicted_expense_str = f"{predicted_value:,.2f} (已還原季節性)"
+    
+        # 【修正】根據調整後的值，重新產生信心區間的顯示文字
+        if lower is not None and upper is not None:
+            ci_str = f" [下限：{lower:,.2f}，上限：{upper:,.2f}] (95% 信心)"
 
     expense_std_dev = None
     if monthly_expenses is not None and len(monthly_expenses) >= 2:
