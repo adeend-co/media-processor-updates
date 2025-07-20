@@ -9,13 +9,13 @@
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新：重寫結構性轉變偵測演算法，改用更穩健的宏觀對比法以準確識別模式變化。   #
+# 更新：放寬結構性轉變的偵測條件，使其更能適應真實數據的正常波動。            #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.4"  # 更新版本：重寫結構性轉變偵測演算法
+SCRIPT_VERSION = "v2.4"  # 更新版本：優化結構性轉變偵測邏輯
 SCRIPT_UPDATE_DATE = "2025-07-20"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -531,44 +531,22 @@ def calculate_anomaly_scores(data, window_size=6, k_ma=2.5, k_sigmoid=0.5):
     })
 
 
-# --- 【全新】結構性轉變偵測演算法 v2 (宏觀對比法) ---
-def detect_structural_change_point_v2(monthly_expenses, change_threshold=1.3, min_consecutive=3):
+# --- 結構性轉變偵測函數 (【已修正】) ---
+def detect_structural_change_point(anomaly_scores_df, min_consecutive=3):
     """
-    使用宏觀對比法偵測結構性轉變。
-    回傳：(轉變點索引, 轉變日期字串)
+    偵測最後一個「結構性轉變」時期的起始點。
+    【修正】：放寬判斷條件，以容忍真實數據中的正常波動。
     """
-    data = monthly_expenses['Real_Amount'].values
-    n = len(data)
-
-    # 數據量過少，無法進行有意義的對比
-    if n < 12:
-        return 0, None
-
-    # 1. 確認宏觀轉變：比較前後半段的中位數
-    half_point = n // 2
-    first_half = data[:half_point]
-    second_half = data[half_point:]
+    # 【核心修正】將 SMA == 0 的嚴苛條件，放寬為一個可容忍的門檻值
+    is_change_candidate = (anomaly_scores_df['SIQR'] > 0.05) & (anomaly_scores_df['SMA'] <= 0.05)
     
-    median_first_half = np.median(first_half)
-    median_second_half = np.median(second_half)
-
-    # 如果後半段沒有顯著高於前半段，則認為沒有結構性轉變
-    if median_second_half < median_first_half * change_threshold:
-        return 0, None
-
-    # 2. 精準定位轉變起點
-    # 從中點開始，尋找第一個連續高於舊常態的月份
-    for i in range(half_point, n - min_consecutive + 1):
-        # 檢查從 i 開始的連續三個月是否都穩定在新水平
-        is_new_level = all(data[j] > median_first_half * 1.1 for j in range(i, i + min_consecutive))
-        if is_new_level:
-            change_date = monthly_expenses['Parsed_Date'].iloc[i]
-            change_date_str = change_date.strftime('%Y年-%m月')
-            return i, change_date_str
-            
-    # 如果找不到明確的起點，則返回無轉變
-    return 0, None
-
+    last_change_point = 0
+    # 從後往前找，找到最後一個連續為True的區塊的起點
+    for i in range(len(is_change_candidate) - min_consecutive, -1, -1):
+        if is_change_candidate[i:i+min_consecutive].all():
+            last_change_point = i
+            break # 找到最後一個就停止
+    return last_change_point
 
 # --- 三層式預算建議核心函數 (【已升級】) ---
 def assess_risk_and_budget_advanced(monthly_expenses, model_error_coefficient, historical_rmse):
@@ -581,14 +559,18 @@ def assess_risk_and_budget_advanced(monthly_expenses, model_error_coefficient, h
     
     anomaly_df = calculate_anomaly_scores(data)
     
-    # --- 模式偵測 (【核心替換】) ---
-    # 使用全新的 v2 偵測演算法
-    change_point, change_date_str = detect_structural_change_point_v2(monthly_expenses)
+    # --- 模式偵測 ---
+    change_point = detect_structural_change_point(anomaly_df)
+    change_date_str = None
+    if change_point > 0:
+        change_date = monthly_expenses['Parsed_Date'].iloc[change_point]
+        change_date_str = change_date.strftime('%Y年-%m月')
+    
     num_shocks = int(anomaly_df['Is_Shock'].sum())
 
     # --- 第一層：基礎日常預算 (Base Living Budget) ---
     new_normal_df = anomaly_df.iloc[change_point:].copy()
-    # 在計算基礎預算時，應排除真實衝擊點
+    # 修正：在計算基礎預算時，應排除真實衝擊點
     clean_new_normal_data = new_normal_df[~new_normal_df['Is_Shock']]['Amount'].values
     
     if len(clean_new_normal_data) < 2:
@@ -606,13 +588,8 @@ def assess_risk_and_budget_advanced(monthly_expenses, model_error_coefficient, h
     amortized_shock_fund = 0.0
     
     if len(shock_amounts) > 0:
-        # 只考慮轉變點之後的衝擊來計算平均值，更能反映未來風險
-        recent_shocks = shock_rows[shock_rows.index >= change_point]['Amount'].values
-        if len(recent_shocks) == 0:
-            recent_shocks = shock_amounts # 如果近期無衝擊，則使用全部歷史
-        
-        avg_shock = np.mean(recent_shocks)
-        prob_shock = len(shock_amounts) / n_total # 發生頻率仍看全局
+        avg_shock = np.mean(shock_amounts)
+        prob_shock = len(shock_amounts) / n_total
         amortized_shock_fund = avg_shock * prob_shock
     
     # --- 第三層：模型誤差緩衝 (Model Error Buffer) ---
@@ -645,7 +622,7 @@ def assess_risk_and_budget_advanced(monthly_expenses, model_error_coefficient, h
     return (status, description, suggested_budget, data_reliability, components)
 
 
-# --- 風險狀態判讀與預算建議函數 (未變更) ---
+# --- 風險狀態判讀與預算建議函數 (【已改造】) ---
 def percentile_score(value, p25, p50, p75, p90):
     if value <= p25:
         return 1
@@ -1125,7 +1102,10 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             target_year = target_period_dt.year
             steps_ahead = 1
             if not any("預測將順延" in s for s in str(warnings_report).split('\n')):
-                 warnings_report += f"\n{colors.YELLOW}警告：目標月份已過期，預測將自動順延至下一個未發生月份 ({target_month_str})。{colors.RESET}"
+                 warnings_report_list = warnings_report.split('\n')
+                 warnings_report_list.append(f"{colors.YELLOW}警告：目標月份已過期，預測將自動順延至下一個未發生月份 ({target_month_str})。{colors.RESET}")
+                 warnings_report = "\n".join(warnings_report_list)
+
 
         if steps_ahead > 12:
             step_warning = f"{colors.YELLOW}警告：預測步數超過12 ({steps_ahead})，遠期預測不確定性增加，但計算繼續進行。{colors.RESET}"
@@ -1357,10 +1337,12 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         if is_advanced_model:
             change_date = trend_scores.get('change_date')
             num_shocks = trend_scores.get('num_shocks', 0)
+            print() # Add a blank line for better readability
             if change_date:
                 print(f"{colors.YELLOW}模式偵測: 偵測到您的支出模式在 {colors.BOLD}{change_date}{colors.RESET}{colors.YELLOW} 附近發生結構性轉變，後續評估將更側重於近期數據。{colors.RESET}")
             if num_shocks > 0:
                 print(f"{colors.RED}衝擊偵測: 系統識別出 {colors.BOLD}{num_shocks} 次「真實衝擊」{colors.RESET}{colors.RED} (同時偏離長期基準與近期習慣的極端開銷)，已納入攤提金準備中。{colors.RESET}")
+            print() # Add a blank line for better readability
 
         if suggested_budget is not None:
             print(f"{colors.BOLD}建議 {target_month_str} 預算: {suggested_budget:,.2f} 元{colors.RESET}")
