@@ -2,20 +2,20 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.4                 #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.3                 #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新：放寬結構性轉變的偵測條件，使其更能適應真實數據的正常波動。            #
+# 更新：引入中位數絕對偏差(MAD)取代標準差，以穩健地偵測極端財務衝擊。           #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.4"  # 更新版本：優化結構性轉變偵測邏輯
+SCRIPT_VERSION = "v2.3"  # 更新版本：使用MAD穩健偵測極端值
 SCRIPT_UPDATE_DATE = "2025-07-20"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -531,15 +531,13 @@ def calculate_anomaly_scores(data, window_size=6, k_ma=2.5, k_sigmoid=0.5):
     })
 
 
-# --- 結構性轉變偵測函數 (【已修正】) ---
+# --- 結構性轉變偵測函數 (未變更) ---
 def detect_structural_change_point(anomaly_scores_df, min_consecutive=3):
     """
     偵測最後一個「結構性轉變」時期的起始點。
-    【修正】：放寬判斷條件，以容忍真實數據中的正常波動。
+    結構性轉變：支出水平永久性提高，被IQR視為異常，但逐漸被MA視為正常。
     """
-    # 【核心修正】將 SMA == 0 的嚴苛條件，放寬為一個可容忍的門檻值
-    is_change_candidate = (anomaly_scores_df['SIQR'] > 0.05) & (anomaly_scores_df['SMA'] <= 0.05)
-    
+    is_change_candidate = (anomaly_scores_df['SIQR'] > 0) & (anomaly_scores_df['SMA'] == 0)
     last_change_point = 0
     # 從後往前找，找到最後一個連續為True的區塊的起點
     for i in range(len(is_change_candidate) - min_consecutive, -1, -1):
@@ -1102,10 +1100,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             target_year = target_period_dt.year
             steps_ahead = 1
             if not any("預測將順延" in s for s in str(warnings_report).split('\n')):
-                 warnings_report_list = warnings_report.split('\n')
-                 warnings_report_list.append(f"{colors.YELLOW}警告：目標月份已過期，預測將自動順延至下一個未發生月份 ({target_month_str})。{colors.RESET}")
-                 warnings_report = "\n".join(warnings_report_list)
-
+                 warnings_report += f"\n{colors.YELLOW}警告：目標月份已過期，預測將自動順延至下一個未發生月份 ({target_month_str})。{colors.RESET}"
 
         if steps_ahead > 12:
             step_warning = f"{colors.YELLOW}警告：預測步數超過12 ({steps_ahead})，遠期預測不確定性增加，但計算繼續進行。{colors.RESET}"
@@ -1337,12 +1332,10 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         if is_advanced_model:
             change_date = trend_scores.get('change_date')
             num_shocks = trend_scores.get('num_shocks', 0)
-            print() # Add a blank line for better readability
             if change_date:
                 print(f"{colors.YELLOW}模式偵測: 偵測到您的支出模式在 {colors.BOLD}{change_date}{colors.RESET}{colors.YELLOW} 附近發生結構性轉變，後續評估將更側重於近期數據。{colors.RESET}")
             if num_shocks > 0:
                 print(f"{colors.RED}衝擊偵測: 系統識別出 {colors.BOLD}{num_shocks} 次「真實衝擊」{colors.RESET}{colors.RED} (同時偏離長期基準與近期習慣的極端開銷)，已納入攤提金準備中。{colors.RESET}")
-            print() # Add a blank line for better readability
 
         if suggested_budget is not None:
             print(f"{colors.BOLD}建議 {target_month_str} 預算: {suggested_budget:,.2f} 元{colors.RESET}")
