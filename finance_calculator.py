@@ -2,20 +2,20 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.0                 #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.1                 #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新：新增模型診斷儀表板，並針對超過12個月的數據引入三層式預算模型與動態異常偵測。           #
+# 更新：修正了在異常分數計算中因混用套件方法導致的 'AttributeError' 錯誤。            #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.0"  # 更新版本：整合三層式預算與動態加權異常偵測
+SCRIPT_VERSION = "v2.1"  # 更新版本：修正 NumPy 陣列的屬性錯誤
 SCRIPT_UPDATE_DATE = "2025-07-20"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -506,7 +506,8 @@ def calculate_anomaly_scores(data, window_size=6, k_ma=2.5, k_sigmoid=0.5):
     # 4. 最終綜合異常分數 (Final Anomaly Score)
     numerator = (siqr * w_global) + (sma * w_local)
     denominator = w_global + w_local
-    final_score = (numerator / denominator).fillna(0)
+    # 【修正】使用 NumPy 的 nan_to_num 函數取代 Pandas 的 fillna，以處理 NumPy 陣列
+    final_score = np.nan_to_num((numerator / denominator), nan=0.0)
     
     # 5. 識別全局性衝擊 (用於攤提金計算)
     is_shock = (siqr > 0.1) & (sma > 0.1)
@@ -1065,8 +1066,8 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         if steps_ahead <= 0:
             warnings_report += f"\n{colors.YELLOW}警告：目標月份 {target_month_str} 已過期或已在資料中，預測將順延至下一個未發生月份。{colors.RESET}"
             # 修正 steps_ahead 的計算邏輯
-            target_period = last_period.to_timestamp() + pd.DateOffset(months=1)
-            target_month_str = target_period.strftime('%Y-%m')
+            target_period_dt = last_period.to_timestamp() + pd.DateOffset(months=1)
+            target_month_str = target_period_dt.strftime('%Y-%m')
             steps_ahead = 1
         if steps_ahead > 12:
             step_warning = f"{colors.YELLOW}警告：預測步數超過12 ({steps_ahead})，遠期預測不確定性增加，但計算繼續進行。{colors.RESET}"
@@ -1075,6 +1076,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     ci_str = ""
     method_used = " (基於直接-遞歸混合)"
     upper = None
+    lower = None
     predicted_value = None
     historical_mae = None
     historical_rmse = None
