@@ -2,20 +2,20 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.4                 #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.5                 #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新：重構結構性轉變偵測邏輯，使其能更穩健地識別持續性的支出水平變化。         #
+# 更新：重構結構性轉變偵測邏輯，採用基於歷史中位數與IQR的比較，以更準確地識別支出水平的持續性變化。#
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.4"  # 更新版本：重構結構性轉變偵測邏輯
+SCRIPT_VERSION = "v2.5"  # 更新版本：重構結構性轉變偵測邏輯
 SCRIPT_UPDATE_DATE = "2025-07-20"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -532,25 +532,45 @@ def calculate_anomaly_scores(data, window_size=6, k_ma=2.5, k_sigmoid=0.5):
 
 
 # --- 結構性轉變偵測函數 (【已重構】) ---
-def detect_structural_change_point(anomaly_scores_df, min_consecutive=3):
+def detect_structural_change_point(monthly_expenses_df, history_window=12, recent_window=6, c_factor=1.0):
     """
-    【重構】偵測最後一個「結構性轉變」時期的起始點。
-    新的邏輯：尋找最後一個連續出現的「全局異常」區塊。
+    【重構】偵測最後一個「結構性轉變」時期。
+    邏輯：比較近期中位數是否顯著高於歷史中位數+歷史波動。
     """
-    # 步驟1：只關注全局異常的點 (SIQR > 0)
-    is_globally_unusual = anomaly_scores_df['SIQR'] > 0.01
+    data = monthly_expenses_df['Real_Amount'].values
+    n = len(data)
     
+    # 需要足夠的數據來進行比較
+    if n < history_window + recent_window:
+        return 0
+        
     last_change_point = 0
-    
-    # 步驟2：從後往前，尋找第一個連續 min_consecutive 個月為 True 的區塊
-    for i in range(len(is_globally_unusual) - min_consecutive, -1, -1):
-        # 如果從 i 開始的 min_consecutive 個點都是全局異常
-        if is_globally_unusual[i : i + min_consecutive].all():
-            # 我們就將這個區塊的起點 i 視為最後的轉變點
+    # 從後往前掃描，尋找最後一個轉變點
+    # 迭代的起點確保歷史數據至少有 history_window 那麼長
+    for i in range(n - recent_window, history_window -1, -1):
+        history_data = data[:i]
+        recent_data = data[i : i + recent_window]
+        
+        # 計算歷史數據的穩健統計量
+        median_history = np.median(history_data)
+        q1_history, q3_history = np.percentile(history_data, [25, 75])
+        iqr_history = q3_history - q1_history
+        
+        # 如果歷史波動為零，給一個很小的基礎值避免判斷失效
+        if iqr_history == 0:
+            iqr_history = median_history * 0.05 
+        
+        # 計算近期數據的中位數
+        median_recent = np.median(recent_data)
+        
+        # 核心判斷條件：近期中位數是否已突破歷史常態區間
+        threshold = median_history + (c_factor * iqr_history)
+        if median_recent > threshold:
             last_change_point = i
-            break  # 找到最後一個就停止
+            break # 從後往前找，第一個找到的就是最後一個
             
     return last_change_point
+
 
 # --- 三層式預算建議核心函數 (【已升級】) ---
 def assess_risk_and_budget_advanced(monthly_expenses, model_error_coefficient, historical_rmse):
@@ -564,7 +584,7 @@ def assess_risk_and_budget_advanced(monthly_expenses, model_error_coefficient, h
     anomaly_df = calculate_anomaly_scores(data)
     
     # --- 模式偵測 (使用重構後的函數) ---
-    change_point = detect_structural_change_point(anomaly_df)
+    change_point = detect_structural_change_point(monthly_expenses)
     change_date_str = None
     # 只有當偵測到的轉變點不是從頭開始時，才視為一次「轉變」
     if change_point > 0:
