@@ -2,20 +2,20 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.3                 #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.4                 #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新：引入中位數絕對偏差(MAD)取代標準差，以穩健地偵測極端財務衝擊。           #
+# 更新：重寫結構性轉變偵測演算法，改用更穩健的宏觀對比法以準確識別模式變化。   #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.3"  # 更新版本：使用MAD穩健偵測極端值
+SCRIPT_VERSION = "v2.4"  # 更新版本：重寫結構性轉變偵測演算法
 SCRIPT_UPDATE_DATE = "2025-07-20"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -531,20 +531,44 @@ def calculate_anomaly_scores(data, window_size=6, k_ma=2.5, k_sigmoid=0.5):
     })
 
 
-# --- 結構性轉變偵測函數 (未變更) ---
-def detect_structural_change_point(anomaly_scores_df, min_consecutive=3):
+# --- 【全新】結構性轉變偵測演算法 v2 (宏觀對比法) ---
+def detect_structural_change_point_v2(monthly_expenses, change_threshold=1.3, min_consecutive=3):
     """
-    偵測最後一個「結構性轉變」時期的起始點。
-    結構性轉變：支出水平永久性提高，被IQR視為異常，但逐漸被MA視為正常。
+    使用宏觀對比法偵測結構性轉變。
+    回傳：(轉變點索引, 轉變日期字串)
     """
-    is_change_candidate = (anomaly_scores_df['SIQR'] > 0) & (anomaly_scores_df['SMA'] == 0)
-    last_change_point = 0
-    # 從後往前找，找到最後一個連續為True的區塊的起點
-    for i in range(len(is_change_candidate) - min_consecutive, -1, -1):
-        if is_change_candidate[i:i+min_consecutive].all():
-            last_change_point = i
-            break # 找到最後一個就停止
-    return last_change_point
+    data = monthly_expenses['Real_Amount'].values
+    n = len(data)
+
+    # 數據量過少，無法進行有意義的對比
+    if n < 12:
+        return 0, None
+
+    # 1. 確認宏觀轉變：比較前後半段的中位數
+    half_point = n // 2
+    first_half = data[:half_point]
+    second_half = data[half_point:]
+    
+    median_first_half = np.median(first_half)
+    median_second_half = np.median(second_half)
+
+    # 如果後半段沒有顯著高於前半段，則認為沒有結構性轉變
+    if median_second_half < median_first_half * change_threshold:
+        return 0, None
+
+    # 2. 精準定位轉變起點
+    # 從中點開始，尋找第一個連續高於舊常態的月份
+    for i in range(half_point, n - min_consecutive + 1):
+        # 檢查從 i 開始的連續三個月是否都穩定在新水平
+        is_new_level = all(data[j] > median_first_half * 1.1 for j in range(i, i + min_consecutive))
+        if is_new_level:
+            change_date = monthly_expenses['Parsed_Date'].iloc[i]
+            change_date_str = change_date.strftime('%Y年-%m月')
+            return i, change_date_str
+            
+    # 如果找不到明確的起點，則返回無轉變
+    return 0, None
+
 
 # --- 三層式預算建議核心函數 (【已升級】) ---
 def assess_risk_and_budget_advanced(monthly_expenses, model_error_coefficient, historical_rmse):
@@ -557,18 +581,14 @@ def assess_risk_and_budget_advanced(monthly_expenses, model_error_coefficient, h
     
     anomaly_df = calculate_anomaly_scores(data)
     
-    # --- 模式偵測 ---
-    change_point = detect_structural_change_point(anomaly_df)
-    change_date_str = None
-    if change_point > 0:
-        change_date = monthly_expenses['Parsed_Date'].iloc[change_point]
-        change_date_str = change_date.strftime('%Y年-%m月')
-    
+    # --- 模式偵測 (【核心替換】) ---
+    # 使用全新的 v2 偵測演算法
+    change_point, change_date_str = detect_structural_change_point_v2(monthly_expenses)
     num_shocks = int(anomaly_df['Is_Shock'].sum())
 
     # --- 第一層：基礎日常預算 (Base Living Budget) ---
     new_normal_df = anomaly_df.iloc[change_point:].copy()
-    # 修正：在計算基礎預算時，應排除真實衝擊點
+    # 在計算基礎預算時，應排除真實衝擊點
     clean_new_normal_data = new_normal_df[~new_normal_df['Is_Shock']]['Amount'].values
     
     if len(clean_new_normal_data) < 2:
@@ -586,8 +606,13 @@ def assess_risk_and_budget_advanced(monthly_expenses, model_error_coefficient, h
     amortized_shock_fund = 0.0
     
     if len(shock_amounts) > 0:
-        avg_shock = np.mean(shock_amounts)
-        prob_shock = len(shock_amounts) / n_total
+        # 只考慮轉變點之後的衝擊來計算平均值，更能反映未來風險
+        recent_shocks = shock_rows[shock_rows.index >= change_point]['Amount'].values
+        if len(recent_shocks) == 0:
+            recent_shocks = shock_amounts # 如果近期無衝擊，則使用全部歷史
+        
+        avg_shock = np.mean(recent_shocks)
+        prob_shock = len(shock_amounts) / n_total # 發生頻率仍看全局
         amortized_shock_fund = avg_shock * prob_shock
     
     # --- 第三層：模型誤差緩衝 (Model Error Buffer) ---
@@ -620,7 +645,7 @@ def assess_risk_and_budget_advanced(monthly_expenses, model_error_coefficient, h
     return (status, description, suggested_budget, data_reliability, components)
 
 
-# --- 風險狀態判讀與預算建議函數 (【已改造】) ---
+# --- 風險狀態判讀與預算建議函數 (未變更) ---
 def percentile_score(value, p25, p50, p75, p90):
     if value <= p25:
         return 1
