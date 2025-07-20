@@ -2,20 +2,20 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.3                 #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.4                 #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新：引入中位數絕對偏差(MAD)取代標準差，以穩健地偵測極端財務衝擊。           #
+# 更新：重構結構性轉變偵測邏輯，使其能更穩健地識別持續性的支出水平變化。         #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.3"  # 更新版本：使用MAD穩健偵測極端值
+SCRIPT_VERSION = "v2.4"  # 更新版本：重構結構性轉變偵測邏輯
 SCRIPT_UPDATE_DATE = "2025-07-20"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -523,7 +523,7 @@ def calculate_anomaly_scores(data, window_size=6, k_ma=2.5, k_sigmoid=0.5):
     final_score = np.nan_to_num((numerator / denominator), nan=0.0)
     
     # 5. 識別全局性衝擊 (用於攤提金計算) - 未變更
-    is_shock = (siqr > 0.1) & (sma > 0.1)
+    is_shock = (siqr > 0.01) & (sma > 0.01)
 
     return pd.DataFrame({
         'Amount': data, 'SIQR': siqr, 'SMA': sma, 'W_Local': w_local,
@@ -531,19 +531,25 @@ def calculate_anomaly_scores(data, window_size=6, k_ma=2.5, k_sigmoid=0.5):
     })
 
 
-# --- 結構性轉變偵測函數 (未變更) ---
+# --- 結構性轉變偵測函數 (【已重構】) ---
 def detect_structural_change_point(anomaly_scores_df, min_consecutive=3):
     """
-    偵測最後一個「結構性轉變」時期的起始點。
-    結構性轉變：支出水平永久性提高，被IQR視為異常，但逐漸被MA視為正常。
+    【重構】偵測最後一個「結構性轉變」時期的起始點。
+    新的邏輯：尋找最後一個連續出現的「全局異常」區塊。
     """
-    is_change_candidate = (anomaly_scores_df['SIQR'] > 0) & (anomaly_scores_df['SMA'] == 0)
+    # 步驟1：只關注全局異常的點 (SIQR > 0)
+    is_globally_unusual = anomaly_scores_df['SIQR'] > 0.01
+    
     last_change_point = 0
-    # 從後往前找，找到最後一個連續為True的區塊的起點
-    for i in range(len(is_change_candidate) - min_consecutive, -1, -1):
-        if is_change_candidate[i:i+min_consecutive].all():
+    
+    # 步驟2：從後往前，尋找第一個連續 min_consecutive 個月為 True 的區塊
+    for i in range(len(is_globally_unusual) - min_consecutive, -1, -1):
+        # 如果從 i 開始的 min_consecutive 個點都是全局異常
+        if is_globally_unusual[i : i + min_consecutive].all():
+            # 我們就將這個區塊的起點 i 視為最後的轉變點
             last_change_point = i
-            break # 找到最後一個就停止
+            break  # 找到最後一個就停止
+            
     return last_change_point
 
 # --- 三層式預算建議核心函數 (【已升級】) ---
@@ -557,9 +563,10 @@ def assess_risk_and_budget_advanced(monthly_expenses, model_error_coefficient, h
     
     anomaly_df = calculate_anomaly_scores(data)
     
-    # --- 模式偵測 ---
+    # --- 模式偵測 (使用重構後的函數) ---
     change_point = detect_structural_change_point(anomaly_df)
     change_date_str = None
+    # 只有當偵測到的轉變點不是從頭開始時，才視為一次「轉變」
     if change_point > 0:
         change_date = monthly_expenses['Parsed_Date'].iloc[change_point]
         change_date_str = change_date.strftime('%Y年-%m月')
@@ -568,7 +575,7 @@ def assess_risk_and_budget_advanced(monthly_expenses, model_error_coefficient, h
 
     # --- 第一層：基礎日常預算 (Base Living Budget) ---
     new_normal_df = anomaly_df.iloc[change_point:].copy()
-    # 修正：在計算基礎預算時，應排除真實衝擊點
+    # 在計算基礎預算時，應排除真實衝擊點
     clean_new_normal_data = new_normal_df[~new_normal_df['Is_Shock']]['Amount'].values
     
     if len(clean_new_normal_data) < 2:
@@ -620,7 +627,7 @@ def assess_risk_and_budget_advanced(monthly_expenses, model_error_coefficient, h
     return (status, description, suggested_budget, data_reliability, components)
 
 
-# --- 風險狀態判讀與預算建議函數 (【已改造】) ---
+# --- 風險狀態判讀與預算建議函數 (未變更) ---
 def percentile_score(value, p25, p50, p75, p90):
     if value <= p25:
         return 1
