@@ -2,20 +2,20 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.2                 #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.3                 #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新：新增模式偵測註解，可自動在報告中標示結構性轉變與真實財務衝擊。          #
+# 更新：引入中位數絕對偏差(MAD)取代標準差，以穩健地偵測極端財務衝擊。           #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.2"  # 更新版本：新增自動化模式偵測註解
+SCRIPT_VERSION = "v2.3"  # 更新版本：使用MAD穩健偵測極端值
 SCRIPT_UPDATE_DATE = "2025-07-20"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -49,7 +49,7 @@ import pandas as pd
 import argparse
 import numpy as np
 from scipy.stats import linregress, t
-from scipy.stats import skew, kurtosis
+from scipy.stats import skew, kurtosis, median_abs_deviation
 
 # --- 顏色處理類別 ---
 class Colors:
@@ -380,7 +380,7 @@ def process_finance_data_multiple(file_paths, colors):
     year_range = set()
     year_cpi_used = {}
     
-    if monthly_expenses is not None:
+    if monthly_expenses is not None and not monthly_expenses.empty:
         monthly_expenses['Year'] = monthly_expenses['Parsed_Date'].dt.year
         year_range = set(monthly_expenses['Year'])
         if year_range:
@@ -469,10 +469,22 @@ def monte_carlo_dashboard(monthly_expense_data, num_simulations=10000):
 
     return p25, p75, p95
 
-# --- 【新增】動態加權混合演算法核心函數 ---
+# --- 【新增】穩健的移動標準差計算函數 (基於MAD) ---
+def robust_moving_std(series, window):
+    """
+    計算對異常值不敏感的移動標準差。
+    使用中位數絕對偏差 (MAD) 並將其縮放，使其與標準差具有可比性。
+    """
+    # 0.6745 是正態分佈中 Q3 的值，1/0.6745 ≈ 1.4826
+    mad_series = series.rolling(window).apply(median_abs_deviation, raw=True)
+    robust_std = mad_series / 0.6745
+    return robust_std
+
+# --- 動態加權混合演算法核心函數 (【已升級】) ---
 def calculate_anomaly_scores(data, window_size=6, k_ma=2.5, k_sigmoid=0.5):
     """
     根據動態加權混合演算法計算異常分數。
+    【升級】：使用穩健的移動標準差 (基於MAD) 來避免被極端值影響。
     """
     n_total = len(data)
     if n_total < window_size:
@@ -482,34 +494,35 @@ def calculate_anomaly_scores(data, window_size=6, k_ma=2.5, k_sigmoid=0.5):
             'Is_Shock': np.zeros(n_total, dtype=bool)
         })
 
-    # 1. 全局衝擊分數 (IQR Score, SIQR)
+    # 1. 全局衝擊分數 (IQR Score, SIQR) - 未變更
     q1, q3 = np.percentile(data, [25, 75])
     iqr = q3 - q1
     upper_bound_iqr = q3 + 1.5 * iqr
     siqr_denominator = upper_bound_iqr if upper_bound_iqr > 0 else 1
     siqr = np.maximum(0, (data - upper_bound_iqr) / siqr_denominator)
 
-    # 2. 局部行為分數 (Moving Average Score, SMA)
+    # 2. 局部行為分數 (Moving Average Score, SMA) - 【核心升級】
     series = pd.Series(data)
     ma = series.rolling(window=window_size).mean()
-    std_dev = series.rolling(window=window_size).std()
-    channel_top = ma + (k_ma * std_dev)
+    # 【替換】使用新的穩健波動性計算，取代原本的 .std()
+    robust_std = robust_moving_std(series, window=window_size)
+    
+    channel_top = ma + (k_ma * robust_std)
     sma_denominator = channel_top.where(channel_top > 0, 1)
     sma = np.maximum(0, (series - channel_top) / sma_denominator).fillna(0).values
 
-    # 3. 動態權重計算 (Local Weight, W_Local)
+    # 3. 動態權重計算 (Local Weight, W_Local) - 未變更
     n_series = np.arange(1, n_total + 1)
     w_local = 1 / (1 + np.exp(-k_sigmoid * (n_series - window_size)))
     w_local[:window_size] = 0.0
     w_global = 1.0
 
-    # 4. 最終綜合異常分數 (Final Anomaly Score)
+    # 4. 最終綜合異常分數 (Final Anomaly Score) - 未變更
     numerator = (siqr * w_global) + (sma * w_local)
     denominator = w_global + w_local
-    # 【修正】使用 NumPy 的 nan_to_num 函數取代 Pandas 的 fillna，以處理 NumPy 陣列
     final_score = np.nan_to_num((numerator / denominator), nan=0.0)
     
-    # 5. 識別全局性衝擊 (用於攤提金計算)
+    # 5. 識別全局性衝擊 (用於攤提金計算) - 未變更
     is_shock = (siqr > 0.1) & (sma > 0.1)
 
     return pd.DataFrame({
@@ -517,7 +530,8 @@ def calculate_anomaly_scores(data, window_size=6, k_ma=2.5, k_sigmoid=0.5):
         'Final_Score': final_score, 'Is_Shock': is_shock
     })
 
-# --- 【新增】結構性轉變偵測函數 ---
+
+# --- 結構性轉變偵測函數 (未變更) ---
 def detect_structural_change_point(anomaly_scores_df, min_consecutive=3):
     """
     偵測最後一個「結構性轉變」時期的起始點。
@@ -532,7 +546,7 @@ def detect_structural_change_point(anomaly_scores_df, min_consecutive=3):
             break # 找到最後一個就停止
     return last_change_point
 
-# --- 【新增 & 升級】三層式預算建議核心函數 ---
+# --- 三層式預算建議核心函數 (【已升級】) ---
 def assess_risk_and_budget_advanced(monthly_expenses, model_error_coefficient, historical_rmse):
     """
     針對超過12個月數據的進階三層式預算計算模型。
@@ -554,7 +568,8 @@ def assess_risk_and_budget_advanced(monthly_expenses, model_error_coefficient, h
 
     # --- 第一層：基礎日常預算 (Base Living Budget) ---
     new_normal_df = anomaly_df.iloc[change_point:].copy()
-    clean_new_normal_data = new_normal_df[new_normal_df['SMA'] == 0]['Amount'].values
+    # 修正：在計算基礎預算時，應排除真實衝擊點
+    clean_new_normal_data = new_normal_df[~new_normal_df['Is_Shock']]['Amount'].values
     
     if len(clean_new_normal_data) < 2:
         clean_new_normal_data = new_normal_df['Amount'].values
@@ -1331,7 +1346,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 print(f"{colors.YELLOW}      - 巨額衝擊攤提金: {trend_scores.get('amortized', 0):,.2f}{colors.RESET}")
                 print(f"{colors.RED}      - 模型誤差緩衝: {trend_scores.get('error', 0):,.2f}{colors.RESET}")
                 if error_coefficient is not None: 
-                    print(f"{colors.BOLD}模型誤差係數: {error_coefficient:.2f}{colors.RESET}")
+                    print(f"\n{colors.BOLD}模型誤差係數: {error_coefficient:.2f}{colors.RESET}")
 
             # 原始模型的報告邏輯
             else:
