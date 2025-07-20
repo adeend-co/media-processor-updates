@@ -2,20 +2,20 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.1                 #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.2                 #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新：修正了在異常分數計算中因混用套件方法導致的 'AttributeError' 錯誤。            #
+# 更新：新增模式偵測註解，可自動在報告中標示結構性轉變與真實財務衝擊。          #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.1"  # 更新版本：修正 NumPy 陣列的屬性錯誤
+SCRIPT_VERSION = "v2.2"  # 更新版本：新增自動化模式偵測註解
 SCRIPT_UPDATE_DATE = "2025-07-20"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -525,23 +525,34 @@ def detect_structural_change_point(anomaly_scores_df, min_consecutive=3):
     """
     is_change_candidate = (anomaly_scores_df['SIQR'] > 0) & (anomaly_scores_df['SMA'] == 0)
     last_change_point = 0
-    for i in range(len(is_change_candidate) - min_consecutive + 1):
+    # 從後往前找，找到最後一個連續為True的區塊的起點
+    for i in range(len(is_change_candidate) - min_consecutive, -1, -1):
         if is_change_candidate[i:i+min_consecutive].all():
             last_change_point = i
+            break # 找到最後一個就停止
     return last_change_point
 
-# --- 【新增】三層式預算建議核心函數 ---
+# --- 【新增 & 升級】三層式預算建議核心函數 ---
 def assess_risk_and_budget_advanced(monthly_expenses, model_error_coefficient, historical_rmse):
     """
     針對超過12個月數據的進階三層式預算計算模型。
+    現在會返回包含模式偵測結果的字典。
     """
     data = monthly_expenses['Real_Amount'].values
     n_total = len(data)
     
     anomaly_df = calculate_anomaly_scores(data)
     
-    # --- 第一層：基礎日常預算 (Base Living Budget) ---
+    # --- 模式偵測 ---
     change_point = detect_structural_change_point(anomaly_df)
+    change_date_str = None
+    if change_point > 0:
+        change_date = monthly_expenses['Parsed_Date'].iloc[change_point]
+        change_date_str = change_date.strftime('%Y年-%m月')
+    
+    num_shocks = int(anomaly_df['Is_Shock'].sum())
+
+    # --- 第一層：基礎日常預算 (Base Living Budget) ---
     new_normal_df = anomaly_df.iloc[change_point:].copy()
     clean_new_normal_data = new_normal_df[new_normal_df['SMA'] == 0]['Amount'].values
     
@@ -580,10 +591,18 @@ def assess_risk_and_budget_advanced(monthly_expenses, model_error_coefficient, h
     status = "進階預算模式 (三層式)"
     description = f"偵測到數據模式複雜，已啟用三層式預算模型以提高準確性。"
     data_reliability = "高度可靠 (進階模型)"
+
+    # --- 打包所有結果 ---
+    components = {
+        'is_advanced': True,
+        'base': base_budget_p75,
+        'amortized': amortized_shock_fund,
+        'error': model_error_buffer,
+        'change_date': change_date_str,
+        'num_shocks': num_shocks
+    }
     
-    return (status, description, suggested_budget, 
-            base_budget_p75, amortized_shock_fund, model_error_buffer, 
-            data_reliability)
+    return (status, description, suggested_budget, data_reliability, components)
 
 
 # --- 風險狀態判讀與預算建議函數 (【已改造】) ---
@@ -723,7 +742,7 @@ def calculate_dynamic_error_coefficient(calibration_results, acf_results, quanti
     根據三大診斷維度，動態計算模型誤差係數。
     """
     calibration_errors = [abs(res['observed_freq'] - res['quantile']) for res in calibration_results.values()]
-    calibration_penalty = np.mean(calibration_errors) / 100.0
+    calibration_penalty = np.mean(calibration_errors) / 100.0 if calibration_errors else 0.0
     autocorrelation_penalty = abs(acf_results.get(1, {}).get('acf', 0))
     uncertainty_factor = quantile_spread
     base_coefficient = 0.25
@@ -751,23 +770,16 @@ def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly
         if calibration_results and acf_results and quantile_spread is not None:
             error_coefficient = calculate_dynamic_error_coefficient(calibration_results, acf_results, quantile_spread)
 
-        (status, description, suggested_budget, 
-         base_budget, amortized_fund, error_buffer_new, 
-         data_reliability) = assess_risk_and_budget_advanced(monthly_expenses, error_coefficient, historical_rmse)
+        status, description, suggested_budget, data_reliability, components = \
+            assess_risk_and_budget_advanced(monthly_expenses, error_coefficient, historical_rmse)
         
-        # 將三層式預算的細項打包，以便在報告中顯示
-        new_budget_components = {
-            'is_advanced': True,
-            'base': base_budget, 
-            'amortized': amortized_fund, 
-            'error': error_buffer_new
-        }
-        
+        error_buffer = components.get('error')
+
         # 為了保持與主函數的兼容性，將結果打包成原有的16元組格式
         return (status, description, suggested_budget,
                 None, None, None, None, # dynamic_risk_coefficient, trend_score, volatility_score, shock_score
-                data_reliability, error_coefficient, error_buffer_new, 
-                new_budget_components, # trend_scores slot is used for breakdown
+                data_reliability, error_coefficient, error_buffer, 
+                components, # trend_scores slot is used for breakdown dict
                 None, None, None, None) # volatility_scores, shock_scores, overall_score, risk_buffer
 
     # --- 以下為 num_months <= 12 的原始邏輯 ---
@@ -997,22 +1009,24 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
 
     master_df, monthly_expenses, warnings_report = process_finance_data_multiple(file_paths, colors)
 
-    if master_df is None and monthly_expenses is None:
-        print(f"\n{colors.RED}資料處理失敗：{warnings_report}{colors.RESET}\n")
-        return
+    if monthly_expenses is None:
+        if master_df is None:
+            print(f"\n{colors.RED}資料處理失敗：{warnings_report}{colors.RESET}\n")
+            return
+        else: # Handle case where only income data might exist
+             monthly_expenses = pd.DataFrame(columns=['Parsed_Date', 'Amount', 'Real_Amount'])
+
     if warnings_report:
         print(f"\n{colors.YELLOW}--- 資料品質摘要 ---{colors.RESET}")
         print(warnings_report)
         print(f"{colors.YELLOW}--------------------{colors.RESET}")
 
-    num_unique_months = 0
-    if monthly_expenses is not None:
-        num_unique_months = monthly_expenses['Parsed_Date'].dt.to_period('M').nunique()
+    num_unique_months = monthly_expenses['Parsed_Date'].dt.to_period('M').nunique() if not monthly_expenses.empty else 0
 
     used_seasonal = False
     seasonal_note = "未使用季節性分解（資料月份不足 24 個月）。"
     analysis_data = None
-    if monthly_expenses is not None:
+    if not monthly_expenses.empty:
         if num_unique_months >= 24:
             deseasonalized, seasonal_indices = seasonal_decomposition(monthly_expenses)
             analysis_data = deseasonalized['Deseasonalized'].values
@@ -1025,7 +1039,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     total_expense = 0
     total_real_expense = 0
     
-    is_wide_format_expense_only = (master_df is None and monthly_expenses is not None)
+    is_wide_format_expense_only = (master_df is None and not monthly_expenses.empty)
     
     if master_df is not None:
         master_df['Amount'] = pd.to_numeric(master_df['Amount'], errors='coerce')
@@ -1036,10 +1050,10 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         total_income = income_df['Amount'].sum()
         total_expense = expense_df['Amount'].sum()
         
-        if monthly_expenses is not None:
+        if not monthly_expenses.empty:
             total_real_expense = monthly_expenses['Real_Amount'].sum()
             
-    elif monthly_expenses is not None:
+    elif not monthly_expenses.empty:
         total_expense = monthly_expenses['Amount'].sum()
         total_real_expense = monthly_expenses['Real_Amount'].sum()
 
@@ -1058,17 +1072,21 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
 
     steps_ahead = 1
     step_warning = ""
-    if monthly_expenses is not None and not monthly_expenses.empty:
+    if not monthly_expenses.empty:
         last_date = monthly_expenses['Parsed_Date'].max()
         last_period = last_date.to_period('M')
         target_period = pd.Period(target_month_str, freq='M')
         steps_ahead = (target_period - last_period).n
         if steps_ahead <= 0:
-            warnings_report += f"\n{colors.YELLOW}警告：目標月份 {target_month_str} 已過期或已在資料中，預測將順延至下一個未發生月份。{colors.RESET}"
             # 修正 steps_ahead 的計算邏輯
             target_period_dt = last_period.to_timestamp() + pd.DateOffset(months=1)
             target_month_str = target_period_dt.strftime('%Y-%m')
+            target_month = target_period_dt.month
+            target_year = target_period_dt.year
             steps_ahead = 1
+            if not any("預測將順延" in s for s in str(warnings_report).split('\n')):
+                 warnings_report += f"\n{colors.YELLOW}警告：目標月份已過期，預測將自動順延至下一個未發生月份 ({target_month_str})。{colors.RESET}"
+
         if steps_ahead > 12:
             step_warning = f"{colors.YELLOW}警告：預測步數超過12 ({steps_ahead})，遠期預測不確定性增加，但計算繼續進行。{colors.RESET}"
 
@@ -1170,7 +1188,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                     lower = max(0, predicted_value - t_val * se)
                     upper = predicted_value + t_val * se
             
-            ci_str = f" [下限：{lower:,.2f}，上限：{upper:,.2f}] (95% 信心)"
+            ci_str = f" [下限：{lower:,.2f}，上限：{upper:,.2f}] (95% 信心)" if lower is not None and upper is not None else ""
 
             # 統一回測指標計算
             historical_mae = np.mean(np.abs(residuals))
@@ -1201,7 +1219,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     expense_std_dev = None
     volatility_report = ""
     color = colors.WHITE
-    if monthly_expenses is not None and len(monthly_expenses) >= 2:
+    if not monthly_expenses.empty and len(monthly_expenses) >= 2:
         expense_values = monthly_expenses['Real_Amount']
         expense_std_dev = expense_values.std()
         expense_mean = expense_values.mean()
@@ -1215,7 +1233,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
 
     p25, p75, p95 = None, None, None
     mc_note = "未使用優化蒙地卡羅模擬（資料月份不足 24 個月，使用標準版）。"
-    if monthly_expenses is not None and len(monthly_expenses) >= 2:
+    if not monthly_expenses.empty and len(monthly_expenses) >= 2:
         if num_unique_months >= 24:
             p25, p75, p95 = optimized_monte_carlo(monthly_expenses, predicted_value)
             mc_note = "已使用優化蒙地卡羅模擬（自舉法，資料月份足夠）。"
@@ -1242,7 +1260,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     if not is_wide_format_expense_only:
         print(f"{colors.BOLD}總收入: {colors.GREEN}{total_income:,.2f}{colors.RESET}")
     print(f"{colors.BOLD}總支出 (名目): {colors.RED}{total_expense:,.2f}{colors.RESET}")
-    if monthly_expenses is not None and len(monthly_expenses) > 0:
+    if not monthly_expenses.empty:
         print(f"{colors.BOLD}總支出 (實質，經通膨調整): {colors.RED}{total_real_expense:,.2f}{colors.RESET}")
     if expense_std_dev is not None:
         print(f"{colors.BOLD}歷史月均支出波動 (基於實質金額): {color}{expense_std_dev:,.2f}{volatility_report}{colors.RESET}")
@@ -1285,22 +1303,33 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         print(f"{colors.WHITE}    └ 當單月支出超過此金額，代表發生僅靠月度預算無法應對的重大財務衝擊，應考慮「動用」您另外儲備的緊急預備金。{colors.RESET}")
         print(f"{colors.GREEN}--------------------------------------------------{colors.RESET}")
 
-    # --- 【修改】根據不同預算模型，顯示對應的報告 ---
+    # --- 【升級】根據不同預算模型與模式偵測，顯示對應的報告 ---
     if risk_status and "無法判讀" not in risk_status:
         print(f"\n{colors.CYAN}{colors.BOLD}>>> 月份保守預算建議{colors.RESET}")
         print(f"{colors.BOLD}風險狀態: {risk_status}{colors.RESET}")
         print(f"{colors.WHITE}{risk_description}{colors.RESET}")
         if data_reliability: print(f"{colors.BOLD}數據可靠性: {data_reliability}{colors.RESET}")
 
+        # 檢查是否使用了進階三層式模型
+        is_advanced_model = isinstance(trend_scores, dict) and trend_scores.get('is_advanced')
+        
+        # --- 【新增】自動化註解 ---
+        if is_advanced_model:
+            change_date = trend_scores.get('change_date')
+            num_shocks = trend_scores.get('num_shocks', 0)
+            if change_date:
+                print(f"{colors.YELLOW}模式偵測: 偵測到您的支出模式在 {colors.BOLD}{change_date}{colors.RESET}{colors.YELLOW} 附近發生結構性轉變，後續評估將更側重於近期數據。{colors.RESET}")
+            if num_shocks > 0:
+                print(f"{colors.RED}衝擊偵測: 系統識別出 {colors.BOLD}{num_shocks} 次「真實衝擊」{colors.RESET}{colors.RED} (同時偏離長期基準與近期習慣的極端開銷)，已納入攤提金準備中。{colors.RESET}")
+
         if suggested_budget is not None:
             print(f"{colors.BOLD}建議 {target_month_str} 預算: {suggested_budget:,.2f} 元{colors.RESET}")
             
-            # 檢查是否使用了進階三層式模型
-            if isinstance(trend_scores, dict) and trend_scores.get('is_advanced'):
+            if is_advanced_model:
                 print(f"{colors.WHITE}    └ 計算依據 (三層式模型):{colors.RESET}")
-                print(f"{colors.WHITE}      - 基礎日常預算 (P75): {trend_scores.get('base', 0):,.2f}{colors.RESET}")
-                print(f"{colors.WHITE}      - 巨額衝擊攤提金: {trend_scores.get('amortized', 0):,.2f}{colors.RESET}")
-                print(f"{colors.WHITE}      - 模型誤差緩衝: {trend_scores.get('error', 0):,.2f}{colors.RESET}")
+                print(f"{colors.GREEN}      - 基礎日常預算 (P75): {trend_scores.get('base', 0):,.2f}{colors.RESET}")
+                print(f"{colors.YELLOW}      - 巨額衝擊攤提金: {trend_scores.get('amortized', 0):,.2f}{colors.RESET}")
+                print(f"{colors.RED}      - 模型誤差緩衝: {trend_scores.get('error', 0):,.2f}{colors.RESET}")
                 if error_coefficient is not None: 
                     print(f"{colors.BOLD}模型誤差係數: {error_coefficient:.2f}{colors.RESET}")
 
@@ -1314,7 +1343,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                     print(f"{colors.WHITE}    └ 計算依據：近期平均支出 + 15% 固定緩衝。{colors.RESET}")
 
         # 如果是原始模型，才顯示詳細的風險因子評分
-        if not (isinstance(trend_scores, dict) and trend_scores.get('is_advanced')):
+        if not is_advanced_model:
             if overall_score is not None:
                 print(f"\n{colors.BOLD}動態風險係數: {dynamic_risk_coefficient:.3f}{colors.RESET}")
                 if error_coefficient is not None: 
