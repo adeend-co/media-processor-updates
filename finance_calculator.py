@@ -2,20 +2,20 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.10                #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.11                #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新：新增穩健化RMSE指標，在報告中區分全局誤差與排除衝擊後的日常誤差，以提高可解釋性。#
+# 更新：新增穩健化WAPE指標，在報告中區分全局與日常誤差比例，以完整呈現模型在不同情境下的表現。#
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.10"  # 更新版本：新增穩健化RMSE指標
+SCRIPT_VERSION = "v2.11"  # 更新版本：新增穩健化WAPE指標
 SCRIPT_UPDATE_DATE = "2025-07-21"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -1045,7 +1045,7 @@ def compute_quantile_spread(p25, p75, predicted_value):
     """計算標準化的分位數範圍（例如 (P75 - P25) / predicted_value）。"""
     if predicted_value == 0 or predicted_value is None:
         return 0.0  # 避免除零
-    spread = (p75 - p25) / predicted_value if p75 is not None and p25 is not None else 0.0
+    spread = (p75 - p75) / predicted_value if p75 is not None and p25 is not None else 0.0
     return spread  # 標準化到 0-1 範圍（可根據需要調整）
 
 # --- 【新增】IRLS 穩健迴歸引擎 ---
@@ -1159,8 +1159,9 @@ def run_adaptive_ensemble_model(x, y, steps_ahead, error_window=6):
     final_prediction = (pred_A * weight_A) + (pred_B * weight_B)
     final_historical_pred = (hist_fit_A * weight_A) + (hist_fit_B * weight_B)
     final_residuals = y - final_historical_pred
-    final_lower = (lower_A * weight_A) + (lower_B * weight_B)
-    final_upper = (upper_A * weight_A) + (upper_B * weight_B)
+    final_lower = (lower_A * weight_A) + (lower_B * weight_B) if lower_A is not None and lower_B is not None else None
+    final_upper = (upper_A * weight_A) + (upper_B * weight_B) if upper_A is not None and upper_B is not None else None
+
 
     return final_prediction, final_historical_pred, final_residuals, final_lower, final_upper, weight_A, weight_B
     
@@ -1405,7 +1406,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     predicted_expense_str, ci_str, method_used = "無法預測 (資料不足)", "", ""
     upper, lower, predicted_value = None, None, None
     historical_mae, historical_rmse, historical_wape, historical_mase = None, None, None, None
-    historical_rmse_robust = None # 【新增】穩健化RMSE變數
+    historical_rmse_robust, historical_wape_robust = None, None # 【新增】穩健化指標變數
     quantile_preds, historical_pred, residuals = {}, None, None
     quantiles = [0.10, 0.25, 0.50, 0.75, 0.90]
     model_weights_report = ""
@@ -1458,14 +1459,16 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         for i, q in enumerate(quantiles):
             quantile_preds[q] = historical_pred + res_quantiles[i]
             
-        # --- 【新增】計算穩健化RMSE ---
-        if num_months >= 12: # Only calculate if advanced models are used
+        # --- 【新增】計算穩健化指標 ---
+        if num_months >= 12: 
             anomaly_info = calculate_anomaly_scores(data)
             is_shock = anomaly_info['Is_Shock'].values
             residuals_clean = residuals[~is_shock]
+            data_clean = data[~is_shock]
             if len(residuals_clean) > 0:
                 historical_rmse_robust = np.sqrt(np.mean(residuals_clean**2))
-
+            if len(data_clean) > 0 and np.sum(np.abs(data_clean)) > 0:
+                historical_wape_robust = (np.sum(np.abs(residuals_clean)) / np.sum(np.abs(data_clean))) * 100
 
     # ... The rest of the script remains unchanged ...
     expense_std_dev, volatility_report, color = None, "", colors.WHITE
@@ -1517,11 +1520,15 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     if historical_mae is not None:
         print(f"\n{colors.WHITE}>>> 模型表現評估 (基於歷史回測){colors.RESET}")
         print(f"  - MAE (平均絕對誤差): {historical_mae:,.2f} 元")
-        print(f"  - RMSE (全局): {historical_rmse:,.2f} 元 (受極端值影響較大)")
+        print(f"  - RMSE (全局): {historical_rmse:,.2f} 元 (含極端值，評估總體風險)")
         if historical_rmse_robust is not None:
-            print(f"  - RMSE (排除衝擊後): {colors.GREEN}{historical_rmse_robust:,.2f} 元 (更能反映日常預測的誤差){colors.RESET}")
-        if historical_wape is not None: print(f"  - WAPE (加權絕對百分比誤差): {historical_wape:.2f}%")
-        if historical_mase is not None: print(f"  - MASE (平均絕對標度誤差): {historical_mase:.2f} (小於1優於天真預測)")
+            print(f"  - RMSE (排除衝擊後): {colors.GREEN}{historical_rmse_robust:,.2f} 元 (反映日常預測誤差){colors.RESET}")
+        if historical_wape is not None: 
+            print(f"  - WAPE (全局): {historical_wape:.2f}% (含極端值，評估總體誤差比例)")
+        if historical_wape_robust is not None:
+            print(f"  - WAPE (排除衝擊後): {colors.GREEN}{historical_wape_robust:.2f}% (反映日常預測誤差比例){colors.RESET}")
+        if historical_mase is not None: 
+            print(f"  - MASE (平均絕對標度誤差): {historical_mase:.2f} (小於1優於天真預測)")
 
 
     if diagnostic_report:
