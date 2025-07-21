@@ -2,21 +2,21 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.5                 #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.6                 #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新：重構結構性轉變偵測邏輯，採用基於歷史中位數與IQR的比較，以更準確地識別支出水平的持續性變化。#
+# 更新：新增均值回歸深度洞察模塊，分析波動率趨勢、消費結構與財務恢復力(半衰期)。#
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.5"  # 更新版本：重構結構性轉變偵測邏輯
-SCRIPT_UPDATE_DATE = "2025-07-20"
+SCRIPT_VERSION = "v2.6"  # 更新版本：新增均值回歸深度洞察
+SCRIPT_UPDATE_DATE = "2025-07-21"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
 # 說明：您可以直接修改這裡的數字，來調整報告中各表格欄位的寬度，以適應您的終端機字體。
@@ -547,7 +547,7 @@ def detect_structural_change_point(monthly_expenses_df, history_window=12, recen
     last_change_point = 0
     # 從後往前掃描，尋找最後一個轉變點
     # 迭代的起點確保歷史數據至少有 history_window 那麼長
-    for i in range(n - recent_window, history_window -1, -1):
+    for i in range(n - recent_window, history_window - 1, -1):
         history_data = data[:i]
         recent_data = data[i : i + recent_window]
         
@@ -557,8 +557,8 @@ def detect_structural_change_point(monthly_expenses_df, history_window=12, recen
         iqr_history = q3_history - q1_history
         
         # 如果歷史波動為零，給一個很小的基礎值避免判斷失效
-        if iqr_history == 0:
-            iqr_history = median_history * 0.05 
+        if iqr_history <= 0:
+            iqr_history = median_history * 0.05 if median_history > 0 else 1
         
         # 計算近期數據的中位數
         median_recent = np.median(recent_data)
@@ -566,8 +566,11 @@ def detect_structural_change_point(monthly_expenses_df, history_window=12, recen
         # 核心判斷條件：近期中位數是否已突破歷史常態區間
         threshold = median_history + (c_factor * iqr_history)
         if median_recent > threshold:
-            last_change_point = i
-            break # 從後往前找，第一個找到的就是最後一個
+            # 確認這不是單一月份的跳動，而是持續的狀態
+            # 檢查 recent_window 內的大部分數據是否都高於歷史中位數
+            if np.sum(recent_data > median_history) / recent_window >= 0.66:
+                last_change_point = i
+                break # 從後往前找，第一個找到的就是最後一個
             
     return last_change_point
 
@@ -1044,6 +1047,76 @@ def compute_quantile_spread(p25, p75, predicted_value):
     spread = (p75 - p25) / predicted_value if p75 is not None and p25 is not None else 0.0
     return spread  # 標準化到 0-1 範圍（可根據需要調整）
 
+# --- 【新增】均值回歸深度洞察模塊 ---
+def analyze_mean_reversion_insights(monthly_expenses_df):
+    """
+    對支出數據進行三種進階均值回歸分析。
+    """
+    MIN_MONTHS_FOR_INSIGHTS = 18
+    if len(monthly_expenses_df) < MIN_MONTHS_FOR_INSIGHTS:
+        return {}
+
+    data = monthly_expenses_df['Real_Amount']
+    insights = {}
+
+    # --- 1. 波動率的均值回歸 (財務穩定性趨勢) ---
+    vol_series = robust_moving_std(data, window=6).dropna()
+    if len(vol_series) > 4:
+        vol_slope, _, _, _, _ = linregress(np.arange(len(vol_series)), vol_series)
+        vol_mean = vol_series.mean()
+        relative_slope = vol_slope / vol_mean if vol_mean > 0 else 0
+        
+        if relative_slope > 0.05:
+            insights['財務穩定性趨勢'] = "惡化中 (近期消費波動性正持續擴大)"
+        elif relative_slope < -0.05:
+            insights['財務穩定性趨勢'] = "改善中 (近期消費波動性趨於收斂)"
+        else:
+            insights['財務穩定性趨勢'] = "趨勢穩定"
+
+    # --- 2. 分位數的均值回歸 (消費結構分析) ---
+    p75_threshold = data.quantile(0.75)
+    high_quantile_series = data[data >= p75_threshold]
+    low_quantile_series = data[data < p75_threshold]
+    
+    if len(high_quantile_series) > 4 and len(low_quantile_series) > 4:
+        slope_high, _, _, _, _ = linregress(np.arange(len(high_quantile_series)), high_quantile_series)
+        slope_low, _, _, _, _ = linregress(np.arange(len(low_quantile_series)), low_quantile_series)
+        
+        # 標準化斜率以進行比較
+        norm_slope_high = slope_high / high_quantile_series.mean() if high_quantile_series.mean() > 0 else 0
+        norm_slope_low = slope_low / low_quantile_series.mean() if low_quantile_series.mean() > 0 else 0
+
+        if norm_slope_high > 0.05 and norm_slope_low < 0.05:
+            insights['消費結構分析'] = "高額支出擴張 (日常開銷穩定，但大額支出金額持續增長)"
+        elif norm_slope_high < 0.05 and norm_slope_low > 0.05:
+             insights['消費結構分析'] = "基礎成本上漲 (大額開銷受控，但日常基礎成本正持續增加)"
+        elif norm_slope_high > 0.05 and norm_slope_low > 0.05:
+            insights['消費結構分析'] = "全面性增長 (整體消費水平，無論大小開銷，均在上升通道)"
+        else:
+            insights['消費結構分析'] = "結構穩定"
+
+    # --- 3. 回歸速度分析 (財務恢復力/半衰期) ---
+    y = data.values
+    delta_y = np.diff(y)
+    y_lagged = y[:-1]
+    
+    if len(y_lagged) > 1:
+        lambda_coeff, _, _, _, _ = linregress(y_lagged, delta_y)
+        
+        if lambda_coeff < -0.01: # 存在均值回歸
+            half_life = -np.log(2) / lambda_coeff
+            if half_life < 3:
+                resilience = f"高恢復力 (半衰期: {half_life:.1f} 個月，超支後能迅速調整)"
+            elif half_life <= 6:
+                resilience = f"中等恢復力 (半衰期: {half_life:.1f} 個月，調整速度正常)"
+            else:
+                resilience = f"低恢復力 (半衰期: {half_life:.1f} 個月，超支影響持續較久)"
+            insights['財務恢復力指數'] = resilience
+        else: # 動量效應
+            insights['財務恢復力指數'] = "動量趨勢 (無均值回歸特性，支出傾向維持當前方向)"
+
+    return insights
+
 # --- 主要分析與預測函數 (升級版：整合模型診斷儀表板) ---
 def analyze_and_predict(file_paths_str: str, no_color: bool):
     colors = Colors(enabled=not no_color)
@@ -1288,8 +1361,10 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         acf_results = compute_acf_results(residuals, num_months)
         quantile_spread = compute_quantile_spread(p25, p75, predicted_value)
 
-    # --- 【修改】使用改造後的 assess_risk_and_budget 調度中心 ---
     risk_status, risk_description, suggested_budget, dynamic_risk_coefficient, trend_score, volatility_score, shock_score, data_reliability, error_coefficient, error_buffer, trend_scores, volatility_scores, shock_scores, overall_score, risk_buffer = assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly_expenses, p25, p75, historical_wape, historical_rmse, calibration_results=calibration_results, acf_results=acf_results, quantile_spread=quantile_spread)
+    
+    # --- 【新增】呼叫均值回歸深度洞察模塊 ---
+    mean_reversion_insights = analyze_mean_reversion_insights(monthly_expenses)
 
     diagnostic_report = ""
     if residuals is not None and len(residuals) >= 2 and historical_pred is not None:
@@ -1345,17 +1420,14 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         print(f"{colors.WHITE}    └ 當單月支出超過此金額，代表發生僅靠月度預算無法應對的重大財務衝擊，應考慮「動用」您另外儲備的緊急預備金。{colors.RESET}")
         print(f"{colors.GREEN}--------------------------------------------------{colors.RESET}")
 
-    # --- 【升級】根據不同預算模型與模式偵測，顯示對應的報告 ---
     if risk_status and "無法判讀" not in risk_status:
         print(f"\n{colors.CYAN}{colors.BOLD}>>> 月份保守預算建議{colors.RESET}")
         print(f"{colors.BOLD}風險狀態: {risk_status}{colors.RESET}")
         print(f"{colors.WHITE}{risk_description}{colors.RESET}")
         if data_reliability: print(f"{colors.BOLD}數據可靠性: {data_reliability}{colors.RESET}")
 
-        # 檢查是否使用了進階三層式模型
         is_advanced_model = isinstance(trend_scores, dict) and trend_scores.get('is_advanced')
         
-        # --- 【新增】自動化註解 ---
         if is_advanced_model:
             change_date = trend_scores.get('change_date')
             num_shocks = trend_scores.get('num_shocks', 0)
@@ -1374,8 +1446,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 print(f"{colors.RED}      - 模型誤差緩衝: {trend_scores.get('error', 0):,.2f}{colors.RESET}")
                 if error_coefficient is not None: 
                     print(f"\n{colors.BOLD}模型誤差係數: {error_coefficient:.2f}{colors.RESET}")
-
-            # 原始模型的報告邏輯
             else:
                 if error_buffer is not None and risk_buffer is not None:
                     print(f"{colors.WHITE}    └ 計算依據：風險緩衝 ({risk_buffer:,.2f}) + 模型誤差緩衝 ({error_buffer:,.2f}){colors.RESET}")
@@ -1384,33 +1454,38 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 elif "替代公式" in data_reliability:
                     print(f"{colors.WHITE}    └ 計算依據：近期平均支出 + 15% 固定緩衝。{colors.RESET}")
 
-        # 如果是原始模型，才顯示詳細的風險因子評分
-        if not is_advanced_model:
-            if overall_score is not None:
-                print(f"\n{colors.BOLD}動態風險係數: {dynamic_risk_coefficient:.3f}{colors.RESET}")
-                if error_coefficient is not None: 
-                    print(f"{colors.BOLD}模型誤差係數: {error_coefficient:.2f}{colors.RESET}")
-                print(f"\n{colors.WHITE}>>> 詳細風險因子分析{colors.RESET}")
-                print(f"{colors.BOLD}總體風險評分: {overall_score:.2f}/10{colors.RESET}")
-                print(f"{colors.WHITE}  └ 權重配置: 趨勢(40%) + 波動(35%) + 衝擊(25%){colors.RESET}")
-                if trend_scores:
-                    print(f"\n{colors.CYAN}趨勢風險因子:{colors.RESET}")
-                    print(f"  - 趨勢加速度: {trend_scores.get('accel', 0):.1f}/10")
-                    print(f"  - 滾動平均交叉: {trend_scores.get('crossover', 0):.1f}/10")
-                    print(f"  - 殘差自相關性: {trend_scores.get('autocorr', 0):.1f}/10")
-                    print(f"  - 趨勢風險得分: {trend_score:.2f}/10")
-                if volatility_scores:
-                    print(f"\n{colors.YELLOW}波動風險因子:{colors.RESET}")
-                    print(f"  - 波動的波動性: {volatility_scores.get('vol_of_vol', 0):.1f}/10")
-                    print(f"  - 下行波動率: {volatility_scores.get('downside_vol', 0):.1f}/10")
-                    print(f"  - 峰態: {volatility_scores.get('kurtosis', 0):.1f}/10")
-                    print(f"  - 波動風險得分: {volatility_score:.2f}/10")
-                if shock_scores:
-                    print(f"\n{colors.RED}衝擊風險因子:{colors.RESET}")
-                    print(f"  - 最大衝擊幅度: {shock_scores.get('max_shock_magnitude', 0):.1f}/10")
-                    print(f"  - 連續正向衝擊: {shock_scores.get('consecutive_shocks', 0):.1f}/10")
-                    print(f"  - 衝擊風險得分: {shock_score:.2f}/10")
+        if not is_advanced_model and overall_score is not None:
+            print(f"\n{colors.BOLD}動態風險係數: {dynamic_risk_coefficient:.3f}{colors.RESET}")
+            if error_coefficient is not None: 
+                print(f"{colors.BOLD}模型誤差係數: {error_coefficient:.2f}{colors.RESET}")
+            print(f"\n{colors.WHITE}>>> 詳細風險因子分析{colors.RESET}")
+            print(f"{colors.BOLD}總體風險評分: {overall_score:.2f}/10{colors.RESET}")
+            print(f"{colors.WHITE}  └ 權重配置: 趨勢(40%) + 波動(35%) + 衝擊(25%){colors.RESET}")
+            if trend_scores:
+                print(f"\n{colors.CYAN}趨勢風險因子:{colors.RESET}")
+                print(f"  - 趨勢加速度: {trend_scores.get('accel', 0):.1f}/10")
+                print(f"  - 滾動平均交叉: {trend_scores.get('crossover', 0):.1f}/10")
+                print(f"  - 殘差自相關性: {trend_scores.get('autocorr', 0):.1f}/10")
+                print(f"  - 趨勢風險得分: {trend_score:.2f}/10")
+            if volatility_scores:
+                print(f"\n{colors.YELLOW}波動風險因子:{colors.RESET}")
+                print(f"  - 波動的波動性: {volatility_scores.get('vol_of_vol', 0):.1f}/10")
+                print(f"  - 下行波動率: {volatility_scores.get('downside_vol', 0):.1f}/10")
+                print(f"  - 峰態: {volatility_scores.get('kurtosis', 0):.1f}/10")
+                print(f"  - 波動風險得分: {volatility_score:.2f}/10")
+            if shock_scores:
+                print(f"\n{colors.RED}衝擊風險因子:{colors.RESET}")
+                print(f"  - 最大衝擊幅度: {shock_scores.get('max_shock_magnitude', 0):.1f}/10")
+                print(f"  - 連續正向衝擊: {shock_scores.get('consecutive_shocks', 0):.1f}/10")
+                print(f"  - 衝擊風險得分: {shock_score:.2f}/10")
     
+    # --- 【新增】顯示均值回歸深度洞察報告 ---
+    if mean_reversion_insights:
+        print(f"\n{colors.CYAN}{colors.BOLD}>>> 財務行為深度洞察 (均值回歸分析){colors.RESET}")
+        for title, insight in mean_reversion_insights.items():
+            print(f"{colors.BOLD}{title}:{colors.RESET} {insight}")
+
+
     print(f"\n{colors.WHITE}【註】關於「實質金額」：為了讓不同年份的支出能被公平比較，本報告已將所有歷史數據，統一換算為當前基期年的貨幣價值。這能幫助您在扣除物價上漲的影響後，看清自己真實的消費習慣變化。{colors.RESET}")
     print(f"{colors.CYAN}{colors.BOLD}========================================{colors.RESET}\n")
 
