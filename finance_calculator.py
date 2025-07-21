@@ -409,7 +409,7 @@ def process_finance_data_multiple(file_paths, colors):
                 warnings_report.append(f"{colors.RED}通膨調整錯誤：{str(e)}。使用原始金額繼續分析。{colors.RESET}")
                 monthly_expenses['Real_Amount'] = monthly_expenses['Nominal_Amount']
     
-    return master_df, monthly_expenses, "\n".join(warnings_report)
+    return combined_df, monthly_expenses, "\n".join(warnings_report)
 
 # --- 季節性分解函數 (未變更) ---
 def seasonal_decomposition(monthly_expenses):
