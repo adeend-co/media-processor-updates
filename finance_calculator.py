@@ -2,20 +2,20 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.9                 #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.10                #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新：將元模型從嶺迴歸替換為帶有約束的非負最小平方法(NNLS)，以確保集成權重的合理性。#
+# 更新：新增穩健化RMSE指標，在報告中區分全局誤差與排除衝擊後的日常誤差，以提高可解釋性。#
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.9"  # 更新版本：修正Stacking中的元模型邏輯
+SCRIPT_VERSION = "v2.10"  # 更新版本：新增穩健化RMSE指標
 SCRIPT_UPDATE_DATE = "2025-07-21"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -1253,18 +1253,19 @@ def train_predict_seasonal(df_train, predict_steps, seasonal_period=12):
 # --- 【核心修改】Level 1 Meta-Model ---
 def train_and_predict_meta_model(X_meta_train, y_meta_train, X_meta_predict):
     """
-    使用非負最小平方法(NNLS)訓練元模型並進行預測。
+    使用非負最小平方法(NNLS)訓練元模型並進行預測，確保權重合理。
     """
     # 步驟1: 使用NNLS找出最佳的非負權重
     weights, _ = nnls(X_meta_train, y_meta_train)
     
     # 步驟2: 歸一化權重，使其總和為1
     total_weight = np.sum(weights)
-    if total_weight > 0:
+    if total_weight > 1e-6: # 避免除零
         normalized_weights = weights / total_weight
     else:
-        # 如果所有權重都為0，則使用平均權重
-        normalized_weights = np.full(X_meta_train.shape[1], 1 / X_meta_train.shape[1])
+        # 如果所有權重都趨近於0，則使用平均權重作為備用策略
+        num_models = X_meta_train.shape[1]
+        normalized_weights = np.full(num_models, 1 / num_models)
         
     # 步驟3: 使用歸一化的權重進行預測
     final_prediction = X_meta_predict @ normalized_weights
@@ -1404,6 +1405,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     predicted_expense_str, ci_str, method_used = "無法預測 (資料不足)", "", ""
     upper, lower, predicted_value = None, None, None
     historical_mae, historical_rmse, historical_wape, historical_mase = None, None, None, None
+    historical_rmse_robust = None # 【新增】穩健化RMSE變數
     quantile_preds, historical_pred, residuals = {}, None, None
     quantiles = [0.10, 0.25, 0.50, 0.75, 0.90]
     model_weights_report = ""
@@ -1455,6 +1457,15 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         res_quantiles = np.percentile(residuals, [q * 100 for q in quantiles])
         for i, q in enumerate(quantiles):
             quantile_preds[q] = historical_pred + res_quantiles[i]
+            
+        # --- 【新增】計算穩健化RMSE ---
+        if num_months >= 12: # Only calculate if advanced models are used
+            anomaly_info = calculate_anomaly_scores(data)
+            is_shock = anomaly_info['Is_Shock'].values
+            residuals_clean = residuals[~is_shock]
+            if len(residuals_clean) > 0:
+                historical_rmse_robust = np.sqrt(np.mean(residuals_clean**2))
+
 
     # ... The rest of the script remains unchanged ...
     expense_std_dev, volatility_report, color = None, "", colors.WHITE
@@ -1501,12 +1512,17 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         print(f"{colors.BOLD}淨餘額（名目）: {balance_color}{colors.BOLD}{net_balance:,.2f}{colors.RESET}")
 
     print(f"\n{colors.PURPLE}{colors.BOLD}>>> {target_month_str} 趨勢預測{method_used}: {predicted_expense_str}{ci_str}{colors.RESET}")
+    
+    # --- 【核心修改】升級報告呈現 ---
     if historical_mae is not None:
         print(f"\n{colors.WHITE}>>> 模型表現評估 (基於歷史回測){colors.RESET}")
-        print(f"  - MAE: {historical_mae:,.2f} 元")
-        print(f"  - RMSE: {historical_rmse:,.2f} 元")
-        if historical_wape is not None: print(f"  - WAPE: {historical_wape:.2f}%")
-        if historical_mase is not None: print(f"  - MASE: {historical_mase:.2f} (小於1優於天真預測)")
+        print(f"  - MAE (平均絕對誤差): {historical_mae:,.2f} 元")
+        print(f"  - RMSE (全局): {historical_rmse:,.2f} 元 (受極端值影響較大)")
+        if historical_rmse_robust is not None:
+            print(f"  - RMSE (排除衝擊後): {colors.GREEN}{historical_rmse_robust:,.2f} 元 (更能反映日常預測的誤差){colors.RESET}")
+        if historical_wape is not None: print(f"  - WAPE (加權絕對百分比誤差): {historical_wape:.2f}%")
+        if historical_mase is not None: print(f"  - MASE (平均絕對標度誤差): {historical_mase:.2f} (小於1優於天真預測)")
+
 
     if diagnostic_report:
         print(f"\n{colors.CYAN}{colors.BOLD}>>> 模型診斷儀表板 (進階誤差評估){colors.RESET}")
