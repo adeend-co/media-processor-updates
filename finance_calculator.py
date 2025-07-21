@@ -2,20 +2,20 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.13                #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.11                #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新：修正了模型堆疊集成引擎，確保所有7個基礎模型都被正確調用與整合，並在報告中動態展示其權重。#
+# 更新：新增穩健化WAPE指標，在報告中區分全局與日常誤差比例，以完整呈現模型在不同情境下的表現。#
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.13"  # 更新版本：修正7專家堆疊模型的調用邏輯
+SCRIPT_VERSION = "v2.11"  # 更新版本：新增穩健化WAPE指標
 SCRIPT_UPDATE_DATE = "2025-07-21"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -50,7 +50,7 @@ import argparse
 import numpy as np
 from scipy.stats import linregress, t
 from scipy.stats import skew, kurtosis, median_abs_deviation
-from scipy.optimize import nnls # 導入非負最小平方法
+from scipy.optimize import nnls # 【新增】導入非負最小平方法
 from collections import deque
 
 # --- 顏色處理類別 ---
@@ -1251,6 +1251,33 @@ def train_predict_seasonal(df_train, predict_steps, seasonal_period=12):
 
     return trend_forecast * np.array(seasonal_forecast)
 
+# --- 【★★★ 新增基礎專家模型 ★★★】 ---
+def train_predict_naive(y_train, predict_steps):
+    """專家：天真現實派。預測值永遠是上一個月的實際值。"""
+    if len(y_train) == 0:
+        return np.zeros(predict_steps)
+    last_value = y_train[-1]
+    return np.full(predict_steps, last_value)
+
+def train_predict_rolling_median(y_train, predict_steps, window_size=6):
+    """專家：近期中庸者。預測值是近期(e.g. 6個月)開銷的中位數。"""
+    if len(y_train) == 0:
+        return np.zeros(predict_steps)
+    actual_window = min(len(y_train), window_size)
+    if actual_window == 0:
+        return np.zeros(predict_steps)
+    median_value = np.median(y_train[-actual_window:])
+    return np.full(predict_steps, median_value)
+
+def train_predict_global_median(y_train, predict_steps):
+    """專家：歷史守恆家。預測值是全部歷史開銷的中位數。"""
+    if len(y_train) == 0:
+        return np.zeros(predict_steps)
+    median_value = np.median(y_train)
+    return np.full(predict_steps, median_value)
+# --- 【★★★ 新增結束 ★★★】 ---
+
+
 # --- 【核心修改】Level 1 Meta-Model ---
 def train_and_predict_meta_model(X_meta_train, y_meta_train, X_meta_predict):
     """
@@ -1274,39 +1301,47 @@ def train_and_predict_meta_model(X_meta_train, y_meta_train, X_meta_predict):
     return final_prediction, normalized_weights
 
 
-# --- 【核心修改】Stacking Engine ---
+# --- 【★★★ 核心修改：擴充專家顧問團的堆疊引擎 ★★★】 ---
 def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5):
     data = monthly_expenses_df['Real_Amount'].values
     x = np.arange(1, len(data) + 1)
     
+    # 擴充專家顧問團至七位
     base_models = {
         'poly': train_predict_poly,
         'huber': train_predict_huber,
         'des': train_predict_des,
         'seasonal': train_predict_seasonal,
+        'naive': train_predict_naive,
+        'rolling_median': train_predict_rolling_median,
+        'global_median': train_predict_global_median,
     }
     
+    # 元特徵的欄位數會根據 base_models 的數量自動調整
     meta_features = np.zeros((len(data), len(base_models)))
     
-    # K-Fold cross-validation to generate meta-features
+    # K-Fold 交叉驗證以產生元特徵
     fold_indices = np.array_split(np.arange(len(data)), n_folds)
     
     for i in range(n_folds):
         train_idx = np.concatenate([fold_indices[j] for j in range(n_folds) if i != j])
         val_idx = fold_indices[i]
         
-        # 確保訓練集不是空的
         if len(train_idx) == 0: continue
 
         x_train, y_train, df_train = x[train_idx], data[train_idx], monthly_expenses_df.iloc[train_idx]
         x_val = x[val_idx]
         
+        # 讓七位專家進行預測
         meta_features[val_idx, 0] = base_models['poly'](x_train, y_train, x_val)
         meta_features[val_idx, 1] = base_models['huber'](x_train, y_train, x_val)
         meta_features[val_idx, 2] = base_models['des'](y_train, len(x_val))
         meta_features[val_idx, 3] = base_models['seasonal'](df_train, len(x_val))
+        meta_features[val_idx, 4] = base_models['naive'](y_train, len(x_val))
+        meta_features[val_idx, 5] = base_models['rolling_median'](y_train, len(x_val))
+        meta_features[val_idx, 6] = base_models['global_median'](y_train, len(x_val))
         
-    # Final prediction phase
+    # 最終預測階段
     x_future = np.arange(len(x) + 1, len(x) + steps_ahead + 1)
     
     final_base_predictions = np.zeros((steps_ahead, len(base_models)))
@@ -1314,8 +1349,11 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5):
     final_base_predictions[:, 1] = base_models['huber'](x, data, x_future)
     final_base_predictions[:, 2] = base_models['des'](data, steps_ahead)
     final_base_predictions[:, 3] = base_models['seasonal'](monthly_expenses_df, steps_ahead)
-    
-    # 使用新的元模型進行訓練和預測
+    final_base_predictions[:, 4] = base_models['naive'](data, steps_ahead)
+    final_base_predictions[:, 5] = base_models['rolling_median'](data, steps_ahead)
+    final_base_predictions[:, 6] = base_models['global_median'](data, steps_ahead)
+
+    # 使用元模型進行訓練和預測
     final_prediction_sequence, model_weights = train_and_predict_meta_model(meta_features, data, final_base_predictions)
     final_prediction = final_prediction_sequence[-1]
     
@@ -1326,7 +1364,7 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5):
     if dof <= 0: return final_prediction, historical_pred, residuals, None, None, model_weights
     
     mse = np.sum(residuals**2) / dof
-    se = np.sqrt(mse) # Simplified SE for ensemble
+    se = np.sqrt(mse) # Ensemble 的簡化標準誤
     t_val = t.ppf(0.975, dof)
     lower, upper = final_prediction - t_val * se, final_prediction + t_val * se
     
@@ -1419,8 +1457,13 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         if num_months >= 24:
             method_used = " (基於模型堆疊集成)"
             predicted_value, historical_pred, residuals, lower, upper, model_weights = run_stacked_ensemble_model(df_for_seasonal_model, steps_ahead)
+            
+            # --- 【★★★ 核心修改：更新報告權重顯示 ★★★】 ---
             weights_str = [f"{w:.1%}" for w in model_weights]
-            model_weights_report = f"  - 專家權重: 趨勢({weights_str[0]}), 穩健({weights_str[1]}), 慣性({weights_str[2]}), 週期({weights_str[3]})"
+            model_names = ["趨勢", "穩健", "慣性", "週期", "天真", "近期", "歷史"]
+            report_parts = [f"{name}({weight})" for name, weight in zip(model_names, weights_str)]
+            model_weights_report = f"  - 專家權重: {', '.join(report_parts)}"
+            
         elif 18 <= num_months < 24:
             method_used = " (基於穩健迴歸IRLS-Huber)"
             predicted_value, historical_pred, residuals, lower, upper = huber_robust_regression(x, data, steps_ahead)
