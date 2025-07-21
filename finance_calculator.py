@@ -9,13 +9,13 @@
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新：修正了在模型堆疊交叉驗證中，因Huber模型預測邏輯錯誤導致的IndexError。     #
+# 更新：將元模型從嶺迴歸替換為帶有約束的非負最小平方法(NNLS)，以確保集成權重的合理性。#
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.9"  # 更新版本：修正Stacking中的Huber模型預測邏輯
+SCRIPT_VERSION = "v2.9"  # 更新版本：修正Stacking中的元模型邏輯
 SCRIPT_UPDATE_DATE = "2025-07-21"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -50,6 +50,7 @@ import argparse
 import numpy as np
 from scipy.stats import linregress, t
 from scipy.stats import skew, kurtosis, median_abs_deviation
+from scipy.optimize import nnls # 【新增】導入非負最小平方法
 from collections import deque
 
 # --- 顏色處理類別 ---
@@ -1171,11 +1172,18 @@ def train_predict_huber(x_train, y_train, x_predict, t_const=1.345, max_iter=100
     【修正】專為交叉驗證設計的Huber模型。
     它只學習訓練數據的規則(beta)，並將該規則應用於預測數據。
     """
+    if len(x_train) < 2: # 如果訓練數據太少，返回一個簡單的平均值
+        return np.full(len(x_predict), np.mean(y_train) if len(y_train) > 0 else 0)
+
     X_train_b = np.c_[np.ones(len(x_train)), x_train]
     
     # 初始擬合
-    slope, intercept, _, _, _ = linregress(x_train, y_train)
-    beta = np.array([intercept, slope])
+    try:
+        slope, intercept, _, _, _ = linregress(x_train, y_train)
+        beta = np.array([intercept, slope])
+    except ValueError: # 如果linregress失敗 (例如，所有x都相同)
+        beta = np.array([np.mean(y_train), 0])
+
 
     # IRLS 迭代找出穩健的 beta
     for _ in range(max_iter):
@@ -1190,7 +1198,13 @@ def train_predict_huber(x_train, y_train, x_predict, t_const=1.345, max_iter=100
         W_sqrt = np.sqrt(weights)
         X_w = X_train_b * W_sqrt[:, np.newaxis]
         y_w = y_train * W_sqrt
-        beta = np.linalg.lstsq(X_w, y_w, rcond=None)[0]
+        
+        try:
+            beta = np.linalg.lstsq(X_w, y_w, rcond=None)[0]
+        except np.linalg.LinAlgError: # 如果WLS失敗，保留舊的beta
+            beta = beta_old
+            break
+            
         if np.sum(np.abs(beta - beta_old)) < tol:
             break
             
@@ -1200,6 +1214,7 @@ def train_predict_huber(x_train, y_train, x_predict, t_const=1.345, max_iter=100
 
 # Level 0 Base Models
 def train_predict_poly(x_train, y_train, x_predict, degree=2):
+    if len(x_train) < degree + 1: return np.full(len(x_predict), np.mean(y_train) if len(y_train) > 0 else 0)
     coeffs = np.polyfit(x_train, y_train, degree)
     p = np.poly1d(coeffs)
     return p(x_predict)
@@ -1221,11 +1236,12 @@ def train_predict_seasonal(df_train, predict_steps, seasonal_period=12):
     trend_component = deseasonalized_data['Deseasonalized'].values
     
     x_trend = np.arange(len(trend_component))
+    if len(x_trend) < 2: return np.full(predict_steps, np.mean(df_train['Real_Amount']))
+
     slope, intercept, _, _, _ = linregress(x_trend, trend_component)
     future_x = np.arange(len(x_trend), len(x_trend) + predict_steps)
     trend_forecast = intercept + slope * future_x
     
-    # 使用最後觀測到的季節性指數來預測
     last_observed_month = df_train['Parsed_Date'].iloc[-1].month
     seasonal_forecast = []
     for i in range(1, predict_steps + 1):
@@ -1234,20 +1250,29 @@ def train_predict_seasonal(df_train, predict_steps, seasonal_period=12):
 
     return trend_forecast * np.array(seasonal_forecast)
 
-# Level 1 Meta-Model
-def train_predict_ridge_regression(X, y, X_predict, alpha=1.0):
-    X_b = np.c_[np.ones((X.shape[0], 1)), X] 
-    I = np.identity(X_b.shape[1])
-    I[0, 0] = 0 
-    try:
-        beta = np.linalg.inv(X_b.T @ X_b + alpha * I) @ X_b.T @ y
-    except np.linalg.LinAlgError:
-        beta = np.linalg.lstsq(X_b, y, rcond=None)[0]
+# --- 【核心修改】Level 1 Meta-Model ---
+def train_and_predict_meta_model(X_meta_train, y_meta_train, X_meta_predict):
+    """
+    使用非負最小平方法(NNLS)訓練元模型並進行預測。
+    """
+    # 步驟1: 使用NNLS找出最佳的非負權重
+    weights, _ = nnls(X_meta_train, y_meta_train)
     
-    X_predict_b = np.c_[np.ones((X_predict.shape[0], 1)), X_predict]
-    return X_predict_b @ beta, beta
+    # 步驟2: 歸一化權重，使其總和為1
+    total_weight = np.sum(weights)
+    if total_weight > 0:
+        normalized_weights = weights / total_weight
+    else:
+        # 如果所有權重都為0，則使用平均權重
+        normalized_weights = np.full(X_meta_train.shape[1], 1 / X_meta_train.shape[1])
+        
+    # 步驟3: 使用歸一化的權重進行預測
+    final_prediction = X_meta_predict @ normalized_weights
+    
+    return final_prediction, normalized_weights
 
-# Stacking Engine
+
+# --- 【核心修改】Stacking Engine ---
 def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5):
     data = monthly_expenses_df['Real_Amount'].values
     x = np.arange(1, len(data) + 1)
@@ -1261,12 +1286,16 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5):
     
     meta_features = np.zeros((len(data), len(base_models)))
     
+    # K-Fold cross-validation to generate meta-features
     fold_indices = np.array_split(np.arange(len(data)), n_folds)
     
     for i in range(n_folds):
         train_idx = np.concatenate([fold_indices[j] for j in range(n_folds) if i != j])
         val_idx = fold_indices[i]
         
+        # 確保訓練集不是空的
+        if len(train_idx) == 0: continue
+
         x_train, y_train, df_train = x[train_idx], data[train_idx], monthly_expenses_df.iloc[train_idx]
         x_val = x[val_idx]
         
@@ -1275,30 +1304,31 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5):
         meta_features[val_idx, 2] = base_models['des'](y_train, len(x_val))
         meta_features[val_idx, 3] = base_models['seasonal'](df_train, len(x_val))
         
-    _, meta_coeffs = train_predict_ridge_regression(meta_features, data, np.zeros((1,len(base_models))))
-
+    # Final prediction phase
     x_future = np.arange(len(x) + 1, len(x) + steps_ahead + 1)
+    
     final_base_predictions = np.zeros((steps_ahead, len(base_models)))
     final_base_predictions[:, 0] = base_models['poly'](x, data, x_future)
     final_base_predictions[:, 1] = base_models['huber'](x, data, x_future)
     final_base_predictions[:, 2] = base_models['des'](data, steps_ahead)
     final_base_predictions[:, 3] = base_models['seasonal'](monthly_expenses_df, steps_ahead)
     
-    final_prediction_sequence, _ = train_predict_ridge_regression(meta_features, data, final_base_predictions)
+    # 使用新的元模型進行訓練和預測
+    final_prediction_sequence, model_weights = train_and_predict_meta_model(meta_features, data, final_base_predictions)
     final_prediction = final_prediction_sequence[-1]
     
-    historical_pred, _ = train_predict_ridge_regression(meta_features, data, meta_features)
+    historical_pred, _ = train_and_predict_meta_model(meta_features, data, meta_features)
     residuals = data - historical_pred
     
     dof = len(data) - len(base_models) - 1
-    if dof <= 0: return final_prediction, historical_pred, residuals, None, None, meta_coeffs[1:]
+    if dof <= 0: return final_prediction, historical_pred, residuals, None, None, model_weights
     
     mse = np.sum(residuals**2) / dof
     se = np.sqrt(mse) # Simplified SE for ensemble
     t_val = t.ppf(0.975, dof)
     lower, upper = final_prediction - t_val * se, final_prediction + t_val * se
     
-    return final_prediction, historical_pred, residuals, lower, upper, meta_coeffs[1:]
+    return final_prediction, historical_pred, residuals, lower, upper, model_weights
 
 
 # --- 主要分析與預測函數 (【已升級】) ---
@@ -1327,12 +1357,10 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     analysis_data = None
     df_for_seasonal_model = None
     if not monthly_expenses.empty:
+        # 修正：Stacking模型應使用未經季節性分解的原始數據
         if num_unique_months >= 24:
-            deseasonalized, seasonal_indices = seasonal_decomposition(monthly_expenses)
-            # Stacking model uses original data for its own seasonal component
             analysis_data = monthly_expenses['Real_Amount'].values
             df_for_seasonal_model = monthly_expenses.copy() 
-            used_seasonal = True
             seasonal_note = "集成模型已內建季節性分析。"
         else:
             analysis_data = monthly_expenses['Real_Amount'].values
@@ -1429,14 +1457,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             quantile_preds[q] = historical_pred + res_quantiles[i]
 
     # ... The rest of the script remains unchanged ...
-    if used_seasonal and predicted_value is not None and not (num_months >= 24):
-        seasonal_factor = seasonal_indices.get(target_month, 1.0)
-        predicted_value *= seasonal_factor
-        if lower is not None: lower *= seasonal_factor
-        if upper is not None: upper *= seasonal_factor
-        predicted_expense_str = f"{predicted_value:,.2f} (已還原季節性)"
-        if lower is not None and upper is not None: ci_str = f" [下限：{lower:,.2f}，上限：{upper:,.2f}]"
-
     expense_std_dev, volatility_report, color = None, "", colors.WHITE
     if not monthly_expenses.empty and len(monthly_expenses)>=2:
         expense_values = monthly_expenses['Real_Amount']
