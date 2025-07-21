@@ -9,17 +9,17 @@
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新：新增「財務行為深度洞察」模組，整合波動率、分位數及回歸速度的均值回歸分析。 #
+# 更新：整合迭代重加權最小平方法(IRLS)與Huber權重，以穩健抵抗極端值對趨勢分析的干擾。 #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.6"  # 更新版本：整合均值回歸深度洞察
+SCRIPT_VERSION = "v2.6"  # 更新版本：整合IRLS穩健迴歸
 SCRIPT_UPDATE_DATE = "2025-07-21"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
-# 說明：您可以直接修改這裡的數字，來調整報告中各表格欄位的寬度，以適應您的終-端機字體。
+# 說明：您可以直接修改這裡的數字，來調整報告中各表格欄位的寬度，以適應您的終端機字體。
 # 'q' 代表分位數, 'loss' 代表損失值, 'interp' 代表解釋, etc.
 TABLE_CONFIG = {
     'quantile_loss': {
@@ -50,7 +50,6 @@ import argparse
 import numpy as np
 from scipy.stats import linregress, t
 from scipy.stats import skew, kurtosis, median_abs_deviation
-from statsmodels.tsa.ar_model import AutoReg
 
 # --- 顏色處理類別 ---
 class Colors:
@@ -105,7 +104,7 @@ def adjust_to_real_amount(amount, data_year, target_year, cpi_values):
 # --- 環境檢查函數 ---
 def check_environment(colors):
     print(f"{colors.CYAN}正在進行環境檢查...{colors.RESET}")
-    required_packages = ['pandas', 'numpy', 'scipy', 'statsmodels']
+    required_packages = ['pandas', 'numpy', 'scipy']
     missing_packages = []
     for pkg in required_packages:
         try:
@@ -122,7 +121,7 @@ def check_environment(colors):
 
 # --- 自動安裝依賴函數 ---
 def install_dependencies(colors):
-    required_packages = ['pandas', 'numpy', 'scipy', 'statsmodels']
+    required_packages = ['pandas', 'numpy', 'scipy']
     for pkg in required_packages:
         try:
             __import__(pkg)
@@ -531,6 +530,7 @@ def calculate_anomaly_scores(data, window_size=6, k_ma=2.5, k_sigmoid=0.5):
         'Final_Score': final_score, 'Is_Shock': is_shock
     })
 
+
 # --- 結構性轉變偵測函數 (【已重構】) ---
 def detect_structural_change_point(monthly_expenses_df, history_window=12, recent_window=6, c_factor=1.0):
     """
@@ -557,8 +557,8 @@ def detect_structural_change_point(monthly_expenses_df, history_window=12, recen
         iqr_history = q3_history - q1_history
         
         # 如果歷史波動為零，給一個很小的基礎值避免判斷失效
-        if iqr_history == 0:
-            iqr_history = median_history * 0.05 
+        if iqr_history <= 1: # 使用一個很小的絕對值避免浮點數問題
+            iqr_history = median_history * 0.05 if median_history > 0 else 1
         
         # 計算近期數據的中位數
         median_recent = np.median(recent_data)
@@ -901,6 +901,51 @@ def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly
             data_reliability, error_coefficient, error_buffer, 
             trend_scores, volatility_scores, shock_scores, overall_score, risk_buffer)
 
+# --- 【新增】IRLS 穩健迴歸函數 ---
+def robust_linear_regression_huber(x, y, t=1.345, max_iter=100, tol=1e-6):
+    """
+    使用迭代重加權最小平方法 (IRLS) 和 Huber 權重進行穩健線性迴歸。
+    """
+    # Step 1: 初始擬合
+    slope, intercept, _, _, _ = linregress(x, y)
+    coeffs = np.array([intercept, slope])
+    
+    X = np.column_stack((np.ones_like(x), x))
+    
+    for _ in range(max_iter):
+        old_coeffs = coeffs.copy()
+        
+        # Step 2 & 3: 計算標準化殘差 (使用穩健的MAD)
+        residuals = y - X @ coeffs
+        scale = median_abs_deviation(residuals, scale='normal')
+        
+        if scale < 1e-6: # 如果誤差極小，表示已完美擬合
+            break
+            
+        z = residuals / scale
+        
+        # Step 4: 計算 Huber 權重
+        weights = np.where(np.abs(z) <= t, 1, t / np.abs(z))
+        
+        # Step 5: 執行加權最小平方法 (WLS)
+        sqrt_w = np.sqrt(weights)
+        X_w = X * sqrt_w[:, np.newaxis]
+        y_w = y * sqrt_w
+        
+        try:
+            coeffs, _, _, _ = np.linalg.lstsq(X_w, y_w, rcond=None)
+        except np.linalg.LinAlgError:
+            # 如果 WLS 失敗，回退到上次的係數
+            coeffs = old_coeffs
+            break
+
+        # Step 6: 檢查收斂
+        if np.sum(np.abs(coeffs - old_coeffs)) < tol:
+            break
+            
+    return coeffs[1], coeffs[0] # slope, intercept
+
+
 # --- 診斷儀表板函數 (v1.9.2 - 整合可自訂寬度設定) ---
 # --- 新增：CJK 字元填充輔助函數 (用於表格對齊) ---
 def pad_cjk(text, total_width, align='left'):
@@ -1043,105 +1088,6 @@ def compute_quantile_spread(p25, p75, predicted_value):
     spread = (p75 - p25) / predicted_value if p75 is not None and p25 is not None else 0.0
     return spread  # 標準化到 0-1 範圍（可根據需要調整）
 
-# --- 【新增】波動率均值回歸分析 ---
-def analyze_volatility_reversion(monthly_expenses, colors, window=6):
-    data = monthly_expenses['Real_Amount']
-    if len(data) < window * 2:
-        return f"  - {colors.WHITE}財務穩定性趨勢: {colors.YELLOW}數據長度不足，無法進行分析。{colors.RESET}"
-
-    volatility_series = robust_moving_std(data, window=window).dropna()
-    long_term_mean_vol = volatility_series.mean()
-    current_vol = volatility_series.iloc[-1]
-    recent_trend_vol, _, _, _, _ = linregress(np.arange(len(volatility_series[-window:])), volatility_series[-window:])
-
-    report = []
-    if current_vol > long_term_mean_vol:
-        status = f"{colors.RED}高於歷史平均{colors.WHITE}"
-        if recent_trend_vol < 0:
-            outlook = f"{colors.GREEN}（但呈收斂趨勢）{colors.WHITE}"
-            interpretation = "近期消費雖不穩定，但預計將趨於平穩。"
-        else:
-            outlook = f"{colors.RED}（且呈擴張趨勢）{colors.WHITE}"
-            interpretation = "您的財務狀況正進入一個不穩定的擴張期，建議增加預算緩衝。"
-    else:
-        status = f"{colors.GREEN}低於歷史平均{colors.WHITE}"
-        if recent_trend_vol > 0:
-            outlook = f"{colors.YELLOW}（但呈擴張趨勢）{colors.WHITE}"
-            interpretation = "目前消費狀況穩定，但需注意波動性有溫和上升的跡象。"
-        else:
-            outlook = f"{colors.GREEN}（且呈收斂趨勢）{colors.WHITE}"
-            interpretation = "您的消費習慣高度穩定，財務可預測性強。"
-
-    report.append(f"  - {colors.WHITE}財務穩定性趨勢: {status} {outlook}")
-    report.append(f"    {colors.WHITE}└ {interpretation}")
-    return "\n".join(report)
-
-# --- 【新增】分位數均值回歸分析 ---
-def analyze_quantile_reversion(monthly_expenses, colors):
-    data = monthly_expenses['Real_Amount'].values
-    if len(data) < 24:
-        return f"  - {colors.WHITE}消費結構變化: {colors.YELLOW}數據長度不足，無法進行分析。{colors.RESET}"
-    
-    # 整體趨勢
-    x = np.arange(len(data))
-    slope_overall, _, _, _, _ = linregress(x, data)
-    
-    # 高消費月份 (P75) 趨勢
-    p75_threshold = np.percentile(data, 75)
-    high_spenders = data[data >= p75_threshold]
-    x_high = np.where(data >= p75_threshold)[0]
-    
-    if len(high_spenders) < 5:
-        return f"  - {colors.WHITE}消費結構變化: {colors.YELLOW}高額消費樣本過少，無法分析。{colors.RESET}"
-        
-    slope_high, _, _, _, _ = linregress(x_high, high_spenders)
-    
-    interpretation = ""
-    # 將斜率正規化以便比較
-    norm_slope_overall = slope_overall / np.mean(data)
-    norm_slope_high = slope_high / np.mean(high_spenders)
-    
-    if norm_slope_high > norm_slope_overall * 1.5 and norm_slope_overall >= 0:
-        interpretation = f"{colors.RED}您的日常基礎開銷雖穩定或溫和增長，但偶發性大額支出的金額有加速增長的趨勢，需特別關注。"
-    elif norm_slope_overall > norm_slope_high * 1.5:
-        interpretation = f"{colors.YELLOW}您的整體消費水平在提高，但主要是由日常基礎開銷的增長所驅動，大額消費相對可控。"
-    elif slope_high > 0 and slope_overall > 0:
-        interpretation = f"{colors.WHITE}您的整體消費水平與大額支出呈現同步增長，建議全面檢視預算規劃。"
-    else:
-        interpretation = f"{colors.GREEN}您的日常開銷與大額支出均保持穩定，消費結構健康。"
-
-    return f"  - {colors.WHITE}消費結構變化:\n    {colors.WHITE}└ {interpretation}"
-
-# --- 【新增】回歸速度 (半衰期) 分析 ---
-def analyze_reversion_speed(monthly_expenses, colors):
-    data = monthly_expenses['Real_Amount'].values
-    if len(data) < 24:
-        return f"  - {colors.WHITE}財務恢復力指數: {colors.YELLOW}數據長度不足，無法進行分析。{colors.RESET}"
-    
-    try:
-        # 使用AR(1)模型來估算回歸速度
-        model = AutoReg(data, lags=1)
-        result = model.fit()
-        ar_coefficient = result.params[1]
-        
-        if ar_coefficient >= 1 or ar_coefficient <= 0:
-            return f"  - {colors.WHITE}財務恢復力指数: {colors.YELLOW}數據不符合均值回歸特性，無法計算半衰期。{colors.RESET}"
-
-        # 計算半衰期
-        half_life = -np.log(2) / np.log(ar_coefficient)
-        
-        if half_life <= 2.5:
-            interpretation = f"{colors.GREEN}強。{colors.WHITE}一次性的超支衝擊，其影響大約 {half_life:.1f} 個月即可消退一半，顯示您有很強的財務紀律性。"
-        elif half_life <= 5.0:
-            interpretation = f"{colors.YELLOW}中等。{colors.WHITE}超支影響大約需要 {half_life:.1f} 個月才能減半，顯示您具備一定的調整能力。"
-        else:
-            interpretation = f"{colors.RED}較弱。{colors.WHITE}超支影響需要超過 {half_life:.1f} 個月才能消退一半，表明一次性衝擊消費可能演變成持續性高消費習慣，需提高警覺。"
-
-        return f"  - {colors.WHITE}財務恢復力指數 (半衰期): {interpretation}"
-    except Exception:
-        return f"  - {colors.WHITE}財務恢復力指數: {colors.RED}模型計算時發生錯誤，無法分析。{colors.RESET}"
-
-
 # --- 主要分析與預測函數 (升級版：整合模型診斷儀表板) ---
 def analyze_and_predict(file_paths_str: str, no_color: bool):
     colors = Colors(enabled=not no_color)
@@ -1232,7 +1178,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
 
     predicted_expense_str = "無法預測 (資料不足或錯誤)"
     ci_str = ""
-    method_used = " (基於直接-遞歸混合)"
+    method_used = ""
     upper = None
     lower = None
     predicted_value = None
@@ -1251,35 +1197,45 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         x = np.arange(1, num_months + 1)
 
         model_logic = None
-        if num_months >= 24: model_logic = 'sarima_like'
-        elif num_months >= 12: model_logic = 'poly'
-        elif num_months >= 6: model_logic = 'linear'
-        elif num_months >= 2: model_logic = 'ema'
-
-        if model_logic:
-            # 統一預測邏輯
-            if model_logic == 'sarima_like':
-                slope, intercept, _, _, _ = linregress(x, data)
-                historical_pred = intercept + slope * x
-                feedback_weight = 0.5
-                model_params = (intercept, slope)
-            elif model_logic == 'poly':
+        
+        # --- 【核心修改】整合 IRLS 穩健迴歸 ---
+        if num_months >= 18:
+            model_logic = 'robust_linear'
+            slope, intercept = robust_linear_regression_huber(x, data)
+            historical_pred = intercept + slope * x
+            feedback_weight = 0.5 # 保持與原 SARIMA-like 邏輯一致
+            model_params = (intercept, slope)
+            method_used = " (基於IRLS穩健迴歸)"
+        elif num_months >= 12:
+            model_logic = 'poly'
+        elif num_months >= 6:
+            model_logic = 'linear'
+        elif num_months >= 2:
+            model_logic = 'ema'
+        
+        # --- 沿用原有的非穩健模型 (當數據 < 18個月時) ---
+        if model_logic not in ['robust_linear']:
+            if num_months >= 12: # poly
                 degree = 2
                 coeffs = np.polyfit(x, data, degree)
                 p = np.poly1d(coeffs)
                 historical_pred = p(x)
                 feedback_weight = 0.3
                 model_params = (p,)
-            elif model_logic == 'linear':
+                method_used = " (基於多項式迴歸)"
+            elif num_months >= 6: # linear
                 slope, intercept, _, _, _ = linregress(x, data)
                 historical_pred = intercept + slope * x
                 feedback_weight = 0.4
                 model_params = (intercept, slope)
-            elif model_logic == 'ema':
+                method_used = " (基於線性迴歸)"
+            elif num_months >= 2: # ema
                 historical_pred = pd.Series(data).ewm(span=num_months, adjust=False).mean().values
-                feedback_weight = 0.0 # EMA 無趨勢項
+                feedback_weight = 0.0
                 model_params = (historical_pred[-1],)
-            
+                method_used = " (基於指數移動平均)"
+
+        if model_logic:
             # 統一遞歸預測
             predictions = []
             prev_pred = data[-1]
@@ -1287,7 +1243,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
 
             for step in range(1, steps_ahead + 1):
                 predict_x = num_months + step
-                if model_logic in ['sarima_like', 'linear']:
+                if model_logic in ['robust_linear', 'linear']:
                     intercept, slope = model_params
                     trend_pred = intercept + slope * predict_x
                 elif model_logic == 'poly':
@@ -1295,14 +1251,12 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                     trend_pred = p(predict_x)
                 elif model_logic == 'ema':
                     ema_val, = model_params
-                    trend_pred = ema_val # EMA 預測未來值為最後的EMA值
+                    trend_pred = ema_val
                 
-                # 遞歸修正項
                 feedback = feedback_weight * (prev_pred - last_historical_pred)
                 current_pred = trend_pred + feedback
                 predictions.append(current_pred)
                 
-                # 更新遞歸狀態
                 prev_pred = current_pred
                 last_historical_pred = trend_pred
 
@@ -1310,7 +1264,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             residuals = data - historical_pred
             
             # 統一信賴區間計算
-            if model_logic == 'ema': # Bootstrap for EMA
+            if model_logic == 'ema':
                 bootstrap_preds = []
                 for _ in range(1000):
                     resampled_residuals = np.random.choice(residuals, size=num_months, replace=True)
@@ -1319,7 +1273,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                     bootstrap_preds.append(simulated_ema_val)
                 lower = max(0, np.percentile(bootstrap_preds, 2.5))
                 upper = np.percentile(bootstrap_preds, 97.5)
-            else: # t-distribution for regression models
+            else:
                 dof = num_months - (3 if model_logic=='poly' else 2)
                 if dof > 0:
                     mse = np.sum(residuals**2) / dof
@@ -1428,7 +1382,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     print(f"  - {seasonal_note}")
     print(f"  - {mc_note}")
     print(f"  - 預測目標月份: {target_month_str} (距離資料最後月份 {steps_ahead} 個月)")
-    print(f"  - 使用策略: 直接-遞歸混合 (結合獨立模型與先前預測輸入)")
+    print(f"  - 使用策略: {method_used.replace('(','').replace(')','')} + 直接-遞歸混合")
     if step_warning:
         print(step_warning)
 
@@ -1453,7 +1407,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         # 檢查是否使用了進階三層式模型
         is_advanced_model = isinstance(trend_scores, dict) and trend_scores.get('is_advanced')
         
-        # --- 自動化註解 ---
+        # --- 【新增】自動化註解 ---
         if is_advanced_model:
             change_date = trend_scores.get('change_date')
             num_shocks = trend_scores.get('num_shocks', 0)
@@ -1508,14 +1462,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                     print(f"  - 最大衝擊幅度: {shock_scores.get('max_shock_magnitude', 0):.1f}/10")
                     print(f"  - 連續正向衝擊: {shock_scores.get('consecutive_shocks', 0):.1f}/10")
                     print(f"  - 衝擊風險得分: {shock_score:.2f}/10")
-
-    # --- 【新增】財務行為深度洞察報告 ---
-    if not monthly_expenses.empty and len(monthly_expenses) >= 24:
-        print(f"\n{colors.CYAN}{colors.BOLD}>>> 財務行為深度洞察 (基於均值回歸分析){colors.RESET}")
-        print(analyze_volatility_reversion(monthly_expenses, colors))
-        print(analyze_quantile_reversion(monthly_expenses, colors))
-        print(analyze_reversion_speed(monthly_expenses, colors))
-
     
     print(f"\n{colors.WHITE}【註】關於「實質金額」：為了讓不同年份的支出能被公平比較，本報告已將所有歷史數據，統一換算為當前基期年的貨幣價值。這能幫助您在扣除物價上漲的影響後，看清自己真實的消費習慣變化。{colors.RESET}")
     print(f"{colors.CYAN}{colors.BOLD}========================================{colors.RESET}\n")
