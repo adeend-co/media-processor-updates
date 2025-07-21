@@ -2,20 +2,20 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.6                 #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.7                 #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新：新增均值回歸深度洞察模塊，分析波動率趨勢、消費結構與財務恢復力(半衰期)。#
+# 更新：引入Theil-Sen穩健回歸取代傳統線性回歸，以抵抗極端離群值對深度洞察分析的干擾。#
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.6"  # 更新版本：新增均值回歸深度洞察
+SCRIPT_VERSION = "v2.7"  # 更新版本：引入穩健回歸以抵抗離群值
 SCRIPT_UPDATE_DATE = "2025-07-21"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -48,7 +48,7 @@ from datetime import datetime
 import pandas as pd
 import argparse
 import numpy as np
-from scipy.stats import linregress, t
+from scipy.stats import linregress, t, theilslopes
 from scipy.stats import skew, kurtosis, median_abs_deviation
 
 # --- 顏色處理類別 ---
@@ -575,7 +575,7 @@ def detect_structural_change_point(monthly_expenses_df, history_window=12, recen
     return last_change_point
 
 
-# --- 三層式預算建議核心函數 (【已升級】) ---
+# --- 三層式預算建議核心函數 (未變更) ---
 def assess_risk_and_budget_advanced(monthly_expenses, model_error_coefficient, historical_rmse):
     """
     針對超過12個月數據的進階三層式預算計算模型。
@@ -1047,22 +1047,43 @@ def compute_quantile_spread(p25, p75, predicted_value):
     spread = (p75 - p25) / predicted_value if p75 is not None and p25 is not None else 0.0
     return spread  # 標準化到 0-1 範圍（可根據需要調整）
 
-# --- 【新增】均值回歸深度洞察模塊 ---
+# --- 【新增】Theil-Sen 穩健回歸輔助函數 ---
+def robust_linregress(x, y):
+    """
+    使用 Theil-Sen 估計器進行穩健線性回歸，作為 linregress 的替代品。
+    """
+    if len(x) != len(y) or len(x) < 2:
+        return (np.nan, np.nan, np.nan, np.nan, np.nan)
+        
+    # theilslopes 對 x 的單調性有要求
+    if not np.all(np.diff(x) > 0):
+        # 如果 x 不是嚴格遞增的，創建一個臨時的索引
+        x = np.arange(len(y))
+
+    slope, intercept, _, _ = theilslopes(y, x)
+    return (slope, intercept, np.nan, np.nan, np.nan)
+
+# --- 【升級】均值回歸深度洞察模塊 ---
 def analyze_mean_reversion_insights(monthly_expenses_df):
     """
-    對支出數據進行三種進階均值回歸分析。
+    【升級】對支出數據進行三種進階均值回歸分析。
+    使用穩健回歸(Theil-Sen)取代傳統線性回歸，以抵抗離群值干擾。
     """
     MIN_MONTHS_FOR_INSIGHTS = 18
-    if len(monthly_expenses_df) < MIN_MONTHS_FOR_INSIGHTS:
+    
+    # 預處理：過濾掉明顯的數據錯誤（例如 1 元的月度總支出）
+    filtered_df = monthly_expenses_df[monthly_expenses_df['Real_Amount'] > 1000].copy()
+    
+    if len(filtered_df) < MIN_MONTHS_FOR_INSIGHTS:
         return {}
 
-    data = monthly_expenses_df['Real_Amount']
+    data = filtered_df['Real_Amount']
     insights = {}
 
     # --- 1. 波動率的均值回歸 (財務穩定性趨勢) ---
     vol_series = robust_moving_std(data, window=6).dropna()
     if len(vol_series) > 4:
-        vol_slope, _, _, _, _ = linregress(np.arange(len(vol_series)), vol_series)
+        vol_slope, vol_intercept, _, _, _ = robust_linregress(np.arange(len(vol_series)), vol_series.values)
         vol_mean = vol_series.mean()
         relative_slope = vol_slope / vol_mean if vol_mean > 0 else 0
         
@@ -1079,16 +1100,16 @@ def analyze_mean_reversion_insights(monthly_expenses_df):
     low_quantile_series = data[data < p75_threshold]
     
     if len(high_quantile_series) > 4 and len(low_quantile_series) > 4:
-        slope_high, _, _, _, _ = linregress(np.arange(len(high_quantile_series)), high_quantile_series)
-        slope_low, _, _, _, _ = linregress(np.arange(len(low_quantile_series)), low_quantile_series)
+        slope_high, _, _, _, _ = robust_linregress(np.arange(len(high_quantile_series)), high_quantile_series.values)
+        slope_low, _, _, _, _ = robust_linregress(np.arange(len(low_quantile_series)), low_quantile_series.values)
         
         # 標準化斜率以進行比較
         norm_slope_high = slope_high / high_quantile_series.mean() if high_quantile_series.mean() > 0 else 0
         norm_slope_low = slope_low / low_quantile_series.mean() if low_quantile_series.mean() > 0 else 0
 
-        if norm_slope_high > 0.05 and norm_slope_low < 0.05:
+        if norm_slope_high > 0.05 and abs(norm_slope_low) < 0.05:
             insights['消費結構分析'] = "高額支出擴張 (日常開銷穩定，但大額支出金額持續增長)"
-        elif norm_slope_high < 0.05 and norm_slope_low > 0.05:
+        elif abs(norm_slope_high) < 0.05 and norm_slope_low > 0.05:
              insights['消費結構分析'] = "基礎成本上漲 (大額開銷受控，但日常基礎成本正持續增加)"
         elif norm_slope_high > 0.05 and norm_slope_low > 0.05:
             insights['消費結構分析'] = "全面性增長 (整體消費水平，無論大小開銷，均在上升通道)"
@@ -1101,7 +1122,8 @@ def analyze_mean_reversion_insights(monthly_expenses_df):
     y_lagged = y[:-1]
     
     if len(y_lagged) > 1:
-        lambda_coeff, _, _, _, _ = linregress(y_lagged, delta_y)
+        # 使用穩健回歸來計算回歸係數，避免被離群值干擾
+        lambda_coeff, _, _, _, _ = robust_linregress(y_lagged, delta_y)
         
         if lambda_coeff < -0.01: # 存在均值回歸
             half_life = -np.log(2) / lambda_coeff
