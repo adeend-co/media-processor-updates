@@ -9,14 +9,14 @@
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新：擴充模型堆疊的專家顧問團至七位，新增三位基礎模型以提供強大的現實錨點，      #
-#       進一步增強模型的通用性與對抗過擬合的能力。                                    #
+# 更新：擴充模型堆疊集成的基礎模型至7個，新增三個穩健的基礎性模型（天真、滾動中位數、全局中位數）#
+#       以增強模型在多變數據下的通用性與現實錨點。                                    #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.12"  # 更新版本：擴充模型堆疊專家顧問團
+SCRIPT_VERSION = "v2.12"  # 更新版本：擴充堆疊模型至7個基礎專家
 SCRIPT_UPDATE_DATE = "2025-07-21"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -51,7 +51,7 @@ import argparse
 import numpy as np
 from scipy.stats import linregress, t
 from scipy.stats import skew, kurtosis, median_abs_deviation
-from scipy.optimize import nnls 
+from scipy.optimize import nnls # 導入非負最小平方法
 from collections import deque
 
 # --- 顏色處理類別 ---
@@ -1046,7 +1046,7 @@ def compute_quantile_spread(p25, p75, predicted_value):
     """計算標準化的分位數範圍（例如 (P75 - P25) / predicted_value）。"""
     if predicted_value == 0 or predicted_value is None:
         return 0.0  # 避免除零
-    spread = (p75 - p25) / predicted_value if p75 is not None and p25 is not None else 0.0
+    spread = (p75 - p75) / predicted_value if p75 is not None and p25 is not None else 0.0
     return spread  # 標準化到 0-1 範圍（可根據需要調整）
 
 # --- 【新增】IRLS 穩健迴歸引擎 ---
