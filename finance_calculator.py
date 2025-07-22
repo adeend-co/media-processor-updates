@@ -1500,8 +1500,8 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             # 1. 產生不含填充的報告片段
             report_parts = [f"{name}({weight:.1%})" for name, weight in zip(model_names, model_weights)]
             
-            # 2. 將報告片段分組成每行最多4個
-            chunk_size = 4
+            # 2. 將報告片段分組成每行最多3個
+            chunk_size = 3
             chunks = [report_parts[i:i + chunk_size] for i in range(0, len(report_parts), chunk_size)]
             
             # 3. 將每個分組用 ", " 連接起來
