@@ -1124,7 +1124,7 @@ def run_monte_carlo_cv(full_df, base_models, n_iterations=100, colors=None):
         y_val_true = val_df['Real_Amount'].values
         
         # 1. 訓練元模型
-        _, _, _, _, _, _, X_meta_train, _ = run_stacked_ensemble_model(train_df, steps_ahead=1, enable_bootstrap=False, perform_feature_engineering=False) # CV中禁用高級功能以加速
+        _, _, _, _, _, _, X_meta_train = run_stacked_ensemble_model(train_df, steps_ahead=1, enable_bootstrap=False, perform_feature_engineering=False) # CV中禁用高級功能以加速
         if X_meta_train is None: continue
         
         final_weights, _ = nnls(X_meta_train.values, y_train_true)
