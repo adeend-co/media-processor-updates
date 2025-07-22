@@ -2,20 +2,20 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.24                #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.25                #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新：引入ERAI(集成穩健準確度指數)，從三維度(相對表現/日常精度/風險意識)評估模型。 #
+# 更新：引入基於內部基準化的百分位數排名，實現ERAI指標的業界標準動態評級。        #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.24"  # 更新版本：引入 ERAI 三維度綜合準確度評估指數
+SCRIPT_VERSION = "v2.25"  # 更新版本：引入 ERAI 百分位數動態評級體系
 SCRIPT_UPDATE_DATE = "2025-07-22"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -1020,82 +1020,105 @@ def residual_autocorrelation_diagnosis(residuals, n, colors):
 # --- 【★★★ 新增：ERAI 準確率評估套件 ★★★】 ---
 def calculate_erai(y_true, y_pred_model, quantile_preds_model, wape_robust_model):
     """
-    計算 ERAI (Ensemble Robust-Accuracy Index) 綜合準確率指數。
+    計算 ERAI (Ensemble Robust-Accuracy Index) 的核心組件分數。
     """
     if y_true is None or len(y_true) < 2:
         return None
 
-    # --- 1. 計算三大核心組件指標 ---
-
     # 1.1 組件一：無標度有界相對絕對誤差 (UMBRAE) -> 相對表現
     model_errors = np.abs(y_true - y_pred_model)
     naive_pred = np.roll(y_true, 1)
-    naive_pred[0] = y_true[0]  # First value has no prior, use itself as naive
+    naive_pred[0] = y_true[0]
     benchmark_errors = np.abs(y_true - naive_pred)
     
     denominator = model_errors + benchmark_errors
     brae = np.divide(model_errors, denominator, out=np.full_like(model_errors, 0.5, dtype=float), where=denominator!=0)
     mbrae = np.mean(brae)
-    
     umbrae = np.inf if mbrae >= 1.0 else mbrae / (1.0 - mbrae)
-
-    # 1.2 組件二：穩健化加權絕對百分比誤差 (WAPE-Robust) -> 日常精度
-    # Directly use the pre-calculated value from the main script.
-
+    
+    # 1.2 組件二：WAPE-Robust -> 日常精度 (直接傳入)
     # 1.3 組件三：平均分位數損失 (AQL) -> 風險意識
     quantiles_for_aql = [0.10, 0.25, 0.75, 0.90]
-    
-    # 計算模型的 AQL
     model_losses = [quantile_loss(y_true, quantile_preds_model[q], q) for q in quantiles_for_aql]
     aql_model = np.mean(model_losses)
 
-    # 計算基準(樸素)模型的 AQL
     naive_residuals = y_true[1:] - y_true[:-1]
+    if len(naive_residuals) == 0: naive_residuals = np.array([0]) # 處理只有2個點的邊界情況
     naive_quantiles = np.percentile(naive_residuals, [q * 100 for q in quantiles_for_aql])
-    
-    naive_losses = []
-    for i, q in enumerate(quantiles_for_aql):
-        # Naive quantile forecast is the last value + the quantile of historical changes
-        naive_q_pred = naive_pred + naive_quantiles[i]
-        naive_losses.append(quantile_loss(y_true, naive_q_pred, q))
+    naive_losses = [quantile_loss(y_true[1:], (y_true[:-1] + nq), q) for nq, q in zip(naive_quantiles, quantiles_for_aql)]
     aql_naive = np.mean(naive_losses) if naive_losses else np.inf
 
-    # --- 2. 指標歸一化 ---
-    
-    # Score_Rel: 0 to 1, higher is better
+    # 2. 指標歸一化
     score_rel = max(0, 1 - umbrae)
-    
-    # Score_Prec: 0 to 1, higher is better
     score_prec = 1 - (wape_robust_model / 100.0) if wape_robust_model is not None else 0
-    
-    # Score_Risk: 0 to 1, higher is better
     score_risk = max(0, 1 - (aql_model / aql_naive)) if aql_naive > 1e-9 else 0
     
-    # --- 3. 集成加權與最終指數計算 ---
+    # 3. 集成加權
     weights = {'rel': 0.4, 'prec': 0.4, 'risk': 0.2}
     erai_score = (weights['rel'] * score_rel) + (weights['prec'] * score_prec) + (weights['risk'] * score_risk)
 
-    # --- 4. 結果解讀與評級標準 ---
-    if erai_score >= 0.90:
-        rating = "卓越 (Excellent)"
-        description = "模型在各方面都遠超基準，日常預測極其精準，且對未來風險有深刻洞察。"
-    elif erai_score >= 0.75:
-        rating = "良好 (Good)"
-        description = "一個非常可靠的模型。它顯著優於樸素預測，且日常誤差控制在合理範圍。"
-    elif erai_score >= 0.60:
-        rating = "合格 (Acceptable)"
-        description = "模型具備實用價值，雖然不是最頂尖，但其預測結果可作為有效的財務參考。"
-    else:
-        rating = "有待加強 (Needs Improvement)"
-        description = "模型相較於簡單猜測的提升有限，或在某些核心維度上存在明顯短板。"
+    return erai_score, {'rel': score_rel, 'prec': score_prec, 'risk': score_risk}
+
+def perform_internal_benchmarking(y_true, historical_ensemble_pred, historical_base_preds_df, is_shock_flags):
+    """
+    執行內部基準化，評估集成模型並給予業界標準評級。
+    """
+    score_pool = []
+    
+    # --- 評估集成模型 ---
+    ensemble_residuals = y_true - historical_ensemble_pred
+    ensemble_wape_robust = (np.sum(np.abs(ensemble_residuals[~is_shock_flags])) / np.sum(y_true[~is_shock_flags])) * 100
+    
+    ensemble_quantile_preds = {}
+    res_quantiles = np.percentile(ensemble_residuals, [q * 100 for q in [0.1, 0.25, 0.5, 0.75, 0.9]])
+    for i, q in enumerate([0.1, 0.25, 0.5, 0.75, 0.9]):
+        ensemble_quantile_preds[q] = historical_ensemble_pred + res_quantiles[i]
+
+    ensemble_erai_score, ensemble_components = calculate_erai(y_true, historical_ensemble_pred, ensemble_quantile_preds, ensemble_wape_robust)
+    score_pool.append(ensemble_erai_score)
+
+    # --- 評估所有基礎模型 ---
+    for model_name in historical_base_preds_df.columns:
+        base_pred = historical_base_preds_df[model_name].values
+        base_residuals = y_true - base_pred
         
+        # 檢查是否有足夠的非衝擊點數據
+        if len(y_true[~is_shock_flags]) > 0 and np.sum(y_true[~is_shock_flags]) > 1e-9:
+            base_wape_robust = (np.sum(np.abs(base_residuals[~is_shock_flags])) / np.sum(y_true[~is_shock_flags])) * 100
+        else: # 若所有點都是衝擊點，則退化為全局 WAPE
+            base_wape_robust = (np.sum(np.abs(base_residuals)) / np.sum(y_true)) * 100 if np.sum(y_true) > 1e-9 else 100.0
+
+        base_quantile_preds = {}
+        res_quantiles_base = np.percentile(base_residuals, [q * 100 for q in [0.1, 0.25, 0.5, 0.75, 0.9]])
+        for i, q in enumerate([0.1, 0.25, 0.5, 0.75, 0.9]):
+            base_quantile_preds[q] = base_pred + res_quantiles_base[i]
+        
+        base_erai_score, _ = calculate_erai(y_true, base_pred, base_quantile_preds, base_wape_robust)
+        score_pool.append(base_erai_score)
+
+    # --- 計算百分位排名與評級 ---
+    score_pool = [s for s in score_pool if s is not None and np.isfinite(s)]
+    if not score_pool: return None
+    
+    percentile_rank = (np.sum(ensemble_erai_score > np.array(score_pool)) / len(score_pool)) * 100
+
+    if percentile_rank >= 90:
+        rating = "Elite / S級 (菁英級)"
+        description = "代表了顯著的競爭優勢與技術領先。此模型的預測能力遠超市場平均，其產出的預測結果應被視為高度可靠的決策依據。"
+    elif percentile_rank >= 75:
+        rating = "Leading / A級 (領先級)"
+        description = "表現優於大多數同業，具備強大的預測能力。這是一個非常可靠且高效的模型，能持續提供超越基準的價值。"
+    elif percentile_rank >= 50:
+        rating = "Competitive / B級 (競爭級)"
+        description = "具備市場平均水準的預測能力。模型的表現與大多數標準方案相当，具備實用價值，但沒有顯著的領先優勢。"
+    else:
+        rating = "Lagging / C級 (落後級)"
+        description = "模型的預測能力低於市場平均水準，可能構成決策風險。其預測結果的參考價值有限，強烈建議對模型進行審查、優化或替換。"
+
     return {
-        'erai_score': erai_score,
-        'components': {
-            'relative_performance': score_rel,
-            'routine_precision': score_prec,
-            'risk_awareness': score_risk,
-        },
+        'erai_score': ensemble_erai_score,
+        'percentile_rank': percentile_rank,
+        'components': ensemble_components,
         'rating': rating,
         'description': description
     }
@@ -1418,21 +1441,10 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5):
     data = monthly_expenses_df['Real_Amount'].values
     x = np.arange(1, len(data) + 1)
     
-    # 將基礎模型按功能分組排序，以提升報告可讀性
     base_models = {
-        # 趨勢組
-        'poly': train_predict_poly,
-        'huber': train_predict_huber,
-        'des': train_predict_des,
-        'drift': train_predict_drift,
-        # 季節性組
-        'seasonal': train_predict_seasonal,
-        'seasonal_naive': train_predict_seasonal_naive,
-        # 基線/平均組
-        'naive': train_predict_naive,
-        'moving_average': train_predict_moving_average,
-        'rolling_median': train_predict_rolling_median,
-        'global_median': train_predict_global_median,
+        'poly': train_predict_poly, 'huber': train_predict_huber, 'des': train_predict_des, 'drift': train_predict_drift,
+        'seasonal': train_predict_seasonal, 'seasonal_naive': train_predict_seasonal_naive, 'naive': train_predict_naive,
+        'moving_average': train_predict_moving_average, 'rolling_median': train_predict_rolling_median, 'global_median': train_predict_global_median,
     }
     
     model_keys = list(base_models.keys())
@@ -1449,17 +1461,15 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5):
         x_train, y_train, df_train = x[train_idx], data[train_idx], monthly_expenses_df.iloc[train_idx]
         x_val = x[val_idx]
         
-        # 動態地讓所有基礎模型進行預測
         for j, key in enumerate(model_keys):
             model_func = base_models[key]
             if key in ['seasonal']:
                  meta_features[val_idx, j] = model_func(df_train, len(x_val))
             elif key in ['poly', 'huber']:
                  meta_features[val_idx, j] = model_func(x_train, y_train, x_val)
-            else: # 其餘模型
+            else:
                  meta_features[val_idx, j] = model_func(y_train, len(x_val))
 
-    # 最終預測階段
     x_future = np.arange(len(x) + 1, len(x) + steps_ahead + 1)
     final_base_predictions = np.zeros((steps_ahead, len(base_models)))
 
@@ -1472,7 +1482,6 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5):
         else:
             final_base_predictions[:, j] = model_func(data, steps_ahead)
     
-    # 使用元模型進行訓練和預測
     final_prediction_sequence, model_weights = train_and_predict_meta_model(meta_features, data, final_base_predictions)
     final_prediction = final_prediction_sequence[-1]
     
@@ -1480,14 +1489,17 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5):
     residuals = data - historical_pred
     
     dof = len(data) - len(base_models) - 1
-    if dof <= 0: return final_prediction, historical_pred, residuals, None, None, model_weights
+    if dof <= 0: return final_prediction, historical_pred, residuals, None, None, model_weights, pd.DataFrame(meta_features, columns=model_keys)
     
     mse = np.sum(residuals**2) / dof
     se = np.sqrt(mse)
     t_val = t.ppf(0.975, dof)
     lower, upper = final_prediction - t_val * se, final_prediction + t_val * se
     
-    return final_prediction, historical_pred, residuals, lower, upper, model_weights
+    # 【★★★ 核心修改：返回所有基礎模型的歷史預測以供評級 ★★★】
+    historical_base_preds_df = pd.DataFrame(meta_features, columns=model_keys)
+    
+    return final_prediction, historical_pred, residuals, lower, upper, model_weights, historical_base_preds_df
 
 
 # --- 主要分析與預測函數 (【已升級】) ---
@@ -1574,7 +1586,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
 
         if num_months >= 24:
             method_used = " (基於模型堆疊集成)"
-            predicted_value, historical_pred, residuals, lower, upper, model_weights = run_stacked_ensemble_model(df_for_seasonal_model, steps_ahead)
+            predicted_value, historical_pred, residuals, lower, upper, model_weights, historical_base_preds_df = run_stacked_ensemble_model(df_for_seasonal_model, steps_ahead)
             
             model_names = [
                 "趨勢", "穩健", "慣性", "長期趨勢",
@@ -1633,21 +1645,21 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 
             if num_months >= 12: 
                 anomaly_info = calculate_anomaly_scores(data)
-                is_shock = anomaly_info['Is_Shock'].values
-                residuals_clean = residuals[~is_shock]
-                data_clean = data[~is_shock]
+                is_shock_flags = anomaly_info['Is_Shock'].values
+                residuals_clean = residuals[~is_shock_flags]
+                data_clean = data[~is_shock_flags]
                 if len(residuals_clean) > 0:
                     historical_rmse_robust = np.sqrt(np.mean(residuals_clean**2))
                 if len(data_clean) > 0 and np.sum(np.abs(data_clean)) > 0:
                     historical_wape_robust = (np.sum(np.abs(residuals_clean)) / np.sum(np.abs(data_clean))) * 100
             
             # --- 【★★★ 核心修改：計算 ERAI 指標 ★★★】 ---
-            if num_months >= 24 and historical_wape_robust is not None:
-                erai_results = calculate_erai(
+            if num_months >= 24:
+                erai_results = perform_internal_benchmarking(
                     y_true=data,
-                    y_pred_model=historical_pred,
-                    quantile_preds_model=quantile_preds,
-                    wape_robust_model=historical_wape_robust
+                    historical_ensemble_pred=historical_pred,
+                    historical_base_preds_df=historical_base_preds_df,
+                    is_shock_flags=is_shock_flags
                 )
 
     expense_std_dev, volatility_report, color = None, "", colors.WHITE
@@ -1712,9 +1724,10 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             rating = erai_results['rating']
             description = erai_results['description']
             components = erai_results['components']
+            pr = erai_results['percentile_rank']
             
-            print(f"{colors.PURPLE}{colors.BOLD}  - ERAI (綜合準確率): {erai_score:.2f}  評級: {rating}{colors.RESET}")
-            print(f"{colors.WHITE}    └─ 相對表現: {components['relative_performance']:.2f} | 日常精度: {components['routine_precision']:.2f} | 風險意識: {components['risk_awareness']:.2f}{colors.RESET}")
+            print(f"{colors.PURPLE}{colors.BOLD}  - ERAI (綜合準確率): {erai_score:.3f}  評級: {rating}{colors.RESET}")
+            print(f"{colors.WHITE}    └─ 相對表現: {components['rel']:.2f} | 日常精度: {components['prec']:.2f} | 風險意識: {components['risk']:.2f} (百分位排名: {pr:.1f}%){colors.RESET}")
             print(f"{colors.WHITE}    └─ 解讀: {description}{colors.RESET}")
 
         elif historical_mase is not None: 
