@@ -2,20 +2,20 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.31                #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.40                #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新 v2.31：修正三層式預算中誤差緩衝為零的邏輯錯誤；恢復顯示完整的模型性能指標。 #
+# 更新 v2.40：引入波動率加權集成訓練；MPI指標增加百分比顯示。                 #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.31"  # 更新版本：修正誤差緩衝計算邏輯，並恢復顯示所有性能指標
+SCRIPT_VERSION = "v2.40"  # 更新版本：引入波動率加權集成訓練；MPI指標增加百分比顯示。
 SCRIPT_UPDATE_DATE = "2025-07-22"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -1497,7 +1497,7 @@ def train_and_predict_meta_model(X_meta_train, y_meta_train, X_meta_predict, wei
     return final_prediction, normalized_weights
 
 
-# --- 【★★★ 核心升級：引入移動區塊自舉法 (MBB) 增強集成訓練 ★★★】 ---
+# --- 【★★★ 核心升級：引入波動率加權自舉法 (Volatility-Weighted MBB) ★★★】 ---
 def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, enable_bootstrap=True, n_bootstrap_iterations=100, colors=None):
     data = monthly_expenses_df['Real_Amount'].values
     x = np.arange(1, len(data) + 1)
@@ -1534,13 +1534,16 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, enab
                  meta_features[val_idx, j] = model_func(y_train, len(x_val))
 
     # --- 步驟 2: 訓練元模型 (Level 1 Meta-Model) ---
-    # 【核心升級】使用移動區塊自舉法 (MBB) 訓練元模型以達成共識
+    # 【核心升級】使用波動率加權的移動區塊自舉法訓練元模型以達成共識
     if enable_bootstrap:
         color_cyan = colors.CYAN if colors else ''
         color_reset = colors.RESET if colors else ''
-        print(f"\n{color_cyan}正在執行元模型共識訓練 (移動區塊自舉法)...{color_reset}")
+        print(f"\n{color_cyan}正在執行元模型共識訓練 (波動率加權自舉法)...{color_reset}")
         
         committee_weights = []
+        performance_weights = [] # 用於儲存每次訓練的反向波動率權重
+        epsilon = 1e-9 # 用於數值穩定性，防止除以零
+        
         # 啟發式計算最佳區塊長度，通常為 N^(1/3)
         block_length = max(2, int(n_samples**(1/3)))
         num_blocks = n_samples - block_length + 1
@@ -1558,15 +1561,20 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, enab
             X_meta_boot = meta_features[bootstrap_indices]
             y_meta_boot = data[bootstrap_indices]
             
+            # 【v2.40 新增】計算本次抽樣的波動率，並生成反向權重
+            volatility_i = np.std(y_meta_boot)
+            inv_vol_weight_i = 1.0 / (volatility_i + epsilon)
+            performance_weights.append(inv_vol_weight_i)
+
             # 訓練一個微型元模型
             _, weights = train_and_predict_meta_model(X_meta_boot, y_meta_boot, X_meta_boot)
             committee_weights.append(weights)
             
             print_progress_bar(i + 1, n_bootstrap_iterations, prefix='進度:', suffix='完成', length=40)
             
-        # 達成共識：對所有委員會成員的權重取平均值
-        model_weights = np.mean(committee_weights, axis=0)
-        print("元模型共識訓練完成。")
+        # 【v2.40 核心修改】執行加權平均，取代原有的簡單算術平均
+        model_weights = np.average(committee_weights, axis=0, weights=performance_weights)
+        print("元模型共識訓練完成 (已應用波動率加權)。")
 
     else: # 原始單次訓練方法 (用於CV或禁用時)
         _, model_weights = train_and_predict_meta_model(meta_features, data, meta_features)
@@ -1695,7 +1703,8 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         }
 
         if num_months >= 24:
-            method_used = " (基於自舉法增強的集成訓練)"
+            # 【v2.40 核心修改】更新方法描述
+            method_used = " (基於波動率加權的集成訓練)"
             predicted_value, historical_pred, residuals, lower, upper, model_weights, historical_base_preds_df = run_stacked_ensemble_model(df_for_seasonal_model, steps_ahead, colors=colors)
             
             model_names = [
@@ -1850,7 +1859,8 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             components = mpi_results['components']
             
             print(f"{colors.PURPLE}{colors.BOLD}  ---")
-            print(f"{colors.PURPLE}{colors.BOLD}  - MPI (綜合效能指數): {mpi_score:.3f}  評級: {rating}{colors.RESET}")
+            # 【v2.40 核心修改】MPI指標增加百分比顯示
+            print(f"{colors.PURPLE}{colors.BOLD}  - MPI (綜合效能指數): {mpi_score:.3f} ({mpi_score:.1%})  評級: {rating}{colors.RESET}")
             print(f"{colors.WHITE}    └─ 絕對準確度: {components['absolute_accuracy']:.3f} | 相對優越性 (ERAI): {components['relative_superiority']:.3f}{colors.RESET}")
             print(f"{colors.WHITE}    └─ 建議行動: {suggestion}{colors.RESET}")
 
