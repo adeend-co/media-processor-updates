@@ -2,20 +2,20 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.32                #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.33                #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新 v2.32：導入動態參數自適應調整策略，擴編集成模型智囊團；優化MPI指標顯示。 #
+# 更新 v2.33：增強共識權重報告的解釋性，採用繁體中文標籤並優化排版。        #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.32"  # 更新版本：導入動態參數自適應調整，優化MPI指標顯示
+SCRIPT_VERSION = "v2.33"  # 更新版本：增強共識權重報告的解釋性，採用繁體中文標籤並優化排版
 SCRIPT_UPDATE_DATE = "2025-07-22"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -1647,7 +1647,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
 
     num_unique_months = monthly_expenses['Parsed_Date'].dt.to_period('M').nunique() if not monthly_expenses.empty else 0
 
-    used_seasonal = False
     seasonal_note = "未使用季節性分解（資料月份不足 24 個月）。"
     analysis_data = None
     df_for_seasonal_model = None
@@ -1725,13 +1724,28 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             method_used = " (基於動態參數自適應集成)"
             predicted_value, historical_pred, residuals, lower, upper, model_weights, historical_base_preds_df = run_stacked_ensemble_model(df_for_seasonal_model, steps_ahead, colors=colors)
             
-            # 動態產生權重報告
+            # 【v2.33 升級】使用繁體中文名稱對應表，增強結果解釋性
+            model_name_map = {
+                'huber': '穩健趨勢', 'des': '指數平滑', 'drift': '漂移法',
+                'seasonal': '季節分解', 'seasonal_naive': '季節模仿', 'naive': '單純預測',
+                'global_median': '全局中位數', 'poly_deg1': '多項式-線性', 'poly_deg2': '多項式-二次',
+                'poly_deg3': '多項式-三次', 'ma_win3': '移動平均(3月)', 'ma_win6': '移動平均(6月)',
+                'ma_win9': '移動平均(9月)', 'ma_win12': '移動平均(12月)',
+                'rm_win3': '滾動中位(3月)', 'rm_win6': '滾動中位(6月)',
+                'rm_win9': '滾動中位(9月)', 'rm_win12': '滾動中位(12月)',
+            }
             model_keys = historical_base_preds_df.columns
-            report_parts = [f"{name}({weight:.1%})" for name, weight in zip(model_keys, model_weights) if weight > 0.001] # 只顯示有貢獻的
+            
+            report_parts = [
+                f"{model_name_map.get(name, name)}({weight:.1%})" 
+                for name, weight in zip(model_keys, model_weights) 
+                if weight > 0.001
+            ]
+
             chunk_size = 3
             chunks = [report_parts[i:i + chunk_size] for i in range(0, len(report_parts), chunk_size)]
             lines = [", ".join(chunk) for chunk in chunks]
-            indentation = "\n" + " " * 16
+            indentation = "\n                " # 調整縮排以對齊
             model_weights_report = f"  - 共識權重: {indentation.join(lines)}"
 
         elif 18 <= num_months < 24:
@@ -1854,7 +1868,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     if historical_mae is not None:
         print(f"\n{colors.WHITE}>>> 模型表現評估 (基於歷史回測){colors.RESET}")
         
-        # 【v2.31 核心修正】: 移除 if/else，總是顯示基礎指標。
         print(f"  - MAE (平均絕對誤差): {historical_mae:,.2f} 元")
         print(f"  - RMSE (全局): {historical_rmse:,.2f} 元 (含極端值，評估總體風險)")
         if historical_rmse_robust is not None:
@@ -1866,7 +1879,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         if historical_mase is not None: 
             print(f"  - MASE (平均絕對標度誤差): {historical_mase:.2f} (小於1優於天真預測)")
 
-        # 【v2.31 核心修正】: 將 MPI 作為補充資訊顯示。
         if mpi_results is not None:
             mpi_score = mpi_results['mpi_score']
             rating = mpi_results['rating']
@@ -1874,7 +1886,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             components = mpi_results['components']
             
             print(f"{colors.PURPLE}{colors.BOLD}  ---")
-            # 【v2.32 升級】同時顯示分數與百分比
             print(f"{colors.PURPLE}{colors.BOLD}  - MPI (綜合效能指數): {mpi_score:.3f} ({mpi_score:.1%})  評級: {rating}{colors.RESET}")
             print(f"{colors.WHITE}    └─ 絕對準確度: {components['absolute_accuracy']:.3f} | 相對優越性 (ERAI): {components['relative_superiority']:.3f}{colors.RESET}")
             print(f"{colors.WHITE}    └─ 建議行動: {suggestion}{colors.RESET}")
