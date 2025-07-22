@@ -1508,8 +1508,8 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             lines = [", ".join(chunk) for chunk in chunks]
             
             # 4. 用換行符和正確的縮排，將所有行組合成最終報告
-            indentation = "\n" + " " * 8 # 換行符 + 與 "  - 專家權重: " 對齊的空白
-            model_weights_report = f"  - 專家權重:   {indentation.join(lines)}"
+            indentation = "\n" + " " * 4 # 換行符 + 與 "  - 專家權重: " 對齊的空白
+            model_weights_report = f"  - 專家權重: {indentation.join(lines)}"
 
         elif 18 <= num_months < 24:
             method_used = " (基於穩健迴歸IRLS-Huber)"
