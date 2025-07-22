@@ -2,20 +2,20 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.30                #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.31                #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新 v2.30：引入「移動區塊自舉法」增強集成訓練，尊重時序性，並加入進度條。     #
+# 更新 v2.31：修正三層式預算中誤差緩衝為零的邏輯錯誤；恢復顯示完整的模型性能指標。 #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.30"  # 更新版本：引入移動區塊自舉法 (MBB) 增強集成訓練
+SCRIPT_VERSION = "v2.31"  # 更新版本：修正誤差緩衝計算邏輯，並恢復顯示所有性能指標
 SCRIPT_UPDATE_DATE = "2025-07-22"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -576,11 +576,11 @@ def detect_structural_change_point(monthly_expenses_df, history_window=12, recen
     return last_change_point
 
 
-# --- 三層式預算建議核心函數 (未變更) ---
+# --- 三層式預算建議核心函數 (【★★★ 已修正 ★★★】) ---
 def assess_risk_and_budget_advanced(monthly_expenses, model_error_coefficient, historical_rmse):
     """
     針對超過12個月數據的進階三層式預算計算模型。
-    現在會返回包含模式偵測結果的字典。
+    【v2.31 修正】: 確保模型誤差緩衝總是使用主模型傳入的全局 historical_rmse。
     """
     data = monthly_expenses['Real_Amount'].values
     n_total = len(data)
@@ -590,7 +590,6 @@ def assess_risk_and_budget_advanced(monthly_expenses, model_error_coefficient, h
     # --- 模式偵測 (使用重構後的函數) ---
     change_point = detect_structural_change_point(monthly_expenses)
     change_date_str = None
-    # 只有當偵測到的轉變點不是從頭開始時，才視為一次「轉變」
     if change_point > 0:
         change_date = monthly_expenses['Parsed_Date'].iloc[change_point]
         change_date_str = change_date.strftime('%Y年-%m月')
@@ -599,7 +598,6 @@ def assess_risk_and_budget_advanced(monthly_expenses, model_error_coefficient, h
 
     # --- 第一層：基礎日常預算 (Base Living Budget) ---
     new_normal_df = anomaly_df.iloc[change_point:].copy()
-    # 在計算基礎預算時，應排除真實衝擊點
     clean_new_normal_data = new_normal_df[~new_normal_df['Is_Shock']]['Amount'].values
     
     if len(clean_new_normal_data) < 2:
@@ -622,14 +620,9 @@ def assess_risk_and_budget_advanced(monthly_expenses, model_error_coefficient, h
         amortized_shock_fund = avg_shock * prob_shock
     
     # --- 第三層：模型誤差緩衝 (Model Error Buffer) ---
-    rmse_clean = historical_rmse if historical_rmse is not None else 0
-    if len(clean_new_normal_data) >= 2:
-        x_clean = np.arange(len(clean_new_normal_data))
-        slope, intercept, _, _, _ = linregress(x_clean, clean_new_normal_data)
-        y_pred_clean = intercept + slope * x_clean
-        rmse_clean = np.sqrt(np.mean((clean_new_normal_data - y_pred_clean) ** 2))
-
-    model_error_buffer = model_error_coefficient * rmse_clean
+    # 【v2.31 核心修正】: 直接使用傳入的全局 historical_rmse，不再重新計算局部 RMSE。
+    # 這確保了誤差緩衝能準確反映主預測模型本身的內在不確定性。
+    model_error_buffer = model_error_coefficient * (historical_rmse if historical_rmse is not None else 0)
     
     # --- 最終預算 ---
     suggested_budget = base_budget_p75 + amortized_shock_fund + model_error_buffer
@@ -1613,7 +1606,7 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, enab
     return final_prediction, historical_pred, residuals, lower, upper, model_weights, historical_base_preds_df
 
 
-# --- 主要分析與預測函數 (【已升級】) ---
+# --- 主要分析與預測函數 (【★★★ 已修正 ★★★】) ---
 def analyze_and_predict(file_paths_str: str, no_color: bool):
     colors = Colors(enabled=not no_color)
     file_paths = [path.strip() for path in file_paths_str.split(';')]
@@ -1837,27 +1830,29 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     if historical_mae is not None:
         print(f"\n{colors.WHITE}>>> 模型表現評估 (基於歷史回測){colors.RESET}")
         
+        # 【v2.31 核心修正】: 移除 if/else，總是顯示基礎指標。
+        print(f"  - MAE (平均絕對誤差): {historical_mae:,.2f} 元")
+        print(f"  - RMSE (全局): {historical_rmse:,.2f} 元 (含極端值，評估總體風險)")
+        if historical_rmse_robust is not None:
+            print(f"  - RMSE (排除衝擊後): {colors.GREEN}{historical_rmse_robust:,.2f} 元 (反映日常預測誤差){colors.RESET}")
+        if historical_wape is not None: 
+            print(f"  - WAPE (全局): {historical_wape:.2f}% (含極端值，評估總體誤差比例)")
+        if historical_wape_robust is not None:
+            print(f"  - WAPE (排除衝擊後): {colors.GREEN}{historical_wape_robust:.2f}% (反映日常預測誤差比例){colors.RESET}")
+        if historical_mase is not None: 
+            print(f"  - MASE (平均絕對標度誤差): {historical_mase:.2f} (小於1優於天真預測)")
+
+        # 【v2.31 核心修正】: 將 MPI 作為補充資訊顯示。
         if mpi_results is not None:
             mpi_score = mpi_results['mpi_score']
             rating = mpi_results['rating']
             suggestion = mpi_results['suggestion']
             components = mpi_results['components']
             
+            print(f"{colors.PURPLE}{colors.BOLD}  ---")
             print(f"{colors.PURPLE}{colors.BOLD}  - MPI (綜合效能指數): {mpi_score:.3f}  評級: {rating}{colors.RESET}")
             print(f"{colors.WHITE}    └─ 絕對準確度: {components['absolute_accuracy']:.3f} | 相對優越性 (ERAI): {components['relative_superiority']:.3f}{colors.RESET}")
             print(f"{colors.WHITE}    └─ 建議行動: {suggestion}{colors.RESET}")
-
-        else:
-            print(f"  - MAE (平均絕對誤差): {historical_mae:,.2f} 元")
-            print(f"  - RMSE (全局): {historical_rmse:,.2f} 元 (含極端值，評估總體風險)")
-            if historical_rmse_robust is not None:
-                print(f"  - RMSE (排除衝擊後): {colors.GREEN}{historical_rmse_robust:,.2f} 元 (反映日常預測誤差){colors.RESET}")
-            if historical_wape is not None: 
-                print(f"  - WAPE (全局): {historical_wape:.2f}% (含極端值，評估總體誤差比例)")
-            if historical_wape_robust is not None:
-                print(f"  - WAPE (排除衝擊後): {colors.GREEN}{historical_wape_robust:.2f}% (反映日常預測誤差比例){colors.RESET}")
-            if historical_mase is not None: 
-                print(f"  - MASE (平均絕對標度誤差): {historical_mase:.2f} (小於1優於天真預測)")
 
 
     if diagnostic_report:
