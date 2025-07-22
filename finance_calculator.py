@@ -2,21 +2,21 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.11                #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.20                #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新：新增穩健化WAPE指標，在報告中區分全局與日常誤差比例，以完整呈現模型在不同情境下的表現。#
+# 更新：新增 SEAS (堆疊集成準確率) 指標，用以全方位評估模型穩健性、嚴謹性與誠實度。      #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.11"  # 更新版本：新增穩健化WAPE指標
-SCRIPT_UPDATE_DATE = "2025-07-21"
+SCRIPT_VERSION = "v2.20"  # 更新版本：新增 SEAS 綜合準確率指標
+SCRIPT_UPDATE_DATE = "2025-07-22"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
 # 說明：您可以直接修改這裡的數字，來調整報告中各表格欄位的寬度，以適應您的終端機字體。
@@ -1017,6 +1017,114 @@ def residual_autocorrelation_diagnosis(residuals, n, colors):
     report.append(header_line)
     return "\n".join(report)
 
+# --- 【★★★ 新增：SEAS 準確率評估套件 ★★★】 ---
+
+def calculate_umbrae(y_true, y_pred, y_benchmark):
+    """
+    專家：穩健大師 (UMBRAE - Unscaled Mean Bounded Relative Absolute Error)
+    評估模型的基礎穩健性，對離群值不敏感。
+    """
+    # 計算模型誤差和基準誤差
+    model_errors = np.abs(y_true - y_pred)
+    benchmark_errors = np.abs(y_true - y_benchmark)
+    
+    # 核心邏輯：計算有界相對誤差 (BRAE)
+    # 避免除以零
+    denominator = model_errors + benchmark_errors
+    brae = np.divide(model_errors, denominator, out=np.zeros_like(model_errors, dtype=float), where=denominator!=0)
+    
+    # 計算平均有界相對誤差 (MBRAE)
+    mbrae = np.mean(brae)
+    
+    # 轉換為無標度、更易解讀的 UMBRAE
+    # 若 mbrae 趨近於1（極差），結果會趨近於無限大
+    if mbrae >= 1.0:
+        return np.inf
+    umbrae = mbrae / (1 - mbrae)
+    return umbrae
+
+def calculate_rmsse(y_true, y_pred, y_train_naive_errors):
+    """
+    專家：懲罰判官 (RMSSE - Root Mean Squared Scaled Error)
+    嚴厲懲罰大的預測錯誤。
+    """
+    # 計算預測的均方誤差 (MSE)
+    mse = np.mean(np.square(y_true - y_pred))
+    
+    # 計算基準模型的縮放因子 (訓練集上的天真預測誤差的均方值)
+    scale_factor = np.mean(np.square(y_train_naive_errors))
+    
+    # 避免除以零
+    if scale_factor < 1e-9:
+        return np.inf
+        
+    # 計算 RMSSE
+    rmsse = np.sqrt(mse / scale_factor)
+    return rmsse
+
+def calculate_msis(y_true, lower_bound, upper_bound, y_train_naive_errors, alpha=0.05):
+    """
+    專家：誠實度考官 (MSIS - Mean Scaled Interval Score)
+    評估預測區間的品質（寬度與覆蓋率）。
+    """
+    # 計算區間寬度
+    interval_width = upper_bound - lower_bound
+    
+    # 對未覆蓋真實值的區間進行懲罰
+    penalty_lower = (2 / alpha) * np.maximum(0, lower_bound - y_true)
+    penalty_upper = (2 / alpha) * np.maximum(0, y_true - upper_bound)
+    
+    # 總區間分數
+    interval_score = interval_width + penalty_lower + penalty_upper
+    
+    # 計算平均區間分數 (Mean Interval Score, MIS)
+    mis = np.mean(interval_score)
+    
+    # 使用與 MASE 相同的縮放因子
+    scale_factor = np.mean(np.abs(y_train_naive_errors))
+
+    # 避免除以零
+    if scale_factor < 1e-9:
+        return np.inf
+        
+    # 計算 MSIS
+    msis = mis / scale_factor
+    return msis
+
+def calculate_seas(y_true, y_pred, lower_bound, upper_bound, y_train):
+    """
+    主整合函數：SEAS (Stacked Ensemble Accuracy Score)
+    匯總三位專家的意見，得出綜合評分。
+    """
+    # 權重設定
+    weights = {'umbrae': 0.5, 'rmsse': 0.2, 'msis': 0.3}
+
+    # 準備基準預測與誤差
+    # 驗證期
+    benchmark_pred = np.roll(y_true, 1)
+    benchmark_pred[0] = y_train[-1] if len(y_train) == len(y_true) else np.full_like(y_true, y_train[-1])
+    # 訓練期
+    train_naive_errors = y_train[1:] - y_train[:-1]
+
+    if len(train_naive_errors) == 0:
+        return np.inf, {'umbrae': np.inf, 'rmsse': np.inf, 'msis': np.inf}
+
+    # 獲取三位專家的評分
+    umbrae_score = calculate_umbrae(y_true, y_pred, benchmark_pred)
+    rmsse_score = calculate_rmsse(y_true, y_pred, train_naive_errors)
+    msis_score = calculate_msis(y_true, lower_bound, upper_bound, train_naive_errors)
+    
+    scores = {'umbrae': umbrae_score, 'rmsse': rmsse_score, 'msis': msis_score}
+    
+    # 進行加權集成
+    seas_score = (umbrae_score * weights['umbrae'] + 
+                  rmsse_score * weights['rmsse'] + 
+                  msis_score * weights['msis'])
+                  
+    return seas_score, scores
+
+# --- 【★★★ 新增結束 ★★★】 ---
+
 def compute_calibration_results(y_true, quantile_preds, quantiles):
     """計算模型校準結果，返回字典形式。"""
     calibration_results = {}
@@ -1481,6 +1589,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     quantile_preds, historical_pred, residuals = {}, None, None
     quantiles = [0.10, 0.25, 0.50, 0.75, 0.90]
     model_weights_report = ""
+    seas_score, seas_components = None, None
 
     if analysis_data is not None and len(analysis_data) >= 2:
         num_months = len(analysis_data)
@@ -1510,6 +1619,24 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             # 4. 用換行符和正確的縮排，將所有行組合成最終報告
             indentation = "\n" + " " * 14 # 換行符 + 與 "  - 專家權重: " 對齊的空白
             model_weights_report = f"  - 專家權重: {indentation.join(lines)}"
+            
+            # --- 【新增】計算 SEAS 綜合準確率評分 ---
+            if historical_pred is not None and lower is not None and upper is not None:
+                # 為了評估歷史回測的準確度，我們需要將預測值和區間對齊歷史數據
+                # 這裡的 y_true 是 data, y_pred 是 historical_pred
+                # 區間也需要是歷史回測期間的，而非對未來的預測
+                # 腳本目前主要生成未來區間，此處為簡化演示，使用與未來預測相同的不確定性寬度
+                uncertainty_width = (upper - lower) / 2
+                hist_lower = historical_pred - uncertainty_width
+                hist_upper = historical_pred + uncertainty_width
+
+                seas_score, seas_components = calculate_seas(
+                    y_true=data, 
+                    y_pred=historical_pred, 
+                    lower_bound=hist_lower, 
+                    upper_bound=hist_upper, 
+                    y_train=data # 使用自身作為訓練集來計算naive error
+                )
 
         elif 18 <= num_months < 24:
             method_used = " (基於穩健迴歸IRLS-Huber)"
@@ -1613,7 +1740,12 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             print(f"  - WAPE (全局): {historical_wape:.2f}% (含極端值，評估總體誤差比例)")
         if historical_wape_robust is not None:
             print(f"  - WAPE (排除衝擊後): {colors.GREEN}{historical_wape_robust:.2f}% (反映日常預測誤差比例){colors.RESET}")
-        if historical_mase is not None: 
+        
+        # --- 【核心修改】根據是否有 SEAS 分數，切換顯示的準確率指標 ---
+        if seas_score is not None:
+            print(f"{colors.PURPLE}{colors.BOLD}  - SEAS (綜合準確率): {seas_score:.3f} (越低越好，全方位評估){colors.RESET}")
+            print(f"{colors.WHITE}    └─ 穩健性 (UMBRAE): {seas_components['umbrae']:.3f} | 懲罰性 (RMSSE): {seas_components['rmsse']:.3f} | 誠實度 (MSIS): {seas_components['msis']:.3f}{colors.RESET}")
+        elif historical_mase is not None: 
             print(f"  - MASE (平均絕對標度誤差): {historical_mase:.2f} (小於1優於天真預測)")
 
 
