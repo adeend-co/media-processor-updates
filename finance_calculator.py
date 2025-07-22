@@ -2,20 +2,20 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.34                #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.35                #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新 v2.34：【重大修正】實施完整的縮放-還原流程，修正預測值為0的問題。         #
+# 更新 v2.35：【重大修正】補上遺漏的 _apply_scaler 函數以修復 NameError 崩潰問題。 #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.34"  # 更新版本：修正縮放後預測值未還原的根本性錯誤
+SCRIPT_VERSION = "v2.35"  # 更新版本：修復因缺少 _apply_scaler 函數導致的 NameError
 SCRIPT_UPDATE_DATE = "2025-07-22"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -1127,6 +1127,7 @@ def run_monte_carlo_cv(full_df, base_models, n_iterations=100, colors=None):
         _, _, _, _, _, _, X_meta_train_df = run_stacked_ensemble_model(train_df, steps_ahead=1, enable_bootstrap=False, perform_feature_engineering=False) # CV中禁用高級功能以加速
         if X_meta_train_df is None: continue
         
+        # 在CV中，我們在原始尺度上訓練以求快速，不需要縮放
         final_weights, _ = nnls(X_meta_train_df.values, y_train_true)
         if np.sum(final_weights) < 1e-9:
             num_models = X_meta_train_df.shape[1]
@@ -1137,8 +1138,9 @@ def run_monte_carlo_cv(full_df, base_models, n_iterations=100, colors=None):
         # 2. 生成驗證集的預測特徵
         x_train_range = np.arange(len(train_df))
         x_val_range = np.arange(len(train_df), len(train_df) + len(val_df))
-        X_meta_val = np.zeros((len(val_df), len(base_models)))
+        X_meta_val = np.zeros((len(val_df), X_meta_train_df.shape[1])) # 維度應與訓練時相同
 
+        # 這裡的邏輯需要確保我們只生成基礎模型的特徵，因為CV中禁用了特徵工程
         for j, key in enumerate(base_models.keys()):
             model_func = base_models[key]
             if key in ['seasonal']:
@@ -1347,6 +1349,7 @@ def train_and_predict_meta_model(X_meta_train, y_meta_train, X_meta_predict, wei
     
     return final_prediction, normalized_weights
 
+
 # --- 【★★★ 新增：進階特徵工程與縮放相關輔助函數 ★★★】 ---
 def _create_advanced_features(df):
     """為元模型創建延遲、滾動和時間戳特徵。"""
@@ -1380,16 +1383,21 @@ def _create_advanced_features(df):
 
 def _create_and_apply_scaler(data):
     """從數據創建縮放器並應用它。返回縮放器和縮放後的數據。"""
-    scaler = {'min': np.nanmin(data), 'max': np.nanmax(data)}
+    scaler = {'min': np.nanmin(data, axis=0), 'max': np.nanmax(data, axis=0)}
     scaler['range'] = scaler['max'] - scaler['min']
-    if scaler['range'] == 0:
-        scaler['range'] = 1.0
+    scaler['range'][scaler['range'] == 0] = 1.0 # 避免除以零
     scaled_data = (data - scaler['min']) / scaler['range']
     return scaled_data, scaler
+
+# 【★★★ v2.35 核心修正：補上遺漏的 _apply_scaler 函數 ★★★】
+def _apply_scaler(data, scaler):
+    """使用現有的縮放器轉換新數據。"""
+    return (data - scaler['min']) / scaler['range']
 
 def _inverse_transform_target(scaled_data, scaler):
     """將縮放後的目標數據還原到原始尺度。"""
     return (scaled_data * scaler['range']) + scaler['min']
+
 
 # --- 【★★★ 核心升級：整合進階特徵工程與完整的縮放-還原流程 ★★★】 ---
 def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, enable_bootstrap=True, n_bootstrap_iterations=100, colors=None, perform_feature_engineering=True):
