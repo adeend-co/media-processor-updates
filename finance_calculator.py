@@ -2,20 +2,20 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.21                #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.22                #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新：修正 SEAS 指標中 MSIS 的計算邏輯，使其能更準確地評估歷史預測區間品質。      #
+# 更新：採用滾動標準差修正SEAS指標的MSIS計算，實現動態歷史預測區間評估。          #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.21"  # 更新版本：修正 SEAS 綜合準確率指標的計算邏輯
+SCRIPT_VERSION = "v2.22"  # 更新版本：以滾動標準差修正 SEAS/MSIS 計算邏輯
 SCRIPT_UPDATE_DATE = "2025-07-22"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -393,7 +393,7 @@ def process_finance_data_multiple(file_paths, colors):
                     monthly_expenses.at[idx, 'Real_Amount'] = adjust_to_real_amount(row['Amount'], year, base_year, cpi_values)
                     year_cpi_used[year] = cpi_values.get(year, '無數據')
                 
-                warnings_report.append(f"{colors.GREEN}CPI 基準年份：{cpi_base_year} 年（基於輸入數據最早年份，指數設為 100）。計算到目標年：{base_year} 年。{colors.RESET}")
+                warnings_report.append(f"{colors.GREEN}CPI 基準年份：{cpi_base_year} 年（基於輸入數據最早年份，指数設為 100）。計算到目標年：{base_year} 年。{colors.RESET}")
                 
                 min_year = min(year_range)
                 max_year = max(year_range)
@@ -1624,20 +1624,22 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             indentation = "\n" + " " * 14 # 換行符 + 與 "  - 專家權重: " 對齊的空白
             model_weights_report = f"  - 專家權重: {indentation.join(lines)}"
             
-            # --- 【★★★ 核心修正：修正 SEAS 評估邏輯 ★★★】 ---
+            # --- 【★★★ 核心修正：採用滾動標準差修正 SEAS 評估邏輯 ★★★】 ---
             if historical_pred is not None and residuals is not None:
-                # 為了評估歷史回測的準確度，我們需要一個合理的歷史預測區間。
-                # 我們使用歷史殘差的標準差來建構這個區間，這比使用固定的未來不確定性要準確得多。
+                # 使用滾動標準差來建構動態的、能反映局部波動性的歷史預測區間
+                rolling_std = pd.Series(residuals).abs().rolling(window=6, min_periods=1).mean()
+                # 對開頭的 NaN 值使用後面的第一個有效值進行填充
+                rolling_std = rolling_std.bfill().ffill()
+                
                 # 1.96 對應於 95% 信賴區間 (Z-score for 97.5th percentile)
-                residual_std = np.std(residuals)
-                hist_lower = historical_pred - 1.96 * residual_std
-                hist_upper = historical_pred + 1.96 * residual_std
+                hist_lower = historical_pred - 1.96 * rolling_std
+                hist_upper = historical_pred + 1.96 * rolling_std
 
                 seas_score, seas_components = calculate_seas(
                     y_true=data, 
                     y_pred=historical_pred, 
-                    lower_bound=hist_lower, 
-                    upper_bound=hist_upper, 
+                    lower_bound=hist_lower.values, 
+                    upper_bound=hist_upper.values, 
                     y_train=data # 使用自身作為訓練集來計算naive error
                 )
 
@@ -1665,8 +1667,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 residuals_ema = data - historical_pred
                 bootstrap_preds = [ema.iloc[-1] + np.random.choice(residuals_ema,1)[0] for _ in range(1000)]
                 lower, upper = np.percentile(bootstrap_preds, [2.5, 97.5])
-            residuals = data - historical_pred
-
+            
         if historical_pred is not None:
             residuals = data - historical_pred
             ci_str = f" [下限：{lower:,.2f}，上限：{upper:,.2f}] (95% 信心)" if lower is not None and upper is not None else ""
