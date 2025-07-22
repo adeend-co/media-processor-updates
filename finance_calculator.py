@@ -1490,22 +1490,26 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             method_used = " (基於模型堆疊集成)"
             predicted_value, historical_pred, residuals, lower, upper, model_weights = run_stacked_ensemble_model(df_for_seasonal_model, steps_ahead)
             
-            # --- 【★★★ 核心修改：重新排序與排版報告權重 ★★★】 ---
+            # --- 【★★★ 核心修改：修正報告排版 ★★★】 ---
             model_names = [
-                "趨勢", "穩健", "慣性", "長期趨勢",   # 趨勢組
-                "週期", "週期模仿",                   # 季節性組
-                "天真", "近期平均", "近期中位", "歷史中位" # 基線/平均組
+                "趨勢", "穩健", "慣性", "長期趨勢",
+                "週期", "週期模仿",
+                "天真", "近期平均", "近期中位", "歷史中位"
             ]
             
-            report_parts = [f"{name}({weight:.1%})".ljust(16) for name, weight in zip(model_names, model_weights)]
+            # 1. 產生不含填充的報告片段
+            report_parts = [f"{name}({weight:.1%})" for name, weight in zip(model_names, model_weights)]
             
-            formatted_report_parts = []
-            for i, part in enumerate(report_parts):
-                formatted_report_parts.append(part)
-                if (i + 1) % 4 == 0 and (i + 1) < len(report_parts):
-                    formatted_report_parts.append(f"\n{' ' * 15}") # 換行並對齊
+            # 2. 將報告片段分組成每行最多4個
+            chunk_size = 4
+            chunks = [report_parts[i:i + chunk_size] for i in range(0, len(report_parts), chunk_size)]
             
-            model_weights_report = f"  - 專家權重:   {(''.join(formatted_report_parts)).strip()}"
+            # 3. 將每個分組用 ", " 連接起來
+            lines = [", ".join(chunk) for chunk in chunks]
+            
+            # 4. 用換行符和正確的縮排，將所有行組合成最終報告
+            indentation = "\n" + " " * 15 # 換行符 + 與 "  - 專家權重: " 對齊的空白
+            model_weights_report = f"  - 專家權重:   {indentation.join(lines)}"
 
         elif 18 <= num_months < 24:
             method_used = " (基於穩健迴歸IRLS-Huber)"
