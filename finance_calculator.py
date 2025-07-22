@@ -2,20 +2,20 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.32                #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.33                #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新 v2.32：新增進階特徵工程與兩階段殘差建模；MPI 指標增加百分比顯示。           #
+# 更新 v2.33：【重大修正】引入特徵縮放(Scaling)解決特徵工程導致的模型崩潰問題。   #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.32"  # 更新版本：新增進階特徵工程與兩階段殘差建模
+SCRIPT_VERSION = "v2.33"  # 更新版本：引入特徵縮放修正模型崩潰問題
 SCRIPT_UPDATE_DATE = "2025-07-22"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -50,7 +50,7 @@ import argparse
 import numpy as np
 from scipy.stats import linregress, t
 from scipy.stats import skew, kurtosis, median_abs_deviation
-from scipy.optimize import nnls # 【新增】導入非負最小平方法
+from scipy.optimize import nnls 
 from collections import deque
 
 # --- 顏色處理類別 ---
@@ -1124,12 +1124,12 @@ def run_monte_carlo_cv(full_df, base_models, n_iterations=100, colors=None):
         y_val_true = val_df['Real_Amount'].values
         
         # 1. 訓練元模型
-        _, _, _, _, _, _, X_meta_train = run_stacked_ensemble_model(train_df, steps_ahead=1, enable_bootstrap=False, perform_feature_engineering=False) # CV中禁用高級功能以加速
-        if X_meta_train is None: continue
+        _, _, _, _, _, _, X_meta_train_df = run_stacked_ensemble_model(train_df, steps_ahead=1, enable_bootstrap=False, perform_feature_engineering=False) # CV中禁用高級功能以加速
+        if X_meta_train_df is None: continue
         
-        final_weights, _ = nnls(X_meta_train.values, y_train_true)
+        final_weights, _ = nnls(X_meta_train_df.values, y_train_true)
         if np.sum(final_weights) < 1e-9:
-            num_models = X_meta_train.shape[1]
+            num_models = X_meta_train_df.shape[1]
             normalized_weights = np.full(num_models, 1 / num_models)
         else:
             normalized_weights = final_weights / np.sum(final_weights)
@@ -1463,11 +1463,38 @@ def _create_advanced_features(df):
 
     # 填充因 shift/rolling 產生的 NaN 值
     for col in features_df.columns:
-        features_df[col].fillna(features_df[col].median(), inplace=True)
-        
+        # 使用前向填充再後向填充，以尊重時序性
+        features_df[col].fillna(method='ffill', inplace=True)
+        features_df[col].fillna(method='bfill', inplace=True)
+        # 如果還有 NaN（例如數據太少），則用中位數填充
+        if features_df[col].isnull().any():
+            features_df[col].fillna(features_df[col].median(), inplace=True)
+
     return features_df
 
-# --- 【★★★ 核心升級：整合進階特徵工程 ★★★】 ---
+# --- 【★★★ 新增：手動特徵縮放器 ★★★】 ---
+def _scale_features(train_df, predict_df):
+    """
+    手動實現 Min-Max Scaler，避免引入新依賴。
+    在訓練集上擬合，並應用於訓練集和預測集。
+    """
+    train_np = train_df.values
+    predict_np = predict_df.values
+    
+    min_vals = np.nanmin(train_np, axis=0)
+    max_vals = np.nanmax(train_np, axis=0)
+    
+    # 處理分母為零（特徵為常數）的情況
+    range_vals = max_vals - min_vals
+    range_vals[range_vals == 0] = 1
+    
+    scaled_train = (train_np - min_vals) / range_vals
+    scaled_predict = (predict_np - min_vals) / range_vals
+    
+    return pd.DataFrame(scaled_train, columns=train_df.columns), pd.DataFrame(scaled_predict, columns=predict_df.columns)
+
+
+# --- 【★★★ 核心升級：整合進階特徵工程與特徵縮放 ★★★】 ---
 def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, enable_bootstrap=True, n_bootstrap_iterations=100, colors=None, perform_feature_engineering=True):
     data = monthly_expenses_df['Real_Amount'].values
     x = np.arange(1, len(data) + 1)
@@ -1503,14 +1530,38 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, enab
             else:
                  meta_features_base[val_idx, j] = model_func(y_train, len(x_val))
 
-    # --- 【新增】步驟 1.5: 創建並合併進階特徵 ---
+    # --- 步驟 1.5: 創建並合併進階特徵 ---
     meta_features_df = pd.DataFrame(meta_features_base, columns=model_keys)
     if perform_feature_engineering:
         advanced_features_df = _create_advanced_features(monthly_expenses_df)
         meta_features_df = pd.concat([meta_features_df, advanced_features_df], axis=1)
 
+    # --- 步驟 1.6: 【重大修正】對所有特徵進行縮放 ---
+    # 為未來時間點創建對應的特徵集以進行縮放
+    x_future = np.arange(n_samples + 1, n_samples + steps_ahead + 1)
+    final_base_predictions = np.zeros((steps_ahead, len(base_models)))
+    for j, key in enumerate(model_keys):
+        model_func = base_models[key]
+        if key in ['seasonal']:
+            final_base_predictions[:, j] = model_func(monthly_expenses_df, steps_ahead)
+        elif key in ['poly', 'huber']:
+            final_base_predictions[:, j] = model_func(x, data, x_future)
+        else:
+            final_base_predictions[:, j] = model_func(data, steps_ahead)
+    final_pred_features_df = pd.DataFrame(final_base_predictions, columns=model_keys)
+
+    if perform_feature_engineering:
+        future_df_template = pd.concat([monthly_expenses_df, pd.DataFrame({'Parsed_Date': pd.to_datetime(monthly_expenses_df['Parsed_Date'].iloc[-1]) + pd.DateOffset(months=1), 'Real_Amount': [0]})], ignore_index=True)
+        future_adv_features = _create_advanced_features(future_df_template).iloc[-steps_ahead:]
+        final_pred_features_df = pd.concat([final_pred_features_df.reset_index(drop=True), future_adv_features.reset_index(drop=True)], axis=1)
+
+    # 執行縮放
+    meta_features_scaled_df, final_pred_features_scaled_df = _scale_features(meta_features_df, final_pred_features_df)
+    meta_features_scaled = meta_features_scaled_df.values
+    final_pred_features_scaled = final_pred_features_scaled_df.values
+
+
     # --- 步驟 2: 訓練元模型 (Level 1 Meta-Model) ---
-    meta_features = meta_features_df.values
     if enable_bootstrap:
         color_cyan = colors.CYAN if colors else ''
         color_reset = colors.RESET if colors else ''
@@ -1528,7 +1579,7 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, enab
                 bootstrap_indices.extend(range(start_index, start_index + block_length))
             bootstrap_indices = bootstrap_indices[:n_samples]
             
-            X_meta_boot = meta_features[bootstrap_indices]
+            X_meta_boot = meta_features_scaled[bootstrap_indices]
             y_meta_boot = data[bootstrap_indices]
             
             _, weights = train_and_predict_meta_model(X_meta_boot, y_meta_boot, X_meta_boot)
@@ -1539,43 +1590,23 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, enab
         model_weights = np.mean(committee_weights, axis=0)
         print("元模型共識訓練完成。")
     else:
-        _, model_weights = train_and_predict_meta_model(meta_features, data, meta_features)
+        _, model_weights = train_and_predict_meta_model(meta_features_scaled, data, meta_features_scaled)
 
     # --- 步驟 3: 使用共識權重進行最終預測 ---
-    x_future = np.arange(n_samples + 1, n_samples + steps_ahead + 1)
-    final_base_predictions = np.zeros((steps_ahead, len(base_models)))
-    for j, key in enumerate(model_keys):
-        model_func = base_models[key]
-        if key in ['seasonal']:
-            final_base_predictions[:, j] = model_func(monthly_expenses_df, steps_ahead)
-        elif key in ['poly', 'huber']:
-            final_base_predictions[:, j] = model_func(x, data, x_future)
-        else:
-            final_base_predictions[:, j] = model_func(data, steps_ahead)
-
-    final_base_pred_df = pd.DataFrame(final_base_predictions, columns=model_keys)
-    if perform_feature_engineering:
-        # 為未來時間點創建特徵需要特別處理
-        future_df = monthly_expenses_df.iloc[-1:].copy()
-        future_df['Parsed_Date'] = future_df['Parsed_Date'] + pd.DateOffset(months=1)
-        future_adv_features = _create_advanced_features(pd.concat([monthly_expenses_df, future_df], ignore_index=True)).iloc[-steps_ahead:]
-        final_pred_features = pd.concat([final_base_pred_df.reset_index(drop=True), future_adv_features.reset_index(drop=True)], axis=1)
-    else:
-        final_pred_features = final_base_pred_df
-
-    final_prediction_sequence, _ = train_and_predict_meta_model(None, None, final_pred_features.values, weights=model_weights)
+    final_prediction_sequence, _ = train_and_predict_meta_model(None, None, final_pred_features_scaled, weights=model_weights)
     final_prediction = final_prediction_sequence[-1]
     
-    historical_pred, _ = train_and_predict_meta_model(None, None, meta_features, weights=model_weights)
+    historical_pred, _ = train_and_predict_meta_model(None, None, meta_features_scaled, weights=model_weights)
     residuals = data - historical_pred
     
-    dof = n_samples - meta_features.shape[1] - 1
+    dof = n_samples - meta_features_scaled.shape[1] - 1
     if dof <= 0: return final_prediction, historical_pred, residuals, None, None, model_weights, meta_features_df
     
     mse = np.sum(residuals**2) / dof
     se = np.sqrt(mse)
     t_val = t.ppf(0.975, dof)
     lower, upper = final_prediction - t_val * se, final_prediction + t_val * se
+    lower = max(0, lower) # 確保信賴區間下限不為負
     
     return final_prediction, historical_pred, residuals, lower, upper, model_weights, meta_features_df
 
@@ -1665,13 +1696,8 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
 
         if num_months >= 24:
             perform_feature_engineering = True
-            method_used = " (基於自舉法集成 + 特徵工程 + 殘差修正)"
+            method_used = " (基於自舉法集成 + 特徵工程)"
             predicted_value, historical_pred, residuals, lower, upper, model_weights, meta_features_df = run_stacked_ensemble_model(df_for_model, steps_ahead, colors=colors, perform_feature_engineering=True)
-            
-            # 【新增】兩階段殘差建模
-            x_residuals = np.arange(len(residuals))
-            predicted_residual = train_predict_huber(x_residuals, residuals, np.array([len(residuals) + steps_ahead -1]))
-            predicted_value += predicted_residual[0]
             
             model_names = list(meta_features_df.columns)
             report_parts = [f"{name}({weight:.1%})" for name, weight in zip(model_names, model_weights) if weight > 0.001]
@@ -1680,7 +1706,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             lines = [", ".join(chunk) for chunk in chunks]
             indentation = "\n" + " " * 16
             model_weights_report = f"  - 共識權重: {indentation.join(lines)}"
-            method_notes.append("啟用進階特徵工程與兩階段殘差修正。")
+            method_notes.append("啟用進階特徵工程與特徵縮放。")
             method_notes.append("集成模型已內建季節性分析。")
 
         elif 18 <= num_months < 24:
@@ -1708,7 +1734,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 predicted_value, historical_pred = ema.iloc[-1], ema.values
             
         if historical_pred is not None:
-            # 重新計算殘差，因為預測值可能已被殘差模型修正
             residuals = data - historical_pred
             ci_str = f" [下限：{lower:,.2f}，上限：{upper:,.2f}] (95% 信心)" if lower is not None and upper is not None else ""
             predicted_expense_str = f"{predicted_value:,.2f}"
@@ -1743,6 +1768,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 dynamic_thresholds = run_monte_carlo_cv(df_for_model, base_models, n_iterations=100, colors=colors)
                 
                 if dynamic_thresholds:
+                    # 注意: historical_base_preds_df 在這裡傳遞的是未縮放的特徵，主要用於評估。
                     erai_results = perform_internal_benchmarking(
                         y_true=data,
                         historical_ensemble_pred=historical_pred,
