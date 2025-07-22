@@ -9,13 +9,13 @@
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新：修正 SEAS 指標的歷史區間計算邏輯，使其能準確反映模型的回測表現。            #
+# 更新：修正 SEAS 指標中 MSIS 的計算邏輯，使其能更準確地評估歷史預測區間品質。      #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.21"  # 更新版本：修正 SEAS 歷史區間評估邏輯
+SCRIPT_VERSION = "v2.21"  # 更新版本：修正 SEAS 綜合準確率指標的計算邏輯
 SCRIPT_UPDATE_DATE = "2025-07-22"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -1102,12 +1102,16 @@ def calculate_seas(y_true, y_pred, lower_bound, upper_bound, y_train):
     # 準備基準預測與誤差
     # 驗證期
     benchmark_pred = np.roll(y_true, 1)
-    benchmark_pred[0] = y_train[-1] if len(y_train) == len(y_true) else np.full_like(y_true, y_train[-1])
+    if len(y_train) > 0:
+        benchmark_pred[0] = y_train[-1]
+    else: # Should not happen if y_train is not empty
+        benchmark_pred[0] = y_true[0]
+        
     # 訓練期
+    if len(y_train) < 2:
+        return np.inf, {'umbrae': np.inf, 'rmsse': np.inf, 'msis': np.inf}
     train_naive_errors = y_train[1:] - y_train[:-1]
 
-    if len(train_naive_errors) == 0:
-        return np.inf, {'umbrae': np.inf, 'rmsse': np.inf, 'msis': np.inf}
 
     # 獲取三位專家的評分
     umbrae_score = calculate_umbrae(y_true, y_pred, benchmark_pred)
@@ -1599,26 +1603,35 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             method_used = " (基於模型堆疊集成)"
             predicted_value, historical_pred, residuals, lower, upper, model_weights = run_stacked_ensemble_model(df_for_seasonal_model, steps_ahead)
             
+            # --- 【★★★ 核心修改：修正報告排版 ★★★】 ---
             model_names = [
                 "趨勢", "穩健", "慣性", "長期趨勢",
                 "週期", "週期模仿",
                 "天真", "近期平均", "近期中位", "歷史中位"
             ]
+            
+            # 1. 產生不含填充的報告片段
             report_parts = [f"{name}({weight:.1%})" for name, weight in zip(model_names, model_weights)]
+            
+            # 2. 將報告片段分組成每行最多3個
             chunk_size = 3
             chunks = [report_parts[i:i + chunk_size] for i in range(0, len(report_parts), chunk_size)]
+            
+            # 3. 將每個分組用 ", " 連接起來
             lines = [", ".join(chunk) for chunk in chunks]
-            indentation = "\n" + " " * 14
+            
+            # 4. 用換行符和正確的縮排，將所有行組合成最終報告
+            indentation = "\n" + " " * 14 # 換行符 + 與 "  - 專家權重: " 對齊的空白
             model_weights_report = f"  - 專家權重: {indentation.join(lines)}"
             
-            # --- 【★★★ 核心修正：修正 SEAS 歷史區間的計算邏輯 ★★★】 ---
+            # --- 【★★★ 核心修正：修正 SEAS 評估邏輯 ★★★】 ---
             if historical_pred is not None and residuals is not None:
-                # 為了評估歷史回測的準確度，我們需要生成對應歷史點的預測區間。
-                # 最合理的方式是使用歷史殘差的標準差來代表模型在每個時間點的平均不確定性。
-                # 1.96 對應 95% 信賴水準 (Z-score for 95% confidence)
-                hist_uncertainty_margin = 1.96 * np.std(residuals)
-                hist_lower = historical_pred - hist_uncertainty_margin
-                hist_upper = historical_pred + hist_uncertainty_margin
+                # 為了評估歷史回測的準確度，我們需要一個合理的歷史預測區間。
+                # 我們使用歷史殘差的標準差來建構這個區間，這比使用固定的未來不確定性要準確得多。
+                # 1.96 對應於 95% 信賴區間 (Z-score for 97.5th percentile)
+                residual_std = np.std(residuals)
+                hist_lower = historical_pred - 1.96 * residual_std
+                hist_upper = historical_pred + 1.96 * residual_std
 
                 seas_score, seas_components = calculate_seas(
                     y_true=data, 
@@ -1627,7 +1640,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                     upper_bound=hist_upper, 
                     y_train=data # 使用自身作為訓練集來計算naive error
                 )
-            # --- 【★★★ 修正結束 ★★★】 ---
 
         elif 18 <= num_months < 24:
             method_used = " (基於穩健迴歸IRLS-Huber)"
@@ -1655,26 +1667,28 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 lower, upper = np.percentile(bootstrap_preds, [2.5, 97.5])
             residuals = data - historical_pred
 
-        ci_str = f" [下限：{lower:,.2f}，上限：{upper:,.2f}] (95% 信心)" if lower is not None and upper is not None else ""
-        predicted_expense_str = f"{predicted_value:,.2f}"
-        historical_mae, historical_rmse = np.mean(np.abs(residuals)), np.sqrt(np.mean(residuals**2))
-        denominator = np.sum(np.abs(data))
-        historical_wape = (np.sum(np.abs(residuals))/denominator*100) if denominator!=0 else None
-        mae_naive = np.mean(np.abs(data[1:] - data[:-1])) if len(data)>1 else None
-        historical_mase = (historical_mae/mae_naive) if mae_naive and mae_naive>0 else None
-        res_quantiles = np.percentile(residuals, [q * 100 for q in quantiles])
-        for i, q in enumerate(quantiles):
-            quantile_preds[q] = historical_pred + res_quantiles[i]
-            
-        if num_months >= 12: 
-            anomaly_info = calculate_anomaly_scores(data)
-            is_shock = anomaly_info['Is_Shock'].values
-            residuals_clean = residuals[~is_shock]
-            data_clean = data[~is_shock]
-            if len(residuals_clean) > 0:
-                historical_rmse_robust = np.sqrt(np.mean(residuals_clean**2))
-            if len(data_clean) > 0 and np.sum(np.abs(data_clean)) > 0:
-                historical_wape_robust = (np.sum(np.abs(residuals_clean)) / np.sum(np.abs(data_clean))) * 100
+        if historical_pred is not None:
+            residuals = data - historical_pred
+            ci_str = f" [下限：{lower:,.2f}，上限：{upper:,.2f}] (95% 信心)" if lower is not None and upper is not None else ""
+            predicted_expense_str = f"{predicted_value:,.2f}"
+            historical_mae, historical_rmse = np.mean(np.abs(residuals)), np.sqrt(np.mean(residuals**2))
+            denominator = np.sum(np.abs(data))
+            historical_wape = (np.sum(np.abs(residuals))/denominator*100) if denominator!=0 else None
+            mae_naive = np.mean(np.abs(data[1:] - data[:-1])) if len(data)>1 else None
+            historical_mase = (historical_mae/mae_naive) if mae_naive and mae_naive>0 else None
+            res_quantiles = np.percentile(residuals, [q * 100 for q in quantiles])
+            for i, q in enumerate(quantiles):
+                quantile_preds[q] = historical_pred + res_quantiles[i]
+                
+            if num_months >= 12: 
+                anomaly_info = calculate_anomaly_scores(data)
+                is_shock = anomaly_info['Is_Shock'].values
+                residuals_clean = residuals[~is_shock]
+                data_clean = data[~is_shock]
+                if len(residuals_clean) > 0:
+                    historical_rmse_robust = np.sqrt(np.mean(residuals_clean**2))
+                if len(data_clean) > 0 and np.sum(np.abs(data_clean)) > 0:
+                    historical_wape_robust = (np.sum(np.abs(residuals_clean)) / np.sum(np.abs(data_clean))) * 100
 
     expense_std_dev, volatility_report, color = None, "", colors.WHITE
     if not monthly_expenses.empty and len(monthly_expenses)>=2:
@@ -1733,9 +1747,9 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             print(f"  - WAPE (排除衝擊後): {colors.GREEN}{historical_wape_robust:.2f}% (反映日常預測誤差比例){colors.RESET}")
         
         # --- 【核心修改】根據是否有 SEAS 分數，切換顯示的準確率指標 ---
-        if seas_score is not None:
+        if seas_score is not None and seas_components is not None:
             print(f"{colors.PURPLE}{colors.BOLD}  - SEAS (綜合準確率): {seas_score:.3f} (越低越好，全方位評估){colors.RESET}")
-            print(f"{colors.WHITE}    └─ 穩健性 (UMBRAE): {seas_components['umbrae']:.3f} | 懲罰性 (RMSSE): {seas_components['rmsse']:.3f} | 誠實度 (MSIS): {seas_components['msis']:.3f}{colors.RESET}")
+            print(f"{colors.WHITE}    └─ 穩健性 (UMBRAE): {seas_components.get('umbrae', float('inf')):.3f} | 懲罰性 (RMSSE): {seas_components.get('rmsse', float('inf')):.3f} | 誠實度 (MSIS): {seas_components.get('msis', float('inf')):.3f}{colors.RESET}")
         elif historical_mase is not None: 
             print(f"  - MASE (平均絕對標度誤差): {historical_mase:.2f} (小於1優於天真預測)")
 
