@@ -2,7 +2,7 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.25                #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.15                #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
@@ -15,7 +15,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.25"  # 更新版本：引入 ERAI 百分位數動態評級體系
+SCRIPT_VERSION = "v2.15"  # 更新版本：引入 ERAI 百分位數動態評級體系
 SCRIPT_UPDATE_DATE = "2025-07-22"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -1104,16 +1104,16 @@ def perform_internal_benchmarking(y_true, historical_ensemble_pred, historical_b
 
     if percentile_rank >= 90:
         rating = "Elite / S級 (菁英級)"
-        description = "代表了顯著的競爭優勢與技術領先。此模型的預測能力遠超市場平均，其產出的預測結果應被視為高度可靠的決策依據。"
+        description = "此數據可作為您制定長期、關鍵財務決策（如年度預算、投資規劃）的堅實基礎。"
     elif percentile_rank >= 75:
         rating = "Leading / A級 (領先級)"
-        description = "表現優於大多數同業，具備強大的預測能力。這是一個非常可靠且高效的模型，能持續提供超越基準的價值。"
+        description = "預測結果已充分考慮了數據的多種可能性，具備高度的參考價值。"
     elif percentile_rank >= 50:
         rating = "Competitive / B級 (競爭級)"
-        description = "具備市場平均水準的預測能力。模型的表現與大多數標準方案相当，具備實用價值，但沒有顯著的領先優勢。"
+        description = "可作為有效的財務參考，但建議同時關注診斷儀表板中的細節。"
     else:
         rating = "Lagging / C級 (落後級)"
-        description = "模型的預測能力低於市場平均水準，可能構成決策風險。其預測結果的參考價值有限，強烈建議對模型進行審查、優化或替換。"
+        description = "建議謹慎使用此集成預測。"
 
     return {
         'erai_score': ensemble_erai_score,
