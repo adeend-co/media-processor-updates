@@ -2,20 +2,20 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.20                #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.21                #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新：新增 SEAS (堆疊集成準確率) 指標，用以全方位評估模型穩健性、嚴謹性與誠實度。      #
+# 更新：修正 SEAS 指標的歷史區間計算邏輯，使其能準確反映模型的回測表現。            #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.20"  # 更新版本：新增 SEAS 綜合準確率指標
+SCRIPT_VERSION = "v2.21"  # 更新版本：修正 SEAS 歷史區間評估邏輯
 SCRIPT_UPDATE_DATE = "2025-07-22"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -1599,36 +1599,26 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             method_used = " (基於模型堆疊集成)"
             predicted_value, historical_pred, residuals, lower, upper, model_weights = run_stacked_ensemble_model(df_for_seasonal_model, steps_ahead)
             
-            # --- 【★★★ 核心修改：修正報告排版 ★★★】 ---
             model_names = [
                 "趨勢", "穩健", "慣性", "長期趨勢",
                 "週期", "週期模仿",
                 "天真", "近期平均", "近期中位", "歷史中位"
             ]
-            
-            # 1. 產生不含填充的報告片段
             report_parts = [f"{name}({weight:.1%})" for name, weight in zip(model_names, model_weights)]
-            
-            # 2. 將報告片段分組成每行最多3個
             chunk_size = 3
             chunks = [report_parts[i:i + chunk_size] for i in range(0, len(report_parts), chunk_size)]
-            
-            # 3. 將每個分組用 ", " 連接起來
             lines = [", ".join(chunk) for chunk in chunks]
-            
-            # 4. 用換行符和正確的縮排，將所有行組合成最終報告
-            indentation = "\n" + " " * 14 # 換行符 + 與 "  - 專家權重: " 對齊的空白
+            indentation = "\n" + " " * 14
             model_weights_report = f"  - 專家權重: {indentation.join(lines)}"
             
-            # --- 【新增】計算 SEAS 綜合準確率評分 ---
-            if historical_pred is not None and lower is not None and upper is not None:
-                # 為了評估歷史回測的準確度，我們需要將預測值和區間對齊歷史數據
-                # 這裡的 y_true 是 data, y_pred 是 historical_pred
-                # 區間也需要是歷史回測期間的，而非對未來的預測
-                # 腳本目前主要生成未來區間，此處為簡化演示，使用與未來預測相同的不確定性寬度
-                uncertainty_width = (upper - lower) / 2
-                hist_lower = historical_pred - uncertainty_width
-                hist_upper = historical_pred + uncertainty_width
+            # --- 【★★★ 核心修正：修正 SEAS 歷史區間的計算邏輯 ★★★】 ---
+            if historical_pred is not None and residuals is not None:
+                # 為了評估歷史回測的準確度，我們需要生成對應歷史點的預測區間。
+                # 最合理的方式是使用歷史殘差的標準差來代表模型在每個時間點的平均不確定性。
+                # 1.96 對應 95% 信賴水準 (Z-score for 95% confidence)
+                hist_uncertainty_margin = 1.96 * np.std(residuals)
+                hist_lower = historical_pred - hist_uncertainty_margin
+                hist_upper = historical_pred + hist_uncertainty_margin
 
                 seas_score, seas_components = calculate_seas(
                     y_true=data, 
@@ -1637,6 +1627,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                     upper_bound=hist_upper, 
                     y_train=data # 使用自身作為訓練集來計算naive error
                 )
+            # --- 【★★★ 修正結束 ★★★】 ---
 
         elif 18 <= num_months < 24:
             method_used = " (基於穩健迴歸IRLS-Huber)"
