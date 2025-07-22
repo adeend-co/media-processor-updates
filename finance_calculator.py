@@ -2,20 +2,20 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.28                #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.29                #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新：修正蒙地卡羅交叉驗證中的維度匹配錯誤，確保動態評級的準確性。            #
+# 更新：修正因函數定義順序錯誤導致的 NameError，確保動態評級流程穩定執行。       #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.28"  # 更新版本：修正蒙地卡羅交叉驗證(MCCV)中的維度匹配錯誤
+SCRIPT_VERSION = "v2.29"  # 更新版本：修正 MPI 2.0 評估流程中的 NameError
 SCRIPT_UPDATE_DATE = "2025-07-22"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -1075,6 +1075,18 @@ def calculate_mpi_and_rate(y_true, historical_pred, global_wape, erai_score, dyn
         'components': {'absolute_accuracy': aas, 'relative_superiority': rss}
     }
 
+def perform_internal_benchmarking(y_true, historical_ensemble_pred, historical_base_preds_df, is_shock_flags):
+    """
+    執行內部基準化，評估集成模型並給予業界標準評級。
+    """
+    # --- 評估集成模型 ---
+    ensemble_residuals = y_true - historical_ensemble_pred
+    ensemble_wape_robust = (np.sum(np.abs(ensemble_residuals[~is_shock_flags])) / np.sum(y_true[~is_shock_flags])) * 100 if np.sum(y_true[~is_shock_flags]) > 1e-9 else 100.0
+    ensemble_quantile_preds = {q: historical_ensemble_pred + np.percentile(ensemble_residuals, q*100) for q in [0.1, 0.25, 0.75, 0.9]}
+    ensemble_erai_score = calculate_erai(y_true, historical_ensemble_pred, ensemble_quantile_preds, ensemble_wape_robust)
+    
+    return {'erai_score': ensemble_erai_score}
+
 def run_monte_carlo_cv(full_df, base_models, n_iterations=100):
     """執行蒙地卡羅交叉驗證以生成動態MPI評級閾值。"""
     mpi_scores = []
@@ -1096,16 +1108,20 @@ def run_monte_carlo_cv(full_df, base_models, n_iterations=100):
         val_df = full_df.iloc[end_train_index:].reset_index(drop=True)
 
         if len(train_df) < min_train_size or len(val_df) == 0: continue
-
+        
         y_train_true = train_df['Real_Amount'].values
         y_val_true = val_df['Real_Amount'].values
         
         # 1. 訓練元模型
         _, _, _, _, _, _, X_meta_train = run_stacked_ensemble_model(train_df, steps_ahead=1)
         if X_meta_train is None: continue
+        
         final_weights, _ = nnls(X_meta_train.values, y_train_true)
-        if np.sum(final_weights) < 1e-9: continue
-        normalized_weights = final_weights / np.sum(final_weights)
+        if np.sum(final_weights) < 1e-9:
+            num_models = X_meta_train.shape[1]
+            normalized_weights = np.full(num_models, 1 / num_models)
+        else:
+            normalized_weights = final_weights / np.sum(final_weights)
 
         # 2. 生成驗證集的預測特徵
         x_train_range = np.arange(len(train_df))
