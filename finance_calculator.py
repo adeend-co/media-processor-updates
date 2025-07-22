@@ -2,20 +2,20 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.31                #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.32                #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新 v2.31：修正三層式預算中誤差緩衝為零的邏輯錯誤；恢復顯示完整的模型性能指標。 #
+# 更新 v2.32：導入動態參數自適應調整策略，擴編集成模型智囊團；優化MPI指標顯示。 #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.31"  # 更新版本：修正誤差緩衝計算邏輯，並恢復顯示所有性能指標
+SCRIPT_VERSION = "v2.32"  # 更新版本：導入動態參數自適應調整，優化MPI指標顯示
 SCRIPT_UPDATE_DATE = "2025-07-22"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -393,7 +393,7 @@ def process_finance_data_multiple(file_paths, colors):
                     monthly_expenses.at[idx, 'Real_Amount'] = adjust_to_real_amount(row['Amount'], year, base_year, cpi_values)
                     year_cpi_used[year] = cpi_values.get(year, '無數據')
                 
-                warnings_report.append(f"{colors.GREEN}CPI 基準年份：{cpi_base_year} 年（基於輸入數據最早年份，指数設為 100）。計算到目標年：{base_year} 年。{colors.RESET}")
+                warnings_report.append(f"{colors.GREEN}CPI 基準年份：{cpi_base_year} 年（基於輸入數據最早年份，指數設為 100）。計算到目標年：{base_year} 年。{colors.RESET}")
                 
                 min_year = min(year_range)
                 max_year = max(year_range)
@@ -1143,7 +1143,7 @@ def run_monte_carlo_cv(full_df, base_models, n_iterations=100, colors=None):
             model_func = base_models[key]
             if key in ['seasonal']:
                  preds = model_func(train_df, len(val_df))
-            elif key in ['poly', 'huber']:
+            elif key.startswith('poly') or key in ['huber']:
                  preds = model_func(x_train_range, y_train_true, x_val_range)
             else:
                  preds = model_func(y_train_true, len(val_df))
@@ -1503,10 +1503,30 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, enab
     x = np.arange(1, len(data) + 1)
     n_samples = len(data)
     
+    # --- 【v2.32 升級】動態參數自適應調整 ---
+    # 1. 定義參數候選集
+    window_sizes = [3, 6, 9, 12]  # 回看窗口的候選範圍
+    poly_degrees = [1, 2, 3]       # 多項式次數的候選範圍
+
+    # 2. 建立擴編後的基礎模型字典 (智囊團)
     base_models = {
-        'poly': train_predict_poly, 'huber': train_predict_huber, 'des': train_predict_des, 'drift': train_predict_drift,
-        'seasonal': train_predict_seasonal, 'seasonal_naive': train_predict_seasonal_naive, 'naive': train_predict_naive,
-        'moving_average': train_predict_moving_average, 'rolling_median': train_predict_rolling_median, 'global_median': train_predict_global_median,
+        # --- 固定的、無參數調整的模型 (維持不變) ---
+        'huber': train_predict_huber,
+        'des': train_predict_des,
+        'drift': train_predict_drift,
+        'seasonal': train_predict_seasonal,
+        'seasonal_naive': train_predict_seasonal_naive,
+        'naive': train_predict_naive,
+        'global_median': train_predict_global_median,
+
+        # --- 多項式迴歸家族 ---
+        **{f'poly_deg{d}': (lambda deg=d: lambda x_train, y_train, x_predict: train_predict_poly(x_train, y_train, x_predict, degree=deg))() for d in poly_degrees},
+
+        # --- 移動平均家族 ---
+        **{f'ma_win{w}': (lambda size=w: lambda y_train, p_steps, **kwargs: train_predict_moving_average(y_train, p_steps, window_size=size))() for w in window_sizes},
+
+        # --- 滾動中位數家族 ---
+        **{f'rm_win{w}': (lambda size=w: lambda y_train, p_steps, **kwargs: train_predict_rolling_median(y_train, p_steps, window_size=size))() for w in window_sizes},
     }
     
     model_keys = list(base_models.keys())
@@ -1528,7 +1548,7 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, enab
             model_func = base_models[key]
             if key in ['seasonal']:
                  meta_features[val_idx, j] = model_func(df_train, len(x_val))
-            elif key in ['poly', 'huber']:
+            elif key.startswith('poly') or key in ['huber']:
                  meta_features[val_idx, j] = model_func(x_train, y_train, x_val)
             else:
                  meta_features[val_idx, j] = model_func(y_train, len(x_val))
@@ -1580,7 +1600,7 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, enab
         model_func = base_models[key]
         if key in ['seasonal']:
             final_base_predictions[:, j] = model_func(monthly_expenses_df, steps_ahead)
-        elif key in ['poly', 'huber']:
+        elif key.startswith('poly') or key in ['huber']:
             final_base_predictions[:, j] = model_func(x, data, x_future)
         else:
             final_base_predictions[:, j] = model_func(data, steps_ahead)
@@ -1687,23 +1707,27 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     if analysis_data is not None and len(analysis_data) >= 2:
         num_months = len(analysis_data)
         data, x = analysis_data, np.arange(1, num_months + 1)
-
-        base_models = {
-            'poly': train_predict_poly, 'huber': train_predict_huber, 'des': train_predict_des, 'drift': train_predict_drift,
-            'seasonal': train_predict_seasonal, 'seasonal_naive': train_predict_seasonal_naive, 'naive': train_predict_naive,
-            'moving_average': train_predict_moving_average, 'rolling_median': train_predict_rolling_median, 'global_median': train_predict_global_median,
-        }
+        
+        # 僅為 MCV 建立 base_models 副本，避免重複定義
+        mcv_base_models = {}
+        if num_months >= 24:
+            window_sizes = [3, 6, 9, 12]; poly_degrees = [1, 2, 3]
+            mcv_base_models = {
+                'huber': train_predict_huber, 'des': train_predict_des, 'drift': train_predict_drift,
+                'seasonal': train_predict_seasonal, 'seasonal_naive': train_predict_seasonal_naive,
+                'naive': train_predict_naive, 'global_median': train_predict_global_median,
+                **{f'poly_deg{d}': (lambda deg=d: lambda x_train, y_train, x_predict: train_predict_poly(x_train, y_train, x_predict, degree=deg))() for d in poly_degrees},
+                **{f'ma_win{w}': (lambda size=w: lambda y_train, p_steps, **kwargs: train_predict_moving_average(y_train, p_steps, window_size=size))() for w in window_sizes},
+                **{f'rm_win{w}': (lambda size=w: lambda y_train, p_steps, **kwargs: train_predict_rolling_median(y_train, p_steps, window_size=size))() for w in window_sizes},
+            }
 
         if num_months >= 24:
-            method_used = " (基於自舉法增強的集成訓練)"
+            method_used = " (基於動態參數自適應集成)"
             predicted_value, historical_pred, residuals, lower, upper, model_weights, historical_base_preds_df = run_stacked_ensemble_model(df_for_seasonal_model, steps_ahead, colors=colors)
             
-            model_names = [
-                "多項式", "穩健趨勢", "指數平滑", "漂移",
-                "季節分解", "季節模仿",
-                "單純", "移動平均", "滾動中位", "全局中位"
-            ]
-            report_parts = [f"{name}({weight:.1%})" for name, weight in zip(model_names, model_weights)]
+            # 動態產生權重報告
+            model_keys = historical_base_preds_df.columns
+            report_parts = [f"{name}({weight:.1%})" for name, weight in zip(model_keys, model_weights) if weight > 0.001] # 只顯示有貢獻的
             chunk_size = 3
             chunks = [report_parts[i:i + chunk_size] for i in range(0, len(report_parts), chunk_size)]
             lines = [", ".join(chunk) for chunk in chunks]
@@ -1764,7 +1788,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                     historical_wape_robust = (np.sum(np.abs(residuals_clean)) / sum_abs_clean) * 100
             
             if num_months >= 24:
-                dynamic_thresholds = run_monte_carlo_cv(df_for_seasonal_model, base_models, n_iterations=100, colors=colors)
+                dynamic_thresholds = run_monte_carlo_cv(df_for_seasonal_model, mcv_base_models, n_iterations=100, colors=colors)
                 
                 if dynamic_thresholds:
                     erai_results = perform_internal_benchmarking(
@@ -1850,7 +1874,8 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             components = mpi_results['components']
             
             print(f"{colors.PURPLE}{colors.BOLD}  ---")
-            print(f"{colors.PURPLE}{colors.BOLD}  - MPI (綜合效能指數): {mpi_score:.3f}  評級: {rating}{colors.RESET}")
+            # 【v2.32 升級】同時顯示分數與百分比
+            print(f"{colors.PURPLE}{colors.BOLD}  - MPI (綜合效能指數): {mpi_score:.3f} ({mpi_score:.1%})  評級: {rating}{colors.RESET}")
             print(f"{colors.WHITE}    └─ 絕對準確度: {components['absolute_accuracy']:.3f} | 相對優越性 (ERAI): {components['relative_superiority']:.3f}{colors.RESET}")
             print(f"{colors.WHITE}    └─ 建議行動: {suggestion}{colors.RESET}")
 
