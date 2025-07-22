@@ -2,20 +2,20 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.40                #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.41                #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新 v2.40：引入波動率加權集成訓練；MPI指標增加百分比顯示。                 #
+# 更新 v2.41：MPI指標增加其在交叉驗證分佈中的百分位等級(P-Rank)。             #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.40"  # 更新版本：引入波動率加權集成訓練；MPI指標增加百分比顯示。
+SCRIPT_VERSION = "v2.41"  # 更新版本：MPI指標增加其在交叉驗證分佈中的百分位等級(P-Rank)。
 SCRIPT_UPDATE_DATE = "2025-07-22"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -49,7 +49,7 @@ import pandas as pd
 import argparse
 import numpy as np
 from scipy.stats import linregress, t
-from scipy.stats import skew, kurtosis, median_abs_deviation
+from scipy.stats import skew, kurtosis, median_abs_deviation, percentileofscore
 from scipy.optimize import nnls # 【新增】導入非負最小平方法
 from collections import deque
 
@@ -1094,6 +1094,7 @@ def print_progress_bar(iteration, total, prefix='', suffix='', decimals=1, lengt
         sys.stdout.write('\n')
         sys.stdout.flush()
 
+# --- 【v2.41 核心修改】回傳完整的 MPI 分數分佈 ---
 def run_monte_carlo_cv(full_df, base_models, n_iterations=100, colors=None):
     """執行蒙地卡羅交叉驗證以生成動態MPI評級閾值。"""
     mpi_scores = []
@@ -1102,8 +1103,9 @@ def run_monte_carlo_cv(full_df, base_models, n_iterations=100, colors=None):
     val_ratio = 0.25
     min_val_size = max(1, int(total_len * val_ratio))
 
-    if total_len < min_train_size + min_val_size: return None
-    
+    if total_len < min_train_size + min_val_size: 
+        return None, None
+
     color_cyan = colors.CYAN if colors else ''
     color_reset = colors.RESET if colors else ''
     
@@ -1172,10 +1174,11 @@ def run_monte_carlo_cv(full_df, base_models, n_iterations=100, colors=None):
         print_progress_bar(i + 1, n_iterations, prefix='進度:', suffix='完成', length=40)
     
     print("動態基準計算完成。")
-    if not mpi_scores: return None
+    if not mpi_scores: 
+        return None, None
         
     p25, p50, p85 = np.percentile(mpi_scores, [25, 50, 85])
-    return {'p25': p25, 'p50': p50, 'p85': p85}
+    return {'p25': p25, 'p50': p50, 'p85': p85}, mpi_scores
 # --- 【★★★ 新增結束 ★★★】 ---
 
 
@@ -1691,6 +1694,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     quantiles = [0.10, 0.25, 0.50, 0.75, 0.90]
     model_weights_report = ""
     mpi_results = None
+    cv_mpi_scores = None # 【v2.41 新增】用於儲存交叉驗證的MPI分數列表
 
     if analysis_data is not None and len(analysis_data) >= 2:
         num_months = len(analysis_data)
@@ -1773,7 +1777,8 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                     historical_wape_robust = (np.sum(np.abs(residuals_clean)) / sum_abs_clean) * 100
             
             if num_months >= 24:
-                dynamic_thresholds = run_monte_carlo_cv(df_for_seasonal_model, base_models, n_iterations=100, colors=colors)
+                # 【v2.41 核心修改】接收完整的MPI分數列表
+                dynamic_thresholds, cv_mpi_scores = run_monte_carlo_cv(df_for_seasonal_model, base_models, n_iterations=100, colors=colors)
                 
                 if dynamic_thresholds:
                     erai_results = perform_internal_benchmarking(
@@ -1851,16 +1856,23 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         if historical_mase is not None: 
             print(f"  - MASE (平均絕對標度誤差): {historical_mase:.2f} (小於1優於天真預測)")
 
-        # 【v2.31 核心修正】: 將 MPI 作為補充資訊顯示。
         if mpi_results is not None:
             mpi_score = mpi_results['mpi_score']
             rating = mpi_results['rating']
             suggestion = mpi_results['suggestion']
             components = mpi_results['components']
             
+            # 【v2.41 核心修改】計算並顯示MPI的百分位等級
+            mpi_percentile_rank = None
+            if cv_mpi_scores and len(cv_mpi_scores) > 0:
+                mpi_percentile_rank = percentileofscore(cv_mpi_scores, mpi_score)
+
+            mpi_display_str = f"{mpi_score:.3f} ({mpi_score:.1%})"
+            if mpi_percentile_rank is not None:
+                mpi_display_str += f" | {colors.BOLD}百分位等級: P{mpi_percentile_rank:.1f}{colors.RESET}{colors.PURPLE}{colors.BOLD}"
+
             print(f"{colors.PURPLE}{colors.BOLD}  ---")
-            # 【v2.40 核心修改】MPI指標增加百分比顯示
-            print(f"{colors.PURPLE}{colors.BOLD}  - MPI (綜合效能指數): {mpi_score:.3f} ({mpi_score:.1%})  評級: {rating}{colors.RESET}")
+            print(f"{colors.PURPLE}{colors.BOLD}  - MPI (綜合效能指數): {mpi_display_str}  評級: {rating}{colors.RESET}")
             print(f"{colors.WHITE}    └─ 絕對準確度: {components['absolute_accuracy']:.3f} | 相對優越性 (ERAI): {components['relative_superiority']:.3f}{colors.RESET}")
             print(f"{colors.WHITE}    └─ 建議行動: {suggestion}{colors.RESET}")
 
