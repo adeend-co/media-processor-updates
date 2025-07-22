@@ -1165,28 +1165,27 @@ def run_adaptive_ensemble_model(x, y, steps_ahead, error_window=6):
 
     return final_prediction, final_historical_pred, final_residuals, final_lower, final_upper, weight_A, weight_B
     
-# --- 【新增】模型堆疊集成 (Stacking Ensemble) 總引擎 ---
+# --- 【★★★ 核心修改：更新註解為學術性名詞 ★★★】 ---
+# --- 模型堆疊集成 (Stacking Ensemble) 總引擎 ---
 
-# --- 【僅修正此函數】 ---
+# Level 0 基礎模型 (Base Models)
 def train_predict_huber(x_train, y_train, x_predict, t_const=1.345, max_iter=100, tol=1e-6):
     """
-    【修正】專為交叉驗證設計的Huber模型。
-    它只學習訓練數據的規則(beta)，並將該規則應用於預測數據。
+    Huber 穩健迴歸 (Huber Robust Regression)。
+    專為交叉驗證設計，只學習訓練數據的穩健趨勢規則(beta)，並將該規則應用於預測數據。
+    對數據中的異常值不敏感。
     """
-    if len(x_train) < 2: # 如果訓練數據太少，返回一個簡單的平均值
+    if len(x_train) < 2:
         return np.full(len(x_predict), np.mean(y_train) if len(y_train) > 0 else 0)
 
     X_train_b = np.c_[np.ones(len(x_train)), x_train]
     
-    # 初始擬合
     try:
         slope, intercept, _, _, _ = linregress(x_train, y_train)
         beta = np.array([intercept, slope])
-    except ValueError: # 如果linregress失敗 (例如，所有x都相同)
+    except ValueError:
         beta = np.array([np.mean(y_train), 0])
 
-
-    # IRLS 迭代找出穩健的 beta
     for _ in range(max_iter):
         beta_old = beta.copy()
         residuals = y_train - (X_train_b @ beta)
@@ -1202,25 +1201,25 @@ def train_predict_huber(x_train, y_train, x_predict, t_const=1.345, max_iter=100
         
         try:
             beta = np.linalg.lstsq(X_w, y_w, rcond=None)[0]
-        except np.linalg.LinAlgError: # 如果WLS失敗，保留舊的beta
+        except np.linalg.LinAlgError:
             beta = beta_old
             break
             
         if np.sum(np.abs(beta - beta_old)) < tol:
             break
             
-    # 使用學習到的 beta 來預測 x_predict 的值
     X_predict_b = np.c_[np.ones(len(x_predict)), x_predict]
     return X_predict_b @ beta
 
-# Level 0 Base Models
 def train_predict_poly(x_train, y_train, x_predict, degree=2):
+    """多項式迴歸 (Polynomial Regression)。用 n 次多項式函數捕捉數據中的非線性曲線趨勢。"""
     if len(x_train) < degree + 1: return np.full(len(x_predict), np.mean(y_train) if len(y_train) > 0 else 0)
     coeffs = np.polyfit(x_train, y_train, degree)
     p = np.poly1d(coeffs)
     return p(x_predict)
 
 def train_predict_des(y_train, predict_steps, alpha=0.5, beta=0.5):
+    """霍爾特線性趨勢模型 (Holt's Linear Trend Method) 或稱二次指數平滑法。能預測同時包含水平(level)與趨勢(trend)的序列。"""
     if len(y_train) < 2: return np.full(predict_steps, y_train[0] if len(y_train) > 0 else 0)
     level, trend = y_train[0], y_train[1] - y_train[0]
     for i in range(1, len(y_train)):
@@ -1230,6 +1229,7 @@ def train_predict_des(y_train, predict_steps, alpha=0.5, beta=0.5):
     return level + trend * np.arange(1, predict_steps + 1)
 
 def train_predict_seasonal(df_train, predict_steps, seasonal_period=12):
+    """時間序列分解法 (Classical Time Series Decomposition)。將數據拆解為趨勢、季節性與殘差項進行預測。"""
     if len(df_train) < 2 * seasonal_period:
         return np.full(predict_steps, np.mean(df_train['Real_Amount']))
 
@@ -1251,16 +1251,15 @@ def train_predict_seasonal(df_train, predict_steps, seasonal_period=12):
 
     return trend_forecast * np.array(seasonal_forecast)
 
-# --- 【★★★ 新增基礎專家模型 ★★★】 ---
 def train_predict_naive(y_train, predict_steps):
-    """專家：天真現實派。預測值永遠是上一個月的實際值。"""
+    """單純預測法 (Naive Method)。預測值等於最後一個觀測值。"""
     if len(y_train) == 0:
         return np.zeros(predict_steps)
     last_value = y_train[-1]
     return np.full(predict_steps, last_value)
 
 def train_predict_rolling_median(y_train, predict_steps, window_size=6):
-    """專家：近期中庸者。預測值是近期(e.g. 6個月)開銷的中位數。"""
+    """滾動中位數預測 (Rolling Median Forecast)。預測值是近期(e.g. 6個月)開銷的中位數，能抵抗近期異常值。"""
     if len(y_train) == 0:
         return np.zeros(predict_steps)
     actual_window = min(len(y_train), window_size)
@@ -1270,120 +1269,90 @@ def train_predict_rolling_median(y_train, predict_steps, window_size=6):
     return np.full(predict_steps, median_value)
 
 def train_predict_global_median(y_train, predict_steps):
-    """專家：歷史守恆家。預測值是全部歷史開銷的中位數。"""
+    """全局中位數預測 (Global Median Forecast)。預測值是全部歷史開銷的中位數。"""
     if len(y_train) == 0:
         return np.zeros(predict_steps)
     median_value = np.median(y_train)
     return np.full(predict_steps, median_value)
 
-# --- 【★★★ 新增專家模型 ★★★】 ---
-
 def train_predict_drift(y_train, predict_steps):
-    """
-    專家：線性趨勢家 (Drift Method)。預測未來值會依循歷史的平均變化率。
-    核心邏輯：在第一個觀測值和最後一個觀測值之間畫一條直線並向未來延伸。
-    此方法能有效捕捉數據的長期、穩定趨勢。
-    """
+    """漂移法 (Drift Method)。預測未來值會依循歷史的平均變化率（從起點到終點的斜率）。"""
     if len(y_train) < 2:
-        # 如果數據不足，退化為天真預測
         return np.full(predict_steps, y_train[-1] if len(y_train) > 0 else 0)
     
-    # 計算歷史平均每期的變化量 (drift)
     first_value = y_train[0]
     last_value = y_train[-1]
-    # (len(y_train) - 1) 是總期間數
     drift = (last_value - first_value) / (len(y_train) - 1)
     
-    # 從最後一個觀測值開始，依循 drift 進行預測
     predictions = [last_value + (i * drift) for i in range(1, predict_steps + 1)]
     return np.array(predictions)
 
 def train_predict_seasonal_naive(y_train, predict_steps, seasonal_period=12):
-    """
-    專家：週期模仿者 (Seasonal Naive Method)。預測未來某月份的值會等於去年同月份的實際值。
-    這是一個非常強大的基準模型，特別適用於有明顯年度、季度等週期性規律的財務數據。
-    """
+    """季節性單純預測法 (Seasonal Naive Method)。預測值等於上一個週期同一時間點的實際值。"""
     if len(y_train) < seasonal_period:
-        # 如果數據不足一個週期，退化為天真預測
         return np.full(predict_steps, y_train[-1] if len(y_train) > 0 else 0)
 
     predictions = []
     for i in range(1, predict_steps + 1):
-        # 計算要參考的歷史數據索引
-        # 例如，預測未來第1個月，就要參考 (全長 - 12 + 0) 的索引
-        # 預測未來第13個月，就要參考 (全長 - 12 + 0) 的索引 (因為 (13-1)%12 = 0)
         idx = len(y_train) - seasonal_period + ((i - 1) % seasonal_period)
         predictions.append(y_train[idx])
     
     return np.array(predictions)
 
 def train_predict_moving_average(y_train, predict_steps, window_size=6):
-    """
-    專家：近期平均派 (Moving Average Forecast)。預測值是近期 (e.g. 6個月) 開銷的算術平均值。
-    與「近期中庸者」(滾動中位數) 形成互補，此方法對異常值較敏感，
-    可以更好地反映近期波動的平均水平。
-    """
+    """移動平均預測 (Moving Average Forecast)。預測值是近期(e.g. 6個月)開銷的算術平均值。"""
     if len(y_train) == 0:
         return np.zeros(predict_steps)
     
-    # 確保窗口大小不超過數據長度
     actual_window = min(len(y_train), window_size)
     if actual_window == 0:
         return np.zeros(predict_steps)
     
-    # 計算近期窗口內的算術平均值
     mean_value = np.mean(y_train[-actual_window:])
     return np.full(predict_steps, mean_value)
 
-# --- 【★★★ 新增結束 ★★★】 ---
-
-
-# --- 【核心修改】Level 1 Meta-Model ---
+# Level 1 元模型 (Meta-Model)
 def train_and_predict_meta_model(X_meta_train, y_meta_train, X_meta_predict):
-    """
-    使用非負最小平方法(NNLS)訓練元模型並進行預測，確保權重合理。
-    """
-    # 步驟1: 使用NNLS找出最佳的非負權重
+    """使用非負最小平方法(NNLS)訓練元模型並進行預測，確保權重合理。"""
     weights, _ = nnls(X_meta_train, y_meta_train)
     
-    # 步驟2: 歸一化權重，使其總和為1
     total_weight = np.sum(weights)
-    if total_weight > 1e-6: # 避免除零
+    if total_weight > 1e-6:
         normalized_weights = weights / total_weight
     else:
-        # 如果所有權重都趨近於0，則使用平均權重作為備用策略
         num_models = X_meta_train.shape[1]
         normalized_weights = np.full(num_models, 1 / num_models)
         
-    # 步驟3: 使用歸一化的權重進行預測
     final_prediction = X_meta_predict @ normalized_weights
     
     return final_prediction, normalized_weights
 
 
-# --- 【★★★ 核心修改：擴充專家顧問團的堆疊引擎 ★★★】 ---
+# --- 【★★★ 核心修改：重排模型順序並擴充至10個 ★★★】 ---
 def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5):
     data = monthly_expenses_df['Real_Amount'].values
     x = np.arange(1, len(data) + 1)
     
-    # 擴充專家顧問團至十位
+    # 將基礎模型按功能分組排序，以提升報告可讀性
     base_models = {
+        # 趨勢組
         'poly': train_predict_poly,
         'huber': train_predict_huber,
         'des': train_predict_des,
+        'drift': train_predict_drift,
+        # 季節性組
         'seasonal': train_predict_seasonal,
+        'seasonal_naive': train_predict_seasonal_naive,
+        # 基線/平均組
         'naive': train_predict_naive,
+        'moving_average': train_predict_moving_average,
         'rolling_median': train_predict_rolling_median,
         'global_median': train_predict_global_median,
-        'drift': train_predict_drift,
-        'seasonal_naive': train_predict_seasonal_naive,
-        'moving_average': train_predict_moving_average,
     }
     
-    # 元特徵的欄位數會根據 base_models 的數量自動調整
+    model_keys = list(base_models.keys())
     meta_features = np.zeros((len(data), len(base_models)))
     
-    # K-Fold 交叉驗證以產生元特徵
     fold_indices = np.array_split(np.arange(len(data)), n_folds)
     
     for i in range(n_folds):
@@ -1393,35 +1362,31 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5):
         if len(train_idx) == 0: continue
 
         x_train, y_train, df_train = x[train_idx], data[train_idx], monthly_expenses_df.iloc[train_idx]
-        x_val, y_val = x[val_idx], data[val_idx]
+        x_val = x[val_idx]
         
-        # 讓所有專家進行預測
-        meta_features[val_idx, 0] = base_models['poly'](x_train, y_train, x_val)
-        meta_features[val_idx, 1] = base_models['huber'](x_train, y_train, x_val)
-        meta_features[val_idx, 2] = base_models['des'](y_train, len(x_val))
-        meta_features[val_idx, 3] = base_models['seasonal'](df_train, len(x_val))
-        meta_features[val_idx, 4] = base_models['naive'](y_train, len(x_val))
-        meta_features[val_idx, 5] = base_models['rolling_median'](y_train, len(x_val))
-        meta_features[val_idx, 6] = base_models['global_median'](y_train, len(x_val))
-        meta_features[val_idx, 7] = base_models['drift'](y_train, len(x_val))
-        meta_features[val_idx, 8] = base_models['seasonal_naive'](y_train, len(x_val))
-        meta_features[val_idx, 9] = base_models['moving_average'](y_train, len(x_val))
-        
+        # 動態地讓所有基礎模型進行預測
+        for j, key in enumerate(model_keys):
+            model_func = base_models[key]
+            if key in ['seasonal']:
+                 meta_features[val_idx, j] = model_func(df_train, len(x_val))
+            elif key in ['poly', 'huber']:
+                 meta_features[val_idx, j] = model_func(x_train, y_train, x_val)
+            else: # 其餘模型
+                 meta_features[val_idx, j] = model_func(y_train, len(x_val))
+
     # 最終預測階段
     x_future = np.arange(len(x) + 1, len(x) + steps_ahead + 1)
-    
     final_base_predictions = np.zeros((steps_ahead, len(base_models)))
-    final_base_predictions[:, 0] = base_models['poly'](x, data, x_future)
-    final_base_predictions[:, 1] = base_models['huber'](x, data, x_future)
-    final_base_predictions[:, 2] = base_models['des'](data, steps_ahead)
-    final_base_predictions[:, 3] = base_models['seasonal'](monthly_expenses_df, steps_ahead)
-    final_base_predictions[:, 4] = base_models['naive'](data, steps_ahead)
-    final_base_predictions[:, 5] = base_models['rolling_median'](data, steps_ahead)
-    final_base_predictions[:, 6] = base_models['global_median'](data, steps_ahead)
-    final_base_predictions[:, 7] = base_models['drift'](data, steps_ahead)
-    final_base_predictions[:, 8] = base_models['seasonal_naive'](data, steps_ahead)
-    final_base_predictions[:, 9] = base_models['moving_average'](data, steps_ahead)
 
+    for j, key in enumerate(model_keys):
+        model_func = base_models[key]
+        if key in ['seasonal']:
+            final_base_predictions[:, j] = model_func(monthly_expenses_df, steps_ahead)
+        elif key in ['poly', 'huber']:
+            final_base_predictions[:, j] = model_func(x, data, x_future)
+        else:
+            final_base_predictions[:, j] = model_func(data, steps_ahead)
+    
     # 使用元模型進行訓練和預測
     final_prediction_sequence, model_weights = train_and_predict_meta_model(meta_features, data, final_base_predictions)
     final_prediction = final_prediction_sequence[-1]
@@ -1433,7 +1398,7 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5):
     if dof <= 0: return final_prediction, historical_pred, residuals, None, None, model_weights
     
     mse = np.sum(residuals**2) / dof
-    se = np.sqrt(mse) # Ensemble 的簡化標準誤
+    se = np.sqrt(mse)
     t_val = t.ppf(0.975, dof)
     lower, upper = final_prediction - t_val * se, final_prediction + t_val * se
     
@@ -1466,7 +1431,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     analysis_data = None
     df_for_seasonal_model = None
     if not monthly_expenses.empty:
-        # 修正：Stacking模型應使用未經季節性分解的原始數據
         if num_unique_months >= 24:
             analysis_data = monthly_expenses['Real_Amount'].values
             df_for_seasonal_model = monthly_expenses.copy() 
@@ -1513,7 +1477,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     predicted_expense_str, ci_str, method_used = "無法預測 (資料不足)", "", ""
     upper, lower, predicted_value = None, None, None
     historical_mae, historical_rmse, historical_wape, historical_mase = None, None, None, None
-    historical_rmse_robust, historical_wape_robust = None, None # 【新增】穩健化指標變數
+    historical_rmse_robust, historical_wape_robust = None, None
     quantile_preds, historical_pred, residuals = {}, None, None
     quantiles = [0.10, 0.25, 0.50, 0.75, 0.90]
     model_weights_report = ""
@@ -1522,17 +1486,27 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         num_months = len(analysis_data)
         data, x = analysis_data, np.arange(1, num_months + 1)
 
-        # --- 【核心改造】三層式模型調度中心 ---
         if num_months >= 24:
             method_used = " (基於模型堆疊集成)"
             predicted_value, historical_pred, residuals, lower, upper, model_weights = run_stacked_ensemble_model(df_for_seasonal_model, steps_ahead)
             
-            # --- 【★★★ 核心修改：更新報告權重顯示 ★★★】 ---
-            weights_str = [f"{w:.1%}" for w in model_weights]
-            model_names = ["趨勢", "穩健", "慣性", "週期", "天真", "近期中位", "歷史中位", "長期趨勢", "週期模仿", "近期平均"]
-            report_parts = [f"{name}({weight})" for name, weight in zip(model_names, weights_str)]
-            model_weights_report = f"  - 專家權重: {', '.join(report_parts)}"
+            # --- 【★★★ 核心修改：重新排序與排版報告權重 ★★★】 ---
+            model_names = [
+                "趨勢", "穩健", "慣性", "長期趨勢",   # 趨勢組
+                "週期", "週期模仿",                   # 季節性組
+                "天真", "近期平均", "近期中位", "歷史中位" # 基線/平均組
+            ]
             
+            report_parts = [f"{name}({weight:.1%})".ljust(16) for name, weight in zip(model_names, model_weights)]
+            
+            formatted_report_parts = []
+            for i, part in enumerate(report_parts):
+                formatted_report_parts.append(part)
+                if (i + 1) % 4 == 0 and (i + 1) < len(report_parts):
+                    formatted_report_parts.append(f"\n{' ' * 15}") # 換行並對齊
+            
+            model_weights_report = f"  - 專家權重:   {(''.join(formatted_report_parts)).strip()}"
+
         elif 18 <= num_months < 24:
             method_used = " (基於穩健迴歸IRLS-Huber)"
             predicted_value, historical_pred, residuals, lower, upper = huber_robust_regression(x, data, steps_ahead)
@@ -1559,7 +1533,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 lower, upper = np.percentile(bootstrap_preds, [2.5, 97.5])
             residuals = data - historical_pred
 
-        # --- 統一的後續計算 ---
         ci_str = f" [下限：{lower:,.2f}，上限：{upper:,.2f}] (95% 信心)" if lower is not None and upper is not None else ""
         predicted_expense_str = f"{predicted_value:,.2f}"
         historical_mae, historical_rmse = np.mean(np.abs(residuals)), np.sqrt(np.mean(residuals**2))
@@ -1571,7 +1544,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         for i, q in enumerate(quantiles):
             quantile_preds[q] = historical_pred + res_quantiles[i]
             
-        # --- 【新增】計算穩健化指標 ---
         if num_months >= 12: 
             anomaly_info = calculate_anomaly_scores(data)
             is_shock = anomaly_info['Is_Shock'].values
@@ -1582,7 +1554,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             if len(data_clean) > 0 and np.sum(np.abs(data_clean)) > 0:
                 historical_wape_robust = (np.sum(np.abs(residuals_clean)) / np.sum(np.abs(data_clean))) * 100
 
-    # ... The rest of the script remains unchanged ...
     expense_std_dev, volatility_report, color = None, "", colors.WHITE
     if not monthly_expenses.empty and len(monthly_expenses)>=2:
         expense_values = monthly_expenses['Real_Amount']
@@ -1628,7 +1599,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
 
     print(f"\n{colors.PURPLE}{colors.BOLD}>>> {target_month_str} 趨勢預測{method_used}: {predicted_expense_str}{ci_str}{colors.RESET}")
     
-    # --- 【核心修改】升級報告呈現 ---
     if historical_mae is not None:
         print(f"\n{colors.WHITE}>>> 模型表現評估 (基於歷史回測){colors.RESET}")
         print(f"  - MAE (平均絕對誤差): {historical_mae:,.2f} 元")
