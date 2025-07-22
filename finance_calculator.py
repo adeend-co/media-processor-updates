@@ -2,20 +2,20 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.22                #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.23                #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新：採用滾動標準差修正SEAS指標的MSIS計算，實現動態歷史預測區間評估。          #
+# 更新：採用基於歷史殘差分位數的非參數化方法，重構SEAS/MSIS的歷史預測區間生成邏輯。   #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.22"  # 更新版本：以滾動標準差修正 SEAS/MSIS 計算邏輯
+SCRIPT_VERSION = "v2.23"  # 更新版本：以殘差分位數重構 SEAS/MSIS 評估邏輯
 SCRIPT_UPDATE_DATE = "2025-07-22"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -1624,22 +1624,20 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             indentation = "\n" + " " * 14 # 換行符 + 與 "  - 專家權重: " 對齊的空白
             model_weights_report = f"  - 專家權重: {indentation.join(lines)}"
             
-            # --- 【★★★ 核心修正：採用滾動標準差修正 SEAS 評估邏輯 ★★★】 ---
-            if historical_pred is not None and residuals is not None:
-                # 使用滾動標準差來建構動態的、能反映局部波動性的歷史預測區間
-                rolling_std = pd.Series(residuals).abs().rolling(window=6, min_periods=1).mean()
-                # 對開頭的 NaN 值使用後面的第一個有效值進行填充
-                rolling_std = rolling_std.bfill().ffill()
+            # --- 【★★★ 核心修正：採用殘差分位數重構 SEAS 評估邏輯 ★★★】 ---
+            if historical_pred is not None and residuals is not None and len(residuals) > 1:
+                # 使用歷史殘差的分位數來建構一個非參數化的、更「誠實」的歷史預測區間。
+                # 這直接反映了模型過去的誤差分佈，而不是假設一個固定的誤差結構。
+                lower_quantile, upper_quantile = np.percentile(residuals, [2.5, 97.5])
                 
-                # 1.96 對應於 95% 信賴區間 (Z-score for 97.5th percentile)
-                hist_lower = historical_pred - 1.96 * rolling_std
-                hist_upper = historical_pred + 1.96 * rolling_std
+                hist_lower = historical_pred + lower_quantile
+                hist_upper = historical_pred + upper_quantile
 
                 seas_score, seas_components = calculate_seas(
                     y_true=data, 
                     y_pred=historical_pred, 
-                    lower_bound=hist_lower.values, 
-                    upper_bound=hist_upper.values, 
+                    lower_bound=hist_lower, 
+                    upper_bound=hist_upper, 
                     y_train=data # 使用自身作為訓練集來計算naive error
                 )
 
@@ -1675,8 +1673,13 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             historical_mae, historical_rmse = np.mean(np.abs(residuals)), np.sqrt(np.mean(residuals**2))
             denominator = np.sum(np.abs(data))
             historical_wape = (np.sum(np.abs(residuals))/denominator*100) if denominator!=0 else None
-            mae_naive = np.mean(np.abs(data[1:] - data[:-1])) if len(data)>1 else None
-            historical_mase = (historical_mae/mae_naive) if mae_naive and mae_naive>0 else None
+            
+            if len(data) > 1:
+                mae_naive = np.mean(np.abs(data[1:] - data[:-1]))
+                historical_mase = (historical_mae/mae_naive) if mae_naive and mae_naive>0 else None
+            else:
+                historical_mase = None
+
             res_quantiles = np.percentile(residuals, [q * 100 for q in quantiles])
             for i, q in enumerate(quantiles):
                 quantile_preds[q] = historical_pred + res_quantiles[i]
