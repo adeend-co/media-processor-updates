@@ -2,20 +2,20 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.26                #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.27                #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新：引入MPI(模型效能指數)，整合絕對準確度(WAPE/R²)與相對優越性(ERAI)進行綜合評級。 #
+# 更新：引入 MPI 2.0，整合蒙地卡羅交叉驗證以實現動態內部標竿評級。                  #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.26"  # 更新版本：引入 MPI 雙維度評估與 A/B/C/D 評級
+SCRIPT_VERSION = "v2.27"  # 更新版本：引入 MPI 2.0 動態內部標竿評級
 SCRIPT_UPDATE_DATE = "2025-07-22"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -1017,120 +1017,131 @@ def residual_autocorrelation_diagnosis(residuals, n, colors):
     report.append(header_line)
     return "\n".join(report)
 
-# --- 【★★★ 新增：MPI / ERAI 準確率評估套件 ★★★】 ---
+# --- 【★★★ 新增：MPI 2.0 評估套件 ★★★】 ---
 def calculate_erai(y_true, y_pred_model, quantile_preds_model, wape_robust_model):
-    """
-    計算 ERAI (Ensemble Robust-Accuracy Index) 的核心組件分數。
-    """
-    if y_true is None or len(y_true) < 2:
-        return None, {}
-
-    # 1.1 組件一：無標度有界相對絕對誤差 (UMBRAE) -> 相對表現
-    model_errors = np.abs(y_true - y_pred_model)
-    naive_pred = np.roll(y_true, 1)
-    naive_pred[0] = y_true[0]
-    benchmark_errors = np.abs(y_true - naive_pred)
+    """計算 ERAI (Ensemble Robust-Accuracy Index) 的核心組件分數。"""
+    if y_true is None or len(y_true) < 2: return None, {}
     
+    model_errors = np.abs(y_true - y_pred_model)
+    naive_pred = np.roll(y_true, 1); naive_pred[0] = y_true[0]
+    benchmark_errors = np.abs(y_true - naive_pred)
     denominator = model_errors + benchmark_errors
     brae = np.divide(model_errors, denominator, out=np.full_like(model_errors, 0.5, dtype=float), where=denominator!=0)
     mbrae = np.mean(brae)
     umbrae = np.inf if mbrae >= 1.0 else mbrae / (1.0 - mbrae)
     
-    # 1.2 組件二：WAPE-Robust -> 日常精度 (直接傳入)
-    # 1.3 組件三：平均分位數損失 (AQL) -> 風險意識
     quantiles_for_aql = [0.10, 0.25, 0.75, 0.90]
     model_losses = [quantile_loss(y_true, quantile_preds_model[q], q) for q in quantiles_for_aql]
     aql_model = np.mean(model_losses)
-
+    
     naive_residuals = y_true[1:] - y_true[:-1]
     if len(naive_residuals) == 0: naive_residuals = np.array([0])
     naive_quantiles = np.percentile(naive_residuals, [q * 100 for q in quantiles_for_aql])
     naive_losses = [quantile_loss(y_true[1:], (y_true[:-1] + nq), q) for nq, q in zip(naive_quantiles, quantiles_for_aql)]
     aql_naive = np.mean(naive_losses) if naive_losses else np.inf
-
-    # 2. 指標歸一化
+    
     score_rel = max(0, 1 - umbrae)
     score_prec = 1 - (wape_robust_model / 100.0) if wape_robust_model is not None else 0
     score_risk = max(0, 1 - (aql_model / aql_naive)) if aql_naive > 1e-9 else 0
     
-    # 3. 集成加權
     weights = {'rel': 0.4, 'prec': 0.4, 'risk': 0.2}
     erai_score = (weights['rel'] * score_rel) + (weights['prec'] * score_prec) + (weights['risk'] * score_risk)
-
-    return erai_score, {'rel': score_rel, 'prec': score_prec, 'risk': score_risk}
-
-def calculate_mpi(y_true, historical_pred, global_wape, erai_results):
-    """
-    計算 MPI (Model Performance Index) 綜合效能指數。
-    """
-    # --- 第一支柱：絕對準確度 (AAS) ---
-    # 1. WAPE 分數
-    wape_score = 1 - (global_wape / 100.0) if global_wape is not None else 0
     
-    # 2. R-squared 分數
+    return erai_score
+
+def calculate_mpi_and_rate(y_true, historical_pred, global_wape, erai_score, dynamic_thresholds):
+    """計算 MPI 最終分數並根據動態閾值進行評級。"""
+    wape_score = 1 - (global_wape / 100.0) if global_wape is not None else 0
     ss_res = np.sum((y_true - historical_pred)**2)
     ss_tot = np.sum((y_true - np.mean(y_true))**2)
     r_squared = 1 - (ss_res / ss_tot) if ss_tot > 1e-9 else 0
     r2_score = max(0, r_squared)
     
-    aas = 0.75 * wape_score + 0.25 * r2_score
+    aas = 0.7 * wape_score + 0.3 * r2_score
+    rss = erai_score if erai_score is not None else 0
+    mpi_score = 0.8 * aas + 0.2 * rss
 
-    # --- 第二支柱：相對優越性 (RSS) ---
-    rss = erai_results['erai_score'] if erai_results else 0
-
-    # --- 最終 MPI 分數 ---
-    mpi_score = 0.7 * aas + 0.3 * rss
-
-    # --- 評級與釋義 ---
-    if mpi_score >= 0.80:
-        rating = "A (高度有效)"
-        suggestion = "可作為制定財務策略的**主要決策依據**。"
-    elif mpi_score >= 0.65:
-        rating = "B (穩健可靠)"
-        suggestion = "可作為財務規劃的**重要參考**。"
-    elif mpi_score >= 0.50:
-        rating = "C (基本合格)"
-        suggestion = "可作為趨勢的**輔助性參考**，使用時應保持審慎。"
+    if mpi_score > dynamic_thresholds['p85']:
+        rating, suggestion = "A (高效能)", "可作為制定**關鍵財務決策**的核心依據。"
+    elif mpi_score > dynamic_thresholds['p50']:
+        rating, suggestion = "B (穩定)", "可作為**月度預算設定**的堅實參考。"
+    elif mpi_score > dynamic_thresholds['p25']:
+        rating, suggestion = "C (可接受)", "可作為趨勢判斷的**輔助性參考**，使用時應審慎。"
     else:
-        rating = "D (待檢視)"
-        suggestion = "建議**謹慎使用**此預測結果，並檢視誤差來源。"
+        rating, suggestion = "D (待觀察)", "建議**謹慎使用**，並檢視誤差來源。"
         
     return {
-        'mpi_score': mpi_score,
-        'rating': rating,
-        'suggestion': suggestion,
+        'mpi_score': mpi_score, 'rating': rating, 'suggestion': suggestion,
         'components': {'absolute_accuracy': aas, 'relative_superiority': rss}
     }
 
-def perform_internal_benchmarking(y_true, historical_ensemble_pred, historical_base_preds_df, is_shock_flags):
-    """
-    執行內部基準化，為 ERAI 計算提供支持。
-    """
-    score_pool = []
-    
-    # 評估集成模型
-    ensemble_residuals = y_true - historical_ensemble_pred
-    ensemble_wape_robust = (np.sum(np.abs(ensemble_residuals[~is_shock_flags])) / np.sum(y_true[~is_shock_flags])) * 100 if np.sum(y_true[~is_shock_flags]) > 1e-9 else 100.0
-    ensemble_quantile_preds = {q: historical_ensemble_pred + np.percentile(ensemble_residuals, q*100) for q in [0.1, 0.25, 0.75, 0.9]}
-    ensemble_erai_score, ensemble_components = calculate_erai(y_true, historical_ensemble_pred, ensemble_quantile_preds, ensemble_wape_robust)
-    
-    if ensemble_erai_score is not None: score_pool.append(ensemble_erai_score)
+def run_monte_carlo_cv(full_df, n_iterations=100):
+    """執行蒙地卡羅交叉驗證以生成動態MPI評級閾值。"""
+    mpi_scores = []
+    total_len = len(full_df)
+    min_train_size = 18
+    min_val_size = 6
+    min_slice_len = min_train_size + min_val_size
 
-    # 評估所有基礎模型
-    for model_name in historical_base_preds_df.columns:
-        base_pred = historical_base_preds_df[model_name].values
-        base_residuals = y_true - base_pred
-        base_wape_robust = (np.sum(np.abs(base_residuals[~is_shock_flags])) / np.sum(y_true[~is_shock_flags])) * 100 if np.sum(y_true[~is_shock_flags]) > 1e-9 else 100.0
-        base_quantile_preds = {q: base_pred + np.percentile(base_residuals, q*100) for q in [0.1, 0.25, 0.75, 0.9]}
-        base_erai_score, _ = calculate_erai(y_true, base_pred, base_quantile_preds, base_wape_robust)
-        if base_erai_score is not None: score_pool.append(base_erai_score)
+    if total_len < min_slice_len: return None
     
-    score_pool = [s for s in score_pool if np.isfinite(s)]
-    if not score_pool: return None
-    
-    # ERAI 的核心是作為相對優越性的分數
-    return {'erai_score': ensemble_erai_score, 'components': ensemble_components}
+    print(f"\n{Colors().CYAN}正在執行蒙地卡羅交叉驗證以建立動態評級基準 (共 {n_iterations} 次迭代)...{Colors().RESET}")
 
+    for i in range(n_iterations):
+        # 隨機選取一個合法的訓練起點
+        max_start_index = total_len - min_slice_len
+        start_index = np.random.randint(0, max_start_index + 1)
+        
+        # 確保訓練集至少為18個月
+        end_index = total_len
+        train_len = max(min_train_size, int((end_index - start_index) * 0.75))
+        
+        train_df = full_df.iloc[start_index : start_index + train_len]
+        val_df = full_df.iloc[start_index + train_len : end_index]
+
+        if len(train_df) < 18 or len(val_df) < 1: continue
+
+        # 訓練模型並預測驗證集
+        _, _, _, _, _, _, val_base_preds = run_stacked_ensemble_model(train_df, steps_ahead=len(val_df))
+        val_pred, _ = train_and_predict_meta_model(val_base_preds.iloc[:len(train_df)], train_df['Real_Amount'].values, val_base_preds)
+
+        y_val_true = val_df['Real_Amount'].values
+        
+        # 計算此次迭代的MPI分數
+        val_residuals = y_val_true - val_pred
+        sum_abs_val_true = np.sum(np.abs(y_val_true))
+        val_wape = (np.sum(np.abs(val_residuals)) / sum_abs_val_true * 100) if sum_abs_val_true > 1e-9 else 100.0
+
+        anomaly_info_val = calculate_anomaly_scores(y_val_true)
+        is_shock_val = anomaly_info_val['Is_Shock'].values
+        val_wape_robust = (np.sum(np.abs(val_residuals[~is_shock_val])) / np.sum(y_val_true[~is_shock_val])) * 100 if np.sum(y_val_true[~is_shock_val]) > 1e-9 else 100.0
+
+        val_quantile_preds = {q: val_pred + np.percentile(val_residuals, q*100) for q in [0.1, 0.25, 0.75, 0.9]}
+        
+        val_erai_score = calculate_erai(y_val_true, val_pred, val_quantile_preds, val_wape_robust)[0]
+        
+        val_wape_score = 1 - (val_wape / 100.0)
+        ss_res_val = np.sum(val_residuals**2)
+        ss_tot_val = np.sum((y_val_true - np.mean(y_val_true))**2)
+        r2_val = 1 - (ss_res_val / ss_tot_val) if ss_tot_val > 1e-9 else 0
+        r2_score_val = max(0, r2_val)
+        
+        aas_val = 0.7 * val_wape_score + 0.3 * r2_score_val
+        rss_val = val_erai_score if val_erai_score is not None else 0
+        mpi_score_val = 0.8 * aas_val + 0.2 * rss_val
+        
+        if np.isfinite(mpi_score_val): mpi_scores.append(mpi_score_val)
+        
+        # 簡單的進度條
+        progress = (i + 1) / n_iterations
+        bar = '[' + '█' * int(progress * 20) + ' ' * (20 - int(progress * 20)) + ']'
+        print(f"\r  {bar} {int(progress*100)}%", end="")
+    
+    print("\n動態基準計算完成。")
+    if not mpi_scores: return None
+        
+    p25, p50, p85 = np.percentile(mpi_scores, [25, 50, 85])
+    return {'p25': p25, 'p50': p50, 'p85': p85}
 # --- 【★★★ 新增結束 ★★★】 ---
 
 
@@ -1663,19 +1674,26 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             
             # --- 【★★★ 核心修改：計算 MPI 指標 ★★★】 ---
             if num_months >= 24:
-                erai_results = perform_internal_benchmarking(
-                    y_true=data,
-                    historical_ensemble_pred=historical_pred,
-                    historical_base_preds_df=historical_base_preds_df,
-                    is_shock_flags=is_shock_flags
-                )
-                if erai_results:
-                    mpi_results = calculate_mpi(
+                # 1. 執行蒙地卡羅交叉驗證，產生動態評級閾值
+                dynamic_thresholds = run_monte_carlo_cv(df_for_seasonal_model, n_iterations=100)
+                
+                if dynamic_thresholds:
+                    # 2. 在完整數據上計算ERAI分數
+                    erai_results = perform_internal_benchmarking(
                         y_true=data,
-                        historical_pred=historical_pred,
-                        global_wape=historical_wape,
-                        erai_results=erai_results
+                        historical_ensemble_pred=historical_pred,
+                        historical_base_preds_df=historical_base_preds_df,
+                        is_shock_flags=is_shock_flags
                     )
+                    # 3. 結合所有指標，計算最終MPI分數並進行評級
+                    if erai_results:
+                        mpi_results = calculate_mpi_and_rate(
+                            y_true=data,
+                            historical_pred=historical_pred,
+                            global_wape=historical_wape,
+                            erai_score=erai_results['erai_score'],
+                            dynamic_thresholds=dynamic_thresholds
+                        )
 
     expense_std_dev, volatility_report, color = None, "", colors.WHITE
     if not monthly_expenses.empty and len(monthly_expenses)>=2:
@@ -1725,7 +1743,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     if historical_mae is not None:
         print(f"\n{colors.WHITE}>>> 模型表現評估 (基於歷史回測){colors.RESET}")
         
-        # --- 【核心修改】根據是否有 MPI 分數，切換顯示的準確率指標 ---
         if mpi_results is not None:
             mpi_score = mpi_results['mpi_score']
             rating = mpi_results['rating']
