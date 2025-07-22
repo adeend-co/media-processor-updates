@@ -2,20 +2,20 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.33                #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.34                #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新 v2.33：【重大修正】引入特徵縮放(Scaling)解決特徵工程導致的模型崩潰問題。   #
+# 更新 v2.34：【重大修正】實施完整的縮放-還原流程，修正預測值為0的問題。         #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.33"  # 更新版本：引入特徵縮放修正模型崩潰問題
+SCRIPT_VERSION = "v2.34"  # 更新版本：修正縮放後預測值未還原的根本性錯誤
 SCRIPT_UPDATE_DATE = "2025-07-22"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -1178,98 +1178,6 @@ def run_monte_carlo_cv(full_df, base_models, n_iterations=100, colors=None):
     return {'p25': p25, 'p50': p50, 'p85': p85}
 # --- 【★★★ 新增結束 ★★★】 ---
 
-
-def compute_calibration_results(y_true, quantile_preds, quantiles):
-    """計算模型校準結果，返回字典形式。"""
-    calibration_results = {}
-    for q in quantiles:
-        preds = quantile_preds.get(q)
-        if preds is None:
-            continue
-        min_len = min(len(y_true), len(preds))
-        observed_freq = np.mean(y_true[:min_len] <= preds[:min_len])
-        calibration_results[q] = {'quantile': q, 'observed_freq': observed_freq}
-    return calibration_results
-
-def compute_acf_results(residuals, n):
-    """計算殘差自相關性結果，返回字典形式。"""
-    sig_boundary = 2 / np.sqrt(n)
-    acf_results = {}
-    for lag in [1, 3, 6, 12]:
-        if len(residuals) <= lag:
-            continue
-        acf = np.corrcoef(residuals[:-lag], residuals[lag:])[0, 1]
-        is_significant = abs(acf) > sig_boundary
-        acf_results[lag] = {'acf': acf, 'is_significant': is_significant}
-    return acf_results
-
-def compute_quantile_spread(p25, p75, predicted_value):
-    """計算標準化的分位數範圍（例如 (P75 - P25) / predicted_value）。"""
-    if predicted_value == 0 or predicted_value is None:
-        return 0.0  # 避免除零
-    spread = (p75 - p75) / predicted_value if p75 is not None and p25 is not None else 0.0
-    return spread  # 標準化到 0-1 範圍（可根據需要調整）
-
-# --- 【新增】IRLS 穩健迴歸引擎 ---
-def huber_robust_regression(x, y, steps_ahead, t_const=1.345, max_iter=100, tol=1e-6):
-    """
-    使用迭代重加權最小平方法 (IRLS) 和 Huber 權重進行穩健迴歸。
-    """
-    X = np.c_[np.ones(len(x)), x]
-    # Step 1: 初始擬合
-    slope, intercept, _, _, _ = linregress(x, y)
-    beta = np.array([intercept, slope])
-
-    for _ in range(max_iter):
-        beta_old = beta.copy()
-        
-        # 計算殘差
-        y_pred = X @ beta
-        residuals = y - y_pred
-        
-        # Step 2: 估計誤差尺度 (MAD)
-        scale = median_abs_deviation(residuals, scale='normal')
-        if scale < 1e-6: scale = 1e-6  # 避免除零
-
-        # Step 3: 標準化殘差
-        z = residuals / scale
-        
-        # Step 4: 計算 Huber 權重
-        weights = np.ones_like(z)
-        outliers = np.abs(z) > t_const
-        weights[outliers] = t_const / np.abs(z[outliers])
-        
-        # Step 5: 執行加權最小平方法 (WLS)
-        W_sqrt = np.sqrt(weights)
-        X_w = X * W_sqrt[:, np.newaxis]
-        y_w = y * W_sqrt
-        beta = np.linalg.lstsq(X_w, y_w, rcond=None)[0]
-        
-        # Step 6: 檢查收斂
-        if np.sum(np.abs(beta - beta_old)) < tol:
-            break
-
-    # 使用最終的穩健係數進行預測和計算
-    historical_pred = X @ beta
-    final_residuals = y - historical_pred
-    
-    # 預測未來值
-    future_x = np.arange(len(x) + 1, len(x) + steps_ahead + 1)
-    predicted_values = beta[0] + beta[1] * future_x
-    predicted_value = predicted_values[-1] if len(predicted_values) > 0 else (beta[0] + beta[1] * (len(x) + 1))
-    
-    # 近似的信賴區間
-    dof = len(x) - 2
-    if dof <= 0: return predicted_value, historical_pred, final_residuals, None, None
-    
-    mse_robust = np.sum(final_residuals**2) / dof
-    se = np.sqrt(mse_robust * (1 + 1/len(x) + (future_x[-1] - np.mean(x))**2 / np.sum((x - np.mean(x))**2))) if len(future_x) > 0 else np.sqrt(mse_robust)
-    t_val = t.ppf(0.975, dof)
-    lower = predicted_value - t_val * se
-    upper = predicted_value + t_val * se
-
-    return predicted_value, historical_pred, final_residuals, lower, upper
-    
 # --- 【★★★ 核心修改：更新註解為學術性名詞 ★★★】 ---
 # --- 模型堆疊集成 (Stacking Ensemble) 總引擎 ---
 
@@ -1439,8 +1347,7 @@ def train_and_predict_meta_model(X_meta_train, y_meta_train, X_meta_predict, wei
     
     return final_prediction, normalized_weights
 
-
-# --- 【★★★ 新增：進階特徵工程輔助函數 ★★★】 ---
+# --- 【★★★ 新增：進階特徵工程與縮放相關輔助函數 ★★★】 ---
 def _create_advanced_features(df):
     """為元模型創建延遲、滾動和時間戳特徵。"""
     features_df = pd.DataFrame(index=df.index)
@@ -1463,38 +1370,28 @@ def _create_advanced_features(df):
 
     # 填充因 shift/rolling 產生的 NaN 值
     for col in features_df.columns:
-        # 使用前向填充再後向填充，以尊重時序性
         features_df[col].fillna(method='ffill', inplace=True)
         features_df[col].fillna(method='bfill', inplace=True)
-        # 如果還有 NaN（例如數據太少），則用中位數填充
         if features_df[col].isnull().any():
-            features_df[col].fillna(features_df[col].median(), inplace=True)
-
+            median_val = df['Real_Amount'].median() # Use a stable value for filling
+            features_df[col].fillna(median_val, inplace=True)
+            
     return features_df
 
-# --- 【★★★ 新增：手動特徵縮放器 ★★★】 ---
-def _scale_features(train_df, predict_df):
-    """
-    手動實現 Min-Max Scaler，避免引入新依賴。
-    在訓練集上擬合，並應用於訓練集和預測集。
-    """
-    train_np = train_df.values
-    predict_np = predict_df.values
-    
-    min_vals = np.nanmin(train_np, axis=0)
-    max_vals = np.nanmax(train_np, axis=0)
-    
-    # 處理分母為零（特徵為常數）的情況
-    range_vals = max_vals - min_vals
-    range_vals[range_vals == 0] = 1
-    
-    scaled_train = (train_np - min_vals) / range_vals
-    scaled_predict = (predict_np - min_vals) / range_vals
-    
-    return pd.DataFrame(scaled_train, columns=train_df.columns), pd.DataFrame(scaled_predict, columns=predict_df.columns)
+def _create_and_apply_scaler(data):
+    """從數據創建縮放器並應用它。返回縮放器和縮放後的數據。"""
+    scaler = {'min': np.nanmin(data), 'max': np.nanmax(data)}
+    scaler['range'] = scaler['max'] - scaler['min']
+    if scaler['range'] == 0:
+        scaler['range'] = 1.0
+    scaled_data = (data - scaler['min']) / scaler['range']
+    return scaled_data, scaler
 
+def _inverse_transform_target(scaled_data, scaler):
+    """將縮放後的目標數據還原到原始尺度。"""
+    return (scaled_data * scaler['range']) + scaler['min']
 
-# --- 【★★★ 核心升級：整合進階特徵工程與特徵縮放 ★★★】 ---
+# --- 【★★★ 核心升級：整合進階特徵工程與完整的縮放-還原流程 ★★★】 ---
 def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, enable_bootstrap=True, n_bootstrap_iterations=100, colors=None, perform_feature_engineering=True):
     data = monthly_expenses_df['Real_Amount'].values
     x = np.arange(1, len(data) + 1)
@@ -1505,22 +1402,18 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, enab
         'seasonal': train_predict_seasonal, 'seasonal_naive': train_predict_seasonal_naive, 'naive': train_predict_naive,
         'moving_average': train_predict_moving_average, 'rolling_median': train_predict_rolling_median, 'global_median': train_predict_global_median,
     }
-    
     model_keys = list(base_models.keys())
     
-    # --- 步驟 1: 生成基礎元特徵 (Level 0 Predictions) ---
+    # --- 步驟 1: 生成基礎元特徵 ---
     meta_features_base = np.zeros((n_samples, len(base_models)))
     fold_indices = np.array_split(np.arange(n_samples), n_folds)
     
     for i in range(n_folds):
         train_idx = np.concatenate([fold_indices[j] for j in range(n_folds) if i != j])
         val_idx = fold_indices[i]
-        
         if len(train_idx) == 0: continue
-
         x_train, y_train, df_train = x[train_idx], data[train_idx], monthly_expenses_df.iloc[train_idx]
         x_val = x[val_idx]
-        
         for j, key in enumerate(model_keys):
             model_func = base_models[key]
             if key in ['seasonal']:
@@ -1530,14 +1423,44 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, enab
             else:
                  meta_features_base[val_idx, j] = model_func(y_train, len(x_val))
 
-    # --- 步驟 1.5: 創建並合併進階特徵 ---
     meta_features_df = pd.DataFrame(meta_features_base, columns=model_keys)
     if perform_feature_engineering:
         advanced_features_df = _create_advanced_features(monthly_expenses_df)
         meta_features_df = pd.concat([meta_features_df, advanced_features_df], axis=1)
 
-    # --- 步驟 1.6: 【重大修正】對所有特徵進行縮放 ---
-    # 為未來時間點創建對應的特徵集以進行縮放
+    # --- 步驟 1.5: 【重大修正】對所有特徵和目標進行縮放 ---
+    # 縮放輸入特徵 (X)
+    X_train_scaled, x_scaler = _create_and_apply_scaler(meta_features_df.values)
+    # 縮放目標變數 (y)
+    y_train_scaled, y_scaler = _create_and_apply_scaler(data)
+
+    # --- 步驟 2: 訓練元模型 ---
+    if enable_bootstrap:
+        color_cyan = colors.CYAN if colors else ''
+        color_reset = colors.RESET if colors else ''
+        print(f"\n{color_cyan}正在執行元模型共識訓練 (移動區塊自舉法)...{color_reset}")
+        committee_weights = []
+        block_length = max(2, int(n_samples**(1/3)))
+        num_blocks = n_samples - block_length + 1
+        print_progress_bar(0, n_bootstrap_iterations, prefix='進度:', suffix='完成', length=40)
+        for i in range(n_bootstrap_iterations):
+            bootstrap_indices = []
+            while len(bootstrap_indices) < n_samples:
+                start_index = np.random.randint(num_blocks)
+                bootstrap_indices.extend(range(start_index, start_index + block_length))
+            bootstrap_indices = bootstrap_indices[:n_samples]
+            X_meta_boot = X_train_scaled[bootstrap_indices]
+            y_meta_boot = y_train_scaled[bootstrap_indices]
+            _, weights = train_and_predict_meta_model(X_meta_boot, y_meta_boot, X_meta_boot)
+            committee_weights.append(weights)
+            print_progress_bar(i + 1, n_bootstrap_iterations, prefix='進度:', suffix='完成', length=40)
+        model_weights = np.mean(committee_weights, axis=0)
+        print("元模型共識訓練完成。")
+    else:
+        _, model_weights = train_and_predict_meta_model(X_train_scaled, y_train_scaled, X_train_scaled)
+
+    # --- 步驟 3: 進行預測並【還原】結果 ---
+    # 準備未來的特徵集
     x_future = np.arange(n_samples + 1, n_samples + steps_ahead + 1)
     final_base_predictions = np.zeros((steps_ahead, len(base_models)))
     for j, key in enumerate(model_keys):
@@ -1549,57 +1472,25 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, enab
         else:
             final_base_predictions[:, j] = model_func(data, steps_ahead)
     final_pred_features_df = pd.DataFrame(final_base_predictions, columns=model_keys)
-
     if perform_feature_engineering:
-        future_df_template = pd.concat([monthly_expenses_df, pd.DataFrame({'Parsed_Date': pd.to_datetime(monthly_expenses_df['Parsed_Date'].iloc[-1]) + pd.DateOffset(months=1), 'Real_Amount': [0]})], ignore_index=True)
+        future_df_template = pd.concat([monthly_expenses_df, pd.DataFrame({'Parsed_Date': pd.to_datetime(monthly_expenses_df['Parsed_Date'].iloc[-1]) + pd.DateOffset(months=1), 'Real_Amount': [data[-1]]})], ignore_index=True)
         future_adv_features = _create_advanced_features(future_df_template).iloc[-steps_ahead:]
         final_pred_features_df = pd.concat([final_pred_features_df.reset_index(drop=True), future_adv_features.reset_index(drop=True)], axis=1)
-
-    # 執行縮放
-    meta_features_scaled_df, final_pred_features_scaled_df = _scale_features(meta_features_df, final_pred_features_df)
-    meta_features_scaled = meta_features_scaled_df.values
-    final_pred_features_scaled = final_pred_features_scaled_df.values
-
-
-    # --- 步驟 2: 訓練元模型 (Level 1 Meta-Model) ---
-    if enable_bootstrap:
-        color_cyan = colors.CYAN if colors else ''
-        color_reset = colors.RESET if colors else ''
-        print(f"\n{color_cyan}正在執行元模型共識訓練 (移動區塊自舉法)...{color_reset}")
-        
-        committee_weights = []
-        block_length = max(2, int(n_samples**(1/3)))
-        num_blocks = n_samples - block_length + 1
-        
-        print_progress_bar(0, n_bootstrap_iterations, prefix='進度:', suffix='完成', length=40)
-        for i in range(n_bootstrap_iterations):
-            bootstrap_indices = []
-            while len(bootstrap_indices) < n_samples:
-                start_index = np.random.randint(num_blocks)
-                bootstrap_indices.extend(range(start_index, start_index + block_length))
-            bootstrap_indices = bootstrap_indices[:n_samples]
-            
-            X_meta_boot = meta_features_scaled[bootstrap_indices]
-            y_meta_boot = data[bootstrap_indices]
-            
-            _, weights = train_and_predict_meta_model(X_meta_boot, y_meta_boot, X_meta_boot)
-            committee_weights.append(weights)
-            
-            print_progress_bar(i + 1, n_bootstrap_iterations, prefix='進度:', suffix='完成', length=40)
-            
-        model_weights = np.mean(committee_weights, axis=0)
-        print("元模型共識訓練完成。")
-    else:
-        _, model_weights = train_and_predict_meta_model(meta_features_scaled, data, meta_features_scaled)
-
-    # --- 步驟 3: 使用共識權重進行最終預測 ---
-    final_prediction_sequence, _ = train_and_predict_meta_model(None, None, final_pred_features_scaled, weights=model_weights)
-    final_prediction = final_prediction_sequence[-1]
     
-    historical_pred, _ = train_and_predict_meta_model(None, None, meta_features_scaled, weights=model_weights)
+    # 應用【相同的】縮放器到未來特徵集
+    final_pred_features_scaled = _apply_scaler(final_pred_features_df.values, x_scaler)
+
+    # 進行【縮放後的】預測
+    historical_pred_scaled, _ = train_and_predict_meta_model(None, None, X_train_scaled, weights=model_weights)
+    final_prediction_scaled, _ = train_and_predict_meta_model(None, None, final_pred_features_scaled, weights=model_weights)
+    
+    # 【最關鍵一步】將預測結果還原到原始貨幣尺度
+    historical_pred = _inverse_transform_target(historical_pred_scaled, y_scaler)
+    final_prediction = _inverse_transform_target(final_prediction_scaled, y_scaler)[-1]
+
+    # --- 步驟 4: 計算最終指標 ---
     residuals = data - historical_pred
-    
-    dof = n_samples - meta_features_scaled.shape[1] - 1
+    dof = n_samples - meta_features_df.shape[1] - 1
     if dof <= 0: return final_prediction, historical_pred, residuals, None, None, model_weights, meta_features_df
     
     mse = np.sum(residuals**2) / dof
@@ -1734,6 +1625,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 predicted_value, historical_pred = ema.iloc[-1], ema.values
             
         if historical_pred is not None:
+            # 現在的 residuals 是在正確的尺度上計算的
             residuals = data - historical_pred
             ci_str = f" [下限：{lower:,.2f}，上限：{upper:,.2f}] (95% 信心)" if lower is not None and upper is not None else ""
             predicted_expense_str = f"{predicted_value:,.2f}"
@@ -1768,7 +1660,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 dynamic_thresholds = run_monte_carlo_cv(df_for_model, base_models, n_iterations=100, colors=colors)
                 
                 if dynamic_thresholds:
-                    # 注意: historical_base_preds_df 在這裡傳遞的是未縮放的特徵，主要用於評估。
                     erai_results = perform_internal_benchmarking(
                         y_true=data,
                         historical_ensemble_pred=historical_pred,
@@ -1850,7 +1741,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             components = mpi_results['components']
             
             print(f"{colors.PURPLE}{colors.BOLD}  ---")
-            # 【v2.32 修正】: 同時顯示分數與百分比
             print(f"{colors.PURPLE}{colors.BOLD}  - MPI (綜合效能指數): {mpi_score:.3f} ({mpi_score*100:.1f}%)  評級: {rating}{colors.RESET}")
             print(f"{colors.WHITE}    └─ 絕對準確度: {components['absolute_accuracy']:.3f} | 相對優越性 (ERAI): {components['relative_superiority']:.3f}{colors.RESET}")
             print(f"{colors.WHITE}    └─ 建議行動: {suggestion}{colors.RESET}")
