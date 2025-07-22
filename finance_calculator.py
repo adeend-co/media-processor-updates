@@ -1073,7 +1073,7 @@ def calculate_mpi(y_true, historical_pred, global_wape, erai_results):
     r_squared = 1 - (ss_res / ss_tot) if ss_tot > 1e-9 else 0
     r2_score = max(0, r_squared)
     
-    aas = 0.6 * wape_score + 0.4 * r2_score
+    aas = 0.75 * wape_score + 0.25 * r2_score
 
     # --- 第二支柱：相對優越性 (RSS) ---
     rss = erai_results['erai_score'] if erai_results else 0
