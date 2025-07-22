@@ -2,20 +2,20 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.29                #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.30                #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新：修正因函數定義順序錯誤導致的 NameError，確保動態評級流程穩定執行。       #
+# 更新 v2.30：引入「移動區塊自舉法」增強集成訓練，尊重時序性，並加入進度條。     #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.29"  # 更新版本：修正 MPI 2.0 評估流程中的 NameError
+SCRIPT_VERSION = "v2.30"  # 更新版本：引入移動區塊自舉法 (MBB) 增強集成訓練
 SCRIPT_UPDATE_DATE = "2025-07-22"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -1087,7 +1087,21 @@ def perform_internal_benchmarking(y_true, historical_ensemble_pred, historical_b
     
     return {'erai_score': ensemble_erai_score}
 
-def run_monte_carlo_cv(full_df, base_models, n_iterations=100):
+# --- 【新增】進度條輔助函數 ---
+def print_progress_bar(iteration, total, prefix='', suffix='', decimals=1, length=50, fill='█', print_end="\r"):
+    """
+    為長時間執行的迴圈打印一個文字進度條。
+    """
+    percent = ("{0:." + str(decimals) + "f}").format(100 * (iteration / float(total)))
+    filled_length = int(length * iteration // total)
+    bar = fill * filled_length + '-' * (length - filled_length)
+    sys.stdout.write(f'\r{prefix} |{bar}| {percent}% {suffix}')
+    sys.stdout.flush()
+    if iteration == total: 
+        sys.stdout.write('\n')
+        sys.stdout.flush()
+
+def run_monte_carlo_cv(full_df, base_models, n_iterations=100, colors=None):
     """執行蒙地卡羅交叉驗證以生成動態MPI評級閾值。"""
     mpi_scores = []
     total_len = len(full_df)
@@ -1097,7 +1111,11 @@ def run_monte_carlo_cv(full_df, base_models, n_iterations=100):
 
     if total_len < min_train_size + min_val_size: return None
     
-    print(f"\n{Colors().CYAN}正在執行蒙地卡羅交叉驗證以建立動態評級基準 (共 {n_iterations} 次迭代)...{Colors().RESET}")
+    color_cyan = colors.CYAN if colors else ''
+    color_reset = colors.RESET if colors else ''
+    
+    print(f"\n{color_cyan}正在執行蒙地卡羅交叉驗證以建立動態評級基準 (共 {n_iterations} 次迭代)...{color_reset}")
+    print_progress_bar(0, n_iterations, prefix='進度:', suffix='完成', length=40)
 
     for i in range(n_iterations):
         train_len = int(total_len * (1 - val_ratio))
@@ -1113,7 +1131,7 @@ def run_monte_carlo_cv(full_df, base_models, n_iterations=100):
         y_val_true = val_df['Real_Amount'].values
         
         # 1. 訓練元模型
-        _, _, _, _, _, _, X_meta_train = run_stacked_ensemble_model(train_df, steps_ahead=1)
+        _, _, _, _, _, _, X_meta_train = run_stacked_ensemble_model(train_df, steps_ahead=1, enable_bootstrap=False) # CV中禁用bootstrap加速
         if X_meta_train is None: continue
         
         final_weights, _ = nnls(X_meta_train.values, y_train_true)
@@ -1158,11 +1176,9 @@ def run_monte_carlo_cv(full_df, base_models, n_iterations=100):
         
         if np.isfinite(mpi_score_val): mpi_scores.append(mpi_score_val)
         
-        progress = (i + 1) / n_iterations
-        bar = '[' + '█' * int(progress * 20) + ' ' * (20 - int(progress * 20)) + ']'
-        print(f"\r  {bar} {int(progress*100)}%", end="")
+        print_progress_bar(i + 1, n_iterations, prefix='進度:', suffix='完成', length=40)
     
-    print("\n動態基準計算完成。")
+    print("動態基準計算完成。")
     if not mpi_scores: return None
         
     p25, p50, p85 = np.percentile(mpi_scores, [25, 50, 85])
@@ -1465,26 +1481,34 @@ def train_predict_moving_average(y_train, predict_steps, window_size=6):
     return np.full(predict_steps, mean_value)
 
 # Level 1 元模型 (Meta-Model)
-def train_and_predict_meta_model(X_meta_train, y_meta_train, X_meta_predict):
-    """使用非負最小平方法(NNLS)訓練元模型並進行預測，確保權重合理。"""
-    weights, _ = nnls(X_meta_train, y_meta_train)
-    
-    total_weight = np.sum(weights)
-    if total_weight > 1e-6:
-        normalized_weights = weights / total_weight
-    else:
-        num_models = X_meta_train.shape[1]
-        normalized_weights = np.full(num_models, 1 / num_models)
+def train_and_predict_meta_model(X_meta_train, y_meta_train, X_meta_predict, weights=None):
+    """
+    使用非負最小平方法(NNLS)訓練元模型或直接使用提供的權重進行預測。
+    """
+    if weights is None:
+        # 訓練模式
+        fit_weights, _ = nnls(X_meta_train, y_meta_train)
         
+        total_weight = np.sum(fit_weights)
+        if total_weight > 1e-6:
+            normalized_weights = fit_weights / total_weight
+        else:
+            num_models = X_meta_train.shape[1]
+            normalized_weights = np.full(num_models, 1 / num_models)
+    else:
+        # 預測模式
+        normalized_weights = weights
+
     final_prediction = X_meta_predict @ normalized_weights
     
     return final_prediction, normalized_weights
 
 
-# --- 【★★★ 核心修改：重排模型順序並擴充至10個 ★★★】 ---
-def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5):
+# --- 【★★★ 核心升級：引入移動區塊自舉法 (MBB) 增強集成訓練 ★★★】 ---
+def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, enable_bootstrap=True, n_bootstrap_iterations=100, colors=None):
     data = monthly_expenses_df['Real_Amount'].values
     x = np.arange(1, len(data) + 1)
+    n_samples = len(data)
     
     base_models = {
         'poly': train_predict_poly, 'huber': train_predict_huber, 'des': train_predict_des, 'drift': train_predict_drift,
@@ -1493,9 +1517,10 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5):
     }
     
     model_keys = list(base_models.keys())
-    meta_features = np.zeros((len(data), len(base_models)))
     
-    fold_indices = np.array_split(np.arange(len(data)), n_folds)
+    # --- 步驟 1: 生成基礎元特徵 (Level 0 Predictions) ---
+    meta_features = np.zeros((n_samples, len(base_models)))
+    fold_indices = np.array_split(np.arange(n_samples), n_folds)
     
     for i in range(n_folds):
         train_idx = np.concatenate([fold_indices[j] for j in range(n_folds) if i != j])
@@ -1515,7 +1540,47 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5):
             else:
                  meta_features[val_idx, j] = model_func(y_train, len(x_val))
 
-    x_future = np.arange(len(x) + 1, len(x) + steps_ahead + 1)
+    # --- 步驟 2: 訓練元模型 (Level 1 Meta-Model) ---
+    # 【核心升級】使用移動區塊自舉法 (MBB) 訓練元模型以達成共識
+    if enable_bootstrap:
+        color_cyan = colors.CYAN if colors else ''
+        color_reset = colors.RESET if colors else ''
+        print(f"\n{color_cyan}正在執行元模型共識訓練 (移動區塊自舉法)...{color_reset}")
+        
+        committee_weights = []
+        # 啟發式計算最佳區塊長度，通常為 N^(1/3)
+        block_length = max(2, int(n_samples**(1/3)))
+        num_blocks = n_samples - block_length + 1
+        
+        print_progress_bar(0, n_bootstrap_iterations, prefix='進度:', suffix='完成', length=40)
+        for i in range(n_bootstrap_iterations):
+            # 創建自舉樣本索引
+            bootstrap_indices = []
+            while len(bootstrap_indices) < n_samples:
+                start_index = np.random.randint(num_blocks)
+                bootstrap_indices.extend(range(start_index, start_index + block_length))
+            bootstrap_indices = bootstrap_indices[:n_samples]
+            
+            # 從元特徵和真實數據中抽樣
+            X_meta_boot = meta_features[bootstrap_indices]
+            y_meta_boot = data[bootstrap_indices]
+            
+            # 訓練一個微型元模型
+            _, weights = train_and_predict_meta_model(X_meta_boot, y_meta_boot, X_meta_boot)
+            committee_weights.append(weights)
+            
+            print_progress_bar(i + 1, n_bootstrap_iterations, prefix='進度:', suffix='完成', length=40)
+            
+        # 達成共識：對所有委員會成員的權重取平均值
+        model_weights = np.mean(committee_weights, axis=0)
+        print("元模型共識訓練完成。")
+
+    else: # 原始單次訓練方法 (用於CV或禁用時)
+        _, model_weights = train_and_predict_meta_model(meta_features, data, meta_features)
+
+    # --- 步驟 3: 使用共識權重進行最終預測 ---
+    # 預測未來
+    x_future = np.arange(n_samples + 1, n_samples + steps_ahead + 1)
     final_base_predictions = np.zeros((steps_ahead, len(base_models)))
 
     for j, key in enumerate(model_keys):
@@ -1527,17 +1592,19 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5):
         else:
             final_base_predictions[:, j] = model_func(data, steps_ahead)
     
-    final_prediction_sequence, model_weights = train_and_predict_meta_model(meta_features, data, final_base_predictions)
+    final_prediction_sequence, _ = train_and_predict_meta_model(None, None, final_base_predictions, weights=model_weights)
     final_prediction = final_prediction_sequence[-1]
     
-    historical_pred, _ = train_and_predict_meta_model(meta_features, data, meta_features)
+    # 預測歷史 (回測)
+    historical_pred, _ = train_and_predict_meta_model(None, None, meta_features, weights=model_weights)
     residuals = data - historical_pred
     
-    dof = len(data) - len(base_models) - 1
+    # 計算信賴區間
+    dof = n_samples - len(base_models) - 1
     if dof <= 0: return final_prediction, historical_pred, residuals, None, None, model_weights, pd.DataFrame(meta_features, columns=model_keys)
     
     mse = np.sum(residuals**2) / dof
-    se = np.sqrt(mse)
+    se = np.sqrt(mse) # 使用簡化的SE計算，因為多步預測的SE更複雜
     t_val = t.ppf(0.975, dof)
     lower, upper = final_prediction - t_val * se, final_prediction + t_val * se
     
@@ -1635,20 +1702,20 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         }
 
         if num_months >= 24:
-            method_used = " (基於模型堆疊集成)"
-            predicted_value, historical_pred, residuals, lower, upper, model_weights, historical_base_preds_df = run_stacked_ensemble_model(df_for_seasonal_model, steps_ahead)
+            method_used = " (基於自舉法增強的集成訓練)"
+            predicted_value, historical_pred, residuals, lower, upper, model_weights, historical_base_preds_df = run_stacked_ensemble_model(df_for_seasonal_model, steps_ahead, colors=colors)
             
             model_names = [
-                "趨勢", "穩健", "慣性", "長期趨勢",
-                "週期", "週期模仿",
-                "天真", "近期平均", "近期中位", "歷史中位"
+                "多項式", "穩健趨勢", "指數平滑", "漂移",
+                "季節分解", "季節模仿",
+                "單純", "移動平均", "滾動中位", "全局中位"
             ]
             report_parts = [f"{name}({weight:.1%})" for name, weight in zip(model_names, model_weights)]
             chunk_size = 3
             chunks = [report_parts[i:i + chunk_size] for i in range(0, len(report_parts), chunk_size)]
             lines = [", ".join(chunk) for chunk in chunks]
-            indentation = "\n" + " " * 14
-            model_weights_report = f"  - 專家權重: {indentation.join(lines)}"
+            indentation = "\n" + " " * 16
+            model_weights_report = f"  - 共識權重: {indentation.join(lines)}"
 
         elif 18 <= num_months < 24:
             method_used = " (基於穩健迴歸IRLS-Huber)"
@@ -1704,7 +1771,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                     historical_wape_robust = (np.sum(np.abs(residuals_clean)) / sum_abs_clean) * 100
             
             if num_months >= 24:
-                dynamic_thresholds = run_monte_carlo_cv(df_for_seasonal_model, base_models, n_iterations=100)
+                dynamic_thresholds = run_monte_carlo_cv(df_for_seasonal_model, base_models, n_iterations=100, colors=colors)
                 
                 if dynamic_thresholds:
                     erai_results = perform_internal_benchmarking(
