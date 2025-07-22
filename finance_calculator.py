@@ -2,20 +2,20 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.30                #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.31                #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# v2.30 更新：整合進階特徵工程與兩階段殘差建模，提升 ≥24 個月數據的預測精度。      #
+# v2.31 更新：修正因未來特徵生成缺少欄位導致的 KeyError。                            #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.30"  # 更新版本：新增特徵工程 & 殘差修正
+SCRIPT_VERSION = "v2.31"  # 更新版本：修正特徵工程中的 KeyError
 SCRIPT_UPDATE_DATE = "2025-07-22"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -1138,12 +1138,12 @@ def run_monte_carlo_cv(full_df, base_models, n_iterations=100):
         y_val_true = val_df['Real_Amount'].values
         
         # 1. 訓練元模型
-        _, _, _, _, _, _, X_meta_train = run_stacked_ensemble_model(train_df, steps_ahead=1)
-        if X_meta_train is None: continue
+        _, _, _, _, _, _, X_meta_train_df = run_stacked_ensemble_model(train_df, steps_ahead=1)
+        if X_meta_train_df is None: continue
         
-        final_weights, _ = nnls(X_meta_train.values, y_train_true)
+        final_weights, _ = nnls(X_meta_train_df.values, y_train_true)
         if np.sum(final_weights) < 1e-9:
-            num_models = X_meta_train.shape[1]
+            num_models = X_meta_train_df.shape[1]
             normalized_weights = np.full(num_models, 1 / num_models)
         else:
             normalized_weights = final_weights / np.sum(final_weights)
@@ -1343,7 +1343,7 @@ def run_adaptive_ensemble_model(x, y, steps_ahead, error_window=6):
 
     return final_prediction, final_historical_pred, final_residuals, final_lower, final_upper, weight_A, weight_B
     
-# --- 【★★★ 核心修改：模型堆疊集成引擎 (v2.30) - 整合特徵工程 ★★★】 ---
+# --- 【★★★ 核心修改：模型堆疊集成引擎 (v2.31) - 整合特徵工程 ★★★】 ---
 
 # --- Level 0 基礎模型 (Base Models) ---
 def train_predict_huber(x_train, y_train, x_predict, t_const=1.345, max_iter=100, tol=1e-6):
@@ -1526,11 +1526,13 @@ def _create_advanced_features(df):
     df_out['quarter_sin'] = np.sin(2 * np.pi * df_out['Parsed_Date'].dt.quarter / 4)
     df_out['quarter_cos'] = np.cos(2 * np.pi * df_out['Parsed_Date'].dt.quarter / 4)
     
-    return df_out.drop(columns=['Parsed_Date', 'Amount', 'Real_Amount', 'Year'])
+    # 【v2.31 修正】使用 errors='ignore' 讓 drop 更穩健，避免 KeyError
+    columns_to_drop = ['Parsed_Date', 'Amount', 'Real_Amount', 'Year']
+    return df_out.drop(columns=columns_to_drop, errors='ignore')
 
 def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5):
     """
-    【v2.30 升級版】執行包含進階特徵工程的模型堆疊集成。
+    【v2.31 升級版】執行包含進階特徵工程的模型堆疊集成。
     """
     df = monthly_expenses_df.copy().reset_index(drop=True)
     y_true = df['Real_Amount'].values
@@ -1640,7 +1642,7 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5):
     return final_prediction, historical_pred, residuals, lower, upper, model_weights, historical_base_preds_df
 
 
-# --- 主要分析與預測函數 (【已升級 v2.30】) ---
+# --- 主要分析與預測函數 (【已升級 v2.31】) ---
 def analyze_and_predict(file_paths_str: str, no_color: bool):
     colors = Colors(enabled=not no_color)
     file_paths = [path.strip() for path in file_paths_str.split(';')]
@@ -1736,8 +1738,9 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             original_predicted_value = predicted_value
             if residuals is not None and len(residuals) >= 2:
                 x_residuals = np.arange(len(residuals))
-                predicted_future_residual = train_predict_huber(x_train=x_residuals, y_train=residuals, x_predict=[len(residuals) + 1])
-                residual_correction_value = predicted_future_residual[0]
+                # 使用 Huber 迴歸預測殘差，更穩健
+                predicted_future_residual, _, _, _, _ = huber_robust_regression(x_residuals, residuals, steps_ahead=1)
+                residual_correction_value = predicted_future_residual
                 predicted_value += residual_correction_value
                 if lower is not None: lower += residual_correction_value
                 if upper is not None: upper += residual_correction_value
@@ -1749,7 +1752,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             
             # 將權重與特徵名稱對應
             all_feature_names = model_names + adv_feat_names
-            # 權重數量可能少於特徵總數，因為進階特徵不直接有權重，而是影響元模型決策
             report_parts = [f"{name}({weight:.1%})" for name, weight in zip(all_feature_names, model_weights) if weight > 0.001]
 
             chunk_size = 3
@@ -1782,6 +1784,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 predicted_value, historical_pred = ema.iloc[-1], ema.values
             
         if historical_pred is not None:
+            # 殘差應基於未修正的預測計算
             residuals = data - historical_pred
             ci_str = f" [下限：{lower:,.2f}，上限：{upper:,.2f}] (95% 信心)" if lower is not None and upper is not None else ""
             predicted_expense_str = f"{predicted_value:,.2f}"
@@ -1815,7 +1818,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             if num_months >= 24:
                 dynamic_thresholds = run_monte_carlo_cv(df_for_model, base_models, n_iterations=100)
                 
-                if dynamic_thresholds:
+                if dynamic_thresholds and 'historical_base_preds_df' in locals():
                     erai_results = perform_internal_benchmarking(
                         y_true=data,
                         historical_ensemble_pred=historical_pred,
