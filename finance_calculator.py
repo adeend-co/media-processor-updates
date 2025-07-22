@@ -1048,123 +1048,6 @@ def compute_quantile_spread(p25, p75, predicted_value):
     spread = (p75 - p75) / predicted_value if p75 is not None and p25 is not None else 0.0
     return spread  # 標準化到 0-1 範圍（可根據需要調整）
 
-# --- 【新增】IRLS 穩健迴歸引擎 ---
-def huber_robust_regression(x, y, steps_ahead, t_const=1.345, max_iter=100, tol=1e-6):
-    """
-    使用迭代重加權最小平方法 (IRLS) 和 Huber 權重進行穩健迴歸。
-    """
-    X = np.c_[np.ones(len(x)), x]
-    # Step 1: 初始擬合
-    slope, intercept, _, _, _ = linregress(x, y)
-    beta = np.array([intercept, slope])
-
-    for _ in range(max_iter):
-        beta_old = beta.copy()
-        
-        # 計算殘差
-        y_pred = X @ beta
-        residuals = y - y_pred
-        
-        # Step 2: 估計誤差尺度 (MAD)
-        scale = median_abs_deviation(residuals, scale='normal')
-        if scale < 1e-6: scale = 1e-6  # 避免除零
-
-        # Step 3: 標準化殘差
-        z = residuals / scale
-        
-        # Step 4: 計算 Huber 權重
-        weights = np.ones_like(z)
-        outliers = np.abs(z) > t_const
-        weights[outliers] = t_const / np.abs(z[outliers])
-        
-        # Step 5: 執行加權最小平方法 (WLS)
-        W_sqrt = np.sqrt(weights)
-        X_w = X * W_sqrt[:, np.newaxis]
-        y_w = y * W_sqrt
-        beta = np.linalg.lstsq(X_w, y_w, rcond=None)[0]
-        
-        # Step 6: 檢查收斂
-        if np.sum(np.abs(beta - beta_old)) < tol:
-            break
-
-    # 使用最終的穩健係數進行預測和計算
-    historical_pred = X @ beta
-    final_residuals = y - historical_pred
-    
-    # 預測未來值
-    future_x = np.arange(len(x) + 1, len(x) + steps_ahead + 1)
-    predicted_values = beta[0] + beta[1] * future_x
-    predicted_value = predicted_values[-1] if len(predicted_values) > 0 else (beta[0] + beta[1] * (len(x) + 1))
-    
-    # 近似的信賴區間
-    dof = len(x) - 2
-    if dof <= 0: return predicted_value, historical_pred, final_residuals, None, None
-    
-    mse_robust = np.sum(final_residuals**2) / dof
-    se = np.sqrt(mse_robust * (1 + 1/len(x) + (future_x[-1] - np.mean(x))**2 / np.sum((x - np.mean(x))**2))) if len(future_x) > 0 else np.sqrt(mse_robust)
-    t_val = t.ppf(0.975, dof)
-    lower = predicted_value - t_val * se
-    upper = predicted_value + t_val * se
-
-    return predicted_value, historical_pred, final_residuals, lower, upper
-
-# --- 【新增】適應性加權集成模型引擎 ---
-def run_adaptive_ensemble_model(x, y, steps_ahead, error_window=6):
-    """
-    執行適應性加權集成模型。
-    """
-    # --- 模型 A (穩健先生): IRLS-Huber ---
-    pred_A, hist_fit_A, residuals_A, lower_A, upper_A = huber_robust_regression(x, y, steps_ahead)
-    
-    # --- 模型 B (敏感先生): 原始模型 (SARIMA-like) ---
-    slope_B, intercept_B, _, _, _ = linregress(x, y)
-    hist_fit_B = intercept_B + slope_B * x
-    residuals_B = y - hist_fit_B
-    
-    # 遞歸預測
-    predictions_B = []
-    prev_pred_B = y[-1]
-    last_hist_pred_B = hist_fit_B[-1]
-    for step in range(1, steps_ahead + 1):
-        predict_x_B = len(x) + step
-        trend_pred_B = intercept_B + slope_B * predict_x_B
-        feedback = 0.5 * (prev_pred_B - last_hist_pred_B)
-        current_pred_B = trend_pred_B + feedback
-        predictions_B.append(current_pred_B)
-        prev_pred_B = current_pred_B
-        last_hist_pred_B = trend_pred_B
-    pred_B = predictions_B[-1]
-    
-    # 信賴區間
-    dof_B = len(x) - 2
-    mse_B = np.sum(residuals_B**2) / dof_B
-    se_B = np.sqrt(mse_B) * np.sqrt(steps_ahead)
-    t_val_B = t.ppf(0.975, dof_B)
-    lower_B, upper_B = pred_B - t_val_B * se_B, pred_B + t_val_B * se_B
-
-    # --- 計算動態權重 ---
-    if len(x) < error_window: # 冷啟動
-        weight_A, weight_B = 0.5, 0.5
-    else:
-        error_A = np.mean(np.abs(residuals_A[-error_window:]))
-        error_B = np.mean(np.abs(residuals_B[-error_window:]))
-        
-        if error_A + error_B < 1e-6: # 避免除零
-            weight_A, weight_B = 0.5, 0.5
-        else:
-            weight_A = error_B / (error_A + error_B)
-            weight_B = 1.0 - weight_A
-
-    # --- 集成最終結果 ---
-    final_prediction = (pred_A * weight_A) + (pred_B * weight_B)
-    final_historical_pred = (hist_fit_A * weight_A) + (hist_fit_B * weight_B)
-    final_residuals = y - final_historical_pred
-    final_lower = (lower_A * weight_A) + (lower_B * weight_B) if lower_A is not None and lower_B is not None else None
-    final_upper = (upper_A * weight_A) + (upper_B * weight_B) if upper_A is not None and upper_B is not None else None
-
-
-    return final_prediction, final_historical_pred, final_residuals, final_lower, final_upper, weight_A, weight_B
-    
 # --- 【★★★ 核心修改：更新註解為學術性名詞 ★★★】 ---
 # --- 模型堆疊集成 (Stacking Ensemble) 總引擎 ---
 
@@ -1508,8 +1391,12 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             lines = [", ".join(chunk) for chunk in chunks]
             
             # 4. 用換行符和正確的縮排，將所有行組合成最終報告
-            indentation = "\n" + " " * 15 # 換行符 + 與 "  - 專家權重: " 對齊的空白
-            model_weights_report = f"  - 專家權重:   {indentation.join(lines)}"
+            first_line = lines[0] if lines else ""
+            model_weights_report = f"  - 專家權重:   {first_line}"
+            if len(lines) > 1:
+                indentation = " " * 15  # 15個空格，與第一行對齊
+                for line in lines[1:]:
+                    model_weights_report += f"\n{indentation}{line}"
 
         elif 18 <= num_months < 24:
             method_used = " (基於穩健迴歸IRLS-Huber)"
