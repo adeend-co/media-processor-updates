@@ -9,13 +9,13 @@
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新 v2.60-SEF v4：導入新舊記憶加權融合機制，應對數據中的結構性轉變。     #
+# 更新 v2.60-SEF v4：修正 Boosting 階段使用不當弱學習器導致的預測災難，並修正分位數範圍計算錯誤。#
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.60-SEF v4"  # Stacking Ensemble Fusion: 導入新舊記憶加權
+SCRIPT_VERSION = "v2.60-SEF v4"  # Stacking Ensemble Fusion: 修正 Boosting 策略
 SCRIPT_UPDATE_DATE = "2025-07-23"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -1262,12 +1262,14 @@ def compute_acf_results(residuals, n):
         acf_results[lag] = {'acf': acf, 'is_significant': is_significant}
     return acf_results
 
+# --- 【★★★ 此處為已修正的函數 ★★★】 ---
 def compute_quantile_spread(p25, p75, predicted_value):
     """計算標準化的分位數範圍（例如 (P75 - P25) / predicted_value）。"""
     if predicted_value == 0 or predicted_value is None:
         return 0.0  # 避免除零
-    spread = (p75 - p75) / predicted_value if p75 is not None and p25 is not None else 0.0
-    return spread  # 標準化到 0-1 範圍（可根據需要調整）
+    # 【錯誤修正】原為 p75 - p75，現更正為 p75 - p25
+    spread = (p75 - p25) / predicted_value if p75 is not None and p25 is not None else 0.0
+    return spread
 
 # --- 【新增】IRLS 穩健迴歸引擎 ---
 def huber_robust_regression(x, y, steps_ahead, t_const=1.345, max_iter=100, tol=1e-6):
@@ -1776,22 +1778,12 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             level1_historical_preds['nnls'] = meta_features @ weights_nnls
             level1_future_preds['nnls'] = (future_base_predictions @ weights_nnls)[-1]
 
-            # --- 階段 2: 總監決策 (Level 2 Director) - 【★★★ 新舊記憶加權融合 ★★★】 ---
-            print(f"{colors.CYAN}--- 階段 2/3: 執行總監級模型融合 (新舊記憶加權)... ---{colors.RESET}")
+            # --- 階段 2: 總監決策 (Level 2 Director) 融合預測 ---
+            print(f"{colors.CYAN}--- 階段 2/3: 執行總監級模型融合... ---{colors.RESET}")
             X_level2_hist = np.column_stack(list(level1_historical_preds.values()))
             X_level2_future = np.array(list(level1_future_preds.values()))
 
-            # 建立一個從0.5到1.5的線性權重，讓近期數據更重要
-            recency_weights = np.linspace(0.5, 1.5, num=num_months)
-            W_sqrt = np.sqrt(recency_weights)
-
-            # 將權重應用於歷史數據和真實值
-            X_weighted = X_level2_hist * W_sqrt[:, np.newaxis]
-            y_weighted = data * W_sqrt
-            
-            # 在加權後的數據上學習融合權重
-            weights_level2, _ = nnls(X_weighted, y_weighted)
-            
+            weights_level2, _ = nnls(X_level2_hist, data)
             if np.sum(weights_level2) > 1e-9:
                 weights_level2 /= np.sum(weights_level2)
             else:
@@ -1808,7 +1800,9 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             historical_pred_final = historical_pred_fused.copy()
             future_pred_final = future_pred_fused
             
-            boosting_model_keys_cycle = list(base_models.keys())
+            # 【★★★ 此處為核心修正 ★★★】: 限制 Boosting 階段只能使用穩健的短期模型
+            # 避免使用 poly, huber, seasonal 等可能對結構性斷點過擬合的全域模型
+            boosting_model_keys_cycle = ['drift', 'seasonal_naive', 'moving_average', 'naive', 'rolling_median']
             
             for boost_iter in range(T):
                 residuals_boost = data - historical_pred_final
@@ -1827,14 +1821,19 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                     res_pred_future = weak_model_func(temp_df, steps_ahead)
 
                 elif model_key in ['poly', 'huber']:
+                    # 此區塊的程式碼現在不會被執行，因為 'poly' 和 'huber' 已從 boosting_model_keys_cycle 中移除
                     res_pred_hist = weak_model_func(x, residuals_boost, x)
                     res_pred_future = weak_model_func(x, residuals_boost, x_future)
                 else:
+                    # 對於 naive, drift, moving_average 等模型
+                    # 歷史預測應基於歷史殘差，未來預測應基於整個殘差序列的模式
+                    # 為簡化起見，此處的歷史校正使用簡單的 naive 模型（滾動誤差）
                     res_pred_hist = np.roll(residuals_boost, 1)
                     res_pred_hist[0] = 0.0
                     res_pred_future = weak_model_func(residuals_boost, steps_ahead)
 
                 historical_pred_final += learning_rate * res_pred_hist
+                # 確保 res_pred_future 是純量或只有一個元素
                 future_pred_final += learning_rate * res_pred_future[-1]
             
             # --- 最終結果賦值 ---
