@@ -2,20 +2,20 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.50                #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.51                #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新 v2.50: 整合頻率域分析(FFT)、時間戳強化特徵與稀疏預測，提升長數據模型精確度。      #
+# 更新 v2.51: 修正 v2.50 中 sparse_trend 模型因誤用 Timestamp 物件造成的執行錯誤。      #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.50"  # 更新版本: 整合頻率域、時間特徵與稀疏預測模型。
+SCRIPT_VERSION = "v2.51"  # 更新版本: 修正 v2.50 中 sparse_trend 模型的執行錯誤。
 SCRIPT_UPDATE_DATE = "2025-07-23"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -1485,14 +1485,17 @@ def train_predict_sparse(df_train, predict_steps, period='Q'):
     y_q_full = np.concatenate([y_quarterly.values, y_q_predict])
     q_full_dates = pd.date_range(start=y_quarterly.index[0], periods=len(y_q_full), freq=period)
     
-    # 轉換為月度時間戳進行插值
     monthly_dates = pd.date_range(start=y_series.index[0], periods=len(y_series) + predict_steps, freq='M')
     
-    # 月度插值：將季度總和分配到該季度的中間月份
-    q_timestamps = q_full_dates.to_series().apply(lambda dt: dt.to_timestamp() + pd.DateOffset(months=1, days=15)).values.astype(float)
-    m_timestamps = monthly_dates.to_timestamp().values.astype(float)
+    # 【v2.5.1 修正】將季度時間戳移至季度中點，以獲得更準確的插值錨點
+    q_mid_dates = q_full_dates + pd.DateOffset(months=-1, days=-15)
+    q_timestamps = q_mid_dates.values.astype(np.int64)
 
-    y_monthly_interp = np.interp(m_timestamps, q_timestamps, y_q_full / 3) # 除以3得到月均值
+    # 【v2.5.1 修正】直接從 DatetimeIndex 獲取數值，而不是呼叫不存在的方法
+    m_timestamps = monthly_dates.values.astype(np.int64)
+
+    # 使用線性插值將季度均值還原為月度預測
+    y_monthly_interp = np.interp(m_timestamps, q_timestamps, y_q_full / 3)
     
     return y_monthly_interp[-predict_steps:]
 
@@ -1556,7 +1559,11 @@ def train_predict_huber_time_features(df_train, predict_steps, t_const=1.345, ma
     # 4. 創建並縮放預測特徵
     future_dates = pd.date_range(start=df_train['Parsed_Date'].iloc[-1] + pd.DateOffset(months=1), periods=predict_steps, freq='M')
     df_predict = pd.DataFrame({'Parsed_Date': future_dates})
+    
+    # 在創建特徵前，需要確保 time_idx 是連續的
     X_predict_df = _create_time_features(df_predict)
+    X_predict_df['time_idx'] += n_train
+
     # 使用訓練集的 mu 和 std 進行縮放
     X_predict_scaled = (X_predict_df - train_mu) / train_std
     X_predict_b = np.c_[np.ones(predict_steps), X_predict_scaled.values]
