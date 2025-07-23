@@ -1262,12 +1262,10 @@ def compute_acf_results(residuals, n):
         acf_results[lag] = {'acf': acf, 'is_significant': is_significant}
     return acf_results
 
-# --- 【★★★ 此處為已修正的函數 ★★★】 ---
 def compute_quantile_spread(p25, p75, predicted_value):
     """計算標準化的分位數範圍（例如 (P75 - P25) / predicted_value）。"""
     if predicted_value is None or predicted_value == 0:
         return 0.0  # 避免除零
-    # 【錯誤修正】原為 p75 - p75，現更正為 p75 - p25
     spread = (p75 - p25) / predicted_value if p75 is not None and p25 is not None else 0.0
     return spread
 
@@ -1801,29 +1799,24 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             historical_pred_final = historical_pred_fused.copy()
             future_pred_final = future_pred_fused
             
-            # 只使用穩定的趨勢學習器來修正殘差，防止震盪
-            boosting_model_keys_cycle = ['huber', 'drift'] 
-            
+            # 只使用穩健的「迴歸」模型來學習殘差中任何剩餘的「趨勢」。
+            # 這是防止震盪和 TypeError 的關鍵。
+            weak_model_func = base_models['huber']
+
             for boost_iter in range(T):
                 residuals_boost = data - historical_pred_final
                 
-                model_key = boosting_model_keys_cycle[boost_iter % len(boosting_model_keys_cycle)]
-                weak_model_func = base_models[model_key]
+                # 1. 讓弱學習器學習當前殘差的模式 f(x) -> residual
+                # 2. 獲取對歷史殘差的「擬合值」
+                res_pred_hist = weak_model_func(x, residuals_boost, x)
                 
-                # 重新訓練弱學習器來「學習殘差的模式」
-                # 這是與先前版本最大的不同，我們不再是複製或滾動誤差
-                if model_key in ['huber', 'drift']: # 適用於需要 x 和 y 的模型
-                    # 使用弱學習器學習「歷史殘差」，並用學到的規則來「預測歷史殘差」
-                    res_pred_hist = weak_model_func(x, residuals_boost, x)
-                    # 使用相同的規則來「預測未來殘差」
-                    res_pred_future_seq = weak_model_func(x, residuals_boost, x_future)
-                else: # 備用，適用於只需要 y 序列的模型
-                    res_pred_hist = weak_model_func(residuals_boost, len(x))
-                    res_pred_future_seq = weak_model_func(residuals_boost, steps_ahead)
-
+                # 3. 獲取對未來殘差的「預測值」
+                res_pred_future_seq = weak_model_func(x, residuals_boost, x_future)
+                
+                # 4. 以較小的學習率應用學到的修正
                 historical_pred_final += learning_rate * res_pred_hist
                 future_pred_final += learning_rate * res_pred_future_seq[-1]
-            
+
             # --- 最終結果賦值 ---
             predicted_value = future_pred_final
             historical_pred = historical_pred_final
