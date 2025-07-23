@@ -1611,7 +1611,7 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
         else:
             future_base_predictions[:, j] = model_func(data, steps_ahead)
 
-    # --- 【★★★ 此處為核心修正 ★★★】 ---
+    # --- 【★★★ 此處為核心修正與請求對應之處 ★★★】 ---
     # --- 階段 1 & 2: 巢狀交叉驗證以獲得公平的總監權重 ---
     if verbose: print(f"{colors.CYAN}--- 階段 1-2/3: 執行巢狀交叉驗證以訓練總監模型... ---{colors.RESET}")
     n_folds = 5
@@ -1649,11 +1649,33 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
         else: nnls_weights_fold.fill(1/len(base_models))
         X_level2_hist_oof[val_idx, 2] = meta_features[val_idx] @ nnls_weights_fold
 
-    # 現在，使用公平的 OOF 預測來訓練最終的總監模型
-    weights_level2, _ = nnls(X_level2_hist_oof, data)
-    if np.sum(weights_level2) < 1e-9: weights_level2.fill(1/X_level2_hist_oof.shape[1])
-    else: weights_level2 /= np.sum(weights_level2)
-        
+    # --- 【針對您的請求進行修改】 ---
+    # 原本使用 NNLS，容易導致贏者全拿。現改為使用貪婪前向選擇法來融合三個委員會的權重，以促進權重多樣性。
+    if verbose: print(f"{colors.WHITE}    └─ 正在使用「貪婪前向選擇法」融合總監權重以促進多樣性...{colors.RESET}")
+    
+    level2_model_keys = ['GFS', 'PWA', 'NNLS']
+    # 使用與基礎模型相同的貪婪選擇法來決定總監權重
+    # n_iterations > n_models (30 > 3) 可以確保模型被重複選取，產生更平滑的權重分佈
+    selected_director_indices, _ = train_greedy_forward_ensemble(
+        X_meta=X_level2_hist_oof, 
+        y_true=data, 
+        model_keys=level2_model_keys, 
+        n_iterations=30, 
+        colors=colors, 
+        verbose=False # 主流程中已有提示，此處不重複打印
+    )
+
+    director_counts = Counter(selected_director_indices)
+    weights_level2 = np.zeros(len(level2_model_keys))
+    if selected_director_indices:
+        for idx, count in director_counts.items():
+            weights_level2[idx] = count
+        # 歸一化權重
+        weights_level2 = weights_level2 / np.sum(weights_level2)
+    else:
+        # 如果貪婪選擇失敗（極端情況），退回至均等權重
+        weights_level2 = np.full(len(level2_model_keys), 1 / len(level2_model_keys))
+
     # --- 重新在全部數據上訓練 Level 1 委員以預測未來 ---
     level1_future_preds = {}
     # GFS
