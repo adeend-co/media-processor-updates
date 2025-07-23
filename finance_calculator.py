@@ -1461,6 +1461,49 @@ def train_predict_moving_average(y_train, predict_steps, window_size=6):
     mean_value = np.mean(y_train[-actual_window:])
     return np.full(predict_steps, mean_value)
 
+# --- 【★★★ 此處為被恢復的函數 ★★★】 ---
+def train_greedy_forward_ensemble(X_meta, y_true, model_keys, n_iterations=20, colors=None, verbose=True):
+    """
+    使用 Caruana 的貪婪前向選擇法訓練元模型。
+    """
+    color_cyan = colors.CYAN if colors else ''
+    color_reset = colors.RESET if colors else ''
+    
+    n_samples, n_models = X_meta.shape
+    ensemble_model_indices = []
+    ensemble_predictions = np.zeros(n_samples)
+    
+    if verbose:
+        print(f"\n{color_cyan}正在執行元模型團隊建設 (貪婪前向選擇法)...{color_reset}")
+    
+    def rmse(y_true, y_pred):
+        return np.sqrt(np.mean((y_true - y_pred)**2))
+
+    for i in range(n_iterations):
+        best_model_idx_this_round = -1
+        lowest_error = np.inf
+        
+        for model_idx in range(n_models):
+            candidate_model_preds = X_meta[:, model_idx]
+            temp_predictions = (ensemble_predictions * i + candidate_model_preds) / (i + 1)
+            current_error = rmse(y_true, temp_predictions)
+            
+            if current_error < lowest_error:
+                lowest_error = current_error
+                best_model_idx_this_round = model_idx
+        
+        if best_model_idx_this_round != -1:
+            ensemble_model_indices.append(best_model_idx_this_round)
+            best_model_preds = X_meta[:, best_model_idx_this_round]
+            ensemble_predictions = (ensemble_predictions * i + best_model_preds) / (i + 1)
+        else:
+            break
+            
+    if verbose:
+        print("團隊建設完成。")
+        
+    return ensemble_model_indices, None # 維持與舊版相同的返回格式
+
 def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, ensemble_size=20, colors=None, verbose=True):
     data = monthly_expenses_df['Real_Amount'].values
     x = np.arange(1, len(data) + 1)
@@ -1536,7 +1579,6 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, ense
     
     return final_prediction_sequence, historical_pred, residuals, lower_seq, upper_seq, model_weights, historical_base_preds_df
 
-# --- 【★★★ 此處為核心修正 ★★★】 ---
 def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose=True):
     """
     將三階段集成模型流程封裝為一個獨立函數。
@@ -1740,7 +1782,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             method_used = " (基於三階段混合集成法)"
             
             # --- 執行完整的集成流程以獲得最終預測和回測結果 ---
-            future_pred_final_seq, historical_pred, effective_base_weights, weights_level2, lower_seq, upper_seq, historical_base_preds_df = \
+            future_pred_final_seq, historical_pred, effective_base_weights, weights_level2, lower_seq, upper_seq, _ = \
                 run_full_ensemble_pipeline(df_for_seasonal_model, steps_ahead, colors, verbose=True)
 
             predicted_value = future_pred_final_seq[-1]
