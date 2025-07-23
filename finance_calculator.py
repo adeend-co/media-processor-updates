@@ -2,20 +2,20 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.60-SEF v2       #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.60-SEF v3       #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新 v2.60-SEF v2：修正Boosting階段因弱學習器返回空陣列導致的廣播錯誤。   #
+# 更新 v2.60-SEF v3：修正因迴圈變數 t 覆蓋scipy.stats.t導致的AttributeError。   #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.60-SEF v2"  # Stacking Ensemble Fusion: 修正Boosting階段的廣播錯誤
+SCRIPT_VERSION = "v2.60-SEF v3"  # Stacking Ensemble Fusion: 修正變數覆蓋導致的AttributeError
 SCRIPT_UPDATE_DATE = "2025-07-23"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -1798,13 +1798,12 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             historical_pred_final = historical_pred_fused.copy()
             future_pred_final = future_pred_fused
             
-            # 使用模型鍵的循環以識別模型類型
             boosting_model_keys_cycle = list(base_models.keys())
             
-            for t in range(T):
+            for boost_iter in range(T): # 【★★★ 此處為核心修正 ★★★】: 將 't' 更改為 'boost_iter'
                 residuals_boost = data - historical_pred_final
                 
-                model_key = boosting_model_keys_cycle[t % len(boosting_model_keys_cycle)]
+                model_key = boosting_model_keys_cycle[boost_iter % len(boosting_model_keys_cycle)]
                 weak_model_func = base_models[model_key]
                 
                 res_pred_hist = np.zeros_like(residuals_boost)
@@ -1813,8 +1812,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 if model_key == 'seasonal':
                     temp_df = df_for_seasonal_model.copy()
                     temp_df['Real_Amount'] = residuals_boost
-                    # 需修改 train_predict_seasonal 以返回歷史擬合，此處使用簡化版
-                    # 為避免修改基礎函數，我們使用一個近似的歷史擬合
                     deseasonalized_res, _ = seasonal_decomposition(temp_df)
                     res_pred_hist = residuals_boost - deseasonalized_res['Deseasonalized'].values
                     res_pred_future = weak_model_func(temp_df, steps_ahead)
@@ -1823,13 +1820,10 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                     res_pred_hist = weak_model_func(x, residuals_boost, x)
                     res_pred_future = weak_model_func(x, residuals_boost, x_future)
                 else:
-                    # 【★★★ 此處為核心修正 ★★★】
-                    # 對於簡單模型，其歷史擬合的最佳近似是 "上一個時間點的殘差"
                     res_pred_hist = np.roll(residuals_boost, 1)
-                    res_pred_hist[0] = 0.0 # 第一個值沒有前期參考，殘差預測為0
+                    res_pred_hist[0] = 0.0
                     res_pred_future = weak_model_func(residuals_boost, steps_ahead)
 
-                # 更新總預測
                 historical_pred_final += learning_rate * res_pred_hist
                 future_pred_final += learning_rate * res_pred_future[-1]
             
@@ -1846,7 +1840,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             if dof > 0:
                 mse = np.sum(residuals**2) / dof
                 se = np.sqrt(mse) * np.sqrt(1 + 1/num_months)
-                t_val = t.ppf(0.975, dof)
+                t_val = t.ppf(0.975, dof) # 現在 't' 會正確地指向 scipy.stats.t
                 lower, upper = predicted_value - t_val*se, predicted_value + t_val*se
         
         # ==============================================================================
