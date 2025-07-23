@@ -1124,13 +1124,15 @@ def calculate_mpi_and_rate(y_true, historical_pred, global_wape, erai_score, mpi
     }
 
 
-def perform_internal_benchmarking(y_true, historical_ensemble_pred, historical_base_preds_df, is_shock_flags):
+def perform_internal_benchmarking(y_true, historical_ensemble_pred, is_shock_flags):
     """
     執行內部基準化，評估集成模型並給予業界標準評級。
     """
-    # --- 評估集成模型 ---
     ensemble_residuals = y_true - historical_ensemble_pred
-    ensemble_wape_robust = (np.sum(np.abs(ensemble_residuals[~is_shock_flags])) / np.sum(y_true[~is_shock_flags])) * 100 if np.sum(y_true[~is_shock_flags]) > 1e-9 else 100.0
+    clean_residuals = ensemble_residuals[~is_shock_flags]
+    clean_y_true = y_true[~is_shock_flags]
+    
+    ensemble_wape_robust = (np.sum(np.abs(clean_residuals)) / np.sum(np.abs(clean_y_true))) * 100 if np.sum(np.abs(clean_y_true)) > 1e-9 else 100.0
     ensemble_quantile_preds = {q: historical_ensemble_pred + np.percentile(ensemble_residuals, q*100) for q in [0.1, 0.25, 0.75, 0.9]}
     ensemble_erai_score = calculate_erai(y_true, historical_ensemble_pred, ensemble_quantile_preds, ensemble_wape_robust)
     
@@ -1181,45 +1183,24 @@ def run_monte_carlo_cv(full_df, base_models, n_iterations=100, colors=None):
         y_train_true = train_df['Real_Amount'].values
         y_val_true = val_df['Real_Amount'].values
         
-        # 1. 訓練元模型
-        _, _, _, _, _, _, X_meta_train = run_stacked_ensemble_model(train_df, steps_ahead=1, verbose=False)
-        if X_meta_train is None: continue
+        # 1. 在訓練集上運行完整的集成流程（但禁用內部打印）來獲取預測
+        val_pred_seq, _, _, _, _, _, _ = \
+            run_full_ensemble_pipeline(train_df, steps_ahead=len(val_df), colors=colors, verbose=False)
         
-        # 為了加速CV，這裡仍然使用快速的NNLS進行權重估算
-        final_weights, _ = nnls(X_meta_train.values, y_train_true)
-        if np.sum(final_weights) < 1e-9:
-            num_models = X_meta_train.shape[1]
-            normalized_weights = np.full(num_models, 1 / num_models)
-        else:
-            normalized_weights = final_weights / np.sum(final_weights)
-
-        # 2. 生成驗證集的預測特徵
-        x_train_range = np.arange(len(train_df))
-        x_val_range = np.arange(len(train_df), len(train_df) + len(val_df))
-        X_meta_val = np.zeros((len(val_df), len(base_models)))
-
-        for j, key in enumerate(base_models.keys()):
-            model_func = base_models[key]
-            if key in ['seasonal']:
-                 preds = model_func(train_df, len(val_df))
-            elif key in ['poly', 'huber']:
-                 preds = model_func(x_train_range, y_train_true, x_val_range)
-            else:
-                 preds = model_func(y_train_true, len(val_df))
-            X_meta_val[:, j] = preds
+        if val_pred_seq is None or len(val_pred_seq) != len(y_val_true):
+            continue
             
-        # 3. 執行驗證預測
-        val_pred = X_meta_val @ normalized_weights
-        
-        # 4. 【核心修正】計算此次迭代「真實」的MPI分數
+        # 2. 【核心修正】計算此次迭代「真實」的MPI分數
+        val_pred = np.array(val_pred_seq)
         val_residuals = y_val_true - val_pred
         sum_abs_val_true = np.sum(np.abs(y_val_true))
         val_wape = (np.sum(np.abs(val_residuals)) / sum_abs_val_true * 100) if sum_abs_val_true > 1e-9 else 100.0
 
         # 計算ERAI所需的分位數預測和穩健WAPE
-        val_quantile_preds = {q: val_pred + np.percentile(val_residuals, q*100) for q in [0.10, 0.25, 0.75, 0.90]}
         # 在CV中，我們無法知道真實的衝擊，因此 robust wape 就等於全局 wape
         val_wape_robust = val_wape 
+        # 殘差是相對於預測值計算的，不是相對於歷史擬合值
+        val_quantile_preds = {q: val_pred + np.percentile(val_residuals, q*100) for q in [0.10, 0.25, 0.75, 0.90]}
 
         # 計算真實的相對優越性分數 (ERAI)
         rss_val = calculate_erai(y_val_true, val_pred, val_quantile_preds, val_wape_robust)
@@ -1324,19 +1305,18 @@ def huber_robust_regression(x, y, steps_ahead, t_const=1.345, max_iter=100, tol=
     # 預測未來值
     future_x = np.arange(len(x) + 1, len(x) + steps_ahead + 1)
     predicted_values = beta[0] + beta[1] * future_x
-    predicted_value = predicted_values[-1] if len(predicted_values) > 0 else (beta[0] + beta[1] * (len(x) + 1))
     
     # 近似的信賴區間
     dof = len(x) - 2
-    if dof <= 0: return predicted_value, historical_pred, final_residuals, None, None
+    if dof <= 0: return predicted_values, historical_pred, final_residuals, None, None
     
     mse_robust = np.sum(final_residuals**2) / dof
-    se = np.sqrt(mse_robust * (1 + 1/len(x) + (future_x[-1] - np.mean(x))**2 / np.sum((x - np.mean(x))**2))) if len(future_x) > 0 else np.sqrt(mse_robust)
+    se = np.sqrt(mse_robust * (1 + 1/len(x) + (future_x - np.mean(x))**2 / np.sum((x - np.mean(x))**2))) if len(future_x) > 0 else np.sqrt(mse_robust)
     t_val = t.ppf(0.975, dof)
-    lower = predicted_value - t_val * se
-    upper = predicted_value + t_val * se
+    lower_seq = predicted_values - t_val * se
+    upper_seq = predicted_values + t_val * se
 
-    return predicted_value, historical_pred, final_residuals, lower, upper
+    return predicted_values, historical_pred, final_residuals, lower_seq, upper_seq
 
 # --- 模型堆疊集成 (Stacking Ensemble) 總引擎 ---
 
@@ -1344,8 +1324,6 @@ def huber_robust_regression(x, y, steps_ahead, t_const=1.345, max_iter=100, tol=
 def train_predict_huber(x_train, y_train, x_predict, t_const=1.345, max_iter=100, tol=1e-6):
     """
     Huber 穩健迴歸 (Huber Robust Regression)。
-    專為交叉驗證設計，只學習訓練數據的穩健趨勢規則(beta)，並將該規則應用於預測數據。
-    對數據中的異常值不敏感。
     """
     if len(x_train) < 2:
         return np.full(len(x_predict), np.mean(y_train) if len(y_train) > 0 else 0)
@@ -1384,14 +1362,14 @@ def train_predict_huber(x_train, y_train, x_predict, t_const=1.345, max_iter=100
     return X_predict_b @ beta
 
 def train_predict_poly(x_train, y_train, x_predict, degree=2):
-    """多項式迴歸 (Polynomial Regression)。用 n 次多項式函數捕捉數據中的非線性曲線趨勢。"""
+    """多項式迴歸 (Polynomial Regression)。"""
     if len(x_train) < degree + 1: return np.full(len(x_predict), np.mean(y_train) if len(y_train) > 0 else 0)
     coeffs = np.polyfit(x_train, y_train, degree)
     p = np.poly1d(coeffs)
     return p(x_predict)
 
 def train_predict_des(y_train, predict_steps, alpha=0.5, beta=0.5):
-    """霍爾特線性趨勢模型 (Holt's Linear Trend Method) 或稱二次指數平滑法。能預測同時包含水平(level)與趨勢(trend)的序列。"""
+    """霍爾特線性趨勢模型 (Holt's Linear Trend Method)。"""
     if len(y_train) < 2: return np.full(predict_steps, y_train[0] if len(y_train) > 0 else 0)
     level, trend = y_train[0], y_train[1] - y_train[0]
     for i in range(1, len(y_train)):
@@ -1401,7 +1379,7 @@ def train_predict_des(y_train, predict_steps, alpha=0.5, beta=0.5):
     return level + trend * np.arange(1, predict_steps + 1)
 
 def train_predict_seasonal(df_train, predict_steps, seasonal_period=12):
-    """時間序列分解法 (Classical Time Series Decomposition)。將數據拆解為趨勢、季節性與殘差項進行預測。"""
+    """時間序列分解法 (Classical Time Series Decomposition)。"""
     if len(df_train) < 2 * seasonal_period:
         return np.full(predict_steps, np.mean(df_train['Real_Amount']))
 
@@ -1424,14 +1402,14 @@ def train_predict_seasonal(df_train, predict_steps, seasonal_period=12):
     return trend_forecast * np.array(seasonal_forecast)
 
 def train_predict_naive(y_train, predict_steps):
-    """單純預測法 (Naive Method)。預測值等於最後一個觀測值。"""
+    """單純預測法 (Naive Method)。"""
     if len(y_train) == 0:
         return np.zeros(predict_steps)
     last_value = y_train[-1]
     return np.full(predict_steps, last_value)
 
 def train_predict_rolling_median(y_train, predict_steps, window_size=6):
-    """滾動中位數預測 (Rolling Median Forecast)。預測值是近期(e.g. 6個月)開銷的中位數，能抵抗近期異常值。"""
+    """滾動中位數預測 (Rolling Median Forecast)。"""
     if len(y_train) == 0:
         return np.zeros(predict_steps)
     actual_window = min(len(y_train), window_size)
@@ -1441,14 +1419,14 @@ def train_predict_rolling_median(y_train, predict_steps, window_size=6):
     return np.full(predict_steps, median_value)
 
 def train_predict_global_median(y_train, predict_steps):
-    """全局中位數預測 (Global Median Forecast)。預測值是全部歷史開銷的中位數。"""
+    """全局中位數預測 (Global Median Forecast)。"""
     if len(y_train) == 0:
         return np.zeros(predict_steps)
     median_value = np.median(y_train)
     return np.full(predict_steps, median_value)
 
 def train_predict_drift(y_train, predict_steps):
-    """漂移法 (Drift Method)。預測未來值會依循歷史的平均變化率（從起點到終點的斜率）。"""
+    """漂移法 (Drift Method)。"""
     if len(y_train) < 2:
         return np.full(predict_steps, y_train[-1] if len(y_train) > 0 else 0)
     
@@ -1460,7 +1438,7 @@ def train_predict_drift(y_train, predict_steps):
     return np.array(predictions)
 
 def train_predict_seasonal_naive(y_train, predict_steps, seasonal_period=12):
-    """季節性單純預測法 (Seasonal Naive Method)。預測值等於上一個週期同一時間點的實際值。"""
+    """季節性單純預測法 (Seasonal Naive Method)。"""
     if len(y_train) < seasonal_period:
         return np.full(predict_steps, y_train[-1] if len(y_train) > 0 else 0)
 
@@ -1472,7 +1450,7 @@ def train_predict_seasonal_naive(y_train, predict_steps, seasonal_period=12):
     return np.array(predictions)
 
 def train_predict_moving_average(y_train, predict_steps, window_size=6):
-    """移動平均預測 (Moving Average Forecast)。預測值是近期(e.g. 6個月)開銷的算術平均值。"""
+    """移動平均預測 (Moving Average Forecast)。"""
     if len(y_train) == 0:
         return np.zeros(predict_steps)
     
@@ -1482,49 +1460,6 @@ def train_predict_moving_average(y_train, predict_steps, window_size=6):
     
     mean_value = np.mean(y_train[-actual_window:])
     return np.full(predict_steps, mean_value)
-
-def train_greedy_forward_ensemble(X_meta, y_true, model_keys, n_iterations=20, colors=None, verbose=True):
-    """
-    使用 Caruana 的貪婪前向選擇法訓練元模型。
-    """
-    color_cyan = colors.CYAN if colors else ''
-    color_reset = colors.RESET if colors else ''
-    
-    n_samples, n_models = X_meta.shape
-    ensemble_model_indices = []
-    ensemble_predictions = np.zeros(n_samples)
-    selection_log = []
-    
-    if verbose:
-        print(f"\n{color_cyan}正在執行元模型團隊建設 (貪婪前向選擇法)...{color_reset}")
-    
-    def rmse(y_true, y_pred):
-        return np.sqrt(np.mean((y_true - y_pred)**2))
-
-    for i in range(n_iterations):
-        best_model_idx_this_round = -1
-        lowest_error = np.inf
-        
-        for model_idx in range(n_models):
-            candidate_model_preds = X_meta[:, model_idx]
-            temp_predictions = (ensemble_predictions * i + candidate_model_preds) / (i + 1)
-            current_error = rmse(y_true, temp_predictions)
-            
-            if current_error < lowest_error:
-                lowest_error = current_error
-                best_model_idx_this_round = model_idx
-        
-        if best_model_idx_this_round != -1:
-            ensemble_model_indices.append(best_model_idx_this_round)
-            best_model_preds = X_meta[:, best_model_idx_this_round]
-            ensemble_predictions = (ensemble_predictions * i + best_model_preds) / (i + 1)
-        else:
-            break
-            
-    if verbose:
-        print("團隊建設完成。")
-        
-    return ensemble_model_indices, selection_log
 
 def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, ensemble_size=20, colors=None, verbose=True):
     data = monthly_expenses_df['Real_Amount'].values
@@ -1539,7 +1474,6 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, ense
     
     model_keys = list(base_models.keys())
     
-    # --- 步驟 1: 生成基礎元特徵 (Level 0 Out-of-Fold Predictions) ---
     meta_features = np.zeros((n_samples, len(base_models)))
     fold_indices = np.array_split(np.arange(n_samples), n_folds)
     
@@ -1561,7 +1495,6 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, ense
             else:
                  meta_features[val_idx, j] = model_func(y_train, len(x_val))
 
-    # --- 步驟 2: 訓練元模型 (Level 1 Meta-Model using Greedy Forward Selection) ---
     selected_indices, _ = train_greedy_forward_ensemble(meta_features, data, model_keys, n_iterations=ensemble_size, colors=colors, verbose=verbose)
 
     model_counts = Counter(selected_indices)
@@ -1573,7 +1506,6 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, ense
     else:
         model_weights = np.full(len(base_models), 1 / len(base_models))
 
-    # --- 步驟 3: 使用最終的團隊共識進行預測 ---
     x_future = np.arange(n_samples + 1, n_samples + steps_ahead + 1)
     final_base_predictions = np.zeros((steps_ahead, len(base_models)))
 
@@ -1587,22 +1519,132 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, ense
             final_base_predictions[:, j] = model_func(data, steps_ahead)
     
     final_prediction_sequence = final_base_predictions @ model_weights
-    final_prediction = final_prediction_sequence[-1]
     
     historical_pred = meta_features @ model_weights
     residuals = data - historical_pred
     
     dof = n_samples - len(model_counts) - 1
-    if dof <= 0: return final_prediction, historical_pred, residuals, None, None, model_weights, pd.DataFrame(meta_features, columns=model_keys)
+    if dof <= 0: return final_prediction_sequence, historical_pred, residuals, None, None, model_weights, pd.DataFrame(meta_features, columns=model_keys)
     
     mse = np.sum(residuals**2) / dof
     se = np.sqrt(mse)
     t_val = t.ppf(0.975, dof)
-    lower, upper = final_prediction - t_val * se, final_prediction + t_val * se
+    lower_seq = final_prediction_sequence - t_val * se
+    upper_seq = final_prediction_sequence + t_val * se
     
     historical_base_preds_df = pd.DataFrame(meta_features, columns=model_keys)
     
-    return final_prediction, historical_pred, residuals, lower, upper, model_weights, historical_base_preds_df
+    return final_prediction_sequence, historical_pred, residuals, lower_seq, upper_seq, model_weights, historical_base_preds_df
+
+# --- 【★★★ 此處為核心修正 ★★★】 ---
+def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose=True):
+    """
+    將三階段集成模型流程封裝為一個獨立函數。
+    """
+    data = monthly_expenses_df['Real_Amount'].values
+    x = np.arange(1, len(data) + 1)
+    num_months = len(data)
+
+    base_models = {
+        'poly': train_predict_poly, 'huber': train_predict_huber, 'des': train_predict_des, 'drift': train_predict_drift,
+        'seasonal': train_predict_seasonal, 'seasonal_naive': train_predict_seasonal_naive, 'naive': train_predict_naive,
+        'moving_average': train_predict_moving_average, 'rolling_median': train_predict_rolling_median, 'global_median': train_predict_global_median,
+    }
+
+    # --- 階段 0 ---
+    if verbose: print(f"\n{colors.CYAN}--- 階段 0/3: 執行基礎模型交叉驗證 (生成球探報告)... ---{colors.RESET}")
+    _, _, _, _, _, _, historical_base_preds_df = run_stacked_ensemble_model(
+        monthly_expenses_df, steps_ahead, colors=colors, verbose=False
+    )
+    meta_features = historical_base_preds_df.values
+    
+    x_future = np.arange(num_months + 1, num_months + steps_ahead + 1)
+    future_base_predictions = np.zeros((steps_ahead, len(base_models)))
+    for j, key in enumerate(base_models.keys()):
+        model_func = base_models[key]
+        if key in ['seasonal']:
+            future_base_predictions[:, j] = model_func(monthly_expenses_df, steps_ahead)
+        elif key in ['poly', 'huber']:
+            future_base_predictions[:, j] = model_func(x, data, x_future)
+        else:
+            future_base_predictions[:, j] = model_func(data, steps_ahead)
+
+    # --- 階段 1 ---
+    if verbose: print(f"{colors.CYAN}--- 階段 1/3: 訓練多元元模型委員會... ---{colors.RESET}")
+    level1_historical_preds = {}
+    level1_future_preds = {}
+    
+    # 元模型 1: GFS
+    selected_indices, _ = train_greedy_forward_ensemble(meta_features, data, list(base_models.keys()), n_iterations=20, colors=colors, verbose=verbose)
+    gfs_counts = Counter(selected_indices)
+    gfs_weights = np.zeros(len(base_models))
+    if selected_indices:
+        for idx, count in gfs_counts.items():
+            gfs_weights[idx] = count
+        gfs_weights /= np.sum(gfs_weights)
+    else:
+        gfs_weights = np.full(len(base_models), 1 / len(base_models))
+    level1_historical_preds['gfs'] = meta_features @ gfs_weights
+    level1_future_preds['gfs'] = future_base_predictions @ gfs_weights
+
+    # 元模型 2: PWA
+    maes = [np.mean(np.abs(data - meta_features[:, i])) for i in range(len(base_models))]
+    weights_pwa = 1 / (np.array(maes) + 1e-9)
+    weights_pwa /= np.sum(weights_pwa)
+    level1_historical_preds['pwa'] = meta_features @ weights_pwa
+    level1_future_preds['pwa'] = future_base_predictions @ weights_pwa
+
+    # 元模型 3: NNLS
+    weights_nnls, _ = nnls(meta_features, data)
+    if np.sum(weights_nnls) > 1e-9:
+        weights_nnls /= np.sum(weights_nnls)
+    else:
+        weights_nnls = np.full(len(base_models), 1/len(base_models))
+    level1_historical_preds['nnls'] = meta_features @ weights_nnls
+    level1_future_preds['nnls'] = future_base_predictions @ weights_nnls
+
+    # --- 階段 2 ---
+    if verbose: print(f"{colors.CYAN}--- 階段 2/3: 執行總監級模型融合... ---{colors.RESET}")
+    X_level2_hist = np.column_stack(list(level1_historical_preds.values()))
+    X_level2_future = np.column_stack(list(level1_future_preds.values()))
+
+    weights_level2, _ = nnls(X_level2_hist, data)
+    if np.sum(weights_level2) > 1e-9:
+        weights_level2 /= np.sum(weights_level2)
+    else:
+        weights_level2 = np.full(X_level2_hist.shape[1], 1/X_level2_hist.shape[1])
+    
+    historical_pred_fused = X_level2_hist @ weights_level2
+    future_pred_fused_seq = X_level2_future @ weights_level2
+
+    # --- 階段 3 ---
+    if verbose: print(f"{colors.CYAN}--- 階段 3/3: 執行殘差提升 (Boosting) 最終修正... ---{colors.RESET}")
+    T = 10
+    learning_rate = 0.1
+    historical_pred_final = historical_pred_fused.copy()
+    future_pred_final_seq = future_pred_fused_seq.copy()
+    weak_model_func = base_models['huber']
+
+    for _ in range(T):
+        residuals_boost = data - historical_pred_final
+        res_pred_hist = weak_model_func(x, residuals_boost, x)
+        res_pred_future_seq = weak_model_func(x, residuals_boost, x_future)
+        historical_pred_final += learning_rate * res_pred_hist
+        future_pred_final_seq += learning_rate * res_pred_future_seq
+
+    # 計算最終的有效基礎模型權重以供報告
+    effective_base_weights = (gfs_weights * weights_level2[0]) + (weights_pwa * weights_level2[1]) + (weights_nnls * weights_level2[2])
+    
+    dof = num_months - X_level2_hist.shape[1] - 1
+    lower_seq, upper_seq = None, None
+    if dof > 0:
+        residuals_final = data - historical_pred_final
+        mse = np.sum(residuals_final**2) / dof
+        se = np.sqrt(mse) * np.sqrt(1 + 1/num_months)
+        t_val = t.ppf(0.975, dof)
+        lower_seq, upper_seq = future_pred_final_seq - t_val*se, future_pred_final_seq + t_val*se
+
+    return future_pred_final_seq, historical_pred_final, effective_base_weights, weights_level2, lower_seq, upper_seq, historical_base_preds_df
 
 
 # --- 主要分析與預測函數 ---
@@ -1679,8 +1721,8 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     historical_rmse_robust, historical_wape_robust = None, None
     quantile_preds, historical_pred, residuals = {}, None, None
     quantiles = [0.10, 0.25, 0.50, 0.75, 0.90]
-    base_model_weights_report = "" # 恢復基礎模型權重報告
-    meta_model_weights_report = "" # 新增元模型權重報告
+    base_model_weights_report = ""
+    meta_model_weights_report = ""
     mpi_results = None
     cv_mpi_scores = None
 
@@ -1697,119 +1739,34 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         if num_months >= 24:
             method_used = " (基於三階段混合集成法)"
             
-            print(f"\n{colors.CYAN}--- 階段 0/3: 執行基礎模型交叉驗證 (生成球探報告)... ---{colors.RESET}")
-            _, _, _, _, _, _, historical_base_preds_df = run_stacked_ensemble_model(
-                df_for_seasonal_model, steps_ahead, colors=colors, verbose=False
-            )
-            meta_features = historical_base_preds_df.values
+            # --- 執行完整的集成流程以獲得最終預測和回測結果 ---
+            future_pred_final_seq, historical_pred, effective_base_weights, weights_level2, lower_seq, upper_seq, historical_base_preds_df = \
+                run_full_ensemble_pipeline(df_for_seasonal_model, steps_ahead, colors, verbose=True)
+
+            predicted_value = future_pred_final_seq[-1]
+            lower = lower_seq[-1] if lower_seq is not None else None
+            upper = upper_seq[-1] if upper_seq is not None else None
             
-            x_future = np.arange(num_months + 1, num_months + steps_ahead + 1)
-            future_base_predictions = np.zeros((steps_ahead, len(base_models)))
-            for j, key in enumerate(base_models.keys()):
-                model_func = base_models[key]
-                if key in ['seasonal']:
-                    future_base_predictions[:, j] = model_func(df_for_seasonal_model, steps_ahead)
-                elif key in ['poly', 'huber']:
-                    future_base_predictions[:, j] = model_func(x, data, x_future)
-                else:
-                    future_base_predictions[:, j] = model_func(data, steps_ahead)
-
-            print(f"{colors.CYAN}--- 階段 1/3: 訓練多元元模型委員會... ---{colors.RESET}")
-            level1_historical_preds = {}
-            level1_future_preds = {}
-
-            selected_indices, _ = train_greedy_forward_ensemble(meta_features, data, list(base_models.keys()), n_iterations=20, colors=colors, verbose=True)
-            gfs_counts = Counter(selected_indices)
-            gfs_weights = np.zeros(len(base_models))
-            if selected_indices:
-                for idx, count in gfs_counts.items():
-                    gfs_weights[idx] = count
-                gfs_weights /= np.sum(gfs_weights)
-            else:
-                gfs_weights = np.full(len(base_models), 1 / len(base_models))
-            level1_historical_preds['gfs'] = meta_features @ gfs_weights
-            level1_future_preds['gfs'] = (future_base_predictions @ gfs_weights)[-1]
-
-            maes = [np.mean(np.abs(data - meta_features[:, i])) for i in range(len(base_models))]
-            weights_pwa = 1 / (np.array(maes) + 1e-9)
-            weights_pwa /= np.sum(weights_pwa)
-            level1_historical_preds['pwa'] = meta_features @ weights_pwa
-            level1_future_preds['pwa'] = (future_base_predictions @ weights_pwa)[-1]
-
-            weights_nnls, _ = nnls(meta_features, data)
-            if np.sum(weights_nnls) > 1e-9:
-                weights_nnls /= np.sum(weights_nnls)
-            else:
-                weights_nnls = np.full(len(base_models), 1/len(base_models))
-            level1_historical_preds['nnls'] = meta_features @ weights_nnls
-            level1_future_preds['nnls'] = (future_base_predictions @ weights_nnls)[-1]
-
-            print(f"{colors.CYAN}--- 階段 2/3: 執行總監級模型融合... ---{colors.RESET}")
-            X_level2_hist = np.column_stack(list(level1_historical_preds.values()))
-            X_level2_future = np.array(list(level1_future_preds.values()))
-
-            weights_level2, _ = nnls(X_level2_hist, data)
-            if np.sum(weights_level2) > 1e-9:
-                weights_level2 /= np.sum(weights_level2)
-            else:
-                weights_level2 = np.full(X_level2_hist.shape[1], 1/X_level2_hist.shape[1])
-            
-            historical_pred_fused = X_level2_hist @ weights_level2
-            future_pred_fused = X_level2_future @ weights_level2
-
-            print(f"{colors.CYAN}--- 階段 3/3: 執行殘差提升 (Boosting) 最終修正... ---{colors.RESET}")
-            T = 10
-            learning_rate = 0.1
-            historical_pred_final = historical_pred_fused.copy()
-            future_pred_final = future_pred_fused
-            weak_model_func = base_models['huber']
-
-            for boost_iter in range(T):
-                residuals_boost = data - historical_pred_final
-                res_pred_hist = weak_model_func(x, residuals_boost, x)
-                res_pred_future_seq = weak_model_func(x, residuals_boost, x_future)
-                historical_pred_final += learning_rate * res_pred_hist
-                future_pred_final += learning_rate * res_pred_future_seq[-1]
-            
-            predicted_value = future_pred_final
-            historical_pred = historical_pred_final
-            residuals = data - historical_pred
-            
-            # --- 【★★★ 此處為恢復權重報告的核心 ★★★】 ---
-            # 1. 計算總監融合權重報告
+            # --- 格式化權重報告 ---
             model_names_meta = ["GFS", "PWA", "NNLS"]
             report_parts_meta = [f"{name}({weight:.1%})" for name, weight in zip(model_names_meta, weights_level2) if weight > 0]
             meta_model_weights_report = f"  - 總監融合權重: {', '.join(report_parts_meta)}"
-
-            # 2. 計算並格式化基礎模型的有效權重
-            effective_base_weights = (gfs_weights * weights_level2[0]) + (weights_pwa * weights_level2[1]) + (weights_nnls * weights_level2[2])
-            model_names_base = [
-                "多項式", "穩健趨勢", "指數平滑", "漂移",
-                "季節分解", "季節模仿",
-                "單純", "移動平均", "滾動中位", "全局中位"
-            ]
-            report_parts_base = [f"{name}({weight:.1%})" for name, weight in zip(model_names_base, effective_base_weights) if weight > 0.001] # 只顯示權重 > 0.1% 的模型
             
-            # 排序以突顯最重要的模型
+            model_names_base = ["多項式", "穩健趨勢", "指數平滑", "漂移", "季節分解", "季節模仿", "單純", "移動平均", "滾動中位", "全局中位"]
             sorted_parts = sorted(zip(effective_base_weights, model_names_base), reverse=True)
             report_parts_base_sorted = [f"{name}({weight:.1%})" for weight, name in sorted_parts if weight > 0.001]
-
             chunk_size = 3
             chunks = [report_parts_base_sorted[i:i + chunk_size] for i in range(0, len(report_parts_base_sorted), chunk_size)]
             lines = [", ".join(chunk) for chunk in chunks]
             indentation = "\n" + " " * 16
             base_model_weights_report = f"  - 基礎模型權重: {indentation.join(lines)}"
-            
-            dof = num_months - X_level2_hist.shape[1] - 1
-            if dof > 0:
-                mse = np.sum(residuals**2) / dof
-                se = np.sqrt(mse) * np.sqrt(1 + 1/num_months)
-                t_val = t.ppf(0.975, dof)
-                lower, upper = predicted_value - t_val*se, predicted_value + t_val*se
         
         elif 18 <= num_months < 24:
             method_used = " (基於穩健迴歸IRLS-Huber)"
-            predicted_value, historical_pred, residuals, lower, upper = huber_robust_regression(x, data, steps_ahead)
+            pred_seq, historical_pred, _, lower_seq, upper_seq = huber_robust_regression(x, data, steps_ahead)
+            predicted_value = pred_seq[-1]
+            lower = lower_seq[-1] if lower_seq is not None else None
+            upper = upper_seq[-1] if upper_seq is not None else None
         else:
             method_used = " (基於直接-遞歸混合)"
             model_logic = 'poly' if num_months >= 12 else 'linear' if num_months >= 6 else 'ema'
@@ -1831,9 +1788,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 predicted_value, historical_pred = ema.iloc[-1], ema.values
             
         if historical_pred is not None:
-            if residuals is None:
-                residuals = data - historical_pred
-            
+            residuals = data - historical_pred
             ci_str = f" [下限：{lower:,.2f}，上限：{upper:,.2f}] (95% 信心)" if lower is not None and upper is not None else ""
             predicted_expense_str = f"{predicted_value:,.2f}"
             historical_mae, historical_rmse = np.mean(np.abs(residuals)), np.sqrt(np.mean(residuals**2))
@@ -1864,20 +1819,49 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                     historical_wape_robust = (np.sum(np.abs(residuals_clean)) / sum_abs_clean) * 100
             
             if num_months >= 24:
+                # --- 【★★★ 此處為 P-Rank 修正的核心 ★★★】 ---
+                # 1. 運行交叉驗證以獲取背景分數分佈
                 _, cv_mpi_scores = run_monte_carlo_cv(df_for_seasonal_model, base_models, n_iterations=100, colors=colors)
-                
-                erai_results = perform_internal_benchmarking(
-                    y_true=data,
-                    historical_ensemble_pred=historical_pred,
-                    historical_base_preds_df=historical_base_preds_df if 'historical_base_preds_df' in locals() else pd.DataFrame(meta_features, columns=base_models.keys()),
-                    is_shock_flags=is_shock_flags
-                )
 
+                # 2. 為了獲得公平的比較分數，執行一次與CV相同的驗證流程
+                comparable_mpi_score = None
+                val_ratio = 0.25 # 使用與CV相同的驗證比例
+                train_size_val = int(num_months * (1 - val_ratio))
+                if num_months - train_size_val > 1: # 確保驗證集至少有2個點
+                    train_df_val = df_for_seasonal_model.iloc[:train_size_val]
+                    val_df_val = df_for_seasonal_model.iloc[train_size_val:]
+                    y_val_true = val_df_val['Real_Amount'].values
+
+                    val_pred_seq, _, _, _, _, _, _ = \
+                        run_full_ensemble_pipeline(train_df_val, steps_ahead=len(val_df_val), colors=colors, verbose=False)
+                    
+                    if val_pred_seq is not None and len(val_pred_seq) == len(y_val_true):
+                        # 使用與CV中完全相同的邏輯計算此驗證分數的MPI
+                        val_pred = np.array(val_pred_seq)
+                        val_residuals = y_val_true - val_pred
+                        val_wape = (np.sum(np.abs(val_residuals)) / np.sum(np.abs(y_val_true)) * 100) if np.sum(np.abs(y_val_true)) > 1e-9 else 100.0
+                        val_wape_robust = val_wape
+                        val_quantile_preds = {q: val_pred + np.percentile(val_residuals, q*100) for q in [0.10, 0.25, 0.75, 0.90]}
+                        rss_val = calculate_erai(y_val_true, val_pred, val_quantile_preds, val_wape_robust)
+                        if rss_val is None: rss_val = 0
+                        
+                        val_wape_score = 1 - (val_wape / 100.0)
+                        ss_res_val = np.sum(val_residuals**2)
+                        ss_tot_val = np.sum((y_val_true - np.mean(y_val_true))**2)
+                        r2_val = 1 - (ss_res_val / ss_tot_val) if ss_tot_val > 1e-9 else 0
+                        r2_score_val = max(0, r2_val)
+                        aas_val = 0.7 * val_wape_score + 0.3 * r2_score_val
+                        comparable_mpi_score = 0.8 * aas_val + 0.2 * rss_val
+
+                # 3. 計算百分位等級
                 mpi_percentile_rank = None
-                if cv_mpi_scores and len(cv_mpi_scores) > 0:
-                    temp_mpi_score = calculate_mpi_and_rate(data, historical_pred, historical_wape, erai_results['erai_score'], 100)['mpi_score']
-                    mpi_percentile_rank = percentileofscore(cv_mpi_scores, temp_mpi_score, kind='rank')
+                if cv_mpi_scores and len(cv_mpi_scores) > 0 and comparable_mpi_score is not None:
+                    mpi_percentile_rank = percentileofscore(cv_mpi_scores, comparable_mpi_score, kind='rank')
 
+                # 4. 計算用於「顯示」的最終MPI分數（基於對全部數據的回測）
+                erai_results = perform_internal_benchmarking(data, historical_pred, is_shock_flags)
+
+                # 5. 結合最終MPI分數和公平的百分位等級進行評級
                 mpi_results = calculate_mpi_and_rate(
                     y_true=data,
                     historical_pred=historical_pred,
@@ -1970,7 +1954,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     print(f"  - {seasonal_note}")
     print(f"  - {mc_note}")
     print(f"  - 預測目標月份: {target_month_str} (距離資料 {steps_ahead} 個月)")
-    # --- 【★★★ 此處為恢復權重報告的核心 ★★★】 ---
     if base_model_weights_report: print(base_model_weights_report)
     if meta_model_weights_report: print(meta_model_weights_report)
     if step_warning: print(step_warning)
