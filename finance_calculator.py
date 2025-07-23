@@ -9,13 +9,13 @@
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新 v2.62：修正總監層融合邏輯，改用更穩健的委員會投票平均法，解決NNLS(100%)問題。 #
+# 更新 v2.62：為 Level 2 Meta-Model 引入交叉驗證，修復數據洩漏導致的權重失衡問題。   #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.62"  # Final P-Rank logic fix & Director Voting Ensemble
+SCRIPT_VERSION = "v2.62"  # Final P-Rank & Data Leakage fix
 SCRIPT_UPDATE_DATE = "2025-07-23"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -1611,51 +1611,90 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
         else:
             future_base_predictions[:, j] = model_func(data, steps_ahead)
 
-    # --- 階段 1 ---
-    if verbose: print(f"{colors.CYAN}--- 階段 1/3: 訓練多元元模型委員會... ---{colors.RESET}")
-    level1_historical_preds = {}
-    level1_future_preds = {}
+    # --- 【★★★ 此處為核心修正：防止資訊洩漏 ★★★】 ---
+    # --- 階段 1 & 2: 透過交叉驗證公平地訓練總監模型 ---
+    if verbose: print(f"{colors.CYAN}--- 階段 1&2/3: 執行總監級交叉驗證 (公平決策)... ---{colors.RESET}")
     
-    # 元模型 1: GFS
-    selected_indices, _ = train_greedy_forward_ensemble(meta_features, data, list(base_models.keys()), n_iterations=20, colors=colors, verbose=verbose)
-    gfs_counts = Counter(selected_indices)
-    gfs_weights = np.zeros(len(base_models))
-    if selected_indices:
-        for idx, count in gfs_counts.items():
-            gfs_weights[idx] = count
-        gfs_weights /= np.sum(gfs_weights)
+    n_folds_L2 = 5 # 為第二層模型設定交叉驗證折數
+    fold_indices_L2 = np.array_split(np.arange(num_months), n_folds_L2)
+    
+    # 用於儲存第二層的袋外預測，這是訓練總監模型的公平依據
+    X_level2_OOF = np.zeros((num_months, 3)) 
+
+    for i in range(n_folds_L2):
+        # 劃分訓練集和驗證集 (for Level 1 models)
+        train_idx_L1 = np.concatenate([fold_indices_L2[j] for j in range(n_folds_L2) if i != j])
+        val_idx_L1 = fold_indices_L2[i]
+        
+        if len(train_idx_L1) == 0: continue
+
+        X_meta_train_L1 = meta_features[train_idx_L1]
+        y_meta_train_L1 = data[train_idx_L1]
+        X_meta_val_L1 = meta_features[val_idx_L1]
+
+        # --- 在 L1 訓練集上訓練三個元模型 ---
+        # GFS
+        selected_indices, _ = train_greedy_forward_ensemble(X_meta_train_L1, y_meta_train_L1, list(base_models.keys()), verbose=False)
+        gfs_counts = Counter(selected_indices)
+        gfs_weights = np.zeros(len(base_models))
+        if selected_indices:
+            for idx, count in gfs_counts.items(): gfs_weights[idx] = count
+            gfs_weights /= np.sum(gfs_weights)
+        else:
+            gfs_weights = np.full(len(base_models), 1 / len(base_models))
+        
+        # PWA
+        maes = [np.mean(np.abs(y_meta_train_L1 - X_meta_train_L1[:, k])) for k in range(len(base_models))]
+        weights_pwa = 1 / (np.array(maes) + 1e-9)
+        weights_pwa /= np.sum(weights_pwa)
+
+        # NNLS
+        weights_nnls, _ = nnls(X_meta_train_L1, y_meta_train_L1)
+        if np.sum(weights_nnls) > 1e-9: weights_nnls /= np.sum(weights_nnls)
+        else: weights_nnls = np.full(len(base_models), 1/len(base_models))
+        
+        # --- 用訓練好的 L1 模型在 L1 驗證集上進行預測，並儲存結果 ---
+        X_level2_OOF[val_idx_L1, 0] = X_meta_val_L1 @ gfs_weights
+        X_level2_OOF[val_idx_L1, 1] = X_meta_val_L1 @ weights_pwa
+        X_level2_OOF[val_idx_L1, 2] = X_meta_val_L1 @ weights_nnls
+
+    # --- 使用公平的 OOF 預測來訓練最終的總監模型權重 ---
+    weights_level2, _ = nnls(X_level2_OOF, data)
+    if np.sum(weights_level2) > 1e-9:
+        weights_level2 /= np.sum(weights_level2)
     else:
-        gfs_weights = np.full(len(base_models), 1 / len(base_models))
-    level1_historical_preds['gfs'] = meta_features @ gfs_weights
-    level1_future_preds['gfs'] = future_base_predictions @ gfs_weights
-
-    # 元模型 2: PWA
-    maes = [np.mean(np.abs(data - meta_features[:, i])) for i in range(len(base_models))]
-    weights_pwa = 1 / (np.array(maes) + 1e-9)
-    weights_pwa /= np.sum(weights_pwa)
-    level1_historical_preds['pwa'] = meta_features @ weights_pwa
-    level1_future_preds['pwa'] = future_base_predictions @ weights_pwa
-
-    # 元模型 3: NNLS
-    weights_nnls, _ = nnls(meta_features, data)
-    if np.sum(weights_nnls) > 1e-9:
-        weights_nnls /= np.sum(weights_nnls)
+        weights_level2 = np.full(X_level2_OOF.shape[1], 1/X_level2_OOF.shape[1])
+    
+    # --- 現在，為了做出「未來」的預測，我們需要在「全部」數據上重新訓練 L1 模型 ---
+    # GFS final
+    selected_indices_final, _ = train_greedy_forward_ensemble(meta_features, data, list(base_models.keys()), verbose=False)
+    gfs_counts_final = Counter(selected_indices_final)
+    gfs_weights_final = np.zeros(len(base_models))
+    if selected_indices_final:
+        for idx, count in gfs_counts_final.items(): gfs_weights_final[idx] = count
+        gfs_weights_final /= np.sum(gfs_weights_final)
     else:
-        weights_nnls = np.full(len(base_models), 1/len(base_models))
-    level1_historical_preds['nnls'] = meta_features @ weights_nnls
-    level1_future_preds['nnls'] = future_base_predictions @ weights_nnls
-
-    # --- 【★★★ 此處為核心修正 ★★★】 ---
-    # --- 階段 2: 總監決策 (委員會投票平均法) ---
-    if verbose: print(f"{colors.CYAN}--- 階段 2/3: 執行總監級模型融合 (委員會投票平均法)... ---{colors.RESET}")
-    X_level2_hist = np.column_stack(list(level1_historical_preds.values()))
-    X_level2_future = np.column_stack(list(level1_future_preds.values()))
-
-    # 不再使用有偏見的 NNLS，改採更穩健的算術平均
-    historical_pred_fused = np.mean(X_level2_hist, axis=1)
-    future_pred_fused_seq = np.mean(X_level2_future, axis=1)
-    # 權重現在是均等的
-    weights_level2 = np.full(3, 1/3)
+        gfs_weights_final = np.full(len(base_models), 1 / len(base_models))
+    # PWA final
+    maes_final = [np.mean(np.abs(data - meta_features[:, i])) for i in range(len(base_models))]
+    weights_pwa_final = 1 / (np.array(maes_final) + 1e-9)
+    weights_pwa_final /= np.sum(weights_pwa_final)
+    # NNLS final
+    weights_nnls_final, _ = nnls(meta_features, data)
+    if np.sum(weights_nnls_final) > 1e-9: weights_nnls_final /= np.sum(weights_nnls_final)
+    else: weights_nnls_final = np.full(len(base_models), 1/len(base_models))
+        
+    # 用最終 L1 模型生成對未來的預測
+    level1_future_preds_gfs = future_base_predictions @ gfs_weights_final
+    level1_future_preds_pwa = future_base_predictions @ weights_pwa_final
+    level1_future_preds_nnls = future_base_predictions @ weights_nnls_final
+    
+    X_level2_future = np.column_stack([level1_future_preds_gfs, level1_future_preds_pwa, level1_future_preds_nnls])
+    
+    # 用總監權重融合 L1 的未來預測
+    future_pred_fused_seq = X_level2_future @ weights_level2
+    # 用總監權重融合 L1 的歷史回測 (OOF)
+    historical_pred_fused = X_level2_OOF @ weights_level2
 
     # --- 階段 3 ---
     if verbose: print(f"{colors.CYAN}--- 階段 3/3: 執行殘差提升 (Boosting) 最終修正... ---{colors.RESET}")
@@ -1673,9 +1712,9 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
         future_pred_final_seq += learning_rate * res_pred_future_seq
 
     # 計算最終的有效基礎模型權重以供報告
-    effective_base_weights = (gfs_weights + weights_pwa + weights_nnls) / 3.0
+    effective_base_weights = (gfs_weights_final * weights_level2[0]) + (weights_pwa_final * weights_level2[1]) + (weights_nnls_final * weights_level2[2])
     
-    dof = num_months - X_level2_hist.shape[1] - 1
+    dof = num_months - X_level2_OOF.shape[1] - 1
     lower_seq, upper_seq = None, None
     if dof > 0:
         residuals_final = data - historical_pred_final
@@ -1780,7 +1819,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             method_used = " (基於三階段混合集成法)"
             
             # --- 執行完整的集成流程以獲得最終預測和回測結果 ---
-            future_pred_final_seq, historical_pred, effective_base_weights, _, lower_seq, upper_seq, _ = \
+            future_pred_final_seq, historical_pred, effective_base_weights, weights_level2, lower_seq, upper_seq, _ = \
                 run_full_ensemble_pipeline(df_for_seasonal_model, steps_ahead, colors, verbose=True)
 
             predicted_value = future_pred_final_seq[-1]
@@ -1788,7 +1827,9 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             upper = upper_seq[-1] if upper_seq is not None else None
             
             # --- 格式化權重報告 ---
-            meta_model_weights_report = f"  - 總監融合策略: 委員會投票平均法 (Voting Average)"
+            model_names_meta = ["GFS", "PWA", "NNLS"]
+            report_parts_meta = [f"{name}({weight:.1%})" for name, weight in zip(model_names_meta, weights_level2) if weight > 0]
+            meta_model_weights_report = f"  - 總監融合權重: {', '.join(report_parts_meta)}"
             
             model_names_base = ["多項式", "穩健趨勢", "指數平滑", "漂移", "季節分解", "季節模仿", "單純", "移動平均", "滾動中位", "全局中位"]
             sorted_parts = sorted(zip(effective_base_weights, model_names_base), reverse=True)
@@ -1802,9 +1843,10 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         elif 18 <= num_months < 24:
             method_used = " (基於穩健迴歸IRLS-Huber)"
             pred_seq, historical_pred, _, lower_seq, upper_seq = huber_robust_regression(x, data, steps_ahead)
-            predicted_value = pred_seq[-1]
-            lower = lower_seq[-1] if lower_seq is not None else None
-            upper = upper_seq[-1] if upper_seq is not None else None
+            predicted_value = pred_seq[-1] if pred_seq is not None and len(pred_seq) > 0 else None
+            lower = lower_seq[-1] if lower_seq is not None and len(lower_seq) > 0 else None
+            upper = upper_seq[-1] if upper_seq is not None and len(upper_seq) > 0 else None
+
         else:
             method_used = " (基於直接-遞歸混合)"
             model_logic = 'poly' if num_months >= 12 else 'linear' if num_months >= 6 else 'ema'
@@ -1828,7 +1870,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         if historical_pred is not None:
             residuals = data - historical_pred
             ci_str = f" [下限：{lower:,.2f}，上限：{upper:,.2f}] (95% 信心)" if lower is not None and upper is not None else ""
-            predicted_expense_str = f"{predicted_value:,.2f}"
+            predicted_expense_str = f"{predicted_value:,.2f}" if predicted_value is not None else "計算失敗"
             historical_mae, historical_rmse = np.mean(np.abs(residuals)), np.sqrt(np.mean(residuals**2))
             
             sum_abs_actual = np.sum(np.abs(data))
@@ -1863,13 +1905,12 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
 
                 # 2. 計算用於「顯示」和「排名」的最終MPI分數（基於對全部數據的回測）
                 erai_results = perform_internal_benchmarking(data, historical_pred, is_shock_flags)
-                # 使用這個回測分數來計算其在背景分佈中的百分位
-                backtest_mpi_score_for_ranking = calculate_mpi_and_rate(data, historical_pred, historical_wape, erai_results['erai_score'], 100)['mpi_score']
+                backtest_mpi_score = calculate_mpi_and_rate(data, historical_pred, historical_wape, erai_results['erai_score'], 100)['mpi_score']
                 
                 # 3. 計算百分位等級
                 mpi_percentile_rank = None
                 if cv_mpi_scores and len(cv_mpi_scores) > 0:
-                    mpi_percentile_rank = percentileofscore(cv_mpi_scores, backtest_mpi_score_for_ranking, kind='rank')
+                    mpi_percentile_rank = percentileofscore(cv_mpi_scores, backtest_mpi_score, kind='rank')
 
                 # 4. 結合最終MPI分數和公平的百分位等級進行評級
                 mpi_results = calculate_mpi_and_rate(
