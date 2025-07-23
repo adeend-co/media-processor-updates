@@ -2,20 +2,20 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.60-SEF          #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.60-SEF v2       #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新 v2.60-SEF：整合三階段混合集成框架 (多元元模型->總監融合->殘差提升)。 #
+# 更新 v2.60-SEF v2：修正Boosting階段因弱學習器返回空陣列導致的廣播錯誤。   #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.60-SEF"  # Stacking Ensemble Fusion: 整合多元元模型與殘差提升
+SCRIPT_VERSION = "v2.60-SEF v2"  # Stacking Ensemble Fusion: 修正Boosting階段的廣播錯誤
 SCRIPT_UPDATE_DATE = "2025-07-23"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -1792,32 +1792,41 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
 
             # --- 階段 3: 殘差提升 (Boosting) 最終修正 ---
             print(f"{colors.CYAN}--- 階段 3/3: 執行殘差提升 (Boosting) 最終修正... ---{colors.RESET}")
-            T = 20  # Boosting 迴圈次數
+            T = 20
             learning_rate = 0.1
             
             historical_pred_final = historical_pred_fused.copy()
             future_pred_final = future_pred_fused
             
-            boosting_models_cycle = list(base_models.values())
+            # 使用模型鍵的循環以識別模型類型
+            boosting_model_keys_cycle = list(base_models.keys())
             
             for t in range(T):
                 residuals_boost = data - historical_pred_final
                 
-                # 輪流使用基礎模型作為弱學習器
-                weak_model_func = boosting_models_cycle[t % len(boosting_models_cycle)]
+                model_key = boosting_model_keys_cycle[t % len(boosting_model_keys_cycle)]
+                weak_model_func = base_models[model_key]
                 
-                # 弱學習器擬合殘差
-                if weak_model_func in [train_predict_seasonal]: # 需要dataframe的模型
-                    # 創建一個臨時的df來擬合殘差
+                res_pred_hist = np.zeros_like(residuals_boost)
+                res_pred_future = np.zeros(steps_ahead)
+
+                if model_key == 'seasonal':
                     temp_df = df_for_seasonal_model.copy()
                     temp_df['Real_Amount'] = residuals_boost
-                    res_pred_hist = weak_model_func(temp_df, 0) # 這裡我們只需要歷史擬合
+                    # 需修改 train_predict_seasonal 以返回歷史擬合，此處使用簡化版
+                    # 為避免修改基礎函數，我們使用一個近似的歷史擬合
+                    deseasonalized_res, _ = seasonal_decomposition(temp_df)
+                    res_pred_hist = residuals_boost - deseasonalized_res['Deseasonalized'].values
                     res_pred_future = weak_model_func(temp_df, steps_ahead)
-                elif weak_model_func in [train_predict_poly, train_predict_huber]: # 需要x, y的模型
+
+                elif model_key in ['poly', 'huber']:
                     res_pred_hist = weak_model_func(x, residuals_boost, x)
                     res_pred_future = weak_model_func(x, residuals_boost, x_future)
-                else: # 只需要y的模型
-                    res_pred_hist = weak_model_func(residuals_boost, 0) # 歷史擬合的簡化
+                else:
+                    # 【★★★ 此處為核心修正 ★★★】
+                    # 對於簡單模型，其歷史擬合的最佳近似是 "上一個時間點的殘差"
+                    res_pred_hist = np.roll(residuals_boost, 1)
+                    res_pred_hist[0] = 0.0 # 第一個值沒有前期參考，殘差預測為0
                     res_pred_future = weak_model_func(residuals_boost, steps_ahead)
 
                 # 更新總預測
@@ -1829,16 +1838,14 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             historical_pred = historical_pred_final
             residuals = data - historical_pred
             
-            # 建立模型權重報告
             model_names = ["GFS", "PWA", "NNLS"]
             report_parts = [f"{name}({weight:.1%})" for name, weight in zip(model_names, weights_level2) if weight > 0]
             model_weights_report = f"  - 總監融合權重: {', '.join(report_parts)}"
             
-            # 重新計算信賴區間
             dof = num_months - X_level2_hist.shape[1] - 1
             if dof > 0:
                 mse = np.sum(residuals**2) / dof
-                se = np.sqrt(mse) * np.sqrt(1 + 1/num_months) # 簡化SE計算
+                se = np.sqrt(mse) * np.sqrt(1 + 1/num_months)
                 t_val = t.ppf(0.975, dof)
                 lower, upper = predicted_value - t_val*se, predicted_value + t_val*se
         
@@ -1869,7 +1876,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 predicted_value, historical_pred = ema.iloc[-1], ema.values
             
         if historical_pred is not None:
-            if residuals is None: # 如果是回推機制，手動計算residuals
+            if residuals is None:
                 residuals = data - historical_pred
             
             ci_str = f" [下限：{lower:,.2f}，上限：{upper:,.2f}] (95% 信心)" if lower is not None and upper is not None else ""
