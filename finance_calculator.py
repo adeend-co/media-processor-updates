@@ -9,13 +9,13 @@
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新 v2.62：徹底修正 P-Rank 比較基準，確保其能公平反映模型的綜合回測表現。         #
+# 更新 v2.62：修正總監層融合邏輯，改用更穩健的委員會投票平均法，解決NNLS(100%)問題。 #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.62"  # Final P-Rank logic fix
+SCRIPT_VERSION = "v2.62"  # Final P-Rank logic fix & Director Voting Ensemble
 SCRIPT_UPDATE_DATE = "2025-07-23"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -1645,19 +1645,17 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
     level1_historical_preds['nnls'] = meta_features @ weights_nnls
     level1_future_preds['nnls'] = future_base_predictions @ weights_nnls
 
-    # --- 階段 2 ---
-    if verbose: print(f"{colors.CYAN}--- 階段 2/3: 執行總監級模型融合... ---{colors.RESET}")
+    # --- 【★★★ 此處為核心修正 ★★★】 ---
+    # --- 階段 2: 總監決策 (委員會投票平均法) ---
+    if verbose: print(f"{colors.CYAN}--- 階段 2/3: 執行總監級模型融合 (委員會投票平均法)... ---{colors.RESET}")
     X_level2_hist = np.column_stack(list(level1_historical_preds.values()))
     X_level2_future = np.column_stack(list(level1_future_preds.values()))
 
-    weights_level2, _ = nnls(X_level2_hist, data)
-    if np.sum(weights_level2) > 1e-9:
-        weights_level2 /= np.sum(weights_level2)
-    else:
-        weights_level2 = np.full(X_level2_hist.shape[1], 1/X_level2_hist.shape[1])
-    
-    historical_pred_fused = X_level2_hist @ weights_level2
-    future_pred_fused_seq = X_level2_future @ weights_level2
+    # 不再使用有偏見的 NNLS，改採更穩健的算術平均
+    historical_pred_fused = np.mean(X_level2_hist, axis=1)
+    future_pred_fused_seq = np.mean(X_level2_future, axis=1)
+    # 權重現在是均等的
+    weights_level2 = np.full(3, 1/3)
 
     # --- 階段 3 ---
     if verbose: print(f"{colors.CYAN}--- 階段 3/3: 執行殘差提升 (Boosting) 最終修正... ---{colors.RESET}")
@@ -1675,7 +1673,7 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
         future_pred_final_seq += learning_rate * res_pred_future_seq
 
     # 計算最終的有效基礎模型權重以供報告
-    effective_base_weights = (gfs_weights * weights_level2[0]) + (weights_pwa * weights_level2[1]) + (weights_nnls * weights_level2[2])
+    effective_base_weights = (gfs_weights + weights_pwa + weights_nnls) / 3.0
     
     dof = num_months - X_level2_hist.shape[1] - 1
     lower_seq, upper_seq = None, None
@@ -1782,7 +1780,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             method_used = " (基於三階段混合集成法)"
             
             # --- 執行完整的集成流程以獲得最終預測和回測結果 ---
-            future_pred_final_seq, historical_pred, effective_base_weights, weights_level2, lower_seq, upper_seq, _ = \
+            future_pred_final_seq, historical_pred, effective_base_weights, _, lower_seq, upper_seq, _ = \
                 run_full_ensemble_pipeline(df_for_seasonal_model, steps_ahead, colors, verbose=True)
 
             predicted_value = future_pred_final_seq[-1]
@@ -1790,9 +1788,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             upper = upper_seq[-1] if upper_seq is not None else None
             
             # --- 格式化權重報告 ---
-            model_names_meta = ["GFS", "PWA", "NNLS"]
-            report_parts_meta = [f"{name}({weight:.1%})" for name, weight in zip(model_names_meta, weights_level2) if weight > 0]
-            meta_model_weights_report = f"  - 總監融合權重: {', '.join(report_parts_meta)}"
+            meta_model_weights_report = f"  - 總監融合策略: 委員會投票平均法 (Voting Average)"
             
             model_names_base = ["多項式", "穩健趨勢", "指數平滑", "漂移", "季節分解", "季節模仿", "單純", "移動平均", "滾動中位", "全局中位"]
             sorted_parts = sorted(zip(effective_base_weights, model_names_base), reverse=True)
@@ -1865,15 +1861,15 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 # 1. 運行交叉驗證以獲取背景分數分佈
                 _, cv_mpi_scores = run_monte_carlo_cv(df_for_seasonal_model, base_models, n_iterations=100, colors=colors)
 
-                # 2. 計算用於「顯示」的最終MPI分數（基於對全部數據的回測）
+                # 2. 計算用於「顯示」和「排名」的最終MPI分數（基於對全部數據的回測）
                 erai_results = perform_internal_benchmarking(data, historical_pred, is_shock_flags)
                 # 使用這個回測分數來計算其在背景分佈中的百分位
-                backtest_mpi_score = calculate_mpi_and_rate(data, historical_pred, historical_wape, erai_results['erai_score'], 100)['mpi_score']
+                backtest_mpi_score_for_ranking = calculate_mpi_and_rate(data, historical_pred, historical_wape, erai_results['erai_score'], 100)['mpi_score']
                 
                 # 3. 計算百分位等級
                 mpi_percentile_rank = None
                 if cv_mpi_scores and len(cv_mpi_scores) > 0:
-                    mpi_percentile_rank = percentileofscore(cv_mpi_scores, backtest_mpi_score, kind='rank')
+                    mpi_percentile_rank = percentileofscore(cv_mpi_scores, backtest_mpi_score_for_ranking, kind='rank')
 
                 # 4. 結合最終MPI分數和公平的百分位等級進行評級
                 mpi_results = calculate_mpi_and_rate(
