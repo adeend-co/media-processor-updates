@@ -2,20 +2,20 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.60-SEF v4       #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.60-SEF v5       #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新 v2.60-SEF v4：修正 Boosting 階段使用不當弱學習器導致的預測災難，並修正分位數範圍計算錯誤。#
+# 更新 v2.60-SEF v5：徹底重構 Boosting 階段，修復因錯誤的殘差學習方式導致的毀滅性震盪。    #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.60-SEF v4"  # Stacking Ensemble Fusion: 修正 Boosting 策略
+SCRIPT_VERSION = "v2.60-SEF v5"  # Stacking Ensemble Fusion: Final Boosting Fix
 SCRIPT_UPDATE_DATE = "2025-07-23"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -1265,7 +1265,7 @@ def compute_acf_results(residuals, n):
 # --- 【★★★ 此處為已修正的函數 ★★★】 ---
 def compute_quantile_spread(p25, p75, predicted_value):
     """計算標準化的分位數範圍（例如 (P75 - P25) / predicted_value）。"""
-    if predicted_value == 0 or predicted_value is None:
+    if predicted_value is None or predicted_value == 0:
         return 0.0  # 避免除零
     # 【錯誤修正】原為 p75 - p75，現更正為 p75 - p25
     spread = (p75 - p25) / predicted_value if p75 is not None and p25 is not None else 0.0
@@ -1792,17 +1792,17 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             historical_pred_fused = X_level2_hist @ weights_level2
             future_pred_fused = X_level2_future @ weights_level2
 
+            # --- 【★★★ 此處為最終修正的核心 ★★★】 ---
             # --- 階段 3: 殘差提升 (Boosting) 最終修正 ---
             print(f"{colors.CYAN}--- 階段 3/3: 執行殘差提升 (Boosting) 最終修正... ---{colors.RESET}")
-            T = 20
+            T = 10 # 減少迭代次數，避免過擬合
             learning_rate = 0.1
             
             historical_pred_final = historical_pred_fused.copy()
             future_pred_final = future_pred_fused
             
-            # 【★★★ 此處為核心修正 ★★★】: 限制 Boosting 階段只能使用穩健的短期模型
-            # 避免使用 poly, huber, seasonal 等可能對結構性斷點過擬合的全域模型
-            boosting_model_keys_cycle = ['drift', 'seasonal_naive', 'moving_average', 'naive', 'rolling_median']
+            # 只使用穩定的趨勢學習器來修正殘差，防止震盪
+            boosting_model_keys_cycle = ['huber', 'drift'] 
             
             for boost_iter in range(T):
                 residuals_boost = data - historical_pred_final
@@ -1810,31 +1810,19 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 model_key = boosting_model_keys_cycle[boost_iter % len(boosting_model_keys_cycle)]
                 weak_model_func = base_models[model_key]
                 
-                res_pred_hist = np.zeros_like(residuals_boost)
-                res_pred_future = np.zeros(steps_ahead)
-
-                if model_key == 'seasonal':
-                    temp_df = df_for_seasonal_model.copy()
-                    temp_df['Real_Amount'] = residuals_boost
-                    deseasonalized_res, _ = seasonal_decomposition(temp_df)
-                    res_pred_hist = residuals_boost - deseasonalized_res['Deseasonalized'].values
-                    res_pred_future = weak_model_func(temp_df, steps_ahead)
-
-                elif model_key in ['poly', 'huber']:
-                    # 此區塊的程式碼現在不會被執行，因為 'poly' 和 'huber' 已從 boosting_model_keys_cycle 中移除
+                # 重新訓練弱學習器來「學習殘差的模式」
+                # 這是與先前版本最大的不同，我們不再是複製或滾動誤差
+                if model_key in ['huber', 'drift']: # 適用於需要 x 和 y 的模型
+                    # 使用弱學習器學習「歷史殘差」，並用學到的規則來「預測歷史殘差」
                     res_pred_hist = weak_model_func(x, residuals_boost, x)
-                    res_pred_future = weak_model_func(x, residuals_boost, x_future)
-                else:
-                    # 對於 naive, drift, moving_average 等模型
-                    # 歷史預測應基於歷史殘差，未來預測應基於整個殘差序列的模式
-                    # 為簡化起見，此處的歷史校正使用簡單的 naive 模型（滾動誤差）
-                    res_pred_hist = np.roll(residuals_boost, 1)
-                    res_pred_hist[0] = 0.0
-                    res_pred_future = weak_model_func(residuals_boost, steps_ahead)
+                    # 使用相同的規則來「預測未來殘差」
+                    res_pred_future_seq = weak_model_func(x, residuals_boost, x_future)
+                else: # 備用，適用於只需要 y 序列的模型
+                    res_pred_hist = weak_model_func(residuals_boost, len(x))
+                    res_pred_future_seq = weak_model_func(residuals_boost, steps_ahead)
 
                 historical_pred_final += learning_rate * res_pred_hist
-                # 確保 res_pred_future 是純量或只有一個元素
-                future_pred_final += learning_rate * res_pred_future[-1]
+                future_pred_final += learning_rate * res_pred_future_seq[-1]
             
             # --- 最終結果賦值 ---
             predicted_value = future_pred_final
@@ -1949,7 +1937,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     p25, p75, p95 = None, None, None
     mc_note = "未使用蒙地卡羅（數據不足24月）。"
     if not monthly_expenses.empty and len(monthly_expenses)>=2:
-        if num_unique_months >= 24:
+        if num_unique_months >= 24 and predicted_value is not None:
             p25, p75, p95 = optimized_monte_carlo(monthly_expenses, predicted_value)
             mc_note = "已使用優化蒙地卡羅模擬。"
         else:
