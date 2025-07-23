@@ -2,20 +2,20 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.50                #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.51                #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新 v2.50：元模型訓練升級為貪婪前向選擇集成法(Greedy Forward Selection)，以對抗共線性並提升穩健性。#
+# 更新 v2.51：修正交叉驗證期間的進度條打印格式，使其保持在同一行。             #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.50"  # 更新版本：元模型訓練升級為貪婪前向選擇集成法(Greedy Forward Selection)，以對抗共線性並提升穩健性。
+SCRIPT_VERSION = "v2.51"  # 更新版本：修正交叉驗證期間的進度條打印格式，使其保持在同一行。
 SCRIPT_UPDATE_DATE = "2025-07-23"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -50,7 +50,7 @@ import argparse
 import numpy as np
 from scipy.stats import linregress, t
 from scipy.stats import skew, kurtosis, median_abs_deviation, percentileofscore
-from scipy.optimize import nnls # 【新增】導入非負最小平方法
+from scipy.optimize import nnls
 from collections import deque, Counter
 
 # --- 顏色處理類別 ---
@@ -1126,9 +1126,11 @@ def run_monte_carlo_cv(full_df, base_models, n_iterations=100, colors=None):
         y_val_true = val_df['Real_Amount'].values
         
         # 1. 訓練元模型
-        _, _, _, _, _, _, X_meta_train = run_stacked_ensemble_model(train_df, steps_ahead=1) # CV中使用預設參數
+        # 【v2.51 修正】: 在CV中，關閉內層函數的打印訊息，以保持進度條整潔。
+        _, _, _, _, _, _, X_meta_train = run_stacked_ensemble_model(train_df, steps_ahead=1, verbose=False)
         if X_meta_train is None: continue
         
+        # 為了加速CV，這裡仍然使用快速的NNLS進行權重估算
         final_weights, _ = nnls(X_meta_train.values, y_train_true)
         if np.sum(final_weights) < 1e-9:
             num_models = X_meta_train.shape[1]
@@ -1179,8 +1181,6 @@ def run_monte_carlo_cv(full_df, base_models, n_iterations=100, colors=None):
         
     p25, p50, p85 = np.percentile(mpi_scores, [25, 50, 85])
     return {'p25': p25, 'p50': p50, 'p85': p85}, mpi_scores
-# --- 【★★★ 新增結束 ★★★】 ---
-
 
 def compute_calibration_results(y_true, quantile_preds, quantiles):
     """計算模型校準結果，返回字典形式。"""
@@ -1273,63 +1273,6 @@ def huber_robust_regression(x, y, steps_ahead, t_const=1.345, max_iter=100, tol=
 
     return predicted_value, historical_pred, final_residuals, lower, upper
 
-# --- 【新增】適應性加權集成模型引擎 ---
-def run_adaptive_ensemble_model(x, y, steps_ahead, error_window=6):
-    """
-    執行適應性加權集成模型。
-    """
-    # --- 模型 A (穩健先生): IRLS-Huber ---
-    pred_A, hist_fit_A, residuals_A, lower_A, upper_A = huber_robust_regression(x, y, steps_ahead)
-    
-    # --- 模型 B (敏感先生): 原始模型 (SARIMA-like) ---
-    slope_B, intercept_B, _, _, _ = linregress(x, y)
-    hist_fit_B = intercept_B + slope_B * x
-    residuals_B = y - hist_fit_B
-    
-    # 遞歸預測
-    predictions_B = []
-    prev_pred_B = y[-1]
-    last_hist_pred_B = hist_fit_B[-1]
-    for step in range(1, steps_ahead + 1):
-        predict_x_B = len(x) + step
-        trend_pred_B = intercept_B + slope_B * predict_x_B
-        feedback = 0.5 * (prev_pred_B - last_hist_pred_B)
-        current_pred_B = trend_pred_B + feedback
-        predictions_B.append(current_pred_B)
-        prev_pred_B = current_pred_B
-        last_hist_pred_B = trend_pred_B
-    pred_B = predictions_B[-1]
-    
-    # 信賴區間
-    dof_B = len(x) - 2
-    mse_B = np.sum(residuals_B**2) / dof_B
-    se_B = np.sqrt(mse_B) * np.sqrt(steps_ahead)
-    t_val_B = t.ppf(0.975, dof_B)
-    lower_B, upper_B = pred_B - t_val_B * se_B, pred_B + t_val_B * se_B
-
-    # --- 計算動態權重 ---
-    if len(x) < error_window: # 冷啟動
-        weight_A, weight_B = 0.5, 0.5
-    else:
-        error_A = np.mean(np.abs(residuals_A[-error_window:]))
-        error_B = np.mean(np.abs(residuals_B[-error_window:]))
-        
-        if error_A + error_B < 1e-6: # 避免除零
-            weight_A, weight_B = 0.5, 0.5
-        else:
-            weight_A = error_B / (error_A + error_B)
-            weight_B = 1.0 - weight_A
-
-    # --- 集成最終結果 ---
-    final_prediction = (pred_A * weight_A) + (pred_B * weight_B)
-    final_historical_pred = (hist_fit_A * weight_A) + (hist_fit_B * weight_B)
-    final_residuals = y - final_historical_pred
-    final_lower = (lower_A * weight_A) + (lower_B * weight_B) if lower_A is not None and lower_B is not None else None
-    final_upper = (upper_A * weight_A) + (upper_B * weight_B) if upper_A is not None and upper_B is not None else None
-
-
-    return final_prediction, final_historical_pred, final_residuals, final_lower, final_upper, weight_A, weight_B
-    
 # --- 【★★★ 核心修改：模型堆疊集成 (Stacking Ensemble) 總引擎 ★★★】 ---
 
 # --- Level 0 基礎模型 (Base Models) ---
@@ -1475,33 +1418,8 @@ def train_predict_moving_average(y_train, predict_steps, window_size=6):
     mean_value = np.mean(y_train[-actual_window:])
     return np.full(predict_steps, mean_value)
 
-# --- Level 1 元模型 (Meta-Model) ---
-def train_and_predict_meta_model(X_meta_train, y_meta_train, X_meta_predict, weights=None):
-    """
-    【v2.5 角色變更】: 此函數現在主要作為一個預測工具。
-    當 `weights` 被提供時，它使用這些權重進行加權預測。
-    其原始的 NNLS 訓練功能已被「貪婪前向選擇法」取代，僅作為備用或比較。
-    """
-    if weights is None:
-        # 訓練模式 (備用)
-        fit_weights, _ = nnls(X_meta_train, y_meta_train)
-        
-        total_weight = np.sum(fit_weights)
-        if total_weight > 1e-6:
-            normalized_weights = fit_weights / total_weight
-        else:
-            num_models = X_meta_train.shape[1]
-            normalized_weights = np.full(num_models, 1 / num_models)
-    else:
-        # 預測模式
-        normalized_weights = weights
-
-    final_prediction = X_meta_predict @ normalized_weights
-    
-    return final_prediction, normalized_weights
-
 # --- 【★★★ 新增：貪婪前向選擇元模型 (Greedy Forward Selection Meta-Model) ★★★】 ---
-def train_greedy_forward_ensemble(X_meta, y_true, model_keys, n_iterations=20, colors=None):
+def train_greedy_forward_ensemble(X_meta, y_true, model_keys, n_iterations=20, colors=None, verbose=True):
     """
     使用 Caruana 的貪婪前向選擇法訓練元模型。
     此方法從一個空集合開始，迭代地將能夠最大程度降低集成模型整體誤差 (RMSE) 的
@@ -1511,9 +1429,10 @@ def train_greedy_forward_ensemble(X_meta, y_true, model_keys, n_iterations=20, c
     Args:
         X_meta (np.ndarray): (樣本數, 模型數) 的袋外預測矩陣。
         y_true (np.ndarray): 真實目標值。
-        model_keys (list): 基礎模型的名稱列表，用於日誌記錄。
+        model_keys (list): 基礎模型的名稱列表。
         n_iterations (int): 最終集成團隊的規模。
         colors (object): 用於彩色輸出的顏色類別。
+        verbose (bool): 是否打印詳細的建設過程。
 
     Returns:
         list: 被選中的模型索引列表。
@@ -1528,13 +1447,11 @@ def train_greedy_forward_ensemble(X_meta, y_true, model_keys, n_iterations=20, c
     ensemble_predictions = np.zeros(n_samples)
     selection_log = []
     
-    print(f"\n{color_cyan}正在執行元模型團隊建設 (貪婪前向選擇法)...{color_reset}")
+    if verbose:
+        print(f"\n{color_cyan}正在執行元模型團隊建設 (貪婪前向選擇法)...{color_reset}")
     
     def rmse(y_true, y_pred):
         return np.sqrt(np.mean((y_true - y_pred)**2))
-
-    initial_rmse = rmse(y_true, ensemble_predictions)
-    selection_log.append(f"初始狀態 (無模型): RMSE = {initial_rmse:,.2f}")
 
     for i in range(n_iterations):
         best_model_idx_this_round = -1
@@ -1544,8 +1461,7 @@ def train_greedy_forward_ensemble(X_meta, y_true, model_keys, n_iterations=20, c
         for model_idx in range(n_models):
             candidate_model_preds = X_meta[:, model_idx]
             
-            # 計算如果加入此候選模型，臨時團隊的預測。
-            # 這是加權平均，現有團隊權重為 i，候選模型權重為 1。
+            # 計算如果加入此候選模型，臨時團隊的預測（算術平均）。
             temp_predictions = (ensemble_predictions * i + candidate_model_preds) / (i + 1)
             current_error = rmse(y_true, temp_predictions)
             
@@ -1560,21 +1476,17 @@ def train_greedy_forward_ensemble(X_meta, y_true, model_keys, n_iterations=20, c
             # 更新團隊的整體預測，為下一輪做準備
             best_model_preds = X_meta[:, best_model_idx_this_round]
             ensemble_predictions = (ensemble_predictions * i + best_model_preds) / (i + 1)
-            
-            model_name = model_keys[best_model_idx_this_round]
-            log_entry = f"  - 第 {i+1:02d} 輪: 選入 {color_green}{model_name}{color_reset}。團隊新 RMSE = {lowest_error:,.2f}"
-            selection_log.append(log_entry)
         else:
             # 如果沒有模型能改善結果，則提前停止
-            selection_log.append("沒有模型能進一步降低誤差，提前結束選擇。")
             break
             
-    print("團隊建設完成。")
-    # print("\n".join(selection_log)) # 可選：打印詳細選擇過程
+    if verbose:
+        print("團隊建設完成。")
+        
     return ensemble_model_indices, selection_log
 
 # --- 【★★★ 核心升級：引入貪婪前向選擇集成法 (Greedy Forward Selection) ★★★】 ---
-def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, ensemble_size=20, colors=None):
+def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, ensemble_size=20, colors=None, verbose=True):
     data = monthly_expenses_df['Real_Amount'].values
     x = np.arange(1, len(data) + 1)
     n_samples = len(data)
@@ -1613,7 +1525,7 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, ense
     # --- 步驟 2: 訓練元模型 (Level 1 Meta-Model using Greedy Forward Selection) ---
     # 這是核心升級，取代了原有的 NNLS 或自舉法。
     # 我們不再為所有模型尋找權重，而是組建一個精英團隊。
-    selected_indices, _ = train_greedy_forward_ensemble(meta_features, data, model_keys, n_iterations=ensemble_size, colors=colors)
+    selected_indices, _ = train_greedy_forward_ensemble(meta_features, data, model_keys, n_iterations=ensemble_size, colors=colors, verbose=verbose)
 
     # 根據團隊成員的出現次數，計算最終的隱性權重
     model_counts = Counter(selected_indices)
@@ -1683,7 +1595,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
 
     num_unique_months = monthly_expenses['Parsed_Date'].dt.to_period('M').nunique() if not monthly_expenses.empty else 0
 
-    used_seasonal = False
     seasonal_note = "未使用季節性分解（資料月份不足 24 個月）。"
     analysis_data = None
     df_for_seasonal_model = None
@@ -1739,7 +1650,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     quantiles = [0.10, 0.25, 0.50, 0.75, 0.90]
     model_weights_report = ""
     mpi_results = None
-    cv_mpi_scores = None # 【v2.41 新增】用於儲存交叉驗證的MPI分數列表
+    cv_mpi_scores = None
 
     if analysis_data is not None and len(analysis_data) >= 2:
         num_months = len(analysis_data)
@@ -1752,9 +1663,8 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         }
 
         if num_months >= 24:
-            # 【v2.50 核心修改】更新方法描述
             method_used = " (基於貪婪前向選擇集成法)"
-            predicted_value, historical_pred, residuals, lower, upper, model_weights, historical_base_preds_df = run_stacked_ensemble_model(df_for_seasonal_model, steps_ahead, colors=colors)
+            predicted_value, historical_pred, residuals, lower, upper, model_weights, historical_base_preds_df = run_stacked_ensemble_model(df_for_seasonal_model, steps_ahead, colors=colors, verbose=True)
             
             model_names = [
                 "多項式", "穩健趨勢", "指數平滑", "漂移",
@@ -1822,7 +1732,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                     historical_wape_robust = (np.sum(np.abs(residuals_clean)) / sum_abs_clean) * 100
             
             if num_months >= 24:
-                # 【v2.41 核心修改】接收完整的MPI分數列表
                 dynamic_thresholds, cv_mpi_scores = run_monte_carlo_cv(df_for_seasonal_model, base_models, n_iterations=100, colors=colors)
                 
                 if dynamic_thresholds:
@@ -1889,7 +1798,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     if historical_mae is not None:
         print(f"\n{colors.WHITE}>>> 模型表現評估 (基於歷史回測){colors.RESET}")
         
-        # 【v2.31 核心修正】: 移除 if/else，總是顯示基礎指標。
         print(f"  - MAE (平均絕對誤差): {historical_mae:,.2f} 元")
         print(f"  - RMSE (全局): {historical_rmse:,.2f} 元 (含極端值，評估總體風險)")
         if historical_rmse_robust is not None:
@@ -1907,7 +1815,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             suggestion = mpi_results['suggestion']
             components = mpi_results['components']
             
-            # 【v2.41 核心修改】計算並顯示MPI的百分位等級
             mpi_percentile_rank = None
             if cv_mpi_scores and len(cv_mpi_scores) > 0:
                 mpi_percentile_rank = percentileofscore(cv_mpi_scores, mpi_score)
@@ -1973,7 +1880,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         if not is_advanced_model and trend_scores is not None and not isinstance(trend_scores, dict):
             print(f"\n{colors.BOLD}動態風險係數: {trend_scores:.3f}{colors.RESET}")
             if error_coefficient is not None: print(f"{colors.BOLD}模型誤差係數: {error_coefficient:.2f}{colors.RESET}")
-            # Detailed risk factor printing logic...
 
     print(f"\n{colors.WHITE}【註】「實質金額」：為讓不同年份的支出能公平比較，本報告已將所有歷史數據，統一換算為當前基期年的貨幣價值。{colors.RESET}")
     print(f"{colors.CYAN}{colors.BOLD}========================================{colors.RESET}\n")
