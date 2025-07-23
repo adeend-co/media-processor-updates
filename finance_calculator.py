@@ -2,20 +2,20 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.52                #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.53                #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新 v2.52: 為迴歸基礎模型增加IQR異常值防護層，修正極端值導致的預測失準問題。      #
+# 更新 v2.53: 實施穩健信賴區間計算，修正因異常值導致最終誤差評估被污染的問題。      #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.52"  # 更新版本: 為迴歸模型增加IQR防護層，提升穩健性。
+SCRIPT_VERSION = "v2.53"  # 更新版本: 實施穩健信賴區間，修正誤差評估污染問題。
 SCRIPT_UPDATE_DATE = "2025-07-23"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -1333,34 +1333,31 @@ def run_adaptive_ensemble_model(x, y, steps_ahead, error_window=6):
 
     return final_prediction, final_historical_pred, final_residuals, final_lower, final_upper, weight_A, weight_B
     
-# --- 【v2.5.2 ★★★ 核心修改：模型堆疊集成總引擎升級 ★★★】 ---
+# --- 【v2.5.3 ★★★ 核心修改：模型堆疊集成總引擎升級 ★★★】 ---
 
 # Level 0 基礎模型 (Base Models)
 def train_predict_poly(x_train, y_train, x_predict, degree=2):
     """【v2.5.2 強化】多項式迴歸，增加 IQR 防護層以抵抗極端值。"""
-    if len(y_train) < 4: # 如果數據太少，則不進行過濾
+    if len(y_train) < 4:
         x_train_clean, y_train_clean = x_train, y_train
     else:
         q1, q3 = np.percentile(y_train, [25, 75])
         iqr = q3 - q1
-        # 使用較寬鬆的 3.0*IQR 來定義極端值，避免過度過濾
-        upper_bound = q3 + 3.0 * iqr 
-        non_outlier_mask = y_train <= upper_bound
+        upper_bound = q3 + 3.0 * iqr
+        lower_bound = q1 - 3.0 * iqr
+        non_outlier_mask = (y_train <= upper_bound) & (y_train >= lower_bound)
         
         x_train_clean = x_train[non_outlier_mask]
         y_train_clean = y_train[non_outlier_mask]
 
-        # 如果過濾後數據太少，則退回使用原始數據
         if len(y_train_clean) < degree + 1:
             x_train_clean, y_train_clean = x_train, y_train
 
     if len(y_train_clean) < degree + 1:
         return np.full(len(x_predict), np.mean(y_train) if len(y_train) > 0 else 0)
     
-    # 使用過濾後的「乾淨」數據進行擬合
     coeffs = np.polyfit(x_train_clean, y_train_clean, degree)
     p = np.poly1d(coeffs)
-    # 在原始的預測點上進行預測
     return p(x_predict)
 
 def train_predict_des(y_train, predict_steps, alpha=0.5, beta=0.5):
@@ -1507,14 +1504,10 @@ def train_predict_sparse(df_train, predict_steps, period='Q'):
     
     monthly_dates = pd.date_range(start=y_series.index[0], periods=len(y_series) + predict_steps, freq='M')
     
-    # 【v2.5.1 修正】將季度時間戳移至季度中點，以獲得更準確的插值錨點
     q_mid_dates = q_full_dates + pd.DateOffset(months=1, days=15)
     q_timestamps = q_mid_dates.values.astype(np.int64)
-
-    # 【v2.5.1 修正】直接從 DatetimeIndex 獲取數值，而不是呼叫不存在的方法
     m_timestamps = monthly_dates.values.astype(np.int64)
 
-    # 使用線性插值將季度均值還原為月度預測
     y_monthly_interp = np.interp(m_timestamps, q_timestamps, y_q_full / 3)
     
     return y_monthly_interp[-predict_steps:]
@@ -1523,7 +1516,11 @@ def _create_time_features(df):
     """輔助函數：從日期欄位中提取多個時間特徵。"""
     dates = df['Parsed_Date']
     features = pd.DataFrame(index=df.index)
-    features['time_idx'] = np.arange(len(df))
+    # 確保 time_idx 是唯一的，即使在交叉驗證的子集中也是如此
+    if "original_index" in df:
+        features['time_idx'] = df["original_index"]
+    else:
+        features['time_idx'] = np.arange(len(df))
     features['month_sin'] = np.sin(2 * np.pi * dates.dt.month / 12)
     features['month_cos'] = np.cos(2 * np.pi * dates.dt.month / 12)
     features['quarter'] = dates.dt.quarter
@@ -1532,47 +1529,50 @@ def _create_time_features(df):
     return features
 
 def train_predict_huber_time_features(df_train, predict_steps, t_const=1.345, max_iter=100, tol=1e-6):
-    """【v2.5.2 強化】強化版Huber迴歸，增加 IQR 防護層以抵抗極端值。"""
+    """【v2.5.3 強化】修正時間索引邏輯並應用IQR防護層。"""
     y_train_orig = df_train['Real_Amount'].values
     if len(df_train) < 4:
         df_train_clean = df_train
+        non_outlier_mask = pd.Series([True] * len(df_train), index=df_train.index)
     else:
-        # 使用 IQR 過濾極端值以進行穩健訓練
         q1, q3 = np.percentile(y_train_orig, [25, 75])
         iqr = q3 - q1
         upper_bound = q3 + 3.0 * iqr
-        non_outlier_mask = y_train_orig <= upper_bound
-
+        lower_bound = q1 - 3.0 * iqr
+        non_outlier_mask = (y_train_orig <= upper_bound) & (y_train_orig >= lower_bound)
+        
+        # 應用 mask 到 DataFrame
         df_train_clean = df_train[non_outlier_mask]
         
-        # 如果過濾後數據太少，則退回使用原始數據
         if len(df_train_clean) < 4:
             df_train_clean = df_train
+            non_outlier_mask = pd.Series([True] * len(df_train), index=df_train.index)
             
-    y_train = df_train_clean['Real_Amount'].values
-    n_train = len(df_train_clean)
+    y_train_clean = df_train_clean['Real_Amount'].values
+    n_train_clean = len(df_train_clean)
 
-    # 1. 創建訓練特徵
-    X_train_df = _create_time_features(df_train_clean)
-    
-    # 2. 特徵縮放 (標準化)
-    train_mu = X_train_df.mean()
-    train_std = X_train_df.std()
+    # 1. 【修正】先從原始df_train創建特徵，再進行過濾，確保索引一致性
+    X_train_df = _create_time_features(df_train)
+    X_train_df_clean = X_train_df[non_outlier_mask]
+
+    # 2. 特徵縮放
+    train_mu = X_train_df_clean.mean()
+    train_std = X_train_df_clean.std()
     train_std[train_std < 1e-8] = 1.0
     
-    X_train_scaled = (X_train_df - train_mu) / train_std
-    X_train_b = np.c_[np.ones(n_train), X_train_scaled.values]
+    X_train_scaled = (X_train_df_clean - train_mu) / train_std
+    X_train_b = np.c_[np.ones(n_train_clean), X_train_scaled.values]
 
     # 3. IRLS 迭代過程
     try:
-        beta = np.linalg.lstsq(X_train_b, y_train, rcond=None)[0]
+        beta = np.linalg.lstsq(X_train_b, y_train_clean, rcond=None)[0]
     except (np.linalg.LinAlgError, ValueError):
         beta = np.zeros(X_train_b.shape[1])
-        beta[0] = np.mean(y_train)
+        beta[0] = np.mean(y_train_clean)
 
     for _ in range(max_iter):
         beta_old = beta.copy()
-        residuals = y_train - (X_train_b @ beta)
+        residuals = y_train_clean - (X_train_b @ beta)
         scale = median_abs_deviation(residuals, scale='normal')
         if scale < 1e-6: scale = 1e-6
         z = residuals / scale
@@ -1582,7 +1582,7 @@ def train_predict_huber_time_features(df_train, predict_steps, t_const=1.345, ma
         W_sqrt = np.sqrt(weights)
         
         try:
-            beta = np.linalg.lstsq(X_train_b * W_sqrt[:, np.newaxis], y_train * W_sqrt, rcond=None)[0]
+            beta = np.linalg.lstsq(X_train_b * W_sqrt[:, np.newaxis], y_train_clean * W_sqrt, rcond=None)[0]
         except np.linalg.LinAlgError:
             beta = beta_old
             break
@@ -1593,12 +1593,9 @@ def train_predict_huber_time_features(df_train, predict_steps, t_const=1.345, ma
     # 4. 創建並縮放預測特徵
     future_dates = pd.date_range(start=df_train['Parsed_Date'].iloc[-1] + pd.DateOffset(months=1), periods=predict_steps, freq='M')
     df_predict = pd.DataFrame({'Parsed_Date': future_dates})
-    
-    # 在創建特徵前，需要確保 time_idx 是連續的 (相對於原始 df_train)
+    df_predict["original_index"] = np.arange(len(df_train), len(df_train) + predict_steps)
     X_predict_df = _create_time_features(df_predict)
-    X_predict_df['time_idx'] += len(df_train)
-
-    # 使用從乾淨訓練集學到的 mu 和 std 進行縮放
+    
     X_predict_scaled = (X_predict_df - train_mu) / train_std
     X_predict_b = np.c_[np.ones(predict_steps), X_predict_scaled.values]
     
@@ -1631,11 +1628,14 @@ def train_and_predict_meta_model(X_meta_train, y_meta_train, X_meta_predict, wei
 
 # --- 【★★★ 核心升級：引入波動率加權自舉法 (Volatility-Weighted MBB) ★★★】 ---
 def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, enable_bootstrap=True, n_bootstrap_iterations=100, colors=None):
-    data = monthly_expenses_df['Real_Amount'].values
-    x = np.arange(1, len(data) + 1)
+    # 【v2.5.3 修正】為df添加原始索引，以便在過濾後仍能正確生成time_idx
+    df_with_idx = monthly_expenses_df.copy()
+    df_with_idx["original_index"] = np.arange(len(df_with_idx))
+    
+    data = df_with_idx['Real_Amount'].values
+    x = df_with_idx["original_index"].values
     n_samples = len(data)
     
-    # 【v2.5.2 修改】基礎模型庫保持不變，但內部實現已強化
     base_models = {
         'huber_time': train_predict_huber_time_features,
         'fft': train_predict_fft,
@@ -1663,18 +1663,17 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, enab
         
         if len(train_idx) == 0: continue
 
-        x_train, y_train, df_train = x[train_idx], data[train_idx], monthly_expenses_df.iloc[train_idx]
+        x_train, y_train, df_train = x[train_idx], data[train_idx], df_with_idx.iloc[train_idx]
         x_val = x[val_idx]
 
         for j, key in enumerate(model_keys):
             model_func = base_models[key]
             
-            # 處理不同模型函數的簽名
             if key in ['seasonal', 'sparse', 'fft', 'huber_time']:
                 preds = model_func(df_train, len(x_val))
             elif key in ['poly']:
                  preds = model_func(x_train, y_train, x_val)
-            else: # des, drift, naives, etc.
+            else:
                  preds = model_func(y_train, len(x_val))
             meta_features[val_idx, j] = preds
 
@@ -1718,13 +1717,13 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, enab
         _, model_weights = train_and_predict_meta_model(meta_features, data, meta_features)
 
     # --- 步驟 3: 使用共識權重進行最終預測 ---
-    x_future = np.arange(n_samples + 1, n_samples + steps_ahead + 1)
+    x_future = np.arange(n_samples, n_samples + steps_ahead)
     final_base_predictions = np.zeros((steps_ahead, len(base_models)))
 
     for j, key in enumerate(model_keys):
         model_func = base_models[key]
         if key in ['seasonal', 'sparse', 'fft', 'huber_time']:
-            final_base_predictions[:, j] = model_func(monthly_expenses_df, steps_ahead)
+            final_base_predictions[:, j] = model_func(df_with_idx, steps_ahead)
         elif key in ['poly']:
             final_base_predictions[:, j] = model_func(x, data, x_future)
         else:
@@ -1736,11 +1735,17 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, enab
     historical_pred, _ = train_and_predict_meta_model(None, None, meta_features, weights=model_weights)
     residuals = data - historical_pred
     
-    dof = n_samples - len(base_models) - 1
+    # --- 【v2.5.3 核心修正】計算穩健的信賴區間 ---
+    anomaly_info = calculate_anomaly_scores(data)
+    is_shock_flags = anomaly_info['Is_Shock'].values
+    residuals_clean = residuals[~is_shock_flags]
+    
+    dof = len(residuals_clean) - len(base_models) - 1
     if dof <= 0: return final_prediction, historical_pred, residuals, None, None, model_weights, pd.DataFrame(meta_features, columns=model_keys)
     
-    mse = np.sum(residuals**2) / dof
-    se = np.sqrt(mse)
+    # 使用排除衝擊後的殘差計算 MSE，得到穩健的誤差估計
+    mse_robust = np.sum(residuals_clean**2) / dof
+    se = np.sqrt(mse_robust)
     t_val = t.ppf(0.975, dof)
     lower, upper = final_prediction - t_val * se, final_prediction + t_val * se
     
@@ -1826,13 +1831,12 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     quantiles = [0.10, 0.25, 0.50, 0.75, 0.90]
     model_weights_report = ""
     mpi_results = None
-    cv_mpi_scores = None # 【v2.41 新增】用於儲存交叉驗證的MPI分數列表
+    cv_mpi_scores = None
 
     if analysis_data is not None and len(analysis_data) >= 2:
         num_months = len(analysis_data)
         data, x = analysis_data, np.arange(1, num_months + 1)
         
-        # 【v2.5.2 修改】在主流程中定義 base_models，以便傳遞給 CV 函數
         base_models = {
             'huber_time': train_predict_huber_time_features, 'fft': train_predict_fft, 'sparse': train_predict_sparse,
             'poly': train_predict_poly, 'des': train_predict_des, 'drift': train_predict_drift,
@@ -1841,8 +1845,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         }
 
         if num_months >= 24:
-            # 【v2.5.2 核心修改】更新方法描述
-            method_used = " (基於強化版集成模型 v2.5.2)"
+            method_used = " (基於強化版集成模型 v2.5.3)"
             predicted_value, historical_pred, residuals, lower, upper, model_weights, historical_base_preds_df = run_stacked_ensemble_model(df_for_seasonal_model, steps_ahead, colors=colors)
             
             model_names = [
@@ -1911,7 +1914,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                     historical_wape_robust = (np.sum(np.abs(residuals_clean)) / sum_abs_clean) * 100
             
             if num_months >= 24:
-                # 【v2.5.2 核心修改】將更新後的 base_models 傳入
                 dynamic_thresholds, cv_mpi_scores = run_monte_carlo_cv(df_for_seasonal_model, base_models, n_iterations=100, colors=colors)
                 
                 if dynamic_thresholds:
