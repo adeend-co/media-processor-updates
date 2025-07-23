@@ -2,20 +2,20 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.60-SEF v3       #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.60-SEF v4       #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新 v2.60-SEF v3：修正因迴圈變數 t 覆蓋scipy.stats.t導致的AttributeError。   #
+# 更新 v2.60-SEF v4：導入新舊記憶加權融合機制，應對數據中的結構性轉變。     #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.60-SEF v3"  # Stacking Ensemble Fusion: 修正變數覆蓋導致的AttributeError
+SCRIPT_VERSION = "v2.60-SEF v4"  # Stacking Ensemble Fusion: 導入新舊記憶加權
 SCRIPT_UPDATE_DATE = "2025-07-23"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -1776,12 +1776,22 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             level1_historical_preds['nnls'] = meta_features @ weights_nnls
             level1_future_preds['nnls'] = (future_base_predictions @ weights_nnls)[-1]
 
-            # --- 階段 2: 總監決策 (Level 2 Director) 融合預測 ---
-            print(f"{colors.CYAN}--- 階段 2/3: 執行總監級模型融合... ---{colors.RESET}")
+            # --- 階段 2: 總監決策 (Level 2 Director) - 【★★★ 新舊記憶加權融合 ★★★】 ---
+            print(f"{colors.CYAN}--- 階段 2/3: 執行總監級模型融合 (新舊記憶加權)... ---{colors.RESET}")
             X_level2_hist = np.column_stack(list(level1_historical_preds.values()))
             X_level2_future = np.array(list(level1_future_preds.values()))
 
-            weights_level2, _ = nnls(X_level2_hist, data)
+            # 建立一個從0.5到1.5的線性權重，讓近期數據更重要
+            recency_weights = np.linspace(0.5, 1.5, num=num_months)
+            W_sqrt = np.sqrt(recency_weights)
+
+            # 將權重應用於歷史數據和真實值
+            X_weighted = X_level2_hist * W_sqrt[:, np.newaxis]
+            y_weighted = data * W_sqrt
+            
+            # 在加權後的數據上學習融合權重
+            weights_level2, _ = nnls(X_weighted, y_weighted)
+            
             if np.sum(weights_level2) > 1e-9:
                 weights_level2 /= np.sum(weights_level2)
             else:
@@ -1800,7 +1810,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             
             boosting_model_keys_cycle = list(base_models.keys())
             
-            for boost_iter in range(T): # 【★★★ 此處為核心修正 ★★★】: 將 't' 更改為 'boost_iter'
+            for boost_iter in range(T):
                 residuals_boost = data - historical_pred_final
                 
                 model_key = boosting_model_keys_cycle[boost_iter % len(boosting_model_keys_cycle)]
@@ -1840,7 +1850,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             if dof > 0:
                 mse = np.sum(residuals**2) / dof
                 se = np.sqrt(mse) * np.sqrt(1 + 1/num_months)
-                t_val = t.ppf(0.975, dof) # 現在 't' 會正確地指向 scipy.stats.t
+                t_val = t.ppf(0.975, dof)
                 lower, upper = predicted_value - t_val*se, predicted_value + t_val*se
         
         # ==============================================================================
