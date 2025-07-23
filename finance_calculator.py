@@ -2,20 +2,20 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.60                #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.61                #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新 v2.60：導入 MPI 2.0 雙重門檻混合評級系統，同時考量絕對效能與相對穩定性。#
+# 更新 v2.61：修正：為集成模型引入適應性K-Fold策略，以提高在較短時間序列上的交叉驗證穩定性。#
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.60"  # 更新版本：導入 MPI 2.0 雙重門檻混合評級系統，同時考量絕對效能與相對穩定性。
+SCRIPT_VERSION = "v2.61"  # 更新版本：修正：為集成模型引入適應性K-Fold策略，以提高在較短時間序列上的交叉驗證穩定性。
 SCRIPT_UPDATE_DATE = "2025-07-23"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -1058,8 +1058,8 @@ def calculate_mpi_and_rate(y_true, historical_pred, global_wape, erai_score, mpi
     rss = erai_score if erai_score is not None else 0
     mpi_score = 0.8 * aas + 0.2 * rss
     
-    rating = "D-"
-    suggestion = "請立即停止使用此模型的預測。建議檢查您的原始數據是否存在格式錯誤，或考慮更換其他分析方法。"
+    rating = "D- (完全不可信賴)"
+    suggestion = "模型失效。此模型的綜合表現極差，其預測結果完全不可信賴。\n    └─ 建議行動: **請立即停止使用**此模型的預測。建議檢查您的原始數據是否存在格式錯誤，或考慮更換其他分析方法。"
 
     if mpi_percentile_rank is None:
         rating = "N/A"
@@ -1069,52 +1069,52 @@ def calculate_mpi_and_rate(y_true, historical_pred, global_wape, erai_score, mpi
         if mpi_score > 0.75:  # 卓越
             if mpi_percentile_rank > 85:
                 rating = "A+ (行業頂尖)"
-                suggestion = "卓越的典範。此模型不僅在您個人數據的回測中展現出頂尖的穩定性，其絕對預測能力也達到了業界公認的最高標準。它不僅能精準捕捉您消費模式的細微之處，更對潛在的財務風險有著深刻的洞察力。\n    └─ 建議行動: 此模型的預測結果**高度可信賴**，可作為您進行**關鍵長期財務規劃**（如年度預算、儲蓄目標、投資決策）的核心依據。"
+                suggestion = "卓越的典範。此模型不僅在您個人數據的回測中展現出頂尖的穩定性，其絕對預測能力也達到了業界公認的最高標準。\n    └─ 建議行動: 此模型的預測結果**高度可信賴**，可作為您進行**關鍵長期財務規劃**（如年度預算、儲蓄目標、投資決策）的核心依據。"
             elif mpi_percentile_rank > 50:
                 rating = "A (高效能)"
-                suggestion = "極度可靠的財務夥伴。模型的綜合表現非常出色，在預測準確度和趨勢吻合度上均達到業界的優良標準，且在您的歷史數據上表現穩定。\n    └─ 建議行動: 您可以**充滿信心地採納**此模型的預算建議，它足以應對多數財務決策場景。"
+                suggestion = "極度可靠的財務夥伴。模型的綜合表現非常出色，在預測準確度和趨勢吻合度上均達到業界的優良標準。\n    └─ 建議行動: 您可以**充滿信心地採納**此模型的預算建議，它足以應對多數財務決策場景。"
             elif mpi_percentile_rank > 25:
                 rating = "B (偶有佳作)"
-                suggestion = "表現尚可，偶有亮點。此模型在絕對效能上達到卓越水準，但在穩定性上略有不足。總體而言，它具備基礎的預測能力。\n    └─ 建議行動: 可作為**趨勢判斷的輔助性參考**。採納其建議時，建議結合您自身的判斷。"
+                suggestion = "表現尚可，偶有亮點。此模型在絕對效能上達到卓越水準，但在穩定性上略有不足。\n    └─ 建議行動: 可作為**趨勢判斷的輔助性參考**。採納其建議時，建議結合您自身的判斷。"
             else:
                 rating = "C (曇花一現)"
-                suggestion = "需要審慎對待。模型在「絕對效能」或「穩定性」兩個維度中，至少有一項存在明顯的短板。它可能對您的消費模式有著片面的理解，或其預測結果波動較大。\n    └─ 建議行動: **建議謹慎使用**其預測結果。在採納前，請務必詳細檢視報告中的「模型診斷儀表板」，了解其誤差主要來源。"
+                suggestion = "需要審慎對待。模型在「絕對效能」或「穩定性」兩個維度中，至少有一項存在明顯的短板。\n    └─ 建議行動: **建議謹慎使用**其預測結果。在採納前，請務必詳細檢視報告中的「模型診斷儀表板」。"
         elif mpi_score > 0.65:  # 良好
             if mpi_percentile_rank > 85:
                 rating = "A- (穩健主力)"
-                suggestion = "堅實可靠的主力模型。模型的絕對預測能力良好，且在您的數據上展現出高度的穩定性。這代表它不僅理解您的核心消費習慣，而且這種理解是經得起時間考驗的。\n    └─ 建議行動: 這是非常理想的**常規月度預算設定**參考，其預測結果穩健且值得信賴。"
+                suggestion = "堅實可靠的主力模型。模型的絕對預測能力良好，且在您的數據上展現出高度的穩定性。\n    └─ 建議行動: 這是非常理想的**常規月度預算設定**參考，其預測結果穩健且值得信賴。"
             elif mpi_percentile_rank > 50:
                 rating = "B+ (可靠)"
-                suggestion = "值得信賴的分析師。模型的預測能力良好，且在您的數據上表現穩定。它能準確捕捉您大部分的消費趨勢，是一個可靠的日常財務助手。\n    └─ 建議行動: 預算建議**具有很高的參考價值**，適合用於多數日常財務管理。"
+                suggestion = "值得信賴的分析師。模型的預測能力良好，且在您的數據上表現穩定。\n    └─ 建議行動: 預算建議**具有很高的參考價值**，適合用於多數日常財務管理。"
             elif mpi_percentile_rank > 25:
                 rating = "C+ (差強人意)"
-                suggestion = "需要審慎對待。模型在「絕對效能」或「穩定性」兩個維度中，至少有一項存在明顯的短板。它可能對您的消費模式有著片面的理解，或其預測結果波動較大。\n    └─ 建議行動: **建議謹慎使用**其預測結果。在採納前，請務必詳細檢視報告中的「模型診斷儀表板」，了解其誤差主要來源。"
+                suggestion = "需要審慎對待。模型在「絕對效能」或「穩定性」兩個維度中，至少有一項存在明顯的短板。\n    └─ 建議行動: **建議謹慎使用**其預測結果。在採納前，請務必詳細檢視報告中的「模型診斷儀表板」。"
             else:
                 rating = "D+ (表現不穩)"
-                suggestion = "存在明顯問題。此模型在絕對效能和穩定性上均表現不佳。它可能未能正確理解您消費模式的核心規律，或者其預測結果與簡單的基準模型相差無幾，甚至更差。\n    └─ 建議行動: **不建議採納**其預測結果。這通常意味著您的歷史數據過短、波動過於劇烈，或存在模型無法捕捉的複雜模式。"
+                suggestion = "存在明顯問題。此模型在絕對效能和穩定性上均表現不佳，不建議採納其預測結果。"
         elif mpi_score > 0.50:  # 可接受
             if mpi_percentile_rank > 85:
                 rating = "B (潛力股)"
-                suggestion = "表現尚可，偶有亮點。此模型在穩定性上表現優異，但在絕對效能上略有不足。總體而言，它具備基礎的預測能力。\n    └─ 建議行動: 可作為**趨勢判斷的輔助性參考**。採納其建議時，建議結合您自身的判斷。"
+                suggestion = "表現尚可，偶有亮點。此模型在穩定性上表現優異，但在絕對效能上略有不足。\n    └─ 建議行動: 可作為**趨勢判斷的輔助性參考**。採納其建議時，建議結合您自身的判斷。"
             elif mpi_percentile_rank > 50:
                 rating = "B- (基礎可用)"
-                suggestion = "基礎的趨勢指標。模型的絕對預測能力尚可，穩定性也處於中等水平。它能大致反映您的消費方向，但可能無法捕捉到所有細節。\n    └─ 建議行動: 預算建議**僅供參考**，可作為您制定初步預算的起點。"
+                suggestion = "基礎的趨勢指標。模型的絕對預測能力尚可，穩定性也處於中等水平。\n    └─ 建議行動: 預算建議**僅供參考**，可作為您制定初步預算的起點。"
             elif mpi_percentile_rank > 25:
                 rating = "C (僅供參考)"
-                suggestion = "需要審慎對待。模型在「絕對效能」或「穩定性」兩個維度中，至少有一項存在明顯的短板。它可能對您的消費模式有著片面的理解，或其預測結果波動較大。\n    └─ 建議行動: **建議謹慎使用**其預測結果。在採納前，請務必詳細檢視報告中的「模型診斷儀表板」，了解其誤差主要來源。"
+                suggestion = "需要審慎對待。模型在「絕對效能」或「穩定性」兩個維度中，至少有一項存在明顯的短板。\n    └─ 建議行動: **建議謹慎使用**其預測結果。在採納前，請務必詳細檢視報告中的「模型診斷儀表板」。"
             else:
                 rating = "D (有缺陷)"
-                suggestion = "存在明顯問題。此模型在絕對效能和穩定性上均表現不佳。它可能未能正確理解您消費模式的核心規律，或者其預測結果與簡單的基準模型相差無幾，甚至更差。\n    └─ 建議行動: **不建議採納**其預測結果。這通常意味著您的歷史數據過短、波動過於劇烈，或存在模型無法捕捉的複雜模式。"
+                suggestion = "存在明顯問題。此模型在絕對效能和穩定性上均表現不佳，不建議採納其預測結果。"
         else:  # < 0.50 (待觀察)
             if mpi_percentile_rank > 85:
                 rating = "C (穩定但平庸)"
-                suggestion = "需要審慎對待。模型在「絕對效能」或「穩定性」兩個維度中，至少有一項存在明顯的短板。它可能對您的消費模式有著片面的理解，或其預測結果波動較大。\n    └─ 建議行動: **建議謹慎使用**其預測結果。在採納前，請務必詳細檢視報告中的「模型診斷儀表板」，了解其誤差主要來源。"
+                suggestion = "需要審慎對待。模型在「絕對效能」或「穩定性」兩個維度中，至少有一項存在明顯的短板。\n    └─ 建議行動: **建議謹慎使用**其預測結果。在採納前，請務必詳細檢視報告中的「模型診斷儀表板」。"
             elif mpi_percentile_rank > 50:
                 rating = "D+ (不可靠)"
-                suggestion = "存在明顯問題。此模型在絕對效能和穩定性上均表現不佳。它可能未能正確理解您消費模式的核心規律，或者其預測結果與簡單的基準模型相差無幾，甚至更差。\n    └─ 建議行動: **不建議採納**其預測結果。這通常意味著您的歷史數據過短、波動過於劇烈，或存在模型無法捕捉的複雜模式。"
+                suggestion = "存在明顯問題。此模型在絕對效能和穩定性上均表現不佳，不建議採納其預測結果。"
             elif mpi_percentile_rank > 25:
                 rating = "D (有嚴重問題)"
-                suggestion = "存在明顯問題。此模型在絕對效能和穩定性上均表現不佳。它可能未能正確理解您消費模式的核心規律，或者其預測結果與簡單的基準模型相差無幾，甚至更差。\n    └─ 建議行動: **不建議採納**其預測結果。這通常意味著您的歷史數據過短、波動過於劇烈，或存在模型無法捕捉的複雜模式。"
+                suggestion = "存在明顯問題。此模型在絕對效能和穩定性上均表現不佳，不建議採納其預測結果。"
             else: # D- (完全不可信賴)
                 pass # 使用預設的 D- 評級和建議
                 
@@ -1235,8 +1235,7 @@ def run_monte_carlo_cv(full_df, base_models, n_iterations=100, colors=None):
     if not mpi_scores: 
         return None, None
         
-    p25, p50, p85 = np.percentile(mpi_scores, [25, 50, 85])
-    return {'p25': p25, 'p50': p50, 'p85': p85}, mpi_scores
+    return None, mpi_scores
 
 def compute_calibration_results(y_true, quantile_preds, quantiles):
     """計算模型校準結果，返回字典形式。"""
@@ -1540,8 +1539,8 @@ def train_greedy_forward_ensemble(X_meta, y_true, model_keys, n_iterations=20, c
         
     return ensemble_model_indices, selection_log
 
-# --- 【★★★ 核心升級：引入貪婪前向選擇集成法 (Greedy Forward Selection) ★★★】 ---
-def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, ensemble_size=20, colors=None, verbose=True):
+# --- 【★★★ 核心升級：引入貪婪前向選擇集成法與適應性K-Fold策略 ★★★】 ---
+def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, ensemble_size=20, colors=None, verbose=True):
     data = monthly_expenses_df['Real_Amount'].values
     x = np.arange(1, len(data) + 1)
     n_samples = len(data)
@@ -1555,15 +1554,24 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, ense
     model_keys = list(base_models.keys())
     
     # --- 步驟 1: 生成基礎元特徵 (Level 0 Out-of-Fold Predictions) ---
-    # 此步驟使用交叉驗證生成無數據洩漏的基礎模型預測，是貪婪選擇成功的基石。
+    # 【v2.61 核心修正】引入適應性 K-Fold 策略，以提高在較短時間序列上的穩定性。
+    # 確保每個驗證 fold 至少有 4 個樣本，且 fold 數最少為 3。
+    n_folds = max(3, min(n_samples // 4, 5))
+
     meta_features = np.zeros((n_samples, len(base_models)))
-    fold_indices = np.array_split(np.arange(n_samples), n_folds)
+    
+    # 使用 KFold 可能會因為數據太少而出錯，這裡改用手動切分以確保穩健
+    if n_samples < n_folds: # 如果數據太少，無法進行交叉驗證
+        n_folds = n_samples
+    
+    fold_indices = np.array_split(np.arange(n_samples), n_folds) if n_folds > 0 else []
+
     
     for i in range(n_folds):
         train_idx = np.concatenate([fold_indices[j] for j in range(n_folds) if i != j])
         val_idx = fold_indices[i]
         
-        if len(train_idx) == 0: continue
+        if len(train_idx) == 0 or len(val_idx) == 0: continue
 
         x_train, y_train, df_train = x[train_idx], data[train_idx], monthly_expenses_df.iloc[train_idx]
         x_val = x[val_idx]
@@ -1578,23 +1586,19 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, ense
                  meta_features[val_idx, j] = model_func(y_train, len(x_val))
 
     # --- 步驟 2: 訓練元模型 (Level 1 Meta-Model using Greedy Forward Selection) ---
-    # 這是核心升級，取代了原有的 NNLS 或自舉法。
-    # 我們不再為所有模型尋找權重，而是組建一個精英團隊。
     selected_indices, _ = train_greedy_forward_ensemble(meta_features, data, model_keys, n_iterations=ensemble_size, colors=colors, verbose=verbose)
 
     # 根據團隊成員的出現次數，計算最終的隱性權重
     model_counts = Counter(selected_indices)
     model_weights = np.zeros(len(base_models))
-    if selected_indices: # 確保列表不為空
+    if selected_indices:
         for idx, count in model_counts.items():
             model_weights[idx] = count
-        # 將權重標準化
         model_weights = model_weights / np.sum(model_weights)
-    else: # 如果沒有模型被選中（極端情況），則使用平均權重
+    else:
         model_weights = np.full(len(base_models), 1 / len(base_models))
 
     # --- 步驟 3: 使用最終的團隊共識進行預測 ---
-    # 預測未來
     x_future = np.arange(n_samples + 1, n_samples + steps_ahead + 1)
     final_base_predictions = np.zeros((steps_ahead, len(base_models)))
 
@@ -1607,20 +1611,17 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, ense
         else:
             final_base_predictions[:, j] = model_func(data, steps_ahead)
     
-    # 使用團隊權重進行預測
     final_prediction_sequence = final_base_predictions @ model_weights
     final_prediction = final_prediction_sequence[-1]
     
-    # 預測歷史 (回測)
     historical_pred = meta_features @ model_weights
     residuals = data - historical_pred
     
-    # 計算信賴區間
-    dof = n_samples - len(model_counts) - 1 # 自由度基於獨立模型的數量
+    dof = n_samples - len(model_counts) - 1
     if dof <= 0: return final_prediction, historical_pred, residuals, None, None, model_weights, pd.DataFrame(meta_features, columns=model_keys)
     
     mse = np.sum(residuals**2) / dof
-    se = np.sqrt(mse) # 使用簡化的SE計算
+    se = np.sqrt(mse)
     t_val = t.ppf(0.975, dof)
     lower, upper = final_prediction - t_val * se, final_prediction + t_val * se
     
@@ -1706,6 +1707,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     model_weights_report = ""
     mpi_results = None
     cv_mpi_scores = None
+    mpi_percentile_rank = None
 
     if analysis_data is not None and len(analysis_data) >= 2:
         num_months = len(analysis_data)
@@ -1796,8 +1798,8 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                     is_shock_flags=is_shock_flags
                 )
 
-                mpi_percentile_rank = None
                 if cv_mpi_scores and len(cv_mpi_scores) > 0:
+                    # 暫時計算一次主模型的MPI分數，以獲得其絕對值
                     temp_mpi_score = calculate_mpi_and_rate(data, historical_pred, historical_wape, erai_results['erai_score'], 100)['mpi_score']
                     mpi_percentile_rank = percentileofscore(cv_mpi_scores, temp_mpi_score)
 
