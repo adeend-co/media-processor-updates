@@ -2,20 +2,20 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.61                #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.62                #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新 v2.61：修正 P-Rank 計算邏輯，確保交叉驗證與最終評分標準一致。恢復基礎模型權重顯示。 #
+# 更新 v2.62：徹底修正 P-Rank 比較基準，確保其能公平反映模型的綜合回測表現。         #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.61"  # P-Rank fix and restore base model weights display
+SCRIPT_VERSION = "v2.62"  # Final P-Rank logic fix
 SCRIPT_UPDATE_DATE = "2025-07-23"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -1865,45 +1865,17 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 # 1. 運行交叉驗證以獲取背景分數分佈
                 _, cv_mpi_scores = run_monte_carlo_cv(df_for_seasonal_model, base_models, n_iterations=100, colors=colors)
 
-                # 2. 為了獲得公平的比較分數，執行一次與CV相同的驗證流程
-                comparable_mpi_score = None
-                val_ratio = 0.25 # 使用與CV相同的驗證比例
-                train_size_val = int(num_months * (1 - val_ratio))
-                if num_months - train_size_val > 1: # 確保驗證集至少有2個點
-                    train_df_val = df_for_seasonal_model.iloc[:train_size_val]
-                    val_df_val = df_for_seasonal_model.iloc[train_size_val:]
-                    y_val_true = val_df_val['Real_Amount'].values
-
-                    val_pred_seq, _, _, _, _, _, _ = \
-                        run_full_ensemble_pipeline(train_df_val, steps_ahead=len(val_df_val), colors=colors, verbose=False)
-                    
-                    if val_pred_seq is not None and len(val_pred_seq) == len(y_val_true):
-                        # 使用與CV中完全相同的邏輯計算此驗證分數的MPI
-                        val_pred = np.array(val_pred_seq)
-                        val_residuals = y_val_true - val_pred
-                        val_wape = (np.sum(np.abs(val_residuals)) / np.sum(np.abs(y_val_true)) * 100) if np.sum(np.abs(y_val_true)) > 1e-9 else 100.0
-                        val_wape_robust = val_wape
-                        val_quantile_preds = {q: val_pred + np.percentile(val_residuals, q*100) for q in [0.10, 0.25, 0.75, 0.90]}
-                        rss_val = calculate_erai(y_val_true, val_pred, val_quantile_preds, val_wape_robust)
-                        if rss_val is None: rss_val = 0
-                        
-                        val_wape_score = 1 - (val_wape / 100.0)
-                        ss_res_val = np.sum(val_residuals**2)
-                        ss_tot_val = np.sum((y_val_true - np.mean(y_val_true))**2)
-                        r2_val = 1 - (ss_res_val / ss_tot_val) if ss_tot_val > 1e-9 else 0
-                        r2_score_val = max(0, r2_val)
-                        aas_val = 0.7 * val_wape_score + 0.3 * r2_score_val
-                        comparable_mpi_score = 0.8 * aas_val + 0.2 * rss_val
-
+                # 2. 計算用於「顯示」的最終MPI分數（基於對全部數據的回測）
+                erai_results = perform_internal_benchmarking(data, historical_pred, is_shock_flags)
+                # 使用這個回測分數來計算其在背景分佈中的百分位
+                backtest_mpi_score = calculate_mpi_and_rate(data, historical_pred, historical_wape, erai_results['erai_score'], 100)['mpi_score']
+                
                 # 3. 計算百分位等級
                 mpi_percentile_rank = None
-                if cv_mpi_scores and len(cv_mpi_scores) > 0 and comparable_mpi_score is not None:
-                    mpi_percentile_rank = percentileofscore(cv_mpi_scores, comparable_mpi_score, kind='rank')
+                if cv_mpi_scores and len(cv_mpi_scores) > 0:
+                    mpi_percentile_rank = percentileofscore(cv_mpi_scores, backtest_mpi_score, kind='rank')
 
-                # 4. 計算用於「顯示」的最終MPI分數（基於對全部數據的回測）
-                erai_results = perform_internal_benchmarking(data, historical_pred, is_shock_flags)
-
-                # 5. 結合最終MPI分數和公平的百分位等級進行評級
+                # 4. 結合最終MPI分數和公平的百分位等級進行評級
                 mpi_results = calculate_mpi_and_rate(
                     y_true=data,
                     historical_pred=historical_pred,
