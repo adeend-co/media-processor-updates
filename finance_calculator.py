@@ -2,21 +2,21 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.71                #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.80                #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新 v2.71：注入數值穩定層 (Numerical Stability Layer)，攔截並修正        #
-#             基礎模型在交叉驗證中可能產生的 Inf/NaN，確保 NNLS 等元模型穩定運行。     #
+# 更新 v2.80：升級事件分解為智能插補法(Imputation)，並徹底統一蒙地卡羅        #
+#             與趨勢預測的數據源，解決預測值偏低與風險區間巨大的核心問題。          #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.71"  # Numerical Stability Layer Fix
+SCRIPT_VERSION = "v2.80"  # Imputation & Simulation Correction
 SCRIPT_UPDATE_DATE = "2025-07-24"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -437,55 +437,69 @@ def process_finance_data_multiple(file_paths, colors):
     
     return combined_df, monthly_expenses, "\n".join(warnings_report)
 
-# --- 【★★★ 全新功能：事件導向分解核心 ★★★】 ---
-def detect_and_extract_recurring_events(monthly_expenses_df, colors):
+# --- 【★★★ v2.80 核心升級：智能事件插補法 ★★★】 ---
+def detect_and_impute_recurring_events(monthly_expenses_df, colors):
     """
-    自動偵測並提取週期性的高額日曆事件 (如學費、年費)。
+    自動偵測週期性高額事件，並使用周邊月份的中位數對其進行插補，
+    以產生乾淨的基線序列用於模型訓練。
     """
-    if len(monthly_expenses_df) < 24: # 資料太少，不進行事件偵測
-        return monthly_expenses_df['Real_Amount'], pd.Series(0, index=monthly_expenses_df.index), {}, ""
+    if len(monthly_expenses_df) < 24:
+        # 資料不足，返回原始數據且不進行任何操作
+        original_series = monthly_expenses_df['Real_Amount']
+        return original_series.copy(), pd.Series(0.0, index=original_series.index), {}, ""
 
-    df = monthly_expenses_df.copy()
+    df = monthly_expenses_df.copy().reset_index(drop=True)
     df['Month'] = df['Parsed_Date'].dt.month
     
-    # 定義何謂「高額事件」：超過第90百分位數的支出
     threshold = df['Real_Amount'].quantile(0.90)
-    
-    # 找出所有潛在的高額事件
     potential_events = df[df['Real_Amount'] > threshold]
-    
-    # 計算每個月份發生高額事件的次數
     event_month_counts = potential_events['Month'].value_counts()
-    
-    # 如果一個月份的高額事件發生超過一次 (即在不同年份都發生)，我們就視其為「週期性日曆事件」
     recurring_event_months = event_month_counts[event_month_counts > 1].index.tolist()
     
-    detected_events = {}
+    detected_events_avg = {}
     report_lines = []
-
+    
+    # 初始化基線序列為原始序列
+    baseline_series = df['Real_Amount'].copy()
+    
     if not recurring_event_months:
-        return df['Real_Amount'], pd.Series(0, index=df.index), {}, ""
+        return baseline_series, pd.Series(0.0, index=df.index), {}, ""
 
-    # 計算每個週期性事件月份的平均事件金額
+    # 標記所有非事件月份
+    is_non_event_month = ~df['Month'].isin(recurring_event_months)
+
     for month in recurring_event_months:
+        event_indices = df.index[df['Month'] == month].tolist()
+        
+        # 計算此月份的平均事件金額（僅用於報告）
         avg_event_amount = potential_events[potential_events['Month'] == month]['Real_Amount'].mean()
-        detected_events[month] = avg_event_amount
+        detected_events_avg[month] = avg_event_amount
         report_lines.append(f"    - {colors.YELLOW}偵測到 {month} 月份的週期性高額事件{colors.RESET} (平均金額: {avg_event_amount:,.0f})")
 
-    # 建立事件序列和基線序列
-    events_series = pd.Series(0.0, index=df.index)
-    for month, amount in detected_events.items():
-        # 將事件金額放在對應的月份位置
-        events_series.loc[df['Month'] == month] = amount
-        
-    baseline_series = df['Real_Amount'] - events_series
-    
-    # 確保基線金額不為負 (雖然理論上不應發生)
-    baseline_series[baseline_series < 0] = 0
+        # 對每個事件實例進行插補
+        for idx in event_indices:
+            # 尋找前後最近的非事件月份的數據
+            window = 2
+            local_indices = df.index[
+                (df.index >= idx - window) & (df.index <= idx + window) & (is_non_event_month)
+            ]
+            
+            if not local_indices.empty:
+                imputed_value = df.loc[local_indices, 'Real_Amount'].median()
+            else:
+                # 如果局部找不到，則使用全局非事件月份的中位數
+                imputed_value = df.loc[is_non_event_month, 'Real_Amount'].median()
+            
+            # 在基線序列中用插補值替換原始值
+            baseline_series.at[idx] = imputed_value
+
+    # 事件序列 = 原始序列 - 清理後的基線序列
+    events_series = df['Real_Amount'] - baseline_series
+    events_series[events_series < 0] = 0 # 確保事件金額非負
     
     full_report = "\n".join(report_lines)
     
-    return baseline_series, events_series, detected_events, full_report
+    return baseline_series, events_series, detected_events_avg, full_report
 
 
 # --- 季節性分解函數 (未變更) ---
@@ -500,17 +514,28 @@ def seasonal_decomposition(monthly_expenses):
     
     return deseasonalized, seasonal_indices
 
-# --- 優化蒙地卡羅模擬 (未變更) ---
-def optimized_monte_carlo(monthly_expenses, predicted_value, num_simulations=10000):
-    x = np.arange(len(monthly_expenses))
-    slope, intercept, _, _, _ = linregress(x, monthly_expenses['Real_Amount'])
-    trend = intercept + slope * x
-    residuals = monthly_expenses['Real_Amount'] - trend
+# --- 【v2.80 核心修正】優化蒙地卡羅模擬 ---
+def optimized_monte_carlo(baseline_df, predicted_baseline, num_simulations=10000):
+    """
+    現在基於乾淨的「基線」數據進行模擬，以產生合理的日常波動範圍。
+    """
+    baseline_data = baseline_df['Real_Amount'].values
+    x = np.arange(len(baseline_data))
     
+    # 從基線數據中提取趨勢和殘差
+    slope, intercept, _, _, _ = linregress(x, baseline_data)
+    trend = intercept + slope * x
+    residuals = baseline_data - trend
+    
+    # 如果殘差標準差為0，給予一個小的基礎波動
+    if np.std(residuals) == 0:
+        residuals = np.random.normal(0, np.mean(baseline_data) * 0.05, len(residuals))
+
     simulated = []
     for _ in range(num_simulations):
         sampled_residual = np.random.choice(residuals, size=1)[0]
-        sim_value = predicted_value + sampled_residual
+        # 將波動加到「預測的基線」上
+        sim_value = predicted_baseline + sampled_residual
         simulated.append(sim_value)
     
     p25, p75, p95 = np.percentile(simulated, [25, 75, 95])
@@ -1261,11 +1286,11 @@ def run_monte_carlo_cv(full_df, base_models, n_iterations=100, colors=None):
         if len(train_df) < min_train_size or len(val_df) == 0: continue
         
         # 【修正】在CV中也應用事件分解
-        baseline_train, _, _, _ = detect_and_extract_recurring_events(train_df, colors)
+        baseline_train, _, _, _ = detect_and_impute_recurring_events(train_df, colors)
         train_df_baseline = train_df.copy()
         train_df_baseline['Real_Amount'] = baseline_train
         
-        _, events_val, detected_events_val, _ = detect_and_extract_recurring_events(val_df, colors)
+        _, _, detected_events_val, _ = detect_and_impute_recurring_events(val_df, colors)
         y_val_true = val_df['Real_Amount'].values # 真實值仍是原始總金額
         
         # 1. 在訓練集上運行完整的集成流程（但禁用內部打印）來獲取預測
@@ -2055,16 +2080,16 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
 
     num_unique_months = monthly_expenses['Parsed_Date'].dt.to_period('M').nunique() if not monthly_expenses.empty else 0
 
-    # --- 【核心修正】事件導向分解 ---
+    # --- 【v2.80 核心修正】事件導向分解 ---
     event_decomposition_report = ""
     detected_events = {}
     if not monthly_expenses.empty:
         baseline_amount, events_amount, detected_events, event_decomposition_report = \
-            detect_and_extract_recurring_events(monthly_expenses, colors)
+            detect_and_impute_recurring_events(monthly_expenses, colors)
         
         # 創建一個專門用於建模的 DataFrame
         df_for_modeling = monthly_expenses.copy()
-        # **關鍵**：用平滑後的基線數據替換原始數據，作為模型的訓練目標
+        # **關鍵**：用插補後的基線數據替換原始數據，作為模型的訓練目標
         df_for_modeling['Real_Amount'] = baseline_amount.values
     else:
         df_for_modeling = pd.DataFrame(columns=['Parsed_Date', 'Amount', 'Real_Amount'])
@@ -2181,7 +2206,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 ema = pd.Series(data).ewm(span=num_months, adjust=False).mean()
                 predicted_baseline, historical_pred = ema.iloc[-1], ema.values
 
-        # --- 【核心修正】結果重組 ---
+        # --- 【v2.80 核心修正】結果重組 ---
         predicted_event = detected_events.get(target_month, 0)
         predicted_value = predicted_baseline + predicted_event
         lower = lower_baseline + predicted_event if lower_baseline is not None else None
@@ -2193,8 +2218,11 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         
         if historical_pred_final is not None:
             residuals = y_true_original - historical_pred_final
-            ci_str = f" [下限：{lower:,.2f}，上限：{upper:,.2f}] (95% 信心)" if lower is not None and upper is not None else ""
+            ci_str = f" [下限：{lower:,.2f}，上限：{upper:,.2f}] (95% 信心)"
+            if predicted_event > 0:
+                ci_str += f" (基線 {predicted_baseline:,.0f} + 事件 {predicted_event:,.0f})"
             predicted_expense_str = f"{predicted_value:,.2f}"
+
             historical_mae, historical_rmse = np.mean(np.abs(residuals)), np.sqrt(np.mean(residuals**2))
             
             sum_abs_actual = np.sum(np.abs(y_true_original))
@@ -2249,24 +2277,17 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                     mpi_percentile_rank=mpi_percentile_rank
                 )
 
-    expense_std_dev, volatility_report, color = None, "", colors.WHITE
-    if not monthly_expenses.empty and len(monthly_expenses)>=2:
-        expense_values = monthly_expenses['Real_Amount']
-        expense_std_dev, expense_mean = expense_values.std(), expense_values.mean()
-        if expense_mean > 0:
-            expense_cv = (expense_std_dev/expense_mean)*100
-            if expense_cv < 20: level, color = "低波動", colors.GREEN
-            elif expense_cv < 45: level, color = "中度波動", colors.WHITE
-            elif expense_cv < 70: level, color = "高波動", colors.YELLOW
-            else: level, color = "極高波動", colors.RED
-            volatility_report = f" ({expense_cv:.1f}%, {level})"
-
     p25, p75, p95 = None, None, None
     mc_note = "未使用蒙地卡羅（數據不足24月）。"
     if not monthly_expenses.empty and len(monthly_expenses)>=2:
         if num_unique_months >= 24 and predicted_value is not None:
-            p25, p75, p95 = optimized_monte_carlo(monthly_expenses, predicted_value)
-            mc_note = "已使用優化蒙地卡羅模擬。"
+            # --- 【v2.80 核心修正】統一蒙地卡羅數據源 ---
+            p25_base, p75_base, p95_base = optimized_monte_carlo(df_for_modeling, predicted_baseline)
+            predicted_event_mc = detected_events.get(target_month, 0)
+            p25 = p25_base + predicted_event_mc
+            p75 = p75_base + predicted_event_mc
+            p95 = p95_base + predicted_event_mc
+            mc_note = "已使用基於事件分解的優化蒙地卡羅模擬。"
         else:
             p25, p75, p95 = monte_carlo_dashboard(monthly_expenses['Real_Amount'].values)
 
