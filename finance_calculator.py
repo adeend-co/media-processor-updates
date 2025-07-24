@@ -2,21 +2,21 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.70                #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.71                #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新 v2.70：導入事件導向分解 (Event-Driven Decomposition) 策略，               #
-#             將基線預測與週期性日曆事件分離，根除大型週期性事件造成的殘差規律。        #
+# 更新 v2.71：注入數值穩定層 (Numerical Stability Layer)，攔截並修正        #
+#             基礎模型在交叉驗證中可能產生的 Inf/NaN，確保 NNLS 等元模型穩定運行。     #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.70"  # Event-Driven Decomposition & Residual Fix
+SCRIPT_VERSION = "v2.71"  # Numerical Stability Layer Fix
 SCRIPT_UPDATE_DATE = "2025-07-24"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -422,7 +422,7 @@ def process_finance_data_multiple(file_paths, colors):
                     monthly_expenses.at[idx, 'Real_Amount'] = adjust_to_real_amount(row['Amount'], year, base_year, cpi_values)
                     year_cpi_used[year] = cpi_values.get(year, '無數據')
                 
-                warnings_report.append(f"{colors.GREEN}CPI 基準年份：{cpi_base_year} 年（基於輸入數據最早年份，指数設為 100）。計算到目標年：{base_year} 年。{colors.RESET}")
+                warnings_report.append(f"{colors.GREEN}CPI 基準年份：{cpi_base_year} 年（基於輸入數據最早年份，指數設為 100）。計算到目標年：{base_year} 年。{colors.RESET}")
                 
                 min_year = min(year_range)
                 max_year = max(year_range)
@@ -476,7 +476,7 @@ def detect_and_extract_recurring_events(monthly_expenses_df, colors):
     events_series = pd.Series(0.0, index=df.index)
     for month, amount in detected_events.items():
         # 將事件金額放在對應的月份位置
-        events_series[df['Month'] == month] = amount
+        events_series.loc[df['Month'] == month] = amount
         
     baseline_series = df['Real_Amount'] - events_series
     
@@ -1262,14 +1262,15 @@ def run_monte_carlo_cv(full_df, base_models, n_iterations=100, colors=None):
         
         # 【修正】在CV中也應用事件分解
         baseline_train, _, _, _ = detect_and_extract_recurring_events(train_df, colors)
-        train_df['Real_Amount'] = baseline_train
+        train_df_baseline = train_df.copy()
+        train_df_baseline['Real_Amount'] = baseline_train
         
-        baseline_val, events_val, detected_events_val, _ = detect_and_extract_recurring_events(val_df, colors)
+        _, events_val, detected_events_val, _ = detect_and_extract_recurring_events(val_df, colors)
         y_val_true = val_df['Real_Amount'].values # 真實值仍是原始總金額
         
         # 1. 在訓練集上運行完整的集成流程（但禁用內部打印）來獲取預測
         val_pred_seq, _, _, _, _, _, _ = \
-            run_full_ensemble_pipeline(train_df, steps_ahead=len(val_df), colors=colors, verbose=False)
+            run_full_ensemble_pipeline(train_df_baseline, steps_ahead=len(val_df), colors=colors, verbose=False)
         
         if val_pred_seq is None or len(val_pred_seq) != len(y_val_true):
             continue
@@ -1459,9 +1460,11 @@ def train_predict_holt_winters(y_train, predict_steps, seasonal_period, model_ty
                 trend[i] = beta * (level[i] - level_old) + (1 - beta) * trend_old
                 season[i] = gamma * (y[i] - level[i]) + (1 - gamma) * season[season_idx]
             else: # mul
-                level[i] = alpha * (y[i] / season[season_idx]) + (1 - alpha) * (level_old + trend_old)
+                level_val = y[i] / season[season_idx] if season[season_idx] != 0 else y[i]
+                level[i] = alpha * level_val + (1 - alpha) * (level_old + trend_old)
                 trend[i] = beta * (level[i] - level_old) + (1 - beta) * trend_old
-                season[i] = gamma * (y[i] / level[i]) + (1 - gamma) * season[season_idx]
+                season_val = y[i] / level[i] if level[i] != 0 else y[i]
+                season[i] = gamma * season_val + (1 - gamma) * season[season_idx]
         
         # 計算擬合值和誤差
         if model_type == 'add':
@@ -1497,9 +1500,11 @@ def train_predict_holt_winters(y_train, predict_steps, seasonal_period, model_ty
             trend_final[i] = beta_opt * (level_final[i] - level_old) + (1 - beta_opt) * trend_old
             season_final[i] = gamma_opt * (y[i] - level_final[i]) + (1 - gamma_opt) * season_final[season_idx]
         else: # mul
-            level_final[i] = alpha_opt * (y[i] / season_final[season_idx]) + (1 - alpha_opt) * (level_old + trend_old)
+            level_val = y[i] / season_final[season_idx] if season_final[season_idx] != 0 else y[i]
+            level_final[i] = alpha_opt * level_val + (1 - alpha_opt) * (level_old + trend_old)
             trend_final[i] = beta_opt * (level_final[i] - level_old) + (1 - beta_opt) * trend_old
-            season_final[i] = gamma_opt * (y[i] / level_final[i]) + (1 - gamma_opt) * season_final[season_idx]
+            season_val = y[i] / level_final[i] if level_final[i] != 0 else y[i]
+            season_final[i] = gamma_opt * season_val + (1 - gamma_opt) * season_final[season_idx]
 
     # 預測未來
     predictions = []
@@ -1753,11 +1758,18 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, ense
             model_func = base_models[key]
             # 【修正】根據模型類型傳遞正確的輸入
             if key in ['seasonal_poly', 'seasonal_huber']:
-                 meta_features[val_idx, j] = model_func(X_features_train, y_train, X_features_val)
+                 prediction_result = model_func(X_features_train, y_train, X_features_val)
             elif key in ['seasonal']:
-                 meta_features[val_idx, j] = model_func(df_train, len(x_val))
+                 prediction_result = model_func(df_train, len(x_val))
             else: # 所有其他模型 (des, drift, holt_winters, naives, MAs, medians)
-                 meta_features[val_idx, j] = model_func(y_train, len(x_val))
+                 prediction_result = model_func(y_train, len(x_val))
+
+            # --- 【v2.71 核心修正】注入穩定性層 ---
+            if not np.all(np.isfinite(prediction_result)):
+                safe_fallback = np.median(y_train) if len(y_train) > 0 else 0
+                prediction_result = np.nan_to_num(prediction_result, nan=safe_fallback, posinf=safe_fallback, neginf=safe_fallback)
+            
+            meta_features[val_idx, j] = prediction_result
 
     selected_indices, _ = train_greedy_forward_ensemble(meta_features, data, model_keys, n_iterations=ensemble_size, colors=colors, verbose=verbose)
 
@@ -1782,11 +1794,18 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, ense
         model_func = base_models[key]
         # 【修正】為最終預測傳遞正確的輸入
         if key in ['seasonal_poly', 'seasonal_huber']:
-            final_base_predictions[:, j] = model_func(X_features_full, data, X_features_future)
+            prediction_result = model_func(X_features_full, data, X_features_future)
         elif key in ['seasonal']:
-            final_base_predictions[:, j] = model_func(monthly_expenses_df, steps_ahead)
+            prediction_result = model_func(monthly_expenses_df, steps_ahead)
         else:
-            final_base_predictions[:, j] = model_func(data, steps_ahead)
+            prediction_result = model_func(data, steps_ahead)
+            
+        # --- 【v2.71 核心修正】注入穩定性層 ---
+        if not np.all(np.isfinite(prediction_result)):
+            safe_fallback = np.median(data) if len(data) > 0 else 0
+            prediction_result = np.nan_to_num(prediction_result, nan=safe_fallback, posinf=safe_fallback, neginf=safe_fallback)
+        
+        final_base_predictions[:, j] = prediction_result
     
     final_prediction_sequence = final_base_predictions @ model_weights
     
@@ -2046,9 +2065,9 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         # 創建一個專門用於建模的 DataFrame
         df_for_modeling = monthly_expenses.copy()
         # **關鍵**：用平滑後的基線數據替換原始數據，作為模型的訓練目標
-        df_for_modeling['Real_Amount'] = baseline_amount
+        df_for_modeling['Real_Amount'] = baseline_amount.values
     else:
-        df_for_modeling = monthly_expenses.copy()
+        df_for_modeling = pd.DataFrame(columns=['Parsed_Date', 'Amount', 'Real_Amount'])
 
     seasonal_note = "未使用季節性分解（資料月份不足 24 個月）。"
     analysis_data = None
