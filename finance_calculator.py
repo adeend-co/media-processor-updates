@@ -1609,7 +1609,7 @@ def train_director_with_bootstrap_gfs(X_level1_hist, y_true, model_keys, n_boots
     ensemble_selection_counts = Counter()
     
     if verbose:
-        print_progress_bar(0, n_bootstrap, prefix='模型權重校準進度:', suffix='完成', length=40)
+        print_progress_bar(0, n_bootstrap, prefix='進度:', suffix='完成', length=40)
 
     for i in range(n_bootstrap):
         bootstrap_res = np.random.choice(clean_residuals, size=n_samples, replace=True)
@@ -1622,7 +1622,7 @@ def train_director_with_bootstrap_gfs(X_level1_hist, y_true, model_keys, n_boots
         ensemble_selection_counts.update(selected_indices_for_iter)
         
         if verbose:
-            print_progress_bar(i + 1, n_bootstrap, prefix='模型權重校準進度:', suffix='完成', length=40)
+            print_progress_bar(i + 1, n_bootstrap, prefix='進度:', suffix='完成', length=40)
 
     if verbose:
         print("權重校準完成。")
