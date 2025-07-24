@@ -2,22 +2,21 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.81                #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.62                #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新 v2.81：修正 NameError，調整 expense_std_dev 的計算順序，確保           #
-#             在呼叫預算評估函數前該變數已被定義，恢復腳本正常執行流程。            #
+# 更新 v2.62：徹底修正 P-Rank 與總監融合權重的比較基準，確保公平性與有效性。     #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.81"  # Variable Definition Order Fix
-SCRIPT_UPDATE_DATE = "2025-07-24"
+SCRIPT_VERSION = "v2.62"  # Final P-Rank & Meta-Model Logic Fix
+SCRIPT_UPDATE_DATE = "2025-07-23"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
 # 說明：您可以直接修改這裡的數字，來調整報告中各表格欄位的寬度，以適應您的終端機字體。
@@ -41,19 +40,6 @@ TABLE_CONFIG = {
     }
 }
 
-# --- 【★★★ 新增：可自訂的季節性分析設定 ★★★】 ---
-# 說明：此處設定模型要分析的季節性週期與其複雜度。
-# 'periods': 您想分析的週期長度列表 (例如, [12, 6] 代表年度和學期)。
-# 'k_terms': 每個週期的傅立葉階數 K (K 值越高，擬合的季節性曲線越複雜)。
-SEASONALITY_CONFIG = {
-    'periods': [12, 6],  # 年度週期 (12個月), 學期週期 (6個月)
-    'k_terms': {
-        12: 4,          # 使用 4 對 sin/cos 波來擬合年度模式
-        6: 2            # 使用 2 對 sin/cos 波來擬合學期模式
-    }
-}
-
-
 import sys
 import os
 import subprocess
@@ -64,9 +50,8 @@ import argparse
 import numpy as np
 from scipy.stats import linregress, t
 from scipy.stats import skew, kurtosis, median_abs_deviation, percentileofscore
-from scipy.optimize import nnls, minimize
+from scipy.optimize import nnls
 from collections import deque, Counter
-from functools import partial
 
 # --- 顏色處理類別 ---
 class Colors:
@@ -202,20 +187,6 @@ def normalize_date(date_str):
             pass
     
     return None
-
-# --- 【★★★ 新增：傅立葉特徵生成函數 ★★★】 ---
-def generate_fourier_features(time_index, config):
-    """根據時間索引和設定生成傅立葉特徵。"""
-    features = pd.DataFrame()
-    for p in config['periods']:
-        k_max = config['k_terms'].get(p)
-        if k_max:
-            for k in range(1, k_max + 1):
-                sin_feat = np.sin(2 * np.pi * k * time_index / p)
-                cos_feat = np.cos(2 * np.pi * k * time_index / p)
-                features[f'sin_{k}_{p}'] = sin_feat
-                features[f'cos_{k}_{p}'] = cos_feat
-    return features
 
 # --- 單檔處理函數 (未變更) ---
 def process_finance_data_individual(file_path, colors):
@@ -422,7 +393,7 @@ def process_finance_data_multiple(file_paths, colors):
                     monthly_expenses.at[idx, 'Real_Amount'] = adjust_to_real_amount(row['Amount'], year, base_year, cpi_values)
                     year_cpi_used[year] = cpi_values.get(year, '無數據')
                 
-                warnings_report.append(f"{colors.GREEN}CPI 基準年份：{cpi_base_year} 年（基於輸入數據最早年份，指數設為 100）。計算到目標年：{base_year} 年。{colors.RESET}")
+                warnings_report.append(f"{colors.GREEN}CPI 基準年份：{cpi_base_year} 年（基於輸入數據最早年份，指数設為 100）。計算到目標年：{base_year} 年。{colors.RESET}")
                 
                 min_year = min(year_range)
                 max_year = max(year_range)
@@ -437,71 +408,6 @@ def process_finance_data_multiple(file_paths, colors):
     
     return combined_df, monthly_expenses, "\n".join(warnings_report)
 
-# --- 【★★★ v2.80 核心升級：智能事件插補法 ★★★】 ---
-def detect_and_impute_recurring_events(monthly_expenses_df, colors):
-    """
-    自動偵測週期性高額事件，並使用周邊月份的中位數對其進行插補，
-    以產生乾淨的基線序列用於模型訓練。
-    """
-    if len(monthly_expenses_df) < 24:
-        # 資料不足，返回原始數據且不進行任何操作
-        original_series = monthly_expenses_df['Real_Amount']
-        return original_series.copy(), pd.Series(0.0, index=original_series.index), {}, ""
-
-    df = monthly_expenses_df.copy().reset_index(drop=True)
-    df['Month'] = df['Parsed_Date'].dt.month
-    
-    threshold = df['Real_Amount'].quantile(0.90)
-    potential_events = df[df['Real_Amount'] > threshold]
-    event_month_counts = potential_events['Month'].value_counts()
-    recurring_event_months = event_month_counts[event_month_counts > 1].index.tolist()
-    
-    detected_events_avg = {}
-    report_lines = []
-    
-    # 初始化基線序列為原始序列
-    baseline_series = df['Real_Amount'].copy()
-    
-    if not recurring_event_months:
-        return baseline_series, pd.Series(0.0, index=df.index), {}, ""
-
-    # 標記所有非事件月份
-    is_non_event_month = ~df['Month'].isin(recurring_event_months)
-
-    for month in recurring_event_months:
-        event_indices = df.index[df['Month'] == month].tolist()
-        
-        # 計算此月份的平均事件金額（僅用於報告）
-        avg_event_amount = potential_events[potential_events['Month'] == month]['Real_Amount'].mean()
-        detected_events_avg[month] = avg_event_amount
-        report_lines.append(f"    - {colors.YELLOW}偵測到 {month} 月份的週期性高額事件{colors.RESET} (平均金額: {avg_event_amount:,.0f})")
-
-        # 對每個事件實例進行插補
-        for idx in event_indices:
-            # 尋找前後最近的非事件月份的數據
-            window = 2
-            local_indices = df.index[
-                (df.index >= idx - window) & (df.index <= idx + window) & (is_non_event_month)
-            ]
-            
-            if not local_indices.empty:
-                imputed_value = df.loc[local_indices, 'Real_Amount'].median()
-            else:
-                # 如果局部找不到，則使用全局非事件月份的中位數
-                imputed_value = df.loc[is_non_event_month, 'Real_Amount'].median()
-            
-            # 在基線序列中用插補值替換原始值
-            baseline_series.at[idx] = imputed_value
-
-    # 事件序列 = 原始序列 - 清理後的基線序列
-    events_series = df['Real_Amount'] - baseline_series
-    events_series[events_series < 0] = 0 # 確保事件金額非負
-    
-    full_report = "\n".join(report_lines)
-    
-    return baseline_series, events_series, detected_events_avg, full_report
-
-
 # --- 季節性分解函數 (未變更) ---
 def seasonal_decomposition(monthly_expenses):
     monthly_expenses['Month'] = monthly_expenses['Parsed_Date'].dt.month
@@ -514,28 +420,17 @@ def seasonal_decomposition(monthly_expenses):
     
     return deseasonalized, seasonal_indices
 
-# --- 【v2.80 核心修正】優化蒙地卡羅模擬 ---
-def optimized_monte_carlo(baseline_df, predicted_baseline, num_simulations=10000):
-    """
-    現在基於乾淨的「基線」數據進行模擬，以產生合理的日常波動範圍。
-    """
-    baseline_data = baseline_df['Real_Amount'].values
-    x = np.arange(len(baseline_data))
-    
-    # 從基線數據中提取趨勢和殘差
-    slope, intercept, _, _, _ = linregress(x, baseline_data)
+# --- 優化蒙地卡羅模擬 (未變更) ---
+def optimized_monte_carlo(monthly_expenses, predicted_value, num_simulations=10000):
+    x = np.arange(len(monthly_expenses))
+    slope, intercept, _, _, _ = linregress(x, monthly_expenses['Real_Amount'])
     trend = intercept + slope * x
-    residuals = baseline_data - trend
+    residuals = monthly_expenses['Real_Amount'] - trend
     
-    # 如果殘差標準差為0，給予一個小的基礎波動
-    if np.std(residuals) == 0 and np.mean(baseline_data) > 0:
-        residuals = np.random.normal(0, np.mean(baseline_data) * 0.05, len(residuals))
-
     simulated = []
     for _ in range(num_simulations):
         sampled_residual = np.random.choice(residuals, size=1)[0]
-        # 將波動加到「預測的基線」上
-        sim_value = predicted_baseline + sampled_residual
+        sim_value = predicted_value + sampled_residual
         simulated.append(sim_value)
     
     p25, p75, p95 = np.percentile(simulated, [25, 75, 95])
@@ -1285,27 +1180,18 @@ def run_monte_carlo_cv(full_df, base_models, n_iterations=100, colors=None):
 
         if len(train_df) < min_train_size or len(val_df) == 0: continue
         
-        # 【修正】在CV中也應用事件分解
-        baseline_train, _, _, _ = detect_and_impute_recurring_events(train_df, colors)
-        train_df_baseline = train_df.copy()
-        train_df_baseline['Real_Amount'] = baseline_train
-        
-        _, _, detected_events_val, _ = detect_and_impute_recurring_events(val_df, colors)
-        y_val_true = val_df['Real_Amount'].values # 真實值仍是原始總金額
+        y_train_true = train_df['Real_Amount'].values
+        y_val_true = val_df['Real_Amount'].values
         
         # 1. 在訓練集上運行完整的集成流程（但禁用內部打印）來獲取預測
         val_pred_seq, _, _, _, _, _, _ = \
-            run_full_ensemble_pipeline(train_df_baseline, steps_ahead=len(val_df), colors=colors, verbose=False)
+            run_full_ensemble_pipeline(train_df, steps_ahead=len(val_df), colors=colors, verbose=False)
         
         if val_pred_seq is None or len(val_pred_seq) != len(y_val_true):
             continue
-        
-        # 重組預測
-        val_df['Month'] = val_df['Parsed_Date'].dt.month
-        predicted_events_val = val_df['Month'].map(detected_events_val).fillna(0).values
-        val_pred = np.array(val_pred_seq) + predicted_events_val
             
         # 2. 【核心修正】計算此次迭代「真實」的MPI分數
+        val_pred = np.array(val_pred_seq)
         val_residuals = y_val_true - val_pred
         sum_abs_val_true = np.sum(np.abs(y_val_true))
         val_wape = (np.sum(np.abs(val_residuals)) / sum_abs_val_true * 100) if sum_abs_val_true > 1e-9 else 100.0
@@ -1435,132 +1321,20 @@ def huber_robust_regression(x, y, steps_ahead, t_const=1.345, max_iter=100, tol=
 # --- 模型堆疊集成 (Stacking Ensemble) 總引擎 ---
 
 # Level 0 基礎模型 (Base Models)
-# --- 【修正】此處為真正實作並整合霍特-溫特斯模型與傅立葉特徵的部分 ---
-
-def train_predict_seasonal_naive(y_train, predict_steps, seasonal_period=12):
-    """季節性單純預測法 (Seasonal Naive Method)。"""
-    if len(y_train) < seasonal_period:
-        return np.full(predict_steps, y_train[-1] if len(y_train) > 0 else 0)
-
-    predictions = []
-    for i in range(1, predict_steps + 1):
-        idx = len(y_train) - seasonal_period + ((i - 1) % seasonal_period)
-        predictions.append(y_train[idx])
-    
-    return np.array(predictions)
-
-def train_predict_holt_winters(y_train, predict_steps, seasonal_period, model_type='add'):
+def train_predict_huber(x_train, y_train, x_predict, t_const=1.345, max_iter=100, tol=1e-6):
     """
-    霍特-溫特斯季節性模型 (包含自動參數尋優)。
+    Huber 穩健迴歸 (Huber Robust Regression)。
     """
-    if len(y_train) < 2 * seasonal_period:
-        # 資料不足，退回為季節性單純預測法
-        return train_predict_seasonal_naive(y_train, predict_steps, seasonal_period)
+    if len(x_train) < 2:
+        return np.full(len(x_predict), np.mean(y_train) if len(y_train) > 0 else 0)
 
-    y = np.array(y_train)
-
-    def sse(params):
-        alpha, beta, gamma = params
-        if not (0 <= alpha <= 1 and 0 <= beta <= 1 and 0 <= gamma <= 1):
-            return np.inf
-
-        level = np.zeros_like(y)
-        trend = np.zeros_like(y)
-        season = np.zeros_like(y)
-        
-        # 初始化
-        level[0] = y[0]
-        trend[0] = (y[seasonal_period] - y[0]) / seasonal_period if len(y) > seasonal_period else 0
-        
-        initial_seasonals = [y[i] - np.mean(y[:seasonal_period]) for i in range(seasonal_period)]
-        season[:seasonal_period] = initial_seasonals
-
-        # 迭代計算
-        for i in range(1, len(y)):
-            level_old, trend_old = level[i-1], trend[i-1]
-            season_idx = i - seasonal_period
-            
-            if model_type == 'add':
-                level[i] = alpha * (y[i] - season[season_idx]) + (1 - alpha) * (level_old + trend_old)
-                trend[i] = beta * (level[i] - level_old) + (1 - beta) * trend_old
-                season[i] = gamma * (y[i] - level[i]) + (1 - gamma) * season[season_idx]
-            else: # mul
-                level_val = y[i] / season[season_idx] if season[season_idx] != 0 else y[i]
-                level[i] = alpha * level_val + (1 - alpha) * (level_old + trend_old)
-                trend[i] = beta * (level[i] - level_old) + (1 - beta) * trend_old
-                season_val = y[i] / level[i] if level[i] != 0 else y[i]
-                season[i] = gamma * season_val + (1 - gamma) * season[season_idx]
-        
-        # 計算擬合值和誤差
-        if model_type == 'add':
-            fitted = level + trend + season
-        else:
-            fitted = (level + trend) * season
-
-        return np.sum((y - fitted)**2)
-
-    # 尋找最佳參數
-    initial_params = [0.3, 0.1, 0.1]
-    bounds = [(0, 1), (0, 1), (0, 1)]
-    result = minimize(sse, initial_params, bounds=bounds, method='L-BFGS-B')
-    alpha_opt, beta_opt, gamma_opt = result.x
-
-    # 使用最佳參數進行預測
-    level_final = np.zeros(len(y) + predict_steps)
-    trend_final = np.zeros(len(y) + predict_steps)
-    season_final = np.zeros(len(y) + predict_steps)
-
-    # 重新初始化
-    level_final[0] = y[0]
-    trend_final[0] = (y[seasonal_period] - y[0]) / seasonal_period if len(y) > seasonal_period else 0
-    initial_seasonals_final = [y[i] - np.mean(y[:seasonal_period]) for i in range(seasonal_period)]
-    season_final[:seasonal_period] = initial_seasonals_final
-
-    # 重新迭代計算歷史數據
-    for i in range(1, len(y)):
-        level_old, trend_old = level_final[i-1], trend_final[i-1]
-        season_idx = i - seasonal_period
-        if model_type == 'add':
-            level_final[i] = alpha_opt * (y[i] - season_final[season_idx]) + (1 - alpha_opt) * (level_old + trend_old)
-            trend_final[i] = beta_opt * (level_final[i] - level_old) + (1 - beta_opt) * trend_old
-            season_final[i] = gamma_opt * (y[i] - level_final[i]) + (1 - gamma_opt) * season_final[season_idx]
-        else: # mul
-            level_val = y[i] / season_final[season_idx] if season_final[season_idx] != 0 else y[i]
-            level_final[i] = alpha_opt * level_val + (1 - alpha_opt) * (level_old + trend_old)
-            trend_final[i] = beta_opt * (level_final[i] - level_old) + (1 - beta_opt) * trend_old
-            season_val = y[i] / level_final[i] if level_final[i] != 0 else y[i]
-            season_final[i] = gamma_opt * season_val + (1 - gamma_opt) * season_final[season_idx]
-
-    # 預測未來
-    predictions = []
-    for i in range(len(y), len(y) + predict_steps):
-        h = i - len(y) + 1
-        season_idx = i - seasonal_period
-        
-        if model_type == 'add':
-            pred = level_final[len(y)-1] + h * trend_final[len(y)-1] + season_final[season_idx]
-        else: # mul
-            pred = (level_final[len(y)-1] + h * trend_final[len(y)-1]) * season_final[season_idx]
-        predictions.append(pred)
-        
-    return np.array(predictions)
-
-def train_predict_huber(X_train, y_train, X_predict, t_const=1.345, max_iter=100, tol=1e-6):
-    """
-    Huber 穩健迴歸 (現已升級為可處理傅立葉特徵的多元穩健迴歸)。
-    """
-    if len(y_train) < 2:
-        return np.full(len(X_predict), np.mean(y_train) if len(y_train) > 0 else 0)
-
-    X_train_b = np.c_[np.ones(len(y_train)), X_train]
+    X_train_b = np.c_[np.ones(len(x_train)), x_train]
     
     try:
-        # 初始係數來自普通最小平方法
-        beta = np.linalg.lstsq(X_train_b, y_train, rcond=None)[0]
-    except (np.linalg.LinAlgError, ValueError):
-        # 如果失敗，使用一個基礎的猜測
-        beta = np.zeros(X_train_b.shape[1])
-        if len(y_train) > 0: beta[0] = np.mean(y_train)
+        slope, intercept, _, _, _ = linregress(x_train, y_train)
+        beta = np.array([intercept, slope])
+    except ValueError:
+        beta = np.array([np.mean(y_train), 0])
 
     for _ in range(max_iter):
         beta_old = beta.copy()
@@ -1584,26 +1358,15 @@ def train_predict_huber(X_train, y_train, X_predict, t_const=1.345, max_iter=100
         if np.sum(np.abs(beta - beta_old)) < tol:
             break
             
-    X_predict_b = np.c_[np.ones(len(X_predict)), X_predict]
+    X_predict_b = np.c_[np.ones(len(x_predict)), x_predict]
     return X_predict_b @ beta
 
-def train_predict_poly(X_train, y_train, X_predict, degree=2):
-    """多項式迴歸 (現已升級為可處理傅立葉特徵的多元線性迴歸)。"""
-    if len(y_train) < X_train.shape[1] + 1:
-        return np.full(len(X_predict), np.mean(y_train) if len(y_train) > 0 else 0)
-
-    # 為特徵矩陣加上截距項
-    X_train_b = np.c_[np.ones(len(y_train)), X_train]
-    X_predict_b = np.c_[np.ones(len(X_predict)), X_predict]
-    
-    try:
-        # 使用最小平方法求解係數
-        coeffs = np.linalg.lstsq(X_train_b, y_train, rcond=None)[0]
-    except np.linalg.LinAlgError:
-        # 如果求解失敗，退回為平均值
-        return np.full(len(X_predict), np.mean(y_train) if len(y_train) > 0 else 0)
-    
-    return X_predict_b @ coeffs
+def train_predict_poly(x_train, y_train, x_predict, degree=2):
+    """多項式迴歸 (Polynomial Regression)。"""
+    if len(x_train) < degree + 1: return np.full(len(x_predict), np.mean(y_train) if len(y_train) > 0 else 0)
+    coeffs = np.polyfit(x_train, y_train, degree)
+    p = np.poly1d(coeffs)
+    return p(x_predict)
 
 def train_predict_des(y_train, predict_steps, alpha=0.5, beta=0.5):
     """霍爾特線性趨勢模型 (Holt's Linear Trend Method)。"""
@@ -1674,6 +1437,18 @@ def train_predict_drift(y_train, predict_steps):
     predictions = [last_value + (i * drift) for i in range(1, predict_steps + 1)]
     return np.array(predictions)
 
+def train_predict_seasonal_naive(y_train, predict_steps, seasonal_period=12):
+    """季節性單純預測法 (Seasonal Naive Method)。"""
+    if len(y_train) < seasonal_period:
+        return np.full(predict_steps, y_train[-1] if len(y_train) > 0 else 0)
+
+    predictions = []
+    for i in range(1, predict_steps + 1):
+        idx = len(y_train) - seasonal_period + ((i - 1) % seasonal_period)
+        predictions.append(y_train[idx])
+    
+    return np.array(predictions)
+
 def train_predict_moving_average(y_train, predict_steps, window_size=6):
     """移動平均預測 (Moving Average Forecast)。"""
     if len(y_train) == 0:
@@ -1740,29 +1515,14 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, ense
     x = np.arange(1, len(data) + 1)
     n_samples = len(data)
     
-    # 【修正】更新基礎模型團隊，加入新的季節性專家
     base_models = {
-        'seasonal_poly': train_predict_poly,
-        'seasonal_huber': train_predict_huber,
-        'des': train_predict_des,
-        'drift': train_predict_drift,
-        'seasonal': train_predict_seasonal,
-        'holt_winters_annual': partial(train_predict_holt_winters, seasonal_period=12, model_type='add'),
-        'holt_winters_semester': partial(train_predict_holt_winters, seasonal_period=6, model_type='add'),
-        'seasonal_naive': train_predict_seasonal_naive,
-        'naive': train_predict_naive,
-        'moving_average': train_predict_moving_average,
-        'rolling_median': train_predict_rolling_median,
-        'global_median': train_predict_global_median,
+        'poly': train_predict_poly, 'huber': train_predict_huber, 'des': train_predict_des, 'drift': train_predict_drift,
+        'seasonal': train_predict_seasonal, 'seasonal_naive': train_predict_seasonal_naive, 'naive': train_predict_naive,
+        'moving_average': train_predict_moving_average, 'rolling_median': train_predict_rolling_median, 'global_median': train_predict_global_median,
     }
+    
     model_keys = list(base_models.keys())
     
-    # 【修正】為整個數據集生成傅立葉特徵
-    time_index_full = np.arange(1, n_samples + 1)
-    fourier_features_full = generate_fourier_features(time_index_full, SEASONALITY_CONFIG)
-    # 將趨勢項（時間索引）和傅立葉特徵結合成一個特徵矩陣
-    X_features_full = pd.concat([pd.Series(x, name='trend'), fourier_features_full], axis=1).values
-
     meta_features = np.zeros((n_samples, len(base_models)))
     fold_indices = np.array_split(np.arange(n_samples), n_folds)
     
@@ -1772,29 +1532,17 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, ense
         
         if len(train_idx) == 0: continue
 
-        y_train, df_train = data[train_idx], monthly_expenses_df.iloc[train_idx]
+        x_train, y_train, df_train = x[train_idx], data[train_idx], monthly_expenses_df.iloc[train_idx]
         x_val = x[val_idx]
-        
-        # 【修正】為訓練集和驗證集準備對應的特徵矩陣
-        X_features_train = X_features_full[train_idx]
-        X_features_val = X_features_full[val_idx]
         
         for j, key in enumerate(model_keys):
             model_func = base_models[key]
-            # 【修正】根據模型類型傳遞正確的輸入
-            if key in ['seasonal_poly', 'seasonal_huber']:
-                 prediction_result = model_func(X_features_train, y_train, X_features_val)
-            elif key in ['seasonal']:
-                 prediction_result = model_func(df_train, len(x_val))
-            else: # 所有其他模型 (des, drift, holt_winters, naives, MAs, medians)
-                 prediction_result = model_func(y_train, len(x_val))
-
-            # --- 【v2.71 核心修正】注入穩定性層 ---
-            if not np.all(np.isfinite(prediction_result)):
-                safe_fallback = np.median(y_train) if len(y_train) > 0 else 0
-                prediction_result = np.nan_to_num(prediction_result, nan=safe_fallback, posinf=safe_fallback, neginf=safe_fallback)
-            
-            meta_features[val_idx, j] = prediction_result
+            if key in ['seasonal']:
+                 meta_features[val_idx, j] = model_func(df_train, len(x_val))
+            elif key in ['poly', 'huber']:
+                 meta_features[val_idx, j] = model_func(x_train, y_train, x_val)
+            else:
+                 meta_features[val_idx, j] = model_func(y_train, len(x_val))
 
     selected_indices, _ = train_greedy_forward_ensemble(meta_features, data, model_keys, n_iterations=ensemble_size, colors=colors, verbose=verbose)
 
@@ -1807,30 +1555,17 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, ense
     else:
         model_weights = np.full(len(base_models), 1 / len(base_models))
 
-    # 【修正】為未來預測生成特徵矩陣
     x_future = np.arange(n_samples + 1, n_samples + steps_ahead + 1)
-    time_index_future = np.arange(n_samples + 1, n_samples + steps_ahead + 1)
-    fourier_features_future = generate_fourier_features(time_index_future, SEASONALITY_CONFIG)
-    X_features_future = pd.concat([pd.Series(x_future, name='trend'), fourier_features_future], axis=1).values
-    
     final_base_predictions = np.zeros((steps_ahead, len(base_models)))
 
     for j, key in enumerate(model_keys):
         model_func = base_models[key]
-        # 【修正】為最終預測傳遞正確的輸入
-        if key in ['seasonal_poly', 'seasonal_huber']:
-            prediction_result = model_func(X_features_full, data, X_features_future)
-        elif key in ['seasonal']:
-            prediction_result = model_func(monthly_expenses_df, steps_ahead)
+        if key in ['seasonal']:
+            final_base_predictions[:, j] = model_func(monthly_expenses_df, steps_ahead)
+        elif key in ['poly', 'huber']:
+            final_base_predictions[:, j] = model_func(x, data, x_future)
         else:
-            prediction_result = model_func(data, steps_ahead)
-            
-        # --- 【v2.71 核心修正】注入穩定性層 ---
-        if not np.all(np.isfinite(prediction_result)):
-            safe_fallback = np.median(data) if len(data) > 0 else 0
-            prediction_result = np.nan_to_num(prediction_result, nan=safe_fallback, posinf=safe_fallback, neginf=safe_fallback)
-        
-        final_base_predictions[:, j] = prediction_result
+            final_base_predictions[:, j] = model_func(data, steps_ahead)
     
     final_prediction_sequence = final_base_predictions @ model_weights
     
@@ -1876,7 +1611,7 @@ def train_meta_model_with_bootstrap_gfs(X_level2_hist, y_true, n_bootstrap=100, 
     ensemble_selection_counts = Counter()
     
     if verbose:
-        print_progress_bar(0, n_bootstrap, prefix='權重校準進度:', suffix='完成', length=40)
+        print_progress_bar(0, n_bootstrap, prefix='進度:', suffix='完成', length=40)
 
     for i in range(n_bootstrap):
         bootstrap_res = np.random.choice(clean_residuals, size=n_samples, replace=True)
@@ -1890,7 +1625,7 @@ def train_meta_model_with_bootstrap_gfs(X_level2_hist, y_true, n_bootstrap=100, 
         ensemble_selection_counts.update(selected_indices_for_iter)
         
         if verbose:
-            print_progress_bar(i + 1, n_bootstrap, prefix='權重校準進度:', suffix='完成', length=40)
+            print_progress_bar(i + 1, n_bootstrap, prefix='進度:', suffix='完成', length=40)
 
     if verbose:
         print("權重校準完成。")
@@ -1915,20 +1650,10 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
     x = np.arange(1, len(data) + 1)
     num_months = len(data)
 
-    # 【修正】定義包含新模型的團隊
     base_models = {
-        'seasonal_poly': train_predict_poly,
-        'seasonal_huber': train_predict_huber,
-        'des': train_predict_des,
-        'drift': train_predict_drift,
-        'seasonal': train_predict_seasonal,
-        'holt_winters_annual': partial(train_predict_holt_winters, seasonal_period=12, model_type='add'),
-        'holt_winters_semester': partial(train_predict_holt_winters, seasonal_period=6, model_type='add'),
-        'seasonal_naive': train_predict_seasonal_naive,
-        'naive': train_predict_naive,
-        'moving_average': train_predict_moving_average,
-        'rolling_median': train_predict_rolling_median,
-        'global_median': train_predict_global_median,
+        'poly': train_predict_poly, 'huber': train_predict_huber, 'des': train_predict_des, 'drift': train_predict_drift,
+        'seasonal': train_predict_seasonal, 'seasonal_naive': train_predict_seasonal_naive, 'naive': train_predict_naive,
+        'moving_average': train_predict_moving_average, 'rolling_median': train_predict_rolling_median, 'global_median': train_predict_global_median,
     }
     model_keys = list(base_models.keys())
     
@@ -1994,25 +1719,15 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
     if np.sum(nnls_weights) > 1e-9: nnls_weights /= np.sum(nnls_weights)
     else: nnls_weights.fill(1/len(base_models))
     
-    # 【修正】為未來預測生成特徵矩陣
+    # 計算未來基礎模型預測
     x_future = np.arange(num_months + 1, num_months + steps_ahead + 1)
-    time_index_future = np.arange(num_months + 1, num_months + steps_ahead + 1)
-    fourier_features_future = generate_fourier_features(time_index_future, SEASONALITY_CONFIG)
-    X_features_future = pd.concat([pd.Series(x_future, name='trend'), fourier_features_future], axis=1).values
-    
-    # 【修正】為完整歷史數據生成特徵矩陣
-    time_index_full = np.arange(1, num_months + 1)
-    fourier_features_full = generate_fourier_features(time_index_full, SEASONALITY_CONFIG)
-    X_features_full = pd.concat([pd.Series(x, name='trend'), fourier_features_full], axis=1).values
-    
     future_base_predictions = np.zeros((steps_ahead, len(base_models)))
     for j, key in enumerate(model_keys):
         model_func = base_models[key]
-        # 【修正】根據模型類型傳遞正確的輸入
-        if key in ['seasonal_poly', 'seasonal_huber']:
-            future_base_predictions[:, j] = model_func(X_features_full, data, X_features_future)
-        elif key in ['seasonal']:
+        if key in ['seasonal']:
             future_base_predictions[:, j] = model_func(monthly_expenses_df, steps_ahead)
+        elif key in ['poly', 'huber']:
+            future_base_predictions[:, j] = model_func(x, data, x_future)
         else:
             future_base_predictions[:, j] = model_func(data, steps_ahead)
 
@@ -2031,14 +1746,12 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
     learning_rate = 0.1
     historical_pred_final = historical_pred_fused.copy()
     future_pred_final_seq = future_pred_fused_seq.copy()
-    
-    # 使用帶有傅立葉特徵的 Huber 模型進行殘差擬合
-    weak_model_func = base_models['seasonal_huber']
+    weak_model_func = base_models['huber']
 
     for _ in range(T):
         residuals_boost = data - historical_pred_final
-        res_pred_hist = weak_model_func(X_features_full, residuals_boost, X_features_full)
-        res_pred_future_seq = weak_model_func(X_features_full, residuals_boost, X_features_future)
+        res_pred_hist = weak_model_func(x, residuals_boost, x)
+        res_pred_future_seq = weak_model_func(x, residuals_boost, x_future)
         historical_pred_final += learning_rate * res_pred_hist
         future_pred_final_seq += learning_rate * res_pred_future_seq
 
@@ -2066,7 +1779,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
 
     master_df, monthly_expenses, warnings_report = process_finance_data_multiple(file_paths, colors)
 
-    if monthly_expenses is None or monthly_expenses.empty:
+    if monthly_expenses is None:
         if master_df is None:
             print(f"\n{colors.RED}資料處理失敗：{warnings_report}{colors.RESET}\n")
             return
@@ -2080,28 +1793,16 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
 
     num_unique_months = monthly_expenses['Parsed_Date'].dt.to_period('M').nunique() if not monthly_expenses.empty else 0
 
-    # --- 【v2.80 核心修正】事件導向分解 ---
-    event_decomposition_report = ""
-    detected_events = {}
-    if not monthly_expenses.empty:
-        baseline_amount, events_amount, detected_events, event_decomposition_report = \
-            detect_and_impute_recurring_events(monthly_expenses, colors)
-        
-        # 創建一個專門用於建模的 DataFrame
-        df_for_modeling = monthly_expenses.copy()
-        # **關鍵**：用插補後的基線數據替換原始數據，作為模型的訓練目標
-        df_for_modeling['Real_Amount'] = baseline_amount.values
-    else:
-        df_for_modeling = pd.DataFrame(columns=['Parsed_Date', 'Amount', 'Real_Amount'])
-
     seasonal_note = "未使用季節性分解（資料月份不足 24 個月）。"
     analysis_data = None
-    if not df_for_modeling.empty:
+    df_for_seasonal_model = None
+    if not monthly_expenses.empty:
         if num_unique_months >= 24:
-            analysis_data = df_for_modeling['Real_Amount'].values
+            analysis_data = monthly_expenses['Real_Amount'].values
+            df_for_seasonal_model = monthly_expenses.copy() 
             seasonal_note = "集成模型已內建季節性分析。"
         else:
-            analysis_data = df_for_modeling['Real_Amount'].values
+            analysis_data = monthly_expenses['Real_Amount'].values
 
     total_income, total_expense, total_real_expense = 0, 0, 0
     is_wide_format_expense_only = (master_df is None and not monthly_expenses.empty)
@@ -2123,19 +1824,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     if current_month == 12: target_month, target_year = 1, current_year + 1
     else: target_month, target_year = current_month + 1, current_year
     target_month_str = f"{target_year}-{target_month:02d}"
-    
-    # --- 【v2.81 核心修正】將 expense_std_dev 的計算提前 ---
-    expense_std_dev, volatility_report, color = None, "", colors.WHITE
-    if not monthly_expenses.empty and len(monthly_expenses)>=2:
-        expense_values = monthly_expenses['Real_Amount']
-        expense_std_dev, expense_mean = expense_values.std(), expense_values.mean()
-        if expense_mean > 0:
-            expense_cv = (expense_std_dev/expense_mean)*100
-            if expense_cv < 20: level, color = "低波動", colors.GREEN
-            elif expense_cv < 45: level, color = "中度波動", colors.WHITE
-            elif expense_cv < 70: level, color = "高波動", colors.YELLOW
-            else: level, color = "極高波動", colors.RED
-            volatility_report = f" ({expense_cv:.1f}%, {level})"
 
     steps_ahead, step_warning = 1, ""
     if not monthly_expenses.empty:
@@ -2165,26 +1853,28 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
 
     if analysis_data is not None and len(analysis_data) >= 2:
         num_months = len(analysis_data)
-        data = analysis_data # `data` is now baseline data if decomposition happened
-        x = np.arange(1, num_months + 1)
-        
-        predicted_baseline = None
-        lower_baseline, upper_baseline = None, None
+        data, x = analysis_data, np.arange(1, num_months + 1)
 
+        base_models = {
+            'poly': train_predict_poly, 'huber': train_predict_huber, 'des': train_predict_des, 'drift': train_predict_drift,
+            'seasonal': train_predict_seasonal, 'seasonal_naive': train_predict_seasonal_naive, 'naive': train_predict_naive,
+            'moving_average': train_predict_moving_average, 'rolling_median': train_predict_rolling_median, 'global_median': train_predict_global_median,
+        }
+        
         if num_months >= 24:
-            method_used = " (基於事件分解 + 混合集成法)"
+            method_used = " (基於三層式混合集成法 - 自舉法校準)"
             
             future_pred_final_seq, historical_pred, effective_base_weights, weights_level2_report, lower_seq, upper_seq, _ = \
-                run_full_ensemble_pipeline(df_for_modeling, steps_ahead, colors, verbose=True)
+                run_full_ensemble_pipeline(df_for_seasonal_model, steps_ahead, colors, verbose=True)
 
-            predicted_baseline = future_pred_final_seq[-1]
-            lower_baseline = lower_seq[-1] if lower_seq is not None else None
-            upper_baseline = upper_seq[-1] if upper_seq is not None else None
+            predicted_value = future_pred_final_seq[-1]
+            lower = lower_seq[-1] if lower_seq is not None else None
+            upper = upper_seq[-1] if upper_seq is not None else None
             
             report_parts_meta = [f"{name}({weight:.1%})" for name, weight in weights_level2_report.items() if weight > 0.001]
             meta_model_weights_report = f"  - 元模型融合策略: {', '.join(report_parts_meta)}"
             
-            model_names_base = ["季節性多項式", "季節性穩健趨勢", "指數平滑", "漂移", "季節分解", "霍特-溫特斯(年)", "霍特-溫特斯(學期)", "季節模仿", "單純", "移動平均", "滾動中位", "全局中位"]
+            model_names_base = ["多項式", "穩健趨勢", "指數平滑", "漂移", "季節分解", "季節模仿", "單純", "移動平均", "滾動中位", "全局中位"]
             sorted_parts = sorted(zip(effective_base_weights, model_names_base), reverse=True)
             report_parts_base_sorted = [f"{name}({weight:.1%})" for weight, name in sorted_parts if weight > 0.001]
             chunk_size = 3
@@ -2196,66 +1886,53 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         elif 18 <= num_months < 24:
             method_used = " (基於穩健迴歸IRLS-Huber)"
             pred_seq, historical_pred, _, lower_seq, upper_seq = huber_robust_regression(x, data, steps_ahead)
-            predicted_baseline = pred_seq[-1]
-            lower_baseline = lower_seq[-1] if lower_seq is not None else None
-            upper_baseline = upper_seq[-1] if upper_seq is not None else None
+            predicted_value = pred_seq[-1]
+            lower = lower_seq[-1] if lower_seq is not None else None
+            upper = upper_seq[-1] if upper_seq is not None else None
         else:
             method_used = " (基於直接-遞歸混合)"
             model_logic = 'poly' if num_months >= 12 else 'linear' if num_months >= 6 else 'ema'
             if model_logic == 'poly':
-                predicted_baseline, lower_baseline, upper_baseline = polynomial_regression_with_ci(x, data, 2, num_months + steps_ahead)
+                predicted_value, lower, upper = polynomial_regression_with_ci(x, data, 2, num_months + steps_ahead)
                 historical_pred = np.poly1d(np.polyfit(x, data, 2))(x)
             elif model_logic == 'linear':
                 slope, intercept, _, _, _ = linregress(x, data)
-                predicted_baseline = intercept + slope * (num_months + steps_ahead)
+                predicted_value = intercept + slope * (num_months + steps_ahead)
                 historical_pred = intercept + slope * x
                 n, x_mean, ssx = len(x), np.mean(x), np.sum((x-x_mean)**2)
                 if n > 2:
                     mse = np.sum((data-historical_pred)**2)/(n-2)
                     se = np.sqrt(mse * (1 + 1/n + ((num_months+steps_ahead)-x_mean)**2/ssx))
                     t_val = t.ppf(0.975, n-2)
-                    lower_baseline, upper_baseline = predicted_baseline - t_val*se, predicted_baseline + t_val*se
+                    lower, upper = predicted_value - t_val*se, predicted_value + t_val*se
             elif model_logic == 'ema':
                 ema = pd.Series(data).ewm(span=num_months, adjust=False).mean()
-                predicted_baseline, historical_pred = ema.iloc[-1], ema.values
-
-        # --- 【v2.80 核心修正】結果重組 ---
-        predicted_event = detected_events.get(target_month, 0)
-        predicted_value = predicted_baseline + predicted_event
-        lower = lower_baseline + predicted_event if lower_baseline is not None else None
-        upper = upper_baseline + predicted_event if upper_baseline is not None else None
-        
-        y_true_original = monthly_expenses['Real_Amount'].values
-        historical_pred_events = events_amount.values
-        historical_pred_final = historical_pred + historical_pred_events
-        
-        if historical_pred_final is not None:
-            residuals = y_true_original - historical_pred_final
-            ci_str = f" [下限：{lower:,.2f}，上限：{upper:,.2f}] (95% 信心)"
-            if predicted_event > 0:
-                ci_str += f" (基線 {predicted_baseline:,.0f} + 事件 {predicted_event:,.0f})"
+                predicted_value, historical_pred = ema.iloc[-1], ema.values
+            
+        if historical_pred is not None:
+            residuals = data - historical_pred
+            ci_str = f" [下限：{lower:,.2f}，上限：{upper:,.2f}] (95% 信心)" if lower is not None and upper is not None else ""
             predicted_expense_str = f"{predicted_value:,.2f}"
-
             historical_mae, historical_rmse = np.mean(np.abs(residuals)), np.sqrt(np.mean(residuals**2))
             
-            sum_abs_actual = np.sum(np.abs(y_true_original))
+            sum_abs_actual = np.sum(np.abs(data))
             historical_wape = (np.sum(np.abs(residuals)) / sum_abs_actual * 100) if sum_abs_actual > 1e-9 else 100.0
             
-            if len(y_true_original) > 1:
-                mae_naive = np.mean(np.abs(y_true_original[1:] - y_true_original[:-1]))
+            if len(data) > 1:
+                mae_naive = np.mean(np.abs(data[1:] - data[:-1]))
                 historical_mase = (historical_mae/mae_naive) if mae_naive and mae_naive>0 else None
             else:
                 historical_mase = None
 
             res_quantiles = np.percentile(residuals, [q * 100 for q in quantiles])
             for i, q in enumerate(quantiles):
-                quantile_preds[q] = historical_pred_final + res_quantiles[i]
+                quantile_preds[q] = historical_pred + res_quantiles[i]
                 
             if num_months >= 12: 
-                anomaly_info = calculate_anomaly_scores(y_true_original)
+                anomaly_info = calculate_anomaly_scores(data)
                 is_shock_flags = anomaly_info['Is_Shock'].values
                 residuals_clean = residuals[~is_shock_flags]
-                data_clean = y_true_original[~is_shock_flags]
+                data_clean = data[~is_shock_flags]
                 if len(residuals_clean) > 0:
                     historical_rmse_robust = np.sqrt(np.mean(residuals_clean**2))
                 
@@ -2264,49 +1941,47 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                     historical_wape_robust = (np.sum(np.abs(residuals_clean)) / sum_abs_clean) * 100
             
             if num_months >= 24:
-                base_models_cv = {
-                    'seasonal_poly': train_predict_poly, 'seasonal_huber': train_predict_huber, 'des': train_predict_des,
-                    'drift': train_predict_drift, 'seasonal': train_predict_seasonal,
-                    'holt_winters_annual': partial(train_predict_holt_winters, seasonal_period=12, model_type='add'),
-                    'holt_winters_semester': partial(train_predict_holt_winters, seasonal_period=6, model_type='add'),
-                    'seasonal_naive': train_predict_seasonal_naive, 'naive': train_predict_naive,
-                    'moving_average': train_predict_moving_average, 'rolling_median': train_predict_rolling_median,
-                    'global_median': train_predict_global_median,
-                }
-                _, cv_mpi_scores = run_monte_carlo_cv(monthly_expenses, base_models_cv, n_iterations=100, colors=colors)
+                _, cv_mpi_scores = run_monte_carlo_cv(df_for_seasonal_model, base_models, n_iterations=100, colors=colors)
 
-                erai_results = perform_internal_benchmarking(y_true_original, historical_pred_final, is_shock_flags)
+                erai_results = perform_internal_benchmarking(data, historical_pred, is_shock_flags)
                 
-                backtest_mpi_score = calculate_mpi_and_rate(y_true_original, historical_pred_final, historical_wape, erai_results['erai_score'], 100)['mpi_score']
+                backtest_mpi_score = calculate_mpi_and_rate(data, historical_pred, historical_wape, erai_results['erai_score'], 100)['mpi_score']
                 mpi_percentile_rank = None
                 if cv_mpi_scores and len(cv_mpi_scores) > 0:
                     mpi_percentile_rank = percentileofscore(cv_mpi_scores, backtest_mpi_score, kind='rank')
 
                 mpi_results = calculate_mpi_and_rate(
-                    y_true=y_true_original,
-                    historical_pred=historical_pred_final,
+                    y_true=data,
+                    historical_pred=historical_pred,
                     global_wape=historical_wape,
                     erai_score=erai_results['erai_score'],
                     mpi_percentile_rank=mpi_percentile_rank
                 )
 
+    expense_std_dev, volatility_report, color = None, "", colors.WHITE
+    if not monthly_expenses.empty and len(monthly_expenses)>=2:
+        expense_values = monthly_expenses['Real_Amount']
+        expense_std_dev, expense_mean = expense_values.std(), expense_values.mean()
+        if expense_mean > 0:
+            expense_cv = (expense_std_dev/expense_mean)*100
+            if expense_cv < 20: level, color = "低波動", colors.GREEN
+            elif expense_cv < 45: level, color = "中度波動", colors.WHITE
+            elif expense_cv < 70: level, color = "高波動", colors.YELLOW
+            else: level, color = "極高波動", colors.RED
+            volatility_report = f" ({expense_cv:.1f}%, {level})"
+
     p25, p75, p95 = None, None, None
     mc_note = "未使用蒙地卡羅（數據不足24月）。"
     if not monthly_expenses.empty and len(monthly_expenses)>=2:
         if num_unique_months >= 24 and predicted_value is not None:
-            # --- 【v2.80 核心修正】統一蒙地卡羅數據源 ---
-            p25_base, p75_base, p95_base = optimized_monte_carlo(df_for_modeling, predicted_baseline)
-            predicted_event_mc = detected_events.get(target_month, 0)
-            p25 = p25_base + predicted_event_mc
-            p75 = p75_base + predicted_event_mc
-            p95 = p95_base + predicted_event_mc
-            mc_note = "已使用基於事件分解的優化蒙地卡羅模擬。"
+            p25, p75, p95 = optimized_monte_carlo(monthly_expenses, predicted_value)
+            mc_note = "已使用優化蒙地卡羅模擬。"
         else:
             p25, p75, p95 = monte_carlo_dashboard(monthly_expenses['Real_Amount'].values)
 
     calibration_results, acf_results, quantile_spread = {}, {}, 0.0
     if residuals is not None and len(residuals)>=2:
-        calibration_results = compute_calibration_results(y_true_original, quantile_preds, quantiles)
+        calibration_results = compute_calibration_results(data, quantile_preds, quantiles)
         acf_results = compute_acf_results(residuals, num_months)
         quantile_spread = compute_quantile_spread(p25, p75, predicted_value)
 
@@ -2314,7 +1989,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
 
     diagnostic_report = ""
     if residuals is not None and len(residuals)>=2:
-        diagnostic_report = f"{quantile_loss_report(y_true_original, quantile_preds, quantiles, colors)}\n\n{model_calibration_analysis(y_true_original, quantile_preds, quantiles, colors)}\n\n{residual_autocorrelation_diagnosis(residuals, num_months, colors)}"
+        diagnostic_report = f"{quantile_loss_report(data, quantile_preds, quantiles, colors)}\n\n{model_calibration_analysis(data, quantile_preds, quantiles, colors)}\n\n{residual_autocorrelation_diagnosis(residuals, num_months, colors)}"
 
     print(f"\n{colors.CYAN}{colors.BOLD}========== 財務分析與預測報告 =========={colors.RESET}")
     if not is_wide_format_expense_only: print(f"{colors.BOLD}總收入: {colors.GREEN}{total_income:,.2f}{colors.RESET}")
@@ -2364,9 +2039,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
 
     print(f"\n{colors.CYAN}{colors.BOLD}>>> 預測方法摘要{colors.RESET}")
     print(f"  - 資料月份數: {num_unique_months}")
-    if event_decomposition_report:
-        print(f"{colors.CYAN}  - 自動事件偵測與分解:{colors.RESET}")
-        print(event_decomposition_report)
     print(f"  - {seasonal_note}")
     print(f"  - {mc_note}")
     print(f"  - 預測目標月份: {target_month_str} (距離資料 {steps_ahead} 個月)")
