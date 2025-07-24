@@ -1461,11 +1461,10 @@ def train_predict_moving_average(y_train, predict_steps, window_size=6):
     mean_value = np.mean(y_train[-actual_window:])
     return np.full(predict_steps, mean_value)
 
-# --- 【★★★ 此處為核心修正 ★★★】 ---
+# --- 【★★★ 此處為已修正的函數 ★★★】 ---
 def train_greedy_forward_ensemble(X_meta, y_true, model_keys, n_iterations=20, colors=None, verbose=True):
     """
-    使用 Caruana 的貪婪前向選擇法訓練元模型。
-    【已修正】: 修正了團隊預測的平均計算邏輯。
+    使用 Caruana 的貪婪前向選擇法訓練元模型 (已修正為允許重複選擇的穩健版本)。
     """
     color_cyan = colors.CYAN if colors else ''
     color_reset = colors.RESET if colors else ''
@@ -1480,23 +1479,14 @@ def train_greedy_forward_ensemble(X_meta, y_true, model_keys, n_iterations=20, c
     def rmse(y_true, y_pred):
         return np.sqrt(np.mean((y_true - y_pred)**2))
 
-    for _ in range(n_iterations):
+    for i in range(n_iterations):
         best_model_idx_this_round = -1
         lowest_error = np.inf
         
         for model_idx in range(n_models):
-            if model_idx in ensemble_model_indices:
-                continue
-                
             candidate_model_preds = X_meta[:, model_idx]
-            current_size = len(ensemble_model_indices)
-            
-            # 正確計算加入新模型後的平均預測
-            if current_size == 0:
-                temp_predictions = candidate_model_preds
-            else:
-                temp_predictions = (ensemble_predictions * current_size + candidate_model_preds) / (current_size + 1)
-                
+            # 採用簡單的累加平均，允許重複選擇優秀模型以加強其權重
+            temp_predictions = (ensemble_predictions * i + candidate_model_preds) / (i + 1)
             current_error = rmse(y_true, temp_predictions)
             
             if current_error < lowest_error:
@@ -1504,17 +1494,11 @@ def train_greedy_forward_ensemble(X_meta, y_true, model_keys, n_iterations=20, c
                 best_model_idx_this_round = model_idx
         
         if best_model_idx_this_round != -1:
-            best_model_preds = X_meta[:, best_model_idx_this_round]
-            current_size = len(ensemble_model_indices)
-
-            # 正確更新團隊的平均預測
-            if current_size == 0:
-                ensemble_predictions = best_model_preds
-            else:
-                ensemble_predictions = (ensemble_predictions * current_size + best_model_preds) / (current_size + 1)
-            
             ensemble_model_indices.append(best_model_idx_this_round)
+            best_model_preds = X_meta[:, best_model_idx_this_round]
+            ensemble_predictions = (ensemble_predictions * i + best_model_preds) / (i + 1)
         else:
+            # 如果找不到任何能改善模型的選擇，就提前停止
             break
             
     if verbose:
@@ -1674,7 +1658,7 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
     }
     model_keys = list(base_models.keys())
     
-    if verbose: print(f"\n{colors.CYAN}--- 階段 0/3: 執行基礎模型交叉驗證 (生成基礎預測)... ---{colors.RESET}")
+    if verbose: print(f"\n{colors.CYAN}--- 階段 0/3: 執行基礎模型交叉驗證 (生成元特徵)... ---{colors.RESET}")
     _, _, _, _, _, _, historical_base_preds_df = run_stacked_ensemble_model(
         monthly_expenses_df, steps_ahead, colors=colors, verbose=False
     )
