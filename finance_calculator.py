@@ -40,6 +40,19 @@ TABLE_CONFIG = {
     }
 }
 
+# --- 【★★★ 新增：可自訂的季節性分析設定 ★★★】 ---
+# 說明：此處設定模型要分析的季節性週期與其複雜度。
+# 'periods': 您想分析的週期長度列表 (例如, [12, 6] 代表年度和學期)。
+# 'k_terms': 每個週期的傅立葉階數 K (K 值越高，擬合的季節性曲線越複雜)。
+SEASONALITY_CONFIG = {
+    'periods': [12, 6],  # 年度週期 (12個月), 學期週期 (6個月)
+    'k_terms': {
+        12: 4,          # 使用 4 對 sin/cos 波來擬合年度模式
+        6: 2            # 使用 2 對 sin/cos 波來擬合學期模式
+    }
+}
+
+
 import sys
 import os
 import subprocess
@@ -50,7 +63,7 @@ import argparse
 import numpy as np
 from scipy.stats import linregress, t
 from scipy.stats import skew, kurtosis, median_abs_deviation, percentileofscore
-from scipy.optimize import nnls
+from scipy.optimize import nnls, minimize
 from collections import deque, Counter
 
 # --- 顏色處理類別 ---
@@ -187,6 +200,21 @@ def normalize_date(date_str):
             pass
     
     return None
+
+# --- 【★★★ 新增：傅立葉特徵生成函數 ★★★】 ---
+def generate_fourier_features(df, config):
+    """根據設定生成傅立葉特徵。"""
+    time_index = np.arange(1, len(df) + 1)
+    features = pd.DataFrame()
+    for p in config['periods']:
+        k_max = config['k_terms'].get(p)
+        if k_max:
+            for k in range(1, k_max + 1):
+                sin_feat = np.sin(2 * np.pi * k * time_index / p)
+                cos_feat = np.cos(2 * np.pi * k * time_index / p)
+                features[f'sin_{k}_{p}'] = sin_feat
+                features[f'cos_{k}_{p}'] = cos_feat
+    return features
 
 # --- 單檔處理函數 (未變更) ---
 def process_finance_data_individual(file_path, colors):
@@ -1611,7 +1639,7 @@ def train_meta_model_with_bootstrap_gfs(X_level2_hist, y_true, n_bootstrap=100, 
     ensemble_selection_counts = Counter()
     
     if verbose:
-        print_progress_bar(0, n_bootstrap, prefix='進度:', suffix='完成', length=40)
+        print_progress_bar(0, n_bootstrap, prefix='權重校準進度:', suffix='完成', length=40)
 
     for i in range(n_bootstrap):
         bootstrap_res = np.random.choice(clean_residuals, size=n_samples, replace=True)
@@ -1625,7 +1653,7 @@ def train_meta_model_with_bootstrap_gfs(X_level2_hist, y_true, n_bootstrap=100, 
         ensemble_selection_counts.update(selected_indices_for_iter)
         
         if verbose:
-            print_progress_bar(i + 1, n_bootstrap, prefix='進度:', suffix='完成', length=40)
+            print_progress_bar(i + 1, n_bootstrap, prefix='權重校準進度:', suffix='完成', length=40)
 
     if verbose:
         print("權重校準完成。")
