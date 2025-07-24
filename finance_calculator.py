@@ -1461,10 +1461,11 @@ def train_predict_moving_average(y_train, predict_steps, window_size=6):
     mean_value = np.mean(y_train[-actual_window:])
     return np.full(predict_steps, mean_value)
 
-# --- 【★★★ 此處為被恢復的函數 ★★★】 ---
+# --- 【★★★ 此處為核心修正 ★★★】 ---
 def train_greedy_forward_ensemble(X_meta, y_true, model_keys, n_iterations=20, colors=None, verbose=True):
     """
     使用 Caruana 的貪婪前向選擇法訓練元模型。
+    【已修正】: 修正了團隊預測的平均計算邏輯。
     """
     color_cyan = colors.CYAN if colors else ''
     color_reset = colors.RESET if colors else ''
@@ -1479,15 +1480,23 @@ def train_greedy_forward_ensemble(X_meta, y_true, model_keys, n_iterations=20, c
     def rmse(y_true, y_pred):
         return np.sqrt(np.mean((y_true - y_pred)**2))
 
-    for i in range(n_iterations):
+    for _ in range(n_iterations):
         best_model_idx_this_round = -1
         lowest_error = np.inf
         
         for model_idx in range(n_models):
             if model_idx in ensemble_model_indices:
                 continue
+                
             candidate_model_preds = X_meta[:, model_idx]
-            temp_predictions = (ensemble_predictions * len(ensemble_model_indices) + candidate_model_preds) / (len(ensemble_model_indices) + 1)
+            current_size = len(ensemble_model_indices)
+            
+            # 正確計算加入新模型後的平均預測
+            if current_size == 0:
+                temp_predictions = candidate_model_preds
+            else:
+                temp_predictions = (ensemble_predictions * current_size + candidate_model_preds) / (current_size + 1)
+                
             current_error = rmse(y_true, temp_predictions)
             
             if current_error < lowest_error:
@@ -1495,16 +1504,23 @@ def train_greedy_forward_ensemble(X_meta, y_true, model_keys, n_iterations=20, c
                 best_model_idx_this_round = model_idx
         
         if best_model_idx_this_round != -1:
-            ensemble_model_indices.append(best_model_idx_this_round)
             best_model_preds = X_meta[:, best_model_idx_this_round]
-            ensemble_predictions = (ensemble_predictions * (len(ensemble_model_indices) - 1) + best_model_preds) / len(ensemble_model_indices)
+            current_size = len(ensemble_model_indices)
+
+            # 正確更新團隊的平均預測
+            if current_size == 0:
+                ensemble_predictions = best_model_preds
+            else:
+                ensemble_predictions = (ensemble_predictions * current_size + best_model_preds) / (current_size + 1)
+            
+            ensemble_model_indices.append(best_model_idx_this_round)
         else:
             break
             
     if verbose:
         print("團隊建設完成。")
         
-    return ensemble_model_indices, None # 維持與舊版相同的返回格式
+    return ensemble_model_indices, None
 
 def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, ensemble_size=20, colors=None, verbose=True):
     data = monthly_expenses_df['Real_Amount'].values
@@ -1609,7 +1625,7 @@ def train_director_with_bootstrap_gfs(X_level1_hist, y_true, model_keys, n_boots
     ensemble_selection_counts = Counter()
     
     if verbose:
-        print_progress_bar(0, n_bootstrap, prefix='進度:', suffix='完成', length=40)
+        print_progress_bar(0, n_bootstrap, prefix='模型權重校準進度:', suffix='完成', length=40)
 
     for i in range(n_bootstrap):
         bootstrap_res = np.random.choice(clean_residuals, size=n_samples, replace=True)
@@ -1622,7 +1638,7 @@ def train_director_with_bootstrap_gfs(X_level1_hist, y_true, model_keys, n_boots
         ensemble_selection_counts.update(selected_indices_for_iter)
         
         if verbose:
-            print_progress_bar(i + 1, n_bootstrap, prefix='進度:', suffix='完成', length=40)
+            print_progress_bar(i + 1, n_bootstrap, prefix='模型權重校準進度:', suffix='完成', length=40)
 
     if verbose:
         print("權重校準完成。")
@@ -1658,7 +1674,7 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
     }
     model_keys = list(base_models.keys())
     
-    if verbose: print(f"\n{colors.CYAN}--- 階段 0/3: 執行基礎模型交叉驗證 (生成球探報告)... ---{colors.RESET}")
+    if verbose: print(f"\n{colors.CYAN}--- 階段 0/3: 執行基礎模型交叉驗證 (生成基礎預測)... ---{colors.RESET}")
     _, _, _, _, _, _, historical_base_preds_df = run_stacked_ensemble_model(
         monthly_expenses_df, steps_ahead, colors=colors, verbose=False
     )
