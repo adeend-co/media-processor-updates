@@ -2,21 +2,21 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.80                #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.81                #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新 v2.80：升級事件分解為智能插補法(Imputation)，並徹底統一蒙地卡羅        #
-#             與趨勢預測的數據源，解決預測值偏低與風險區間巨大的核心問題。          #
+# 更新 v2.81：修正 NameError，調整 expense_std_dev 的計算順序，確保           #
+#             在呼叫預算評估函數前該變數已被定義，恢復腳本正常執行流程。            #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.80"  # Imputation & Simulation Correction
+SCRIPT_VERSION = "v2.81"  # Variable Definition Order Fix
 SCRIPT_UPDATE_DATE = "2025-07-24"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -528,7 +528,7 @@ def optimized_monte_carlo(baseline_df, predicted_baseline, num_simulations=10000
     residuals = baseline_data - trend
     
     # 如果殘差標準差為0，給予一個小的基礎波動
-    if np.std(residuals) == 0:
+    if np.std(residuals) == 0 and np.mean(baseline_data) > 0:
         residuals = np.random.normal(0, np.mean(baseline_data) * 0.05, len(residuals))
 
     simulated = []
@@ -2123,6 +2123,19 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     if current_month == 12: target_month, target_year = 1, current_year + 1
     else: target_month, target_year = current_month + 1, current_year
     target_month_str = f"{target_year}-{target_month:02d}"
+    
+    # --- 【v2.81 核心修正】將 expense_std_dev 的計算提前 ---
+    expense_std_dev, volatility_report, color = None, "", colors.WHITE
+    if not monthly_expenses.empty and len(monthly_expenses)>=2:
+        expense_values = monthly_expenses['Real_Amount']
+        expense_std_dev, expense_mean = expense_values.std(), expense_values.mean()
+        if expense_mean > 0:
+            expense_cv = (expense_std_dev/expense_mean)*100
+            if expense_cv < 20: level, color = "低波動", colors.GREEN
+            elif expense_cv < 45: level, color = "中度波動", colors.WHITE
+            elif expense_cv < 70: level, color = "高波動", colors.YELLOW
+            else: level, color = "極高波動", colors.RED
+            volatility_report = f" ({expense_cv:.1f}%, {level})"
 
     steps_ahead, step_warning = 1, ""
     if not monthly_expenses.empty:
