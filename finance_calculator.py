@@ -1461,7 +1461,7 @@ def train_predict_moving_average(y_train, predict_steps, window_size=6):
     mean_value = np.mean(y_train[-actual_window:])
     return np.full(predict_steps, mean_value)
 
-# --- 【★★★ 此處為被恢復的函數，並根據您的想法進行了邏輯修正 ★★★】 ---
+# --- 【★★★ 此處為被恢復的函數 ★★★】 ---
 def train_greedy_forward_ensemble(X_meta, y_true, model_keys, n_iterations=20, colors=None, verbose=True):
     """
     使用 Caruana 的貪婪前向選擇法訓練元模型。
@@ -1579,11 +1579,78 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, ense
     
     return final_prediction_sequence, historical_pred, residuals, lower_seq, upper_seq, model_weights, historical_base_preds_df
 
-# --- 【★★★ 此處為核心修改，根據您的想法完全重構 ★★★】 ---
+# --- 【★★★ 使用者提議之核心修改：Bootstrap Meta-Model Training ★★★】 ---
+def train_meta_model_with_bootstrap(y_true, meta_features, model_keys, n_bootstrap=20, ensemble_size=20, colors=None, verbose=True):
+    """
+    使用蒙地卡羅自助法和貪婪前向選擇法來訓練元模型，以獲得極度穩健的權重。
+    """
+    color_cyan = colors.CYAN if colors else ''
+    color_reset = colors.RESET if colors else ''
+
+    if verbose:
+        print(f"{color_cyan}--- 階段 1/3: 執行 Bootstrap 模擬以訓練總監模型 (共 {n_bootstrap} 次)... ---{color_reset}")
+
+    n_samples, n_models = meta_features.shape
+
+    # 1. 計算基準預測和殘差 (用於自助法抽樣)
+    # 使用一個簡單的平均集成作為初始預測
+    initial_ensemble_pred = np.mean(meta_features, axis=1)
+    residuals = y_true - initial_ensemble_pred
+    
+    # 2. 移除極端殘差(黑天鵝)，以符合您的要求
+    q1, q3 = np.percentile(residuals, [25, 75])
+    iqr = q3 - q1
+    lower_bound = q1 - 1.5 * iqr
+    upper_bound = q3 + 1.5 * iqr
+    clean_residuals = residuals[(residuals >= lower_bound) & (residuals <= upper_bound)]
+    
+    if len(clean_residuals) == 0:
+        clean_residuals = np.array([0]) # 避免無殘差可抽
+
+    all_selected_indices = []
+    
+    # 3. 進行 N 次 Bootstrap 模擬
+    for i in range(n_bootstrap):
+        # 3a. 創造一份「虛構歷史數據」
+        bootstrap_residuals = np.random.choice(clean_residuals, size=n_samples, replace=True)
+        y_synthetic = initial_ensemble_pred + bootstrap_residuals
+        
+        # 3b. 在此虛構數據上運行 GFS，找出最佳模型組合
+        # 注意: meta_features (X) 是固定的，我們改變的是 y_synthetic (y)
+        selected_indices_for_iter, _ = train_greedy_forward_ensemble(
+            X_meta=meta_features, 
+            y_true=y_synthetic, 
+            model_keys=model_keys, 
+            n_iterations=ensemble_size,
+            colors=colors, 
+            verbose=False  # 在循環中關閉打印
+        )
+        all_selected_indices.extend(selected_indices_for_iter)
+        if verbose:
+            print_progress_bar(i + 1, n_bootstrap, prefix='進度:', suffix='完成', length=40)
+
+    if verbose:
+        print("Bootstrap 模擬完成。")
+
+    # 4. 統計所有模擬的結果，計算最終權重
+    # 哪個模型被選中的次數最多，權重就愈高
+    if not all_selected_indices:
+        # 如果 GFS 從未選中任何模型，則使用平均權重
+        final_weights = np.full(n_models, 1 / n_models)
+    else:
+        model_counts = Counter(all_selected_indices)
+        final_weights = np.zeros(n_models)
+        for idx, count in model_counts.items():
+            final_weights[idx] = count
+        # 歸一化權重
+        final_weights = final_weights / np.sum(final_weights)
+        
+    return final_weights
+
 def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose=True):
     """
     將三階段集成模型流程封裝為一個獨立函數。
-    採用巢狀交叉驗證，確保每一層的訓練都是公平且無數據洩漏的。
+    【已修改】: 第二階段改為使用您提議的 Bootstrap + GFS 策略。
     """
     data = monthly_expenses_df['Real_Amount'].values
     x = np.arange(1, len(data) + 1)
@@ -1595,19 +1662,22 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
         'moving_average': train_predict_moving_average, 'rolling_median': train_predict_rolling_median, 'global_median': train_predict_global_median,
     }
 
-    # --- 階段 0: 生成基礎模型的「袋外」(Out-of-Fold) 公平預測 ---
+    # --- 階段 0 ---
     if verbose: print(f"\n{colors.CYAN}--- 階段 0/3: 執行基礎模型交叉驗證 (生成球探報告)... ---{colors.RESET}")
-    # 注意：這裡的 run_stacked_ensemble_model 已經內置了時間序列交叉驗證，是安全的
+    # 此函數現在僅用於生成 meta_features (基礎模型的歷史預測)
     _, _, _, _, _, _, historical_base_preds_df = run_stacked_ensemble_model(
         monthly_expenses_df, steps_ahead, colors=colors, verbose=False
     )
-    # 這份 historical_base_preds_df 就是 Level 1 的 meta_features，是公平的
+    if historical_base_preds_df is None:
+        return None, None, None, None, None, None, None
+        
     meta_features = historical_base_preds_df.values
+    model_keys = list(base_models.keys())
     
-    # 為了預測未來，我們需要在全部歷史數據上重新訓練基礎模型
+    # 同時，讓所有基礎模型對未來進行預測
     x_future = np.arange(num_months + 1, num_months + steps_ahead + 1)
     future_base_predictions = np.zeros((steps_ahead, len(base_models)))
-    for j, key in enumerate(base_models.keys()):
+    for j, key in enumerate(model_keys):
         model_func = base_models[key]
         if key in ['seasonal']:
             future_base_predictions[:, j] = model_func(monthly_expenses_df, steps_ahead)
@@ -1616,122 +1686,56 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
         else:
             future_base_predictions[:, j] = model_func(data, steps_ahead)
 
-    # --- 階段 1 & 2: 巢狀交叉驗證以獲得公平的總監權重 ---
-    if verbose: print(f"{colors.CYAN}--- 階段 1-2/3: 執行巢狀交叉驗證以訓練總監模型... ---{colors.RESET}")
-    n_folds = 5
-    # 使用時間序列分割法，確保訓練集總是在驗證集之前
-    # 這裡我們手動實現一個簡單的 Expanding Window CV
-    fold_indices = np.array_split(np.arange(num_months), n_folds)
+    # --- 【★★★ 此處為核心修改 ★★★】 ---
+    # --- 階段 1: 使用 Bootstrap + GFS 訓練元模型（總監） ---
+    # 這個函數取代了舊的、複雜的巢狀交叉驗證邏輯
+    effective_base_weights = train_meta_model_with_bootstrap(
+        y_true=data,
+        meta_features=meta_features,
+        model_keys=model_keys,
+        n_bootstrap=20, # 您提議的20份資料
+        ensemble_size=20,
+        colors=colors,
+        verbose=verbose
+    )
     
-    # 這個矩陣將儲存由 Level 1 三個委員做出的、絕對公平的歷史預測
-    X_level2_hist_oof = np.zeros((num_months, 3)) 
-
-    # 外層迴圈：遍歷每一折，以產生用於訓練 Level 2 的公平數據
-    for i in range(1, n_folds): # 從第二折開始，才有足夠的歷史數據
-        train_idx = np.concatenate(fold_indices[:i])
-        val_idx = fold_indices[i]
-        
-        if len(train_idx) == 0: continue
-
-        # 在當前訓練集上，訓練 Level 1 的三個委員
-        meta_features_train, y_train = meta_features[train_idx], data[train_idx]
-        
-        # 委員 1: GFS (Greedy Forward Selection)
-        selected_indices_fold, _ = train_greedy_forward_ensemble(meta_features_train, y_train, list(base_models.keys()), verbose=False, colors=colors)
-        gfs_counts_fold = Counter(selected_indices_fold)
-        gfs_weights_fold = np.zeros(len(base_models))
-        if selected_indices_fold:
-            for idx, count in gfs_counts_fold.items(): gfs_weights_fold[idx] = count
-            gfs_weights_fold /= np.sum(gfs_weights_fold)
-        else: gfs_weights_fold.fill(1/len(base_models))
-        # 用訓練好的 GFS 委員預測驗證集，並儲存結果
-        X_level2_hist_oof[val_idx, 0] = meta_features[val_idx] @ gfs_weights_fold
-
-        # 委員 2: PWA (Performance-Weighted Average)
-        maes_fold = [np.mean(np.abs(y_train - meta_features_train[:, i])) for i in range(len(base_models))]
-        pwa_weights_fold = 1 / (np.array(maes_fold) + 1e-9)
-        pwa_weights_fold /= np.sum(pwa_weights_fold)
-        X_level2_hist_oof[val_idx, 1] = meta_features[val_idx] @ pwa_weights_fold
-
-        # 委員 3: NNLS (Non-Negative Least Squares)
-        nnls_weights_fold, _ = nnls(meta_features_train, y_train)
-        if np.sum(nnls_weights_fold) > 1e-9: nnls_weights_fold /= np.sum(nnls_weights_fold)
-        else: nnls_weights_fold.fill(1/len(base_models))
-        X_level2_hist_oof[val_idx, 2] = meta_features[val_idx] @ nnls_weights_fold
-
-    # 現在，我們有了三位委員的公平歷史預測 (X_level2_hist_oof)
-    # 我們可以用這份「絕對沒偷看答案」的預測來訓練最終的總監模型
-    # 注意：第一折的數據沒有被預測，因為沒有更早的數據來訓練，這是時間序列CV的正常現象
-    # 我們只用有預測值的後續數據來訓練總監
-    valid_train_mask = np.all(X_level2_hist_oof != 0, axis=1)
-    weights_level2, _ = nnls(X_level2_hist_oof[valid_train_mask], data[valid_train_mask])
-    if np.sum(weights_level2) < 1e-9: weights_level2.fill(1/X_level2_hist_oof.shape[1])
-    else: weights_level2 /= np.sum(weights_level2)
-        
-    # --- 重新在「全部歷史數據」上訓練 Level 1 委員，以便預測「未來」 ---
-    level1_future_preds = {}
-    # GFS
-    selected_indices, _ = train_greedy_forward_ensemble(meta_features, data, list(base_models.keys()), n_iterations=20, colors=colors, verbose=False)
-    gfs_counts = Counter(selected_indices); gfs_weights = np.zeros(len(base_models))
-    if selected_indices:
-        for idx, count in gfs_counts.items(): gfs_weights[idx] = count
-        gfs_weights /= np.sum(gfs_weights)
-    else: gfs_weights.fill(1/len(base_models))
-    level1_future_preds['gfs'] = future_base_predictions @ gfs_weights
-    # PWA
-    maes = [np.mean(np.abs(data - meta_features[:, i])) for i in range(len(base_models))]
-    pwa_weights = 1 / (np.array(maes) + 1e-9); pwa_weights /= np.sum(pwa_weights)
-    level1_future_preds['pwa'] = future_base_predictions @ pwa_weights
-    # NNLS
-    nnls_weights, _ = nnls(meta_features, data)
-    if np.sum(nnls_weights) > 1e-9: nnls_weights /= np.sum(nnls_weights)
-    else: nnls_weights.fill(1/len(base_models))
-    level1_future_preds['nnls'] = future_base_predictions @ nnls_weights
+    # --- 階段 2: 融合預測 ---
+    if verbose: print(f"{colors.CYAN}--- 階段 2/3: 融合基礎模型預測... ---{colors.RESET}")
+    # 使用 Bootstrap 訓練出的權重來融合歷史和未來預測
+    historical_pred_fused = meta_features @ effective_base_weights
+    future_pred_fused_seq = future_base_predictions @ effective_base_weights
     
-    # 總監融合三位委員對未來的預測
-    X_level2_future = np.column_stack(list(level1_future_preds.values()))
-    future_pred_fused_seq = X_level2_future @ weights_level2
-    
-    # 總監融合三位委員對歷史的公平預測，得到最終的歷史回測結果
-    historical_pred_fused = X_level2_hist_oof @ weights_level2
-    # 由於第一折沒有預測，我們用簡單的平均值填充，以保持長度一致
-    historical_pred_fused[~valid_train_mask] = np.mean(data[~valid_train_mask])
-
-
-    # --- 階段 3: 殘差提升 (Boosting) 最終修正 ---
+    # --- 階段 3 ---
     if verbose: print(f"{colors.CYAN}--- 階段 3/3: 執行殘差提升 (Boosting) 最終修正... ---{colors.RESET}")
-    T = 10 # 提升輪數
-    learning_rate = 0.1 # 學習率
+    T = 10
+    learning_rate = 0.1
     historical_pred_final = historical_pred_fused.copy()
     future_pred_final_seq = future_pred_fused_seq.copy()
-    # 使用一個簡單穩健的模型來學習殘差
     weak_model_func = base_models['huber']
 
     for _ in range(T):
         residuals_boost = data - historical_pred_final
-        # 學習歷史殘差的規律
+        # 使用一個穩健的模型來擬合殘差
         res_pred_hist = weak_model_func(x, residuals_boost, x)
-        # 將學到的規律應用到未來
         res_pred_future_seq = weak_model_func(x, residuals_boost, x_future)
-        # 更新預測
+        # 將殘差的預測按比例加回
         historical_pred_final += learning_rate * res_pred_hist
         future_pred_final_seq += learning_rate * res_pred_future_seq
 
-    # --- 報告與返回 ---
-    # 計算最終的「有效基礎模型權重」以供報告
-    effective_base_weights = (gfs_weights * weights_level2[0]) + (pwa_weights * weights_level2[1]) + (nnls_weights * weights_level2[2])
-    
     # 計算信賴區間
-    dof = num_months - X_level2_hist_oof.shape[1] - 1 # 自由度
+    dof = num_months - np.sum(effective_base_weights > 0) - 1
     lower_seq, upper_seq = None, None
     if dof > 0:
         residuals_final = data - historical_pred_final
         mse = np.sum(residuals_final**2) / dof
-        se = np.sqrt(mse) * np.sqrt(1 + 1/num_months) # 簡化的標準誤
+        se = np.sqrt(mse) * np.sqrt(1 + 1/num_months)
         t_val = t.ppf(0.975, dof)
         lower_seq, upper_seq = future_pred_final_seq - t_val*se, future_pred_final_seq + t_val*se
 
-    return future_pred_final_seq, historical_pred_final, effective_base_weights, weights_level2, lower_seq, upper_seq, historical_base_preds_df
+    # 由於不再有三種委員會(GFS, PWA, NNLS)，第二個權重返回 None
+    meta_model_weights = None 
+
+    return future_pred_final_seq, historical_pred_final, effective_base_weights, meta_model_weights, lower_seq, upper_seq, historical_base_preds_df
 
 
 # --- 主要分析與預測函數 ---
@@ -1824,7 +1828,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         }
         
         if num_months >= 24:
-            method_used = " (基於三階段混合集成法)"
+            method_used = " (基於三階段混合集成法 - Bootstrap 權重)"
             
             # --- 執行完整的集成流程以獲得最終預測和回測結果 ---
             future_pred_final_seq, historical_pred, effective_base_weights, weights_level2, lower_seq, upper_seq, _ = \
@@ -1834,10 +1838,11 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             lower = lower_seq[-1] if lower_seq is not None else None
             upper = upper_seq[-1] if upper_seq is not None else None
             
-            # --- 格式化權重報告 ---
-            model_names_meta = ["GFS", "PWA", "NNLS"]
-            report_parts_meta = [f"{name}({weight:.1%})" for name, weight in zip(model_names_meta, weights_level2) if weight > 0]
-            meta_model_weights_report = f"  - 總監融合權重: {', '.join(report_parts_meta)}"
+            # --- 格式化權重報告 (現在只有一層權重) ---
+            if weights_level2 is not None: # 舊版兼容
+                model_names_meta = ["GFS", "PWA", "NNLS"]
+                report_parts_meta = [f"{name}({weight:.1%})" for name, weight in zip(model_names_meta, weights_level2) if weight > 0]
+                meta_model_weights_report = f"  - 總監融合權重: {', '.join(report_parts_meta)}"
             
             model_names_base = ["多項式", "穩健趨勢", "指數平滑", "漂移", "季節分解", "季節模仿", "單純", "移動平均", "滾動中位", "全局中位"]
             sorted_parts = sorted(zip(effective_base_weights, model_names_base), reverse=True)
@@ -1846,7 +1851,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             chunks = [report_parts_base_sorted[i:i + chunk_size] for i in range(0, len(report_parts_base_sorted), chunk_size)]
             lines = [", ".join(chunk) for chunk in chunks]
             indentation = "\n" + " " * 16
-            base_model_weights_report = f"  - 基礎模型權重: {indentation.join(lines)}"
+            base_model_weights_report = f"  - 最終模型權重: {indentation.join(lines)}"
         
         elif 18 <= num_months < 24:
             method_used = " (基於穩健迴歸IRLS-Huber)"
@@ -1983,7 +1988,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         if historical_wape is not None: 
             print(f"  - WAPE (全局): {historical_wape:.2f}% (含極端值，評估總體誤差比例)")
         if historical_wape_robust is not None:
-            print(f"  - WAPE (排除衝擊後): {colors.GREEN}{historical_wape_robust:,.2f}% (反映日常預測誤差比例){colors.RESET}")
+            print(f"  - WAPE (排除衝擊後): {colors.GREEN}{historical_wape_robust:.2f}% (反映日常預測誤差比例){colors.RESET}")
         if historical_mase is not None: 
             print(f"  - MASE (平均絕對標度誤差): {historical_mase:.2f} (小於1優於天真預測)")
 
