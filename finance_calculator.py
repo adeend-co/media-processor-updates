@@ -1592,7 +1592,7 @@ def train_director_with_bootstrap_gfs(X_level1_hist, y_true, model_keys, n_boots
     n_samples, n_models = X_level1_hist.shape
 
     if verbose:
-        print(f"{color_cyan}--- 階段 1-2/3: 執行蒙地卡羅模擬考以訓練總監模型 (共 {n_bootstrap} 次)... ---{color_reset}")
+        print(f"{color_cyan}--- 階段 1-2/3: 執行模型權重校準 (共 {n_bootstrap} 次模擬)... ---{color_reset}")
     
     base_predictions = np.mean(X_level1_hist, axis=1)
     residuals = y_true - base_predictions
@@ -1609,7 +1609,7 @@ def train_director_with_bootstrap_gfs(X_level1_hist, y_true, model_keys, n_boots
     ensemble_selection_counts = Counter()
     
     if verbose:
-        print_progress_bar(0, n_bootstrap, prefix='模擬考進度:', suffix='完成', length=40)
+        print_progress_bar(0, n_bootstrap, prefix='模型權重校準進度:', suffix='完成', length=40)
 
     for i in range(n_bootstrap):
         bootstrap_res = np.random.choice(clean_residuals, size=n_samples, replace=True)
@@ -1622,10 +1622,10 @@ def train_director_with_bootstrap_gfs(X_level1_hist, y_true, model_keys, n_boots
         ensemble_selection_counts.update(selected_indices_for_iter)
         
         if verbose:
-            print_progress_bar(i + 1, n_bootstrap, prefix='模擬考進度:', suffix='完成', length=40)
+            print_progress_bar(i + 1, n_bootstrap, prefix='模型權重校準進度:', suffix='完成', length=40)
 
     if verbose:
-        print("模擬考完成，正在匯總總監權重...")
+        print("權重校準完成。")
 
     if not ensemble_selection_counts:
         director_weights = np.full(n_models, 1/n_models)
@@ -1717,7 +1717,7 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
         t_val = t.ppf(0.975, dof)
         lower_seq, upper_seq = future_pred_final_seq - t_val*se, future_pred_final_seq + t_val*se
 
-    meta_model_names = ["GFS(僅參考)", "Bootstrap-GFS", "NNLS(僅參考)"]
+    meta_model_names = ["貪婪前向選擇法(僅參考)", "自舉法前向選擇", "非負最小平方法(僅參考)"]
     meta_model_weights_for_report = {name: w for name, w in zip(meta_model_names, weights_level2)}
 
     return future_pred_final_seq, historical_pred_final, effective_base_weights, meta_model_weights_for_report, lower_seq, upper_seq, historical_base_preds_df
@@ -1813,7 +1813,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         }
         
         if num_months >= 24:
-            method_used = " (基於三階段混合集成法 - Bootstrap Director)"
+            method_used = " (基於三階段混合集成法 - 自舉法校準)"
             
             future_pred_final_seq, historical_pred, effective_base_weights, weights_level2_report, lower_seq, upper_seq, _ = \
                 run_full_ensemble_pipeline(df_for_seasonal_model, steps_ahead, colors, verbose=True)
@@ -1823,7 +1823,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             upper = upper_seq[-1] if upper_seq is not None else None
             
             report_parts_meta = [f"{name}({weight:.1%})" for name, weight in weights_level2_report.items() if weight > 0]
-            meta_model_weights_report = f"  - 總監融合策略: {', '.join(report_parts_meta)}"
+            meta_model_weights_report = f"  - 元模型融合策略: {', '.join(report_parts_meta)}"
             
             model_names_base = ["多項式", "穩健趨勢", "指數平滑", "漂移", "季節分解", "季節模仿", "單純", "移動平均", "滾動中位", "全局中位"]
             sorted_parts = sorted(zip(effective_base_weights, model_names_base), reverse=True)
