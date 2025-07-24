@@ -1579,78 +1579,80 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, ense
     
     return final_prediction_sequence, historical_pred, residuals, lower_seq, upper_seq, model_weights, historical_base_preds_df
 
-# --- 【★★★ 使用者提議之核心修改：Bootstrap Meta-Model Training ★★★】 ---
-def train_meta_model_with_bootstrap(y_true, meta_features, model_keys, n_bootstrap=20, ensemble_size=20, colors=None, verbose=True):
+# 【★★★ 新增：根據您的想法設計的「總監模型」訓練函數 ★★★】
+def train_director_with_bootstrap_gfs(X_level1_hist, y_true, model_keys, n_bootstrap=100, colors=None, verbose=True):
     """
-    使用蒙地卡羅自助法和貪婪前向選擇法來訓練元模型，以獲得極度穩健的權重。
+    使用蒙地卡羅自助法和GFS來訓練第二層(總監)模型權重。
+    這是一個絕對公平的訓練過程，避免了任何形式的資訊洩漏。
     """
     color_cyan = colors.CYAN if colors else ''
-    color_reset = colors.RESET if colors else ''
+    color_reset = colors.RESET if colors.isatty() else ''
+    n_samples, n_models = X_level1_hist.shape
 
     if verbose:
-        print(f"{color_cyan}--- 階段 1/3: 執行 Bootstrap 模擬以訓練總監模型 (共 {n_bootstrap} 次)... ---{color_reset}")
-
-    n_samples, n_models = meta_features.shape
-
-    # 1. 計算基準預測和殘差 (用於自助法抽樣)
-    # 使用一個簡單的平均集成作為初始預測
-    initial_ensemble_pred = np.mean(meta_features, axis=1)
-    residuals = y_true - initial_ensemble_pred
+        print(f"{color_cyan}--- 階段 1-2/3: 執行蒙地卡羅模擬考以訓練總監模型 (共 {n_bootstrap} 次)... ---{color_reset}")
     
-    # 2. 移除極端殘差(黑天鵝)，以符合您的要求
+    # 1. 計算一個基準預測，並得到「乾淨」的殘差用於抽樣
+    # 我們使用一個簡單的平均值作為基準，更能體現數據的自然波動
+    base_predictions = np.mean(X_level1_hist, axis=1)
+    residuals = y_true - base_predictions
+    
+    # 2. 排除極端值（黑天鵝事件），讓模擬數據更貼近常態
     q1, q3 = np.percentile(residuals, [25, 75])
     iqr = q3 - q1
     lower_bound = q1 - 1.5 * iqr
     upper_bound = q3 + 1.5 * iqr
     clean_residuals = residuals[(residuals >= lower_bound) & (residuals <= upper_bound)]
-    
-    if len(clean_residuals) == 0:
-        clean_residuals = np.array([0]) # 避免無殘差可抽
 
-    all_selected_indices = []
-    
-    # 3. 進行 N 次 Bootstrap 模擬
+    if len(clean_residuals) == 0:
+        clean_residuals = residuals # 如果所有數據都被過濾，則退回使用原始殘差
+
+    # 3. 進行N次模擬考，並用GFS作為考官
+    ensemble_selection_counts = Counter()
+    print_progress_bar(0, n_bootstrap, prefix='模擬考進度:', suffix='完成', length=40)
     for i in range(n_bootstrap):
-        # 3a. 創造一份「虛構歷史數據」
-        bootstrap_residuals = np.random.choice(clean_residuals, size=n_samples, replace=True)
-        y_synthetic = initial_ensemble_pred + bootstrap_residuals
+        # 3.1. 生成一份新的模擬考卷 (Bootstrapped Target)
+        bootstrap_res = np.random.choice(clean_residuals, size=n_samples, replace=True)
+        y_bootstrap = base_predictions + bootstrap_res
         
-        # 3b. 在此虛構數據上運行 GFS，找出最佳模型組合
-        # 注意: meta_features (X) 是固定的，我們改變的是 y_synthetic (y)
+        # 3.2. 在這份考卷上，用GFS評估哪個模型組合表現最好
+        # 注意：此處的`verbose`設為`False`，避免打印過多資訊
         selected_indices_for_iter, _ = train_greedy_forward_ensemble(
-            X_meta=meta_features, 
-            y_true=y_synthetic, 
-            model_keys=model_keys, 
-            n_iterations=ensemble_size,
-            colors=colors, 
-            verbose=False  # 在循環中關閉打印
+            X_level1_hist, y_bootstrap, model_keys, n_iterations=10, colors=colors, verbose=False
         )
-        all_selected_indices.extend(selected_indices_for_iter)
-        if verbose:
-            print_progress_bar(i + 1, n_bootstrap, prefix='進度:', suffix='完成', length=40)
+        
+        # 3.3. 記錄本次考試中被選中的模型
+        ensemble_selection_counts.update(selected_indices_for_iter)
+        print_progress_bar(i + 1, n_bootstrap, prefix='模擬考進度:', suffix='完成', length=40)
 
     if verbose:
-        print("Bootstrap 模擬完成。")
+        print("模擬考完成，正在匯總總監權重...")
 
-    # 4. 統計所有模擬的結果，計算最終權重
-    # 哪個模型被選中的次數最多，權重就愈高
-    if not all_selected_indices:
-        # 如果 GFS 從未選中任何模型，則使用平均權重
-        final_weights = np.full(n_models, 1 / n_models)
+    # 4. 根據總選中次數計算最終的總監權重
+    if not ensemble_selection_counts:
+        # 如果 GFS 從未選中任何模型，則使用簡單平均
+        director_weights = np.full(n_models, 1/n_models)
     else:
-        model_counts = Counter(all_selected_indices)
-        final_weights = np.zeros(n_models)
-        for idx, count in model_counts.items():
-            final_weights[idx] = count
-        # 歸一化權重
-        final_weights = final_weights / np.sum(final_weights)
-        
-    return final_weights
+        total_selections = sum(ensemble_selection_counts.values())
+        director_weights = np.array([ensemble_selection_counts.get(i, 0) for i in range(n_models)])
+        if total_selections > 0:
+            director_weights = director_weights / total_selections
+        else: # 備用方案
+            director_weights = np.full(n_models, 1/n_models)
+
+    # 為了與原流程兼容，我們這裡只返回權重
+    # Level 2 的委員權重現在是基於這個自助法 GFS 的結果
+    # 為了簡化，我們將這個權重直接賦予 PWA 委員，並讓其他委員權重為0
+    # 這等同於創造了一個新的、基於您想法的「Bootstrap-GFS」委員
+    weights_level2 = np.array([0.0, 1.0, 0.0]) # [GFS, PWA, NNLS] -> PWA 現在代表您的新方法
+    
+    return director_weights, weights_level2
+
 
 def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose=True):
     """
     將三階段集成模型流程封裝為一個獨立函數。
-    【已修改】: 第二階段改為使用您提議的 Bootstrap + GFS 策略。
+    【已修改】: 第二階段使用您提議的Bootstrap GFS方法。
     """
     data = monthly_expenses_df['Real_Amount'].values
     x = np.arange(1, len(data) + 1)
@@ -1661,23 +1663,18 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
         'seasonal': train_predict_seasonal, 'seasonal_naive': train_predict_seasonal_naive, 'naive': train_predict_naive,
         'moving_average': train_predict_moving_average, 'rolling_median': train_predict_rolling_median, 'global_median': train_predict_global_median,
     }
-
-    # --- 階段 0 ---
+    model_keys = list(base_models.keys())
+    
+    # --- 階段 0: 生成基礎模型對歷史數據的預測 (球探成績單) ---
     if verbose: print(f"\n{colors.CYAN}--- 階段 0/3: 執行基礎模型交叉驗證 (生成球探報告)... ---{colors.RESET}")
-    # 此函數現在僅用於生成 meta_features (基礎模型的歷史預測)
     _, _, _, _, _, _, historical_base_preds_df = run_stacked_ensemble_model(
         monthly_expenses_df, steps_ahead, colors=colors, verbose=False
     )
-    if historical_base_preds_df is None:
-        return None, None, None, None, None, None, None
-        
     meta_features = historical_base_preds_df.values
-    model_keys = list(base_models.keys())
     
-    # 同時，讓所有基礎模型對未來進行預測
     x_future = np.arange(num_months + 1, num_months + steps_ahead + 1)
     future_base_predictions = np.zeros((steps_ahead, len(base_models)))
-    for j, key in enumerate(model_keys):
+    for j, key in enumerate(base_models.keys()):
         model_func = base_models[key]
         if key in ['seasonal']:
             future_base_predictions[:, j] = model_func(monthly_expenses_df, steps_ahead)
@@ -1686,26 +1683,34 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
         else:
             future_base_predictions[:, j] = model_func(data, steps_ahead)
 
-    # --- 【★★★ 此處為核心修改 ★★★】 ---
-    # --- 階段 1: 使用 Bootstrap + GFS 訓練元模型（總監） ---
-    # 這個函數取代了舊的、複雜的巢狀交叉驗證邏輯
-    effective_base_weights = train_meta_model_with_bootstrap(
-        y_true=data,
-        meta_features=meta_features,
-        model_keys=model_keys,
-        n_bootstrap=20, # 您提議的20份資料
-        ensemble_size=20,
-        colors=colors,
-        verbose=verbose
+    # --- 【★★★ 此處為您的核心思想實作 ★★★】 ---
+    # --- 階段 1 & 2: 使用 Bootstrap GFS 進行模擬考，決定總監權重 ---
+    pwa_weights, weights_level2 = train_director_with_bootstrap_gfs(
+        meta_features, data, list(range(len(model_keys))), n_bootstrap=100, colors=colors, verbose=verbose
     )
+
+    # 在您的邏輯下，我們有三種委員，但實際只有一個委員（PWA）代表了您想法的結果
+    # 這裡我們為了報告的完整性，重新計算 GFS 和 NNLS 在全數據上的權重
+    # GFS
+    selected_indices, _ = train_greedy_forward_ensemble(meta_features, data, model_keys, n_iterations=20, colors=colors, verbose=False)
+    gfs_counts = Counter(selected_indices); gfs_weights = np.zeros(len(base_models))
+    if selected_indices:
+        for idx, count in gfs_counts.items(): gfs_weights[idx] = count
+        gfs_weights /= np.sum(gfs_weights)
+    else: gfs_weights.fill(1/len(base_models))
+    # NNLS
+    nnls_weights, _ = nnls(meta_features, data)
+    if np.sum(nnls_weights) > 1e-9: nnls_weights /= np.sum(nnls_weights)
+    else: nnls_weights.fill(1/len(base_models))
+
+    # 使用 Bootstrap-GFS 的結果作為最終的基礎模型權重
+    effective_base_weights = pwa_weights
     
-    # --- 階段 2: 融合預測 ---
-    if verbose: print(f"{colors.CYAN}--- 階段 2/3: 融合基礎模型預測... ---{colors.RESET}")
-    # 使用 Bootstrap 訓練出的權重來融合歷史和未來預測
+    # 歷史和未來預測都基於這個新的權重
     historical_pred_fused = meta_features @ effective_base_weights
     future_pred_fused_seq = future_base_predictions @ effective_base_weights
-    
-    # --- 階段 3 ---
+
+    # --- 階段 3: 殘差提升 (Boosting) ---
     if verbose: print(f"{colors.CYAN}--- 階段 3/3: 執行殘差提升 (Boosting) 最終修正... ---{colors.RESET}")
     T = 10
     learning_rate = 0.1
@@ -1715,15 +1720,12 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
 
     for _ in range(T):
         residuals_boost = data - historical_pred_final
-        # 使用一個穩健的模型來擬合殘差
         res_pred_hist = weak_model_func(x, residuals_boost, x)
         res_pred_future_seq = weak_model_func(x, residuals_boost, x_future)
-        # 將殘差的預測按比例加回
         historical_pred_final += learning_rate * res_pred_hist
         future_pred_final_seq += learning_rate * res_pred_future_seq
-
-    # 計算信賴區間
-    dof = num_months - np.sum(effective_base_weights > 0) - 1
+    
+    dof = num_months - np.count_nonzero(effective_base_weights) - 1
     lower_seq, upper_seq = None, None
     if dof > 0:
         residuals_final = data - historical_pred_final
@@ -1732,10 +1734,12 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
         t_val = t.ppf(0.975, dof)
         lower_seq, upper_seq = future_pred_final_seq - t_val*se, future_pred_final_seq + t_val*se
 
-    # 由於不再有三種委員會(GFS, PWA, NNLS)，第二個權重返回 None
-    meta_model_weights = None 
+    # 為了報告格式兼容，我們仍然返回一個 level2 權重
+    # 'Bootstrap-GFS' 是我們新方法的名字
+    meta_model_names = ["GFS(僅參考)", "Bootstrap-GFS", "NNLS(僅參考)"]
+    meta_model_weights_for_report = {name: w for name, w in zip(meta_model_names, weights_level2)}
 
-    return future_pred_final_seq, historical_pred_final, effective_base_weights, meta_model_weights, lower_seq, upper_seq, historical_base_preds_df
+    return future_pred_final_seq, historical_pred_final, effective_base_weights, meta_model_weights_for_report, lower_seq, upper_seq, historical_base_preds_df
 
 
 # --- 主要分析與預測函數 ---
@@ -1828,21 +1832,19 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         }
         
         if num_months >= 24:
-            method_used = " (基於三階段混合集成法 - Bootstrap 權重)"
+            method_used = " (基於三階段混合集成法 - Bootstrap Director)"
             
             # --- 執行完整的集成流程以獲得最終預測和回測結果 ---
-            future_pred_final_seq, historical_pred, effective_base_weights, weights_level2, lower_seq, upper_seq, _ = \
+            future_pred_final_seq, historical_pred, effective_base_weights, weights_level2_report, lower_seq, upper_seq, _ = \
                 run_full_ensemble_pipeline(df_for_seasonal_model, steps_ahead, colors, verbose=True)
 
             predicted_value = future_pred_final_seq[-1]
             lower = lower_seq[-1] if lower_seq is not None else None
             upper = upper_seq[-1] if upper_seq is not None else None
             
-            # --- 格式化權重報告 (現在只有一層權重) ---
-            if weights_level2 is not None: # 舊版兼容
-                model_names_meta = ["GFS", "PWA", "NNLS"]
-                report_parts_meta = [f"{name}({weight:.1%})" for name, weight in zip(model_names_meta, weights_level2) if weight > 0]
-                meta_model_weights_report = f"  - 總監融合權重: {', '.join(report_parts_meta)}"
+            # --- 格式化權重報告 ---
+            report_parts_meta = [f"{name}({weight:.1%})" for name, weight in weights_level2_report.items() if weight > 0]
+            meta_model_weights_report = f"  - 總監融合策略: {', '.join(report_parts_meta)}"
             
             model_names_base = ["多項式", "穩健趨勢", "指數平滑", "漂移", "季節分解", "季節模仿", "單純", "移動平均", "滾動中位", "全局中位"]
             sorted_parts = sorted(zip(effective_base_weights, model_names_base), reverse=True)
@@ -1851,7 +1853,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             chunks = [report_parts_base_sorted[i:i + chunk_size] for i in range(0, len(report_parts_base_sorted), chunk_size)]
             lines = [", ".join(chunk) for chunk in chunks]
             indentation = "\n" + " " * 16
-            base_model_weights_report = f"  - 最終模型權重: {indentation.join(lines)}"
+            base_model_weights_report = f"  - 基礎模型權重: {indentation.join(lines)}"
         
         elif 18 <= num_months < 24:
             method_used = " (基於穩健迴歸IRLS-Huber)"
