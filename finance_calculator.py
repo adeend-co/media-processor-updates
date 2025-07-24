@@ -65,6 +65,7 @@ from scipy.stats import linregress, t
 from scipy.stats import skew, kurtosis, median_abs_deviation, percentileofscore
 from scipy.optimize import nnls, minimize
 from collections import deque, Counter
+from functools import partial
 
 # --- 顏色處理類別 ---
 class Colors:
@@ -1348,20 +1349,128 @@ def huber_robust_regression(x, y, steps_ahead, t_const=1.345, max_iter=100, tol=
 # --- 模型堆疊集成 (Stacking Ensemble) 總引擎 ---
 
 # Level 0 基礎模型 (Base Models)
-def train_predict_huber(x_train, y_train, x_predict, t_const=1.345, max_iter=100, tol=1e-6):
-    """
-    Huber 穩健迴歸 (Huber Robust Regression)。
-    """
-    if len(x_train) < 2:
-        return np.full(len(x_predict), np.mean(y_train) if len(y_train) > 0 else 0)
+# --- 【修正】此處為真正實作並整合霍特-溫特斯模型與傅立葉特徵的部分 ---
 
-    X_train_b = np.c_[np.ones(len(x_train)), x_train]
+def train_predict_seasonal_naive(y_train, predict_steps, seasonal_period=12):
+    """季節性單純預測法 (Seasonal Naive Method)。"""
+    if len(y_train) < seasonal_period:
+        return np.full(predict_steps, y_train[-1] if len(y_train) > 0 else 0)
+
+    predictions = []
+    for i in range(1, predict_steps + 1):
+        idx = len(y_train) - seasonal_period + ((i - 1) % seasonal_period)
+        predictions.append(y_train[idx])
+    
+    return np.array(predictions)
+
+def train_predict_holt_winters(y_train, predict_steps, seasonal_period, model_type='add'):
+    """
+    霍特-溫特斯季節性模型 (包含自動參數尋優)。
+    """
+    if len(y_train) < 2 * seasonal_period:
+        # 資料不足，退回為季節性單純預測法
+        return train_predict_seasonal_naive(y_train, predict_steps, seasonal_period)
+
+    y = np.array(y_train)
+
+    def sse(params):
+        alpha, beta, gamma = params
+        if not (0 <= alpha <= 1 and 0 <= beta <= 1 and 0 <= gamma <= 1):
+            return np.inf
+
+        level = np.zeros_like(y)
+        trend = np.zeros_like(y)
+        season = np.zeros_like(y)
+        
+        # 初始化
+        level[0] = y[0]
+        trend[0] = (y[seasonal_period] - y[0]) / seasonal_period if len(y) > seasonal_period else 0
+        
+        initial_seasonals = [y[i] - np.mean(y[:seasonal_period]) for i in range(seasonal_period)]
+        season[:seasonal_period] = initial_seasonals
+
+        # 迭代計算
+        for i in range(1, len(y)):
+            level_old, trend_old = level[i-1], trend[i-1]
+            season_idx = i - seasonal_period
+            
+            if model_type == 'add':
+                level[i] = alpha * (y[i] - season[season_idx]) + (1 - alpha) * (level_old + trend_old)
+                trend[i] = beta * (level[i] - level_old) + (1 - beta) * trend_old
+                season[i] = gamma * (y[i] - level[i]) + (1 - gamma) * season[season_idx]
+            else: # mul
+                level[i] = alpha * (y[i] / season[season_idx]) + (1 - alpha) * (level_old + trend_old)
+                trend[i] = beta * (level[i] - level_old) + (1 - beta) * trend_old
+                season[i] = gamma * (y[i] / level[i]) + (1 - gamma) * season[season_idx]
+        
+        # 計算擬合值和誤差
+        if model_type == 'add':
+            fitted = level + trend + season
+        else:
+            fitted = (level + trend) * season
+
+        return np.sum((y - fitted)**2)
+
+    # 尋找最佳參數
+    initial_params = [0.3, 0.1, 0.1]
+    bounds = [(0, 1), (0, 1), (0, 1)]
+    result = minimize(sse, initial_params, bounds=bounds, method='L-BFGS-B')
+    alpha_opt, beta_opt, gamma_opt = result.x
+
+    # 使用最佳參數進行預測
+    level_final = np.zeros(len(y) + predict_steps)
+    trend_final = np.zeros(len(y) + predict_steps)
+    season_final = np.zeros(len(y) + predict_steps)
+
+    # 重新初始化
+    level_final[0] = y[0]
+    trend_final[0] = (y[seasonal_period] - y[0]) / seasonal_period if len(y) > seasonal_period else 0
+    initial_seasonals_final = [y[i] - np.mean(y[:seasonal_period]) for i in range(seasonal_period)]
+    season_final[:seasonal_period] = initial_seasonals_final
+
+    # 重新迭代計算歷史數據
+    for i in range(1, len(y)):
+        level_old, trend_old = level_final[i-1], trend_final[i-1]
+        season_idx = i - seasonal_period
+        if model_type == 'add':
+            level_final[i] = alpha_opt * (y[i] - season_final[season_idx]) + (1 - alpha_opt) * (level_old + trend_old)
+            trend_final[i] = beta_opt * (level_final[i] - level_old) + (1 - beta_opt) * trend_old
+            season_final[i] = gamma_opt * (y[i] - level_final[i]) + (1 - gamma_opt) * season_final[season_idx]
+        else: # mul
+            level_final[i] = alpha_opt * (y[i] / season_final[season_idx]) + (1 - alpha_opt) * (level_old + trend_old)
+            trend_final[i] = beta_opt * (level_final[i] - level_old) + (1 - beta_opt) * trend_old
+            season_final[i] = gamma_opt * (y[i] / level_final[i]) + (1 - gamma_opt) * season_final[season_idx]
+
+    # 預測未來
+    predictions = []
+    for i in range(len(y), len(y) + predict_steps):
+        h = i - len(y) + 1
+        season_idx = i - seasonal_period
+        
+        if model_type == 'add':
+            pred = level_final[len(y)-1] + h * trend_final[len(y)-1] + season_final[season_idx]
+        else: # mul
+            pred = (level_final[len(y)-1] + h * trend_final[len(y)-1]) * season_final[season_idx]
+        predictions.append(pred)
+        
+    return np.array(predictions)
+
+def train_predict_huber(X_train, y_train, X_predict, t_const=1.345, max_iter=100, tol=1e-6):
+    """
+    Huber 穩健迴歸 (現已升級為可處理傅立葉特徵的多元穩健迴歸)。
+    """
+    if len(y_train) < 2:
+        return np.full(len(X_predict), np.mean(y_train) if len(y_train) > 0 else 0)
+
+    X_train_b = np.c_[np.ones(len(y_train)), X_train]
     
     try:
-        slope, intercept, _, _, _ = linregress(x_train, y_train)
-        beta = np.array([intercept, slope])
-    except ValueError:
-        beta = np.array([np.mean(y_train), 0])
+        # 初始係數來自普通最小平方法
+        beta = np.linalg.lstsq(X_train_b, y_train, rcond=None)[0]
+    except (np.linalg.LinAlgError, ValueError):
+        # 如果失敗，使用一個基礎的猜測
+        beta = np.zeros(X_train_b.shape[1])
+        if len(y_train) > 0: beta[0] = np.mean(y_train)
 
     for _ in range(max_iter):
         beta_old = beta.copy()
@@ -1385,15 +1494,26 @@ def train_predict_huber(x_train, y_train, x_predict, t_const=1.345, max_iter=100
         if np.sum(np.abs(beta - beta_old)) < tol:
             break
             
-    X_predict_b = np.c_[np.ones(len(x_predict)), x_predict]
+    X_predict_b = np.c_[np.ones(len(X_predict)), X_predict]
     return X_predict_b @ beta
 
-def train_predict_poly(x_train, y_train, x_predict, degree=2):
-    """多項式迴歸 (Polynomial Regression)。"""
-    if len(x_train) < degree + 1: return np.full(len(x_predict), np.mean(y_train) if len(y_train) > 0 else 0)
-    coeffs = np.polyfit(x_train, y_train, degree)
-    p = np.poly1d(coeffs)
-    return p(x_predict)
+def train_predict_poly(X_train, y_train, X_predict, degree=2):
+    """多項式迴歸 (現已升級為可處理傅立葉特徵的多元線性迴歸)。"""
+    if len(y_train) < X_train.shape[1] + 1:
+        return np.full(len(X_predict), np.mean(y_train) if len(y_train) > 0 else 0)
+
+    # 為特徵矩陣加上截距項
+    X_train_b = np.c_[np.ones(len(y_train)), X_train]
+    X_predict_b = np.c_[np.ones(len(X_predict)), X_predict]
+    
+    try:
+        # 使用最小平方法求解係數
+        coeffs = np.linalg.lstsq(X_train_b, y_train, rcond=None)[0]
+    except np.linalg.LinAlgError:
+        # 如果求解失敗，退回為平均值
+        return np.full(len(X_predict), np.mean(y_train) if len(y_train) > 0 else 0)
+    
+    return X_predict_b @ coeffs
 
 def train_predict_des(y_train, predict_steps, alpha=0.5, beta=0.5):
     """霍爾特線性趨勢模型 (Holt's Linear Trend Method)。"""
@@ -1464,18 +1584,6 @@ def train_predict_drift(y_train, predict_steps):
     predictions = [last_value + (i * drift) for i in range(1, predict_steps + 1)]
     return np.array(predictions)
 
-def train_predict_seasonal_naive(y_train, predict_steps, seasonal_period=12):
-    """季節性單純預測法 (Seasonal Naive Method)。"""
-    if len(y_train) < seasonal_period:
-        return np.full(predict_steps, y_train[-1] if len(y_train) > 0 else 0)
-
-    predictions = []
-    for i in range(1, predict_steps + 1):
-        idx = len(y_train) - seasonal_period + ((i - 1) % seasonal_period)
-        predictions.append(y_train[idx])
-    
-    return np.array(predictions)
-
 def train_predict_moving_average(y_train, predict_steps, window_size=6):
     """移動平均預測 (Moving Average Forecast)。"""
     if len(y_train) == 0:
@@ -1542,14 +1650,29 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, ense
     x = np.arange(1, len(data) + 1)
     n_samples = len(data)
     
+    # 【修正】更新基礎模型團隊，加入新的季節性專家
     base_models = {
-        'poly': train_predict_poly, 'huber': train_predict_huber, 'des': train_predict_des, 'drift': train_predict_drift,
-        'seasonal': train_predict_seasonal, 'seasonal_naive': train_predict_seasonal_naive, 'naive': train_predict_naive,
-        'moving_average': train_predict_moving_average, 'rolling_median': train_predict_rolling_median, 'global_median': train_predict_global_median,
+        'seasonal_poly': train_predict_poly,
+        'seasonal_huber': train_predict_huber,
+        'des': train_predict_des,
+        'drift': train_predict_drift,
+        'seasonal': train_predict_seasonal,
+        'holt_winters_annual': partial(train_predict_holt_winters, seasonal_period=12, model_type='add'),
+        'holt_winters_semester': partial(train_predict_holt_winters, seasonal_period=6, model_type='add'),
+        'seasonal_naive': train_predict_seasonal_naive,
+        'naive': train_predict_naive,
+        'moving_average': train_predict_moving_average,
+        'rolling_median': train_predict_rolling_median,
+        'global_median': train_predict_global_median,
     }
-    
     model_keys = list(base_models.keys())
     
+    # 【修正】為整個數據集生成傅立葉特徵
+    time_index_full = np.arange(1, n_samples + 1)
+    fourier_features_full = generate_fourier_features(time_index_full, SEASONALITY_CONFIG)
+    # 將趨勢項（時間索引）和傅立葉特徵結合成一個特徵矩陣
+    X_features_full = pd.concat([pd.Series(x, name='trend'), fourier_features_full], axis=1).values
+
     meta_features = np.zeros((n_samples, len(base_models)))
     fold_indices = np.array_split(np.arange(n_samples), n_folds)
     
@@ -1559,16 +1682,21 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, ense
         
         if len(train_idx) == 0: continue
 
-        x_train, y_train, df_train = x[train_idx], data[train_idx], monthly_expenses_df.iloc[train_idx]
+        y_train, df_train = data[train_idx], monthly_expenses_df.iloc[train_idx]
         x_val = x[val_idx]
+        
+        # 【修正】為訓練集和驗證集準備對應的特徵矩陣
+        X_features_train = X_features_full[train_idx]
+        X_features_val = X_features_full[val_idx]
         
         for j, key in enumerate(model_keys):
             model_func = base_models[key]
-            if key in ['seasonal']:
+            # 【修正】根據模型類型傳遞正確的輸入
+            if key in ['seasonal_poly', 'seasonal_huber']:
+                 meta_features[val_idx, j] = model_func(X_features_train, y_train, X_features_val)
+            elif key in ['seasonal']:
                  meta_features[val_idx, j] = model_func(df_train, len(x_val))
-            elif key in ['poly', 'huber']:
-                 meta_features[val_idx, j] = model_func(x_train, y_train, x_val)
-            else:
+            else: # 所有其他模型 (des, drift, holt_winters, naives, MAs, medians)
                  meta_features[val_idx, j] = model_func(y_train, len(x_val))
 
     selected_indices, _ = train_greedy_forward_ensemble(meta_features, data, model_keys, n_iterations=ensemble_size, colors=colors, verbose=verbose)
@@ -1582,15 +1710,21 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, ense
     else:
         model_weights = np.full(len(base_models), 1 / len(base_models))
 
+    # 【修正】為未來預測生成特徵矩陣
     x_future = np.arange(n_samples + 1, n_samples + steps_ahead + 1)
+    time_index_future = np.arange(n_samples + 1, n_samples + steps_ahead + 1)
+    fourier_features_future = generate_fourier_features(time_index_future, SEASONALITY_CONFIG)
+    X_features_future = pd.concat([pd.Series(x_future, name='trend'), fourier_features_future], axis=1).values
+    
     final_base_predictions = np.zeros((steps_ahead, len(base_models)))
 
     for j, key in enumerate(model_keys):
         model_func = base_models[key]
-        if key in ['seasonal']:
+        # 【修正】為最終預測傳遞正確的輸入
+        if key in ['seasonal_poly', 'seasonal_huber']:
+            final_base_predictions[:, j] = model_func(X_features_full, data, X_features_future)
+        elif key in ['seasonal']:
             final_base_predictions[:, j] = model_func(monthly_expenses_df, steps_ahead)
-        elif key in ['poly', 'huber']:
-            final_base_predictions[:, j] = model_func(x, data, x_future)
         else:
             final_base_predictions[:, j] = model_func(data, steps_ahead)
     
@@ -1677,10 +1811,20 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
     x = np.arange(1, len(data) + 1)
     num_months = len(data)
 
+    # 【修正】定義包含新模型的團隊
     base_models = {
-        'poly': train_predict_poly, 'huber': train_predict_huber, 'des': train_predict_des, 'drift': train_predict_drift,
-        'seasonal': train_predict_seasonal, 'seasonal_naive': train_predict_seasonal_naive, 'naive': train_predict_naive,
-        'moving_average': train_predict_moving_average, 'rolling_median': train_predict_rolling_median, 'global_median': train_predict_global_median,
+        'seasonal_poly': train_predict_poly,
+        'seasonal_huber': train_predict_huber,
+        'des': train_predict_des,
+        'drift': train_predict_drift,
+        'seasonal': train_predict_seasonal,
+        'holt_winters_annual': partial(train_predict_holt_winters, seasonal_period=12, model_type='add'),
+        'holt_winters_semester': partial(train_predict_holt_winters, seasonal_period=6, model_type='add'),
+        'seasonal_naive': train_predict_seasonal_naive,
+        'naive': train_predict_naive,
+        'moving_average': train_predict_moving_average,
+        'rolling_median': train_predict_rolling_median,
+        'global_median': train_predict_global_median,
     }
     model_keys = list(base_models.keys())
     
@@ -1746,15 +1890,25 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
     if np.sum(nnls_weights) > 1e-9: nnls_weights /= np.sum(nnls_weights)
     else: nnls_weights.fill(1/len(base_models))
     
-    # 計算未來基礎模型預測
+    # 【修正】為未來預測生成特徵矩陣
     x_future = np.arange(num_months + 1, num_months + steps_ahead + 1)
+    time_index_future = np.arange(num_months + 1, num_months + steps_ahead + 1)
+    fourier_features_future = generate_fourier_features(time_index_future, SEASONALITY_CONFIG)
+    X_features_future = pd.concat([pd.Series(x_future, name='trend'), fourier_features_future], axis=1).values
+    
+    # 【修正】為完整歷史數據生成特徵矩陣
+    time_index_full = np.arange(1, num_months + 1)
+    fourier_features_full = generate_fourier_features(time_index_full, SEASONALITY_CONFIG)
+    X_features_full = pd.concat([pd.Series(x, name='trend'), fourier_features_full], axis=1).values
+    
     future_base_predictions = np.zeros((steps_ahead, len(base_models)))
     for j, key in enumerate(model_keys):
         model_func = base_models[key]
-        if key in ['seasonal']:
+        # 【修正】根據模型類型傳遞正確的輸入
+        if key in ['seasonal_poly', 'seasonal_huber']:
+            future_base_predictions[:, j] = model_func(X_features_full, data, X_features_future)
+        elif key in ['seasonal']:
             future_base_predictions[:, j] = model_func(monthly_expenses_df, steps_ahead)
-        elif key in ['poly', 'huber']:
-            future_base_predictions[:, j] = model_func(x, data, x_future)
         else:
             future_base_predictions[:, j] = model_func(data, steps_ahead)
 
@@ -1773,12 +1927,14 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
     learning_rate = 0.1
     historical_pred_final = historical_pred_fused.copy()
     future_pred_final_seq = future_pred_fused_seq.copy()
-    weak_model_func = base_models['huber']
+    
+    # 使用帶有傅立葉特徵的 Huber 模型進行殘差擬合
+    weak_model_func = base_models['seasonal_huber']
 
     for _ in range(T):
         residuals_boost = data - historical_pred_final
-        res_pred_hist = weak_model_func(x, residuals_boost, x)
-        res_pred_future_seq = weak_model_func(x, residuals_boost, x_future)
+        res_pred_hist = weak_model_func(X_features_full, residuals_boost, X_features_full)
+        res_pred_future_seq = weak_model_func(X_features_full, residuals_boost, X_features_future)
         historical_pred_final += learning_rate * res_pred_hist
         future_pred_final_seq += learning_rate * res_pred_future_seq
 
@@ -1882,7 +2038,8 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         num_months = len(analysis_data)
         data, x = analysis_data, np.arange(1, num_months + 1)
 
-        base_models = {
+        # 【修正】此處的 base_models 僅用於 < 24 個月的舊邏輯，主要邏輯在 run_full_ensemble_pipeline 中
+        base_models_legacy = {
             'poly': train_predict_poly, 'huber': train_predict_huber, 'des': train_predict_des, 'drift': train_predict_drift,
             'seasonal': train_predict_seasonal, 'seasonal_naive': train_predict_seasonal_naive, 'naive': train_predict_naive,
             'moving_average': train_predict_moving_average, 'rolling_median': train_predict_rolling_median, 'global_median': train_predict_global_median,
@@ -1901,7 +2058,8 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             report_parts_meta = [f"{name}({weight:.1%})" for name, weight in weights_level2_report.items() if weight > 0.001]
             meta_model_weights_report = f"  - 元模型融合策略: {', '.join(report_parts_meta)}"
             
-            model_names_base = ["多項式", "穩健趨勢", "指數平滑", "漂移", "季節分解", "季節模仿", "單純", "移動平均", "滾動中位", "全局中位"]
+            # 【修正】更新基礎模型名稱列表以匹配新的模型團隊
+            model_names_base = ["季節性多項式", "季節性穩健趨勢", "指數平滑", "漂移", "季節分解", "霍特-溫特斯(年)", "霍特-溫特斯(學期)", "季節模仿", "單純", "移動平均", "滾動中位", "全局中位"]
             sorted_parts = sorted(zip(effective_base_weights, model_names_base), reverse=True)
             report_parts_base_sorted = [f"{name}({weight:.1%})" for weight, name in sorted_parts if weight > 0.001]
             chunk_size = 3
@@ -1968,7 +2126,17 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                     historical_wape_robust = (np.sum(np.abs(residuals_clean)) / sum_abs_clean) * 100
             
             if num_months >= 24:
-                _, cv_mpi_scores = run_monte_carlo_cv(df_for_seasonal_model, base_models, n_iterations=100, colors=colors)
+                # 【修正】交叉驗證時，需要傳入新的 base_models 字典
+                base_models_cv = {
+                    'seasonal_poly': train_predict_poly, 'seasonal_huber': train_predict_huber, 'des': train_predict_des,
+                    'drift': train_predict_drift, 'seasonal': train_predict_seasonal,
+                    'holt_winters_annual': partial(train_predict_holt_winters, seasonal_period=12, model_type='add'),
+                    'holt_winters_semester': partial(train_predict_holt_winters, seasonal_period=6, model_type='add'),
+                    'seasonal_naive': train_predict_seasonal_naive, 'naive': train_predict_naive,
+                    'moving_average': train_predict_moving_average, 'rolling_median': train_predict_rolling_median,
+                    'global_median': train_predict_global_median,
+                }
+                _, cv_mpi_scores = run_monte_carlo_cv(df_for_seasonal_model, base_models_cv, n_iterations=100, colors=colors)
 
                 erai_results = perform_internal_benchmarking(data, historical_pred, is_shock_flags)
                 
