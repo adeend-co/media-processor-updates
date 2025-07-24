@@ -1484,7 +1484,7 @@ def train_greedy_forward_ensemble(X_meta, y_true, model_keys, n_iterations=20, c
         lowest_error = np.inf
         
         for model_idx in range(n_models):
-            if model_idx in ensemble_model_indices: # 確保每個模型只被選一次
+            if model_idx in ensemble_model_indices:
                 continue
             candidate_model_preds = X_meta[:, model_idx]
             temp_predictions = (ensemble_predictions * len(ensemble_model_indices) + candidate_model_preds) / (len(ensemble_model_indices) + 1)
@@ -1581,24 +1581,22 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, ense
     
     return final_prediction_sequence, historical_pred, residuals, lower_seq, upper_seq, model_weights, historical_base_preds_df
 
-# 【★★★ 新增：根據您的想法設計的「總監模型」訓練函數 ★★★】
+# 【★★★ 新增且已修正：根據您的想法設計的「總監模型」訓練函數 ★★★】
 def train_director_with_bootstrap_gfs(X_level1_hist, y_true, model_keys, n_bootstrap=100, colors=None, verbose=True):
     """
     使用蒙地卡羅自助法和GFS來訓練第二層(總監)模型權重。
     這是一個絕對公平的訓練過程，避免了任何形式的資訊洩漏。
     """
     color_cyan = colors.CYAN if colors else ''
-    color_reset = colors.RESET if colors else '' # 【BUG 已修正】
+    color_reset = colors.RESET if colors else ''
     n_samples, n_models = X_level1_hist.shape
 
     if verbose:
         print(f"{color_cyan}--- 階段 1-2/3: 執行蒙地卡羅模擬考以訓練總監模型 (共 {n_bootstrap} 次)... ---{color_reset}")
     
-    # 1. 計算一個基準預測，並得到「乾淨」的殘差用於抽樣
     base_predictions = np.mean(X_level1_hist, axis=1)
     residuals = y_true - base_predictions
     
-    # 2. 排除極端值（黑天鵝事件），讓模擬數據更貼近常態
     q1, q3 = np.percentile(residuals, [25, 75])
     iqr = q3 - q1
     lower_bound = q1 - 1.5 * iqr
@@ -1608,9 +1606,11 @@ def train_director_with_bootstrap_gfs(X_level1_hist, y_true, model_keys, n_boots
     if len(clean_residuals) == 0:
         clean_residuals = residuals
 
-    # 3. 進行N次模擬考，並用GFS作為考官
     ensemble_selection_counts = Counter()
-    print_progress_bar(0, n_bootstrap, prefix='模擬考進度:', suffix='完成', length=40)
+    
+    if verbose:
+        print_progress_bar(0, n_bootstrap, prefix='模擬考進度:', suffix='完成', length=40)
+
     for i in range(n_bootstrap):
         bootstrap_res = np.random.choice(clean_residuals, size=n_samples, replace=True)
         y_bootstrap = base_predictions + bootstrap_res
@@ -1620,12 +1620,13 @@ def train_director_with_bootstrap_gfs(X_level1_hist, y_true, model_keys, n_boots
         )
         
         ensemble_selection_counts.update(selected_indices_for_iter)
-        print_progress_bar(i + 1, n_bootstrap, prefix='模擬考進度:', suffix='完成', length=40)
+        
+        if verbose:
+            print_progress_bar(i + 1, n_bootstrap, prefix='模擬考進度:', suffix='完成', length=40)
 
     if verbose:
         print("模擬考完成，正在匯總總監權重...")
 
-    # 4. 根據總選中次數計算最終的總監權重
     if not ensemble_selection_counts:
         director_weights = np.full(n_models, 1/n_models)
     else:
