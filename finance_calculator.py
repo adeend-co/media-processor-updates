@@ -203,19 +203,17 @@ def normalize_date(date_str):
 
 # --- 【★★★ 新增：傅立葉特徵生成函數 ★★★】 ---
 def generate_fourier_features(time_index, config):
-    """根據時間索引和設定生成傅立葉特徵矩陣。"""
-    features = []
+    """根據時間索引和設定生成傅立葉特徵。"""
+    features = pd.DataFrame()
     for p in config['periods']:
         k_max = config['k_terms'].get(p)
         if k_max:
             for k in range(1, k_max + 1):
                 sin_feat = np.sin(2 * np.pi * k * time_index / p)
                 cos_feat = np.cos(2 * np.pi * k * time_index / p)
-                features.append(sin_feat)
-                features.append(cos_feat)
-    if not features:
-        return np.array([]).reshape(len(time_index), 0)
-    return np.column_stack(features)
+                features[f'sin_{k}_{p}'] = sin_feat
+                features[f'cos_{k}_{p}'] = cos_feat
+    return features
 
 # --- 單檔處理函數 (未變更) ---
 def process_finance_data_individual(file_path, colors):
