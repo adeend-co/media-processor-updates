@@ -1466,26 +1466,29 @@ def train_greedy_forward_ensemble(X_meta, y_true, model_keys, n_iterations=20, c
     """
     使用 Caruana 的貪婪前向選擇法訓練元模型 (已修正為允許重複選擇的穩健版本)。
     """
-    color_cyan = colors.CYAN if colors else ''
-    color_reset = colors.RESET if colors else ''
-    
     n_samples, n_models = X_meta.shape
     ensemble_model_indices = []
-    ensemble_predictions = np.zeros(n_samples)
     
+    # 確保 verbose 關閉時不打印
     if verbose:
+        color_cyan = colors.CYAN if colors else ''
+        color_reset = colors.RESET if colors else ''
         print(f"\n{color_cyan}正在執行元模型團隊建設 (貪婪前向選擇法)...{color_reset}")
     
     def rmse(y_true, y_pred):
         return np.sqrt(np.mean((y_true - y_pred)**2))
 
+    # 初始化時，集成模型是空的，預測為0
+    ensemble_predictions = np.zeros(n_samples)
+    
     for i in range(n_iterations):
         best_model_idx_this_round = -1
-        lowest_error = np.inf
+        # 初始最低誤差設為當前集成模型的誤差
+        lowest_error = rmse(y_true, ensemble_predictions) if i > 0 else np.inf
         
         for model_idx in range(n_models):
             candidate_model_preds = X_meta[:, model_idx]
-            # 採用簡單的累加平均，允許重複選擇優秀模型以加強其權重
+            # 測試將下一個模型加入團隊後的效果
             temp_predictions = (ensemble_predictions * i + candidate_model_preds) / (i + 1)
             current_error = rmse(y_true, temp_predictions)
             
@@ -1493,12 +1496,13 @@ def train_greedy_forward_ensemble(X_meta, y_true, model_keys, n_iterations=20, c
                 lowest_error = current_error
                 best_model_idx_this_round = model_idx
         
+        # 如果找到了能改善模型的選擇，就將其加入團隊
         if best_model_idx_this_round != -1:
             ensemble_model_indices.append(best_model_idx_this_round)
             best_model_preds = X_meta[:, best_model_idx_this_round]
             ensemble_predictions = (ensemble_predictions * i + best_model_preds) / (i + 1)
         else:
-            # 如果找不到任何能改善模型的選擇，就提前停止
+            # 如果遍歷所有模型都無法改善結果，就提前停止
             break
             
     if verbose:
@@ -1545,9 +1549,9 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, ense
     model_counts = Counter(selected_indices)
     model_weights = np.zeros(len(base_models))
     if selected_indices:
+        total_selections = len(selected_indices)
         for idx, count in model_counts.items():
-            model_weights[idx] = count
-        model_weights = model_weights / np.sum(model_weights)
+            model_weights[idx] = count / total_selections
     else:
         model_weights = np.full(len(base_models), 1 / len(base_models))
 
@@ -1581,20 +1585,18 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, ense
     
     return final_prediction_sequence, historical_pred, residuals, lower_seq, upper_seq, model_weights, historical_base_preds_df
 
-# 【★★★ 新增且已修正：根據您的想法設計的「總監模型」訓練函數 ★★★】
-def train_director_with_bootstrap_gfs(X_level1_hist, y_true, model_keys, n_bootstrap=100, colors=None, verbose=True):
+def train_meta_model_with_bootstrap_gfs(X_level2_hist, y_true, n_bootstrap=100, colors=None, verbose=True):
     """
-    使用蒙地卡羅自助法和GFS來訓練第二層(總監)模型權重。
-    這是一個絕對公平的訓練過程，避免了任何形式的資訊洩漏。
+    【您的核心創新】使用自舉法模擬和GFS，為第一層的集成模型們計算公平的權重。
     """
     color_cyan = colors.CYAN if colors else ''
     color_reset = colors.RESET if colors else ''
-    n_samples, n_models = X_level1_hist.shape
+    n_samples, n_models = X_level2_hist.shape
 
     if verbose:
-        print(f"{color_cyan}--- 階段 1-2/3: 執行模型權重校準 (共 {n_bootstrap} 次模擬)... ---{color_reset}")
+        print(f"{color_cyan}--- 階段 2/3: 執行元模型權重校準 (共 {n_bootstrap} 次模擬)... ---{color_reset}")
     
-    base_predictions = np.mean(X_level1_hist, axis=1)
+    base_predictions = np.mean(X_level2_hist, axis=1)
     residuals = y_true - base_predictions
     
     q1, q3 = np.percentile(residuals, [25, 75])
@@ -1615,8 +1617,9 @@ def train_director_with_bootstrap_gfs(X_level1_hist, y_true, model_keys, n_boots
         bootstrap_res = np.random.choice(clean_residuals, size=n_samples, replace=True)
         y_bootstrap = base_predictions + bootstrap_res
         
+        # 在此模擬數據上，尋找 L1 模型的最佳組合
         selected_indices_for_iter, _ = train_greedy_forward_ensemble(
-            X_level1_hist, y_bootstrap, model_keys, n_iterations=10, colors=colors, verbose=False
+            X_level2_hist, y_bootstrap, list(range(n_models)), n_iterations=n_models, colors=colors, verbose=False
         )
         
         ensemble_selection_counts.update(selected_indices_for_iter)
@@ -1628,24 +1631,20 @@ def train_director_with_bootstrap_gfs(X_level1_hist, y_true, model_keys, n_boots
         print("權重校準完成。")
 
     if not ensemble_selection_counts:
-        director_weights = np.full(n_models, 1/n_models)
+        final_weights = np.full(n_models, 1/n_models)
     else:
         total_selections = sum(ensemble_selection_counts.values())
-        director_weights = np.array([ensemble_selection_counts.get(i, 0) for i in range(n_models)])
+        final_weights = np.array([ensemble_selection_counts.get(i, 0) for i in range(n_models)])
         if total_selections > 0:
-            director_weights = director_weights / total_selections
+            final_weights = final_weights / total_selections
         else:
-            director_weights = np.full(n_models, 1/n_models)
-
-    weights_level2 = np.array([0.0, 1.0, 0.0])
+            final_weights = np.full(n_models, 1/n_models)
     
-    return director_weights, weights_level2
-
+    return final_weights
 
 def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose=True):
     """
-    將三階段集成模型流程封裝為一個獨立函數。
-    【已修改】: 第二階段使用您提議的Bootstrap GFS方法。
+    【已重構】執行完整的三層式集成模型流程。
     """
     data = monthly_expenses_df['Real_Amount'].values
     x = np.arange(1, len(data) + 1)
@@ -1658,15 +1657,72 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
     }
     model_keys = list(base_models.keys())
     
+    # --- 階段 0: 生成基礎模型對歷史數據的預測 (元特徵) ---
     if verbose: print(f"\n{colors.CYAN}--- 階段 0/3: 執行基礎模型交叉驗證 (生成元特徵)... ---{colors.RESET}")
     _, _, _, _, _, _, historical_base_preds_df = run_stacked_ensemble_model(
         monthly_expenses_df, steps_ahead, colors=colors, verbose=False
     )
     meta_features = historical_base_preds_df.values
     
+    # --- 階段 1: 訓練第一層集成模型並產生公平的歷史預測 (OOF) ---
+    if verbose: print(f"{colors.CYAN}--- 階段 1/3: 執行巢狀交叉驗證以訓練第一層集成模型... ---{colors.RESET}")
+    n_folds = 5
+    fold_indices = np.array_split(np.arange(num_months), n_folds)
+    X_level2_hist_oof = np.zeros((num_months, 3)) # 用於儲存 L1 模型的公平預測
+
+    for i in range(n_folds):
+        train_idx = np.concatenate([fold_indices[j] for j in range(n_folds) if i != j])
+        val_idx = fold_indices[i]
+        
+        if len(train_idx) == 0: continue
+
+        meta_features_train, y_train = meta_features[train_idx], data[train_idx]
+        
+        # 1. GFS
+        selected_indices_fold, _ = train_greedy_forward_ensemble(meta_features_train, y_train, model_keys, n_iterations=20, verbose=False, colors=colors)
+        gfs_counts_fold = Counter(selected_indices_fold)
+        gfs_weights_fold = np.zeros(len(base_models))
+        if selected_indices_fold:
+            for idx, count in gfs_counts_fold.items(): gfs_weights_fold[idx] = count
+            gfs_weights_fold /= np.sum(gfs_weights_fold)
+        else: gfs_weights_fold.fill(1/len(base_models))
+        X_level2_hist_oof[val_idx, 0] = meta_features[val_idx] @ gfs_weights_fold
+
+        # 2. PWA
+        maes_fold = [np.mean(np.abs(y_train - meta_features_train[:, i])) for i in range(len(base_models))]
+        pwa_weights_fold = 1 / (np.array(maes_fold) + 1e-9)
+        pwa_weights_fold /= np.sum(pwa_weights_fold)
+        X_level2_hist_oof[val_idx, 1] = meta_features[val_idx] @ pwa_weights_fold
+
+        # 3. NNLS
+        nnls_weights_fold, _ = nnls(meta_features_train, y_train)
+        if np.sum(nnls_weights_fold) > 1e-9: nnls_weights_fold /= np.sum(nnls_weights_fold)
+        else: nnls_weights_fold.fill(1/len(base_models))
+        X_level2_hist_oof[val_idx, 2] = meta_features[val_idx] @ nnls_weights_fold
+
+    # --- 階段 2: 使用自舉法模擬，為第一層的集成模型計算最終權重 ---
+    weights_level2 = train_meta_model_with_bootstrap_gfs(X_level2_hist_oof, data, colors=colors, verbose=verbose)
+        
+    # --- 重新在全部數據上訓練 L1 模型以預測未來 ---
+    # GFS
+    selected_indices, _ = train_greedy_forward_ensemble(meta_features, data, model_keys, n_iterations=20, colors=colors, verbose=False)
+    gfs_counts = Counter(selected_indices); gfs_weights = np.zeros(len(base_models))
+    if selected_indices:
+        for idx, count in gfs_counts.items(): gfs_weights[idx] = count
+        gfs_weights /= np.sum(gfs_weights)
+    else: gfs_weights.fill(1/len(base_models))
+    # PWA
+    maes = [np.mean(np.abs(data - meta_features[:, i])) for i in range(len(base_models))]
+    pwa_weights = 1 / (np.array(maes) + 1e-9); pwa_weights /= np.sum(pwa_weights)
+    # NNLS
+    nnls_weights, _ = nnls(meta_features, data)
+    if np.sum(nnls_weights) > 1e-9: nnls_weights /= np.sum(nnls_weights)
+    else: nnls_weights.fill(1/len(base_models))
+    
+    # 計算未來基礎模型預測
     x_future = np.arange(num_months + 1, num_months + steps_ahead + 1)
     future_base_predictions = np.zeros((steps_ahead, len(base_models)))
-    for j, key in enumerate(base_models.keys()):
+    for j, key in enumerate(model_keys):
         model_func = base_models[key]
         if key in ['seasonal']:
             future_base_predictions[:, j] = model_func(monthly_expenses_df, steps_ahead)
@@ -1675,25 +1731,16 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
         else:
             future_base_predictions[:, j] = model_func(data, steps_ahead)
 
-    pwa_weights, weights_level2 = train_director_with_bootstrap_gfs(
-        meta_features, data, list(range(len(model_keys))), n_bootstrap=100, colors=colors, verbose=verbose
-    )
-
-    selected_indices, _ = train_greedy_forward_ensemble(meta_features, data, model_keys, n_iterations=20, colors=colors, verbose=False)
-    gfs_counts = Counter(selected_indices); gfs_weights = np.zeros(len(base_models))
-    if selected_indices:
-        for idx, count in gfs_counts.items(): gfs_weights[idx] = count
-        gfs_weights /= np.sum(gfs_weights)
-    else: gfs_weights.fill(1/len(base_models))
-    nnls_weights, _ = nnls(meta_features, data)
-    if np.sum(nnls_weights) > 1e-9: nnls_weights /= np.sum(nnls_weights)
-    else: nnls_weights.fill(1/len(base_models))
-
-    effective_base_weights = pwa_weights
+    # 組合未來預測
+    future_pred_l1_gfs = future_base_predictions @ gfs_weights
+    future_pred_l1_pwa = future_base_predictions @ pwa_weights
+    future_pred_l1_nnls = future_base_predictions @ nnls_weights
+    X_level2_future = np.column_stack([future_pred_l1_gfs, future_pred_l1_pwa, future_pred_l1_nnls])
     
-    historical_pred_fused = meta_features @ effective_base_weights
-    future_pred_fused_seq = future_base_predictions @ effective_base_weights
+    future_pred_fused_seq = X_level2_future @ weights_level2
+    historical_pred_fused = X_level2_hist_oof @ weights_level2
 
+    # --- 階段 3: 殘差提升 ---
     if verbose: print(f"{colors.CYAN}--- 階段 3/3: 執行殘差提升 (Boosting) 最終修正... ---{colors.RESET}")
     T = 10
     learning_rate = 0.1
@@ -1707,8 +1754,10 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
         res_pred_future_seq = weak_model_func(x, residuals_boost, x_future)
         historical_pred_final += learning_rate * res_pred_hist
         future_pred_final_seq += learning_rate * res_pred_future_seq
+
+    effective_base_weights = (gfs_weights * weights_level2[0]) + (pwa_weights * weights_level2[1]) + (nnls_weights * weights_level2[2])
     
-    dof = num_months - np.count_nonzero(effective_base_weights) - 1
+    dof = num_months - X_level2_hist_oof.shape[1] - 1
     lower_seq, upper_seq = None, None
     if dof > 0:
         residuals_final = data - historical_pred_final
@@ -1716,8 +1765,8 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
         se = np.sqrt(mse) * np.sqrt(1 + 1/num_months)
         t_val = t.ppf(0.975, dof)
         lower_seq, upper_seq = future_pred_final_seq - t_val*se, future_pred_final_seq + t_val*se
-
-    meta_model_names = ["貪婪前向選擇法(僅參考)", "自舉法前向選擇", "非負最小平方法(僅參考)"]
+    
+    meta_model_names = ["貪婪前向選擇法", "性能加權平均法", "非負最小平方法"]
     meta_model_weights_for_report = {name: w for name, w in zip(meta_model_names, weights_level2)}
 
     return future_pred_final_seq, historical_pred_final, effective_base_weights, meta_model_weights_for_report, lower_seq, upper_seq, historical_base_preds_df
@@ -1813,7 +1862,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         }
         
         if num_months >= 24:
-            method_used = " (基於三階段混合集成法 - 自舉法校準)"
+            method_used = " (基於三層式混合集成法 - 自舉法校準)"
             
             future_pred_final_seq, historical_pred, effective_base_weights, weights_level2_report, lower_seq, upper_seq, _ = \
                 run_full_ensemble_pipeline(df_for_seasonal_model, steps_ahead, colors, verbose=True)
@@ -1822,7 +1871,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             lower = lower_seq[-1] if lower_seq is not None else None
             upper = upper_seq[-1] if upper_seq is not None else None
             
-            report_parts_meta = [f"{name}({weight:.1%})" for name, weight in weights_level2_report.items() if weight > 0]
+            report_parts_meta = [f"{name}({weight:.1%})" for name, weight in weights_level2_report.items() if weight > 0.001]
             meta_model_weights_report = f"  - 元模型融合策略: {', '.join(report_parts_meta)}"
             
             model_names_base = ["多項式", "穩健趨勢", "指數平滑", "漂移", "季節分解", "季節模仿", "單純", "移動平均", "滾動中位", "全局中位"]
