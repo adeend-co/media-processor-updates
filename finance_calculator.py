@@ -16,8 +16,8 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v3.2"  # Refined Adaptive Dynamics Reporting
-SCRIPT_UPDATE_DATE = "2025-07-25"
+SCRIPT_VERSION = "v3.2.1"  # Fix: Restore Risk Factor Breakdown Report
+SCRIPT_UPDATE_DATE = "2025-07-26"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
 # 說明：您可以直接修改這裡的數字，來調整報告中各表格欄位的寬度，以適應您的終端機字體。
@@ -1342,6 +1342,24 @@ def format_adaptive_dynamics_report(results, full_df, colors):
         
     return "\n".join(report)
 
+# 【新增】格式化風險因子報告的輔助函數
+def format_risk_factors_report(trend_score, trend_scores_detail, vol_score, vol_scores_detail, shock_score, shock_scores_detail, colors):
+    """
+    將風險因子的詳細分數格式化為一個整潔的表格。
+    """
+    trend_details = f"加速: {trend_scores_detail['accel']}, 交叉: {trend_scores_detail['crossover']}, 自相關: {trend_scores_detail['autocorr']}"
+    vol_details = f"波動之波動: {vol_scores_detail['vol_of_vol']}, 下行波動: {vol_scores_detail['downside_vol']}, 峰度: {vol_scores_detail['kurtosis']}"
+    shock_details = f"最大衝擊: {shock_scores_detail['max_shock_magnitude']}, 連續衝擊: {shock_scores_detail['consecutive_shocks']}"
+
+    report = [
+        f"\n{colors.WHITE}    ┌───────────────── 風險因子分析 (分數越高風險越大) ─────────────────┐{colors.RESET}",
+        f"{colors.WHITE}    │ 趨勢風險 ({trend_score:.1f}/10): {trend_details:<51} │{colors.RESET}",
+        f"{colors.WHITE}    │ 波動風險 ({vol_score:.1f}/10): {vol_details:<53} │{colors.RESET}",
+        f"{colors.WHITE}    │ 衝擊風險 ({shock_score:.1f}/10): {shock_details:<55} │{colors.RESET}",
+        f"{colors.WHITE}    └─────────────────────────────────────────────────────────────────┘{colors.RESET}"
+    ]
+    return "\n".join(report)
+
 # --- 【★★★ 此處為核心修正 ★★★】 ---
 def run_monte_carlo_cv(full_df, base_models, n_iterations=100, colors=None):
     """執行蒙地卡羅交叉驗證以生成動態MPI評級基準。"""
@@ -1686,7 +1704,7 @@ def train_predict_theta(x_train, y_train, x_predict, theta=2.0):
     # 2. 構建並平滑Theta線
     theta_line_train = theta * (y_train - trend_line_hist) + trend_line_hist
     
-    # 3. 對Theta線進行簡易指數平滑 (SES) 預測
+    # 3. 對Theta線進行簡易指数平滑 (SES) 預測
     forecast_ses = train_predict_ses(theta_line_train, predict_steps=len(x_predict))
 
     # 4. 預測未來的趨勢線
@@ -2108,8 +2126,8 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         steps_ahead = (target_period.year - last_period.year) * 12 + (target_period.month - last_period.month)
         
         if steps_ahead <= 0:
-            warnings_report += f"\n{colors.YELLOW}警告：您的數據包含未來月份的記錄。預測仍將針對真實世界的下一個月份 ({target_month_str})。{colors.RESET}"
-            # 即使數據超前，也只預測一步，目標仍是下個月
+            if "數據包含未來月份" not in str(warnings_report): # 避免重複打印
+                 warnings_report += f"\n{colors.YELLOW}警告：您的數據包含未來月份的記錄。預測仍將針對真實世界的下一個月份 ({target_month_str})。{colors.RESET}"
             steps_ahead = 1 
         
         if steps_ahead > 12:
@@ -2127,6 +2145,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     cv_mpi_scores = None
     prequential_metrics_report = "" 
     adaptive_dynamics_report = ""
+    risk_factors_report = "" # 【新增】初始化風險因子報告變數
 
     if analysis_data is not None and len(analysis_data) >= 2:
         num_months = len(analysis_data)
@@ -2284,7 +2303,12 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         acf_results = compute_acf_results(residuals, num_months)
         quantile_spread = compute_quantile_spread(p25, p75, predicted_value)
 
-    risk_status, risk_description, suggested_budget, _, _, _, _, data_reliability, error_coefficient, error_buffer, trend_scores, _, _, _, risk_buffer = assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly_expenses, p25, p75, historical_wape, historical_rmse, calibration_results=calibration_results, acf_results=acf_results, quantile_spread=quantile_spread)
+    # 【錯誤修正】完整接收風險評估的返回元組
+    risk_status, risk_description, suggested_budget, _, trend_score, vol_score, shock_score, data_reliability, error_coefficient, error_buffer, trend_scores, vol_scores, shock_scores, _, risk_buffer = assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly_expenses, p25, p75, historical_wape, historical_rmse, calibration_results=calibration_results, acf_results=acf_results, quantile_spread=quantile_spread)
+    
+    # 【新增】調用風險因子報告生成函數
+    if trend_scores is not None and isinstance(trend_scores, dict) and not trend_scores.get('is_advanced'):
+        risk_factors_report = format_risk_factors_report(trend_score, trend_scores, vol_score, vol_scores, shock_score, shock_scores, colors)
 
     diagnostic_report = ""
     if residuals is not None and len(residuals)>=2:
@@ -2383,9 +2407,10 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                     print(f"{colors.WHITE}    └ 計算依據：風險緩衝 ({risk_buffer:,.2f}) + 模型誤差緩衝 ({error_buffer:,.2f}){colors.RESET}")
                 elif "替代公式" in data_reliability:
                     print(f"{colors.WHITE}    └ 計算依據：近期平均支出 + 15% 固定緩衝。{colors.RESET}")
-
-        if not is_advanced_model and trend_scores is not None and not isinstance(trend_scores, dict):
-            pass
+        
+        # 【新增】在預算建議下方打印詳細的風險因子報告
+        if risk_factors_report:
+            print(risk_factors_report)
 
     print(f"\n{colors.WHITE}【註】「實質金額」：為讓不同年份的支出能公平比較，本報告已將所有歷史數據，統一換算為當前基期年的貨幣價值。{colors.RESET}")
     print(f"{colors.CYAN}{colors.BOLD}========================================{colors.RESET}\n")
