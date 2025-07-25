@@ -2,21 +2,22 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.62                #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.0                 #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新 v2.62：徹底修正 P-Rank 與總監融合權重的比較基準，確保公平性與有效性。     #
+# 更新 v3.0：全面升級至 MPI 3.0 評級系統，整合前向測試 (Prequential Analysis)    #
+#           以評估模型的未來穩定性與真實泛化能力。                                    #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.62"  # Final P-Rank & Meta-Model Logic Fix
-SCRIPT_UPDATE_DATE = "2025-07-23"
+SCRIPT_VERSION = "v3.0"  # MPI 3.0 with Prequential Analysis Integration
+SCRIPT_UPDATE_DATE = "2025-07-24"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
 # 說明：您可以直接修改這裡的數字，來調整報告中各表格欄位的寬度，以適應您的終端機字體。
@@ -1010,7 +1011,8 @@ def residual_autocorrelation_diagnosis(residuals, n, colors):
     report.append(header_line)
     return "\n".join(report)
 
-# --- MPI 2.0 評估套件 ---
+# --- MPI 3.0 評估套件 ---
+
 def calculate_erai(y_true, y_pred_model, quantile_preds_model, wape_robust_model):
     """計算 ERAI (Ensemble Robust-Accuracy Index) 的核心組件分數。"""
     if y_true is None or len(y_true) < 2: return None
@@ -1042,87 +1044,116 @@ def calculate_erai(y_true, y_pred_model, quantile_preds_model, wape_robust_model
     
     return erai_score
 
-# --- 【★★★ 核心升級：MPI 2.0 雙重門檻混合評級系統 ★★★】 ---
-def calculate_mpi_and_rate(y_true, historical_pred, global_wape, erai_score, mpi_percentile_rank):
+# 【新增】MPI 3.0 - 未來穩定性分數 (FSS) 計算
+def calculate_fss(prequential_results, mean_expense):
     """
-    根據 MPI 2.0 雙重門檻混合系統計算最終評級。
-    此系統同時考量模型的「絕對效能 (MPI Score)」與「相對穩定性 (P-Rank)」。
+    計算未來穩定性分數 (FSS)，這是 MPI 3.0 的核心支柱。
+    FSS 綜合評估模型在前向測試中的偏誤、一致性與預期準確率。
     """
+    if prequential_results is None:
+        return {'fss_score': 0, 'bias_penalty': 1, 'consistency_score': 0, 'expected_accuracy': 0}
+        
+    errors = prequential_results["errors"]
+    true_values = prequential_results["true_values"]
+    
+    # 1. 偏誤懲罰 (Bias Penalty, BP)
+    cfe = np.sum(errors)
+    sum_abs_true = np.sum(np.abs(true_values))
+    bias_penalty = min(1, abs(cfe / sum_abs_true) * 5) if sum_abs_true > 0 else 1
+
+    # 2. 一致性分數 (Consistency Score, CS)
+    rmse_e = np.std(errors, ddof=1) if len(errors) > 1 else 0
+    consistency_score = max(0, 1 - (rmse_e / mean_expense)) if mean_expense > 0 else 0
+    
+    # 3. 預期準確率 (Expected Accuracy, EA)
+    p_wape = 100 * np.sum(np.abs(errors)) / sum_abs_true if sum_abs_true > 0 else 100
+    expected_accuracy = max(0, 1 - (p_wape / 100.0))
+    
+    # 組合 FSS
+    fss_score = (0.4 * (1 - bias_penalty)) + (0.3 * consistency_score) + (0.3 * expected_accuracy)
+
+    return {
+        'fss_score': fss_score, 
+        'bias_penalty': bias_penalty, 
+        'consistency_score': consistency_score, 
+        'expected_accuracy': expected_accuracy
+    }
+    
+# 【新增】MPI 3.0 雙維度評級系統
+def calculate_mpi_3_0_and_rate(y_true, historical_pred, global_wape, erai_score, mpi_percentile_rank, fss_score):
+    """
+    根據 MPI 3.0 雙維度矩陣計算最終評級。
+    此系統同時考量模型的「綜合預測能力 (MPI 3.0 Score)」與「預測穩定性 (P-Rank)」。
+    """
+    # 1. 計算 AAS (絕對準確度分數)
     wape_score = 1 - (global_wape / 100.0) if global_wape is not None else 0
     ss_res = np.sum((y_true - historical_pred)**2)
     ss_tot = np.sum((y_true - np.mean(y_true))**2)
     r_squared = 1 - (ss_res / ss_tot) if ss_tot > 1e-9 else 0
     r2_score = max(0, r_squared)
-    
     aas = 0.7 * wape_score + 0.3 * r2_score
-    rss = erai_score if erai_score is not None else 0
-    mpi_score = 0.8 * aas + 0.2 * rss
     
-    rating = "D-"
-    suggestion = "請立即停止使用此模型的預測。建議檢查您的原始數據是否存在格式錯誤，或考慮更換其他分析方法。"
-
+    # 2. 計算 RSS (相對優越性分數)
+    rss = erai_score if erai_score is not None else 0
+    
+    # 3. 組合 MPI 3.0 總分
+    mpi_3_0_score = (0.25 * aas) + (0.25 * rss) + (0.50 * fss_score)
+    
+    rating = "F" # 預設最低評級
     if mpi_percentile_rank is None:
         rating = "N/A"
-        suggestion = "交叉驗證失敗，無法進行混合評級。"
     else:
-        # 絕對效能門檻 (Absolute Performance Gate)
-        if mpi_score > 0.75:  # 卓越
-            if mpi_percentile_rank > 85:
-                rating = "A+ (行業頂尖)"
-                suggestion = "卓越的典範。此模型不僅在您個人數據的回測中展現出頂尖的穩定性，其絕對預測能力也達到了業界公認的最高標準。它不僅能精準捕捉您消費模式的細微之處，更對潛在的財務風險有著深刻的洞察力。\n    └─ 建議行動: 此模型的預測結果**高度可信賴**，可作為您進行**關鍵長期財務規劃**（如年度預算、儲蓄目標、投資決策）的核心依據。"
-            elif mpi_percentile_rank > 50:
-                rating = "A (高效能)"
-                suggestion = "極度可靠的財務夥伴。模型的綜合表現非常出色，在預測準確度和趨勢吻合度上均達到業界的優良標準，且在您的歷史數據上表現穩定。\n    └─ 建議行動: 您可以**充滿信心地採納**此模型的預算建議，它足以應對多數財務決策場景。"
-            elif mpi_percentile_rank > 25:
-                rating = "B (偶有佳作)"
-                suggestion = "表現尚可，偶有亮點。此模型在絕對效能上達到卓越水準，但在穩定性上略有不足。總體而言，它具備基礎的預測能力。\n    └─ 建議行動: 可作為**趨勢判斷的輔助性參考**。採納其建議時，建議結合您自身的判斷。"
-            else:
-                rating = "C (曇花一現)"
-                suggestion = "需要審慎對待。模型在「絕對效能」或「穩定性」兩個維度中，至少有一項存在明顯的短板。它可能對您的消費模式有著片面的理解，或其預測結果波動較大。\n    └─ 建議行動: **建議謹慎使用**其預測結果。在採納前，請務必詳細檢視報告中的「模型診斷儀表板」，了解其誤差主要來源。"
-        elif mpi_score > 0.65:  # 良好
-            if mpi_percentile_rank > 85:
-                rating = "A- (穩健主力)"
-                suggestion = "堅實可靠的主力模型。模型的絕對預測能力良好，且在您的數據上展現出高度的穩定性。這代表它不僅理解您的核心消費習慣，而且這種理解是經得起時間考驗的。\n    └─ 建議行動: 這是非常理想的**常規月度預算設定**參考，其預測結果穩健且值得信賴。"
-            elif mpi_percentile_rank > 50:
-                rating = "B+ (可靠)"
-                suggestion = "值得信賴的分析師。模型的預測能力良好，且在您的數據上表現穩定。它能準確捕捉您大部分的消費趨勢，是一個可靠的日常財務助手。\n    └─ 建議行動: 預算建議**具有很高的參考價值**，適合用於多數日常財務管理。"
-            elif mpi_percentile_rank > 25:
-                rating = "C+ (差強人意)"
-                suggestion = "需要審慎對待。模型在「絕對效能」或「穩定性」兩個維度中，至少有一項存在明顯的短板。它可能對您的消費模式有著片面的理解，或其預測結果波動較大。\n    └─ 建議行動: **建議謹慎使用**其預測結果。在採納前，請務必詳細檢視報告中的「模型診斷儀表板」，了解其誤差主要來源。"
-            else:
-                rating = "D+ (表現不穩)"
-                suggestion = "存在明顯問題。此模型在絕對效能和穩定性上均表現不佳。它可能未能正確理解您消費模式的核心規律，或者其預測結果與簡單的基準模型相差無幾，甚至更差。\n    └─ 建議行動: **不建議採納**其預測結果。這通常意味著您的歷史數據過短、波動過於劇烈，或存在模型無法捕捉的複雜模式。"
-        elif mpi_score > 0.50:  # 可接受
-            if mpi_percentile_rank > 85:
-                rating = "B (潛力股)"
-                suggestion = "表現尚可，偶有亮點。此模型在穩定性上表現優異，但在絕對效能上略有不足。總體而言，它具備基礎的預測能力。\n    └─ 建議行動: 可作為**趨勢判斷的輔助性參考**。採納其建議時，建議結合您自身的判斷。"
-            elif mpi_percentile_rank > 50:
-                rating = "B- (基礎可用)"
-                suggestion = "基礎的趨勢指標。模型的絕對預測能力尚可，穩定性也處於中等水平。它能大致反映您的消費方向，但可能無法捕捉到所有細節。\n    └─ 建議行動: 預算建議**僅供參考**，可作為您制定初步預算的起點。"
-            elif mpi_percentile_rank > 25:
-                rating = "C (僅供參考)"
-                suggestion = "需要審慎對待。模型在「絕對效能」或「穩定性」兩個維度中，至少有一項存在明顯的短板。它可能對您的消費模式有著片面的理解，或其預測結果波動較大。\n    └─ 建議行動: **建議謹慎使用**其預測結果。在採納前，請務必詳細檢視報告中的「模型診斷儀表板」，了解其誤差主要來源。"
-            else:
-                rating = "D (有缺陷)"
-                suggestion = "存在明顯問題。此模型在絕對效能和穩定性上均表現不佳。它可能未能正確理解您消費模式的核心規律，或者其預測結果與簡單的基準模型相差無幾，甚至更差。\n    └─ 建議行動: **不建議採納**其預測結果。這通常意味著您的歷史數據過短、波動過於劇烈，或存在模型無法捕捉的複雜模式。"
-        else:  # < 0.50 (待觀察)
-            if mpi_percentile_rank > 85:
-                rating = "C (穩定但平庸)"
-                suggestion = "需要審慎對待。模型在「絕對效能」或「穩定性」兩個維度中，至少有一項存在明顯的短板。它可能對您的消費模式有著片面的理解，或其預測結果波動較大。\n    └─ 建議行動: **建議謹慎使用**其預測結果。在採納前，請務必詳細檢視報告中的「模型診斷儀表板」，了解其誤差主要來源。"
-            elif mpi_percentile_rank > 50:
-                rating = "D+ (不可靠)"
-                suggestion = "存在明顯問題。此模型在絕對效能和穩定性上均表現不佳。它可能未能正確理解您消費模式的核心規律，或者其預測結果與簡單的基準模型相差無幾，甚至更差。\n    └─ 建議行動: **不建議採納**其預測結果。這通常意味著您的歷史數據過短、波動過於劇烈，或存在模型無法捕捉的複雜模式。"
-            elif mpi_percentile_rank > 25:
-                rating = "D (有嚴重問題)"
-                suggestion = "存在明顯問題。此模型在絕對效能和穩定性上均表現不佳。它可能未能正確理解您消費模式的核心規律，或者其預測結果與簡單的基準模型相差無幾，甚至更差。\n    └─ 建議行動: **不建議採納**其預測結果。這通常意味著您的歷史數據過短、波動過於劇烈，或存在模型無法捕捉的複雜模式。"
-            else: # D- (完全不可信賴)
-                pass # 使用預設的 D- 評級和建議
+        prank = mpi_percentile_rank
+        score = mpi_3_0_score
+
+        if prank > 90:
+            if score >= 0.85: rating = "A+"
+            elif score >= 0.75: rating = "A"
+            elif score >= 0.60: rating = "B+"
+            elif score >= 0.50: rating = "C"
+            else: rating = "D"
+        elif prank > 70:
+            if score >= 0.85: rating = "A"
+            elif score >= 0.75: rating = "A-"
+            elif score >= 0.60: rating = "B"
+            elif score >= 0.50: rating = "C-"
+            else: rating = "D-"
+        elif prank > 40:
+            if score >= 0.85: rating = "B+"
+            elif score >= 0.75: rating = "B-"
+            elif score >= 0.60: rating = "C+"
+            elif score >= 0.50: rating = "D"
+            else: rating = "F"
+        else: # < 40%
+            if score >= 0.85: rating = "B"
+            elif score >= 0.75: rating = "C"
+            elif score >= 0.60: rating = "C-"
+            elif score >= 0.50: rating = "D-"
+            else: rating = "F"
+            
+    # 評級解釋字典
+    suggestions = {
+        "A+": "頂級信賴。模型的綜合能力與穩定性均達到最高標準。其預算建議可作為**關鍵長期財務規劃**的核心依據。",
+        "A": "高度可靠。模型表現出色且穩定，預測結果值得信賴。非常適合用於設定**常規的月度儲蓄目標與預算**。",
+        "A-": "穩健可靠。模型表現良好，且穩定性高。其預算建議是**設定日常開銷管理**的堅實基礎。",
+        "B+": "良好且穩定。模型的綜合表現不錯，且穩定性值得肯定。其預算建議具有**很高的參考價值**。",
+        "B": "表現良好，但穩定性中等。模型具備不錯的預測能力，但其表現在不同數據週期下可能存在波動。可作為**趨勢判斷的參考**。",
+        "B-": "表現尚可，穩定性中等。模型具備基礎預測能力，建議在採納其預算時，結合自身判斷，並**保留一定的彈性**。",
+        "C+": "基礎可用。模型的預測結果可作為一個**大致的趨勢方向**，但不建議完全依賴其精確數值。",
+        "C": "僅供參考。模型在綜合能力或穩定性上存在短板，其預測可能存在較大誤差或不確定性。",
+        "C-": "需謹慎對待。模型的預測能力較弱，建議在採納前，詳細檢視報告中的「前向測試儀表板」，了解其主要缺陷。",
+        "D": "存在明顯問題。模型在綜合能力和穩定性上均表現不佳，其預測結果參考價值很低。",
+        "D-": "建議停用。模型存在嚴重缺陷，其預測結果可能產生誤導。",
+        "F": "完全不可信。模型的預測能力已低於基準水平，繼續使用弊大於利。請檢查原始數據或等待積累更多資料。",
+        "N/A": "交叉驗證失敗，無法進行混合評級。"
+    }
                 
     return {
-        'mpi_score': mpi_score, 'rating': rating, 'suggestion': suggestion,
-        'components': {'absolute_accuracy': aas, 'relative_superiority': rss}
+        'mpi_score': mpi_3_0_score, 
+        'rating': rating, 
+        'suggestion': suggestions.get(rating, "未知評級。"),
+        'components': {'absolute_accuracy': aas, 'relative_superiority': rss, 'future_stability': fss_score}
     }
-
 
 def perform_internal_benchmarking(y_true, historical_ensemble_pred, is_shock_flags):
     """
@@ -2049,13 +2080,12 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     meta_model_weights_report = ""
     mpi_results = None
     cv_mpi_scores = None
-    prequential_report = "" # 【新增】初始化前向測試報告變數
+    prequential_report = ""
 
     if analysis_data is not None and len(analysis_data) >= 2:
         num_months = len(analysis_data)
         data, x = analysis_data, np.arange(1, num_months + 1)
-
-        # 【方法一整合點】將新模型加入基礎模型庫
+        
         base_models = {
             'poly': train_predict_poly, 'huber': train_predict_huber, 'des': train_predict_des, 'drift': train_predict_drift,
             'seasonal': train_predict_seasonal, 'seasonal_naive': train_predict_seasonal_naive, 'naive': train_predict_naive,
@@ -2076,7 +2106,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             report_parts_meta = [f"{name}({weight:.1%})" for name, weight in weights_level2_report.items() if weight > 0.001]
             meta_model_weights_report = f"  - 元模型融合策略: {', '.join(report_parts_meta)}"
             
-            # 【方法一整合點】加入新模型的中文名稱以供報告顯示
             model_names_base = ["多項式", "穩健趨勢", "指數平滑", "漂移", "季節分解", "季節模仿", "單純", "移動平均", "滾動中位", "全局中位", "簡易平滑", "Theta趨勢"]
             sorted_parts = sorted(zip(effective_base_weights, model_names_base), reverse=True)
             report_parts_base_sorted = [f"{name}({weight:.1%})" for weight, name in sorted_parts if weight > 0.001]
@@ -2086,7 +2115,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             indentation = "\n" + " " * 16
             base_model_weights_report = f"  - 基礎模型權重: {indentation.join(lines)}"
 
-            # 【新增】觸發前向測試
             prequential_results = run_prequential_evaluation(df_for_seasonal_model, colors)
             mean_expense_for_report = monthly_expenses['Real_Amount'].mean() if not monthly_expenses.empty else 0
             prequential_report = format_prequential_report(prequential_results, mean_expense_for_report, colors)
@@ -2118,7 +2146,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 predicted_value, historical_pred = ema.iloc[-1], ema.values
             
         if historical_pred is not None:
-            # 確保 data 和 historical_pred 長度一致以計算殘差
             min_len_for_res = min(len(data), len(historical_pred))
             residuals = data[:min_len_for_res] - historical_pred[:min_len_for_res]
             
@@ -2137,7 +2164,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
 
             res_quantiles = np.percentile(residuals, [q * 100 for q in quantiles])
             for i, q in enumerate(quantiles):
-                # 確保 quantile_preds 和 historical_pred 長度相同
                 quantile_preds[q] = historical_pred + res_quantiles[i]
                 
             if num_months >= 12: 
@@ -2157,17 +2183,24 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
 
                 erai_results = perform_internal_benchmarking(data, historical_pred, is_shock_flags)
                 
-                backtest_mpi_score = calculate_mpi_and_rate(data, historical_pred, historical_wape, erai_results['erai_score'], 100)['mpi_score']
+                # 【MPI 3.0 整合點】
+                fss_results = calculate_fss(prequential_results, mean_expense_for_report)
+                fss_score = fss_results.get('fss_score', 0)
+
+                # 使用回測結果計算一個用於比較基準的 MPI 3.0 分數
+                temp_mpi_score = calculate_mpi_3_0_and_rate(data, historical_pred, historical_wape, erai_results['erai_score'], 100, fss_score)['mpi_score']
+
                 mpi_percentile_rank = None
                 if cv_mpi_scores and len(cv_mpi_scores) > 0:
-                    mpi_percentile_rank = percentileofscore(cv_mpi_scores, backtest_mpi_score, kind='rank')
+                    mpi_percentile_rank = percentileofscore(cv_mpi_scores, temp_mpi_score, kind='rank')
 
-                mpi_results = calculate_mpi_and_rate(
+                mpi_results = calculate_mpi_3_0_and_rate(
                     y_true=data,
                     historical_pred=historical_pred,
                     global_wape=historical_wape,
                     erai_score=erai_results['erai_score'],
-                    mpi_percentile_rank=mpi_percentile_rank
+                    mpi_percentile_rank=mpi_percentile_rank,
+                    fss_score=fss_score
                 )
 
     expense_std_dev, volatility_report, color = None, "", colors.WHITE
@@ -2193,8 +2226,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
 
     calibration_results, acf_results, quantile_spread = {}, {}, 0.0
     if residuals is not None and len(residuals)>=2:
-        # 確保 data 和 quantile_preds 長度一致
-        min_len_diag = len(residuals) # residuals 已經是最小長度
+        min_len_diag = len(residuals)
         data_diag = data[:min_len_diag]
         quantile_preds_diag = {q: p[:min_len_diag] for q, p in quantile_preds.items()}
         
@@ -2245,11 +2277,10 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                  mpi_display_str += f" | {colors.BOLD}百分位等級: P{mpi_percentile_rank:.1f}{colors.RESET}{colors.PURPLE}{colors.BOLD}"
 
             print(f"{colors.PURPLE}{colors.BOLD}  ---")
-            print(f"{colors.PURPLE}{colors.BOLD}  - MPI 2.0 (綜合效能指數): {mpi_display_str}  評級: {rating}{colors.RESET}")
-            print(f"{colors.WHITE}    └─ 絕對準確度: {components['absolute_accuracy']:.3f} | 相對優越性 (ERAI): {components['relative_superiority']:.3f}{colors.RESET}")
+            print(f"{colors.PURPLE}{colors.BOLD}  - MPI 3.0 (綜合效能指數): {mpi_display_str}  評級: {rating}{colors.RESET}")
+            print(f"{colors.WHITE}    └─ 絕對準確度: {components['absolute_accuracy']:.3f} | 相對優越性: {components['relative_superiority']:.3f} | 未來穩定性: {components['future_stability']:.3f}{colors.RESET}")
             print(f"{colors.WHITE}    └─ {suggestion}{colors.RESET}")
 
-    # 【新增】顯示前向測試報告
     if prequential_report:
         print(prequential_report)
 
