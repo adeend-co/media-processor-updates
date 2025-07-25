@@ -9,14 +9,14 @@
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新 v3.2：將前向測試報告拆分為「效能指標」與「動態適應性評估」，            #
-#           提供更具深度的模型行為洞察。                                            #
+# 更新 v3.2.2：恢復並優化了針對中期數據（6-23個月）的詳細風險因子分析報告，     #
+#             以提供更具解釋性的風險評估。                                          #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v3.2.1"  # Fix: Restore Risk Factor Breakdown Report
+SCRIPT_VERSION = "v3.2.2"  # Fix: Restore and enhance detailed risk factor report
 SCRIPT_UPDATE_DATE = "2025-07-26"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -1342,22 +1342,45 @@ def format_adaptive_dynamics_report(results, full_df, colors):
         
     return "\n".join(report)
 
-# 【新增】格式化風險因子報告的輔助函數
-def format_risk_factors_report(trend_score, trend_scores_detail, vol_score, vol_scores_detail, shock_score, shock_scores_detail, colors):
+# 【升級】格式化詳細風險因子報告的輔助函數
+def format_detailed_risk_analysis_report(dynamic_risk_coefficient, error_coefficient, overall_score, 
+                                       trend_score, trend_scores_detail, 
+                                       vol_score, vol_scores_detail, 
+                                       shock_score, shock_scores_detail, colors):
     """
-    將風險因子的詳細分數格式化為一個整潔的表格。
+    將風險因子的詳細分數格式化為一個多區塊的詳細報告。
     """
-    trend_details = f"加速: {trend_scores_detail['accel']}, 交叉: {trend_scores_detail['crossover']}, 自相關: {trend_scores_detail['autocorr']}"
-    vol_details = f"波動之波動: {vol_scores_detail['vol_of_vol']}, 下行波動: {vol_scores_detail['downside_vol']}, 峰度: {vol_scores_detail['kurtosis']}"
-    shock_details = f"最大衝擊: {shock_scores_detail['max_shock_magnitude']}, 連續衝擊: {shock_scores_detail['consecutive_shocks']}"
+    report = []
+    
+    if dynamic_risk_coefficient is not None:
+        report.append(f"{colors.WHITE}動態風險係數: {dynamic_risk_coefficient:.3f}{colors.RESET}")
+    if error_coefficient is not None:
+        report.append(f"{colors.WHITE}模型誤差係數: {error_coefficient:.3f}{colors.RESET}")
+    
+    report.append(f"\n{colors.WHITE}>>> 詳細風險因子分析{colors.RESET}")
+    report.append(f"{colors.BOLD}總體風險評分: {overall_score:.2f}/10{colors.RESET}")
+    report.append(f"  └ 權重配置: 趨勢(40%) + 波動(35%) + 衝擊(25%)")
 
-    report = [
-        f"\n{colors.WHITE}    ┌───────────────── 風險因子分析 (分數越高風險越大) ─────────────────┐{colors.RESET}",
-        f"{colors.WHITE}    │ 趨勢風險 ({trend_score:.1f}/10): {trend_details:<51} │{colors.RESET}",
-        f"{colors.WHITE}    │ 波動風險 ({vol_score:.1f}/10): {vol_details:<53} │{colors.RESET}",
-        f"{colors.WHITE}    │ 衝擊風險 ({shock_score:.1f}/10): {shock_details:<55} │{colors.RESET}",
-        f"{colors.WHITE}    └─────────────────────────────────────────────────────────────────┘{colors.RESET}"
-    ]
+    # 趨勢風險
+    report.append(f"\n{colors.WHITE}趨勢風險因子:{colors.RESET}")
+    report.append(f"  - 趨勢加速度: {trend_scores_detail['accel']:.1f}/10")
+    report.append(f"  - 滾動平均交叉: {trend_scores_detail['crossover']:.1f}/10")
+    report.append(f"  - 殘差自相關性: {trend_scores_detail['autocorr']:.1f}/10")
+    report.append(f"  - {colors.BOLD}趨勢風險得分: {trend_score:.2f}/10{colors.RESET}")
+
+    # 波動風險
+    report.append(f"\n{colors.WHITE}波動風險因子:{colors.RESET}")
+    report.append(f"  - 波動的波動性: {vol_scores_detail['vol_of_vol']:.1f}/10")
+    report.append(f"  - 下行波動率: {vol_scores_detail['downside_vol']:.1f}/10")
+    report.append(f"  - 峰態: {vol_scores_detail['kurtosis']:.1f}/10")
+    report.append(f"  - {colors.BOLD}波動風險得分: {vol_score:.2f}/10{colors.RESET}")
+
+    # 衝擊風險
+    report.append(f"\n{colors.WHITE}衝擊風險因子:{colors.RESET}")
+    report.append(f"  - 最大衝擊幅度: {shock_scores_detail['max_shock_magnitude']:.1f}/10")
+    report.append(f"  - 連續正向衝擊: {shock_scores_detail['consecutive_shocks']:.1f}/10")
+    report.append(f"  - {colors.BOLD}衝擊風險得分: {shock_score:.2f}/10{colors.RESET}")
+    
     return "\n".join(report)
 
 # --- 【★★★ 此處為核心修正 ★★★】 ---
@@ -1704,7 +1727,7 @@ def train_predict_theta(x_train, y_train, x_predict, theta=2.0):
     # 2. 構建並平滑Theta線
     theta_line_train = theta * (y_train - trend_line_hist) + trend_line_hist
     
-    # 3. 對Theta線進行簡易指数平滑 (SES) 預測
+    # 3. 對Theta線進行簡易指數平滑 (SES) 預測
     forecast_ses = train_predict_ses(theta_line_train, predict_steps=len(x_predict))
 
     # 4. 預測未來的趨勢線
@@ -2304,11 +2327,11 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         quantile_spread = compute_quantile_spread(p25, p75, predicted_value)
 
     # 【錯誤修正】完整接收風險評估的返回元組
-    risk_status, risk_description, suggested_budget, _, trend_score, vol_score, shock_score, data_reliability, error_coefficient, error_buffer, trend_scores, vol_scores, shock_scores, _, risk_buffer = assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly_expenses, p25, p75, historical_wape, historical_rmse, calibration_results=calibration_results, acf_results=acf_results, quantile_spread=quantile_spread)
+    risk_status, risk_description, suggested_budget, dynamic_risk_coefficient, trend_score, vol_score, shock_score, data_reliability, error_coefficient, error_buffer, trend_scores, vol_scores, shock_scores, overall_score, risk_buffer = assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly_expenses, p25, p75, historical_wape, historical_rmse, calibration_results=calibration_results, acf_results=acf_results, quantile_spread=quantile_spread)
     
     # 【新增】調用風險因子報告生成函數
     if trend_scores is not None and isinstance(trend_scores, dict) and not trend_scores.get('is_advanced'):
-        risk_factors_report = format_risk_factors_report(trend_score, trend_scores, vol_score, vol_scores, shock_score, shock_scores, colors)
+        risk_factors_report = format_detailed_risk_analysis_report(dynamic_risk_coefficient, error_coefficient, overall_score, trend_score, trend_scores, vol_score, vol_scores, shock_score, shock_scores, colors)
 
     diagnostic_report = ""
     if residuals is not None and len(residuals)>=2:
