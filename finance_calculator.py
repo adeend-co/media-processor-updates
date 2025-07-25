@@ -2,21 +2,21 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.0                 #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.1                 #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新 v3.0：全面升級至 MPI 3.0 評級系統，整合前向測試 (Prequential Analysis)    #
-#           以評估模型的未來穩定性與真實泛化能力。                                    #
+# 更新 v3.1：集成具備概念飄移偵測與自適應遺忘機制的增強型前向測試框架，         #
+#           以提升模型對動態數據模式的適應能力。                                    #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v3.0"  # MPI 3.0 with Prequential Analysis Integration
+SCRIPT_VERSION = "v3.1"  # Enhanced Prequential Analysis with Concept Drift Adaptation
 SCRIPT_UPDATE_DATE = "2025-07-25"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -1079,7 +1079,7 @@ def calculate_fss(prequential_results, mean_expense):
         'expected_accuracy': expected_accuracy
     }
     
-# 【新增】MPI 3.0 雙維度評級系統
+# 【升級】MPI 3.0 雙維度評級系統
 def calculate_mpi_3_0_and_rate(y_true, historical_pred, global_wape, erai_score, mpi_percentile_rank, fss_score):
     """
     根據 MPI 3.0 雙維度矩陣計算最終評級。
@@ -1183,118 +1183,132 @@ def print_progress_bar(iteration, total, prefix='', suffix='', decimals=1, lengt
         sys.stdout.write('\n')
         sys.stdout.flush()
 
-# --- 【新增】前向測試 (Prequential Analysis) 相關函數 ---
-def run_prequential_evaluation(full_df, colors, min_train_size=18):
+# --- 【升級】增強型前向測試 (Prequential Analysis) 框架 ---
+def run_prequential_evaluation(full_df, colors, min_train_size=18, drift_window_size=12):
     """
-    執行前向測試 (Prequential/Forward-Testing) 來評估模型的動態穩定性。
-    該方法模擬真實預測情境：使用過去所有數據預測下一個時間點。
+    執行增強型前向測試，內建概念飄移偵測與自適應遺忘機制。
     """
     total_len = len(full_df)
     errors, predictions, true_values = [], [], []
+    drift_points = []
     
     color_cyan = colors.CYAN if colors else ''
     color_reset = colors.RESET if colors else ''
     
+    training_start_index = 0
+    error_window = deque(maxlen=drift_window_size)
+    
     num_tests = total_len - min_train_size
-    print(f"\n{color_cyan}正在執行前向測試以評估模型動態穩定性 (共 {num_tests} 次滾動預測)...{color_reset}")
+    print(f"\n{color_cyan}正在執行增強型前向測試 (含概念飄移偵測)，共 {num_tests} 次滾動預測...{color_reset}")
     print_progress_bar(0, num_tests, prefix='進度:', suffix='完成', length=40)
     
     for t_step in range(min_train_size, total_len):
-        train_df = full_df.iloc[:t_step]
+        # 動態調整訓練窗口
+        train_df = full_df.iloc[training_start_index:t_step]
         true_value = full_df.iloc[t_step]['Real_Amount']
         
-        # 使用核心集成模型進行單步預測，關閉內部詳細輸出以保持簡潔
         pred_seq, _, _, _, _, _, _ = run_full_ensemble_pipeline(
             train_df, steps_ahead=1, colors=colors, verbose=False
         )
         
         if pred_seq is not None and len(pred_seq) > 0:
             pred = pred_seq[0]
+            error = true_value - pred
             predictions.append(pred)
             true_values.append(true_value)
-            errors.append(true_value - pred)
+            errors.append(error)
+            error_window.append(error)
+            
+            # 概念飄移偵測
+            if len(error_window) == drift_window_size:
+                half_window = drift_window_size // 2
+                reference_errors = np.array(list(error_window)[:half_window])
+                detection_errors = np.array(list(error_window)[half_window:])
+                
+                ref_mean, ref_std = np.mean(reference_errors), np.std(reference_errors)
+                detect_mean = np.mean(detection_errors)
+                
+                # 如果近期誤差均值偏離歷史誤差2個標準差以上，則認為發生飄移
+                if ref_std > 1e-6 and abs(detect_mean - ref_mean) > 2 * ref_std:
+                    drift_points.append(t_step)
+                    # 觸發遺忘機制：更新下一次訓練的起點
+                    training_start_index = max(0, t_step - min_train_size)
+                    error_window.clear() # 清空窗口以重新建立基準
 
         print_progress_bar(t_step - min_train_size + 1, num_tests, prefix='進度:', suffix='完成', length=40)
 
-    print("前向測試完成。")
+    print("增強型前向測試完成。")
     if not errors:
         return None
     
     return {
         "errors": np.array(errors),
         "predictions": np.array(predictions),
-        "true_values": np.array(true_values)
+        "true_values": np.array(true_values),
+        "drift_points": drift_points
     }
 
-# --- 【修改】加入方向性偏誤評估 ---
-def format_prequential_report(results, mean_expense, colors):
+# --- 【升級】加入方向性偏誤與概念飄移報告 ---
+def format_prequential_report(results, mean_expense, full_df, colors):
     """
-    格式化前向測試的結果，提供包含方向性判斷的中立客觀學術性解讀。
+    格式化增強型前向測試的結果報告。
     """
     if results is None:
         return ""
 
     errors = results["errors"]
     true_values = results["true_values"]
+    drift_points = results["drift_points"]
     
-    # 1. 累計預測誤差 (Cumulative Forecast Error, CFE) -> 評估系統性偏誤
-    cfe_series = np.cumsum(errors)
-    final_cfe = cfe_series[-1]
+    # 1. 系統性偏誤 (Bias)
+    cfe = np.sum(errors)
+    sum_abs_true = np.sum(np.abs(true_values))
     
-    # 【新增】判斷偏誤方向
     bias_direction_text = ""
-    # 設定一個小閾值(平均支出的5%)，避免將隨機噪聲誤判為方向性偏誤
     if final_cfe > (mean_expense * 0.05):
         bias_direction_text = "，持續性地低估實際支出"
     elif final_cfe < -(mean_expense * 0.05):
         bias_direction_text = "，持續性地高估實際支出"
 
-    # 判斷偏誤程度
-    cfe_assessment = ""
-    cfe_ratio = final_cfe / np.sum(true_values) if np.sum(true_values) > 0 else 0
+    cfe_ratio = cfe / sum_abs_true if sum_abs_true > 0 else 0
     mid_point = len(errors) // 2
+    drift_ratio = 0
     if mid_point > 1:
         drift = np.mean(errors[mid_point:]) - np.mean(errors[:mid_point])
         drift_ratio = drift / mean_expense if mean_expense > 0 else 0
-    else:
-        drift_ratio = 0
 
     if abs(cfe_ratio) < 0.1 and abs(drift_ratio) < 0.1:
-        # 對於低偏誤，不強調方向性，因為正負誤差基本抵銷
         cfe_assessment = "低 (模型預測的高估與低估能有效自我校正)"
     elif abs(cfe_ratio) < 0.3 and abs(drift_ratio) < 0.25:
         cfe_assessment = f"中 (模型存在輕微的單向預測漂移{bias_direction_text})"
     else:
-        cfe_assessment = f"高 (模型存在顯著的系統性偏誤{bias_direction_text}，未能適應數據模式)"
+        cfe_assessment = f"高 (模型存在顯著的系統性偏誤{bias_direction_text})"
 
-    # 2. 誤差均方根 (Root Mean Squared Error of Errors, RMSE-E) -> 評估穩定性
+    # 2. 預測一致性 (Consistency)
     rmse_e = np.std(errors, ddof=1) if len(errors) > 1 else 0
     rmse_e_ratio = (rmse_e / mean_expense) * 100 if mean_expense > 0 else 0
     
-    rmse_e_assessment = ""
-    if rmse_e_ratio < 15:
-        rmse_e_assessment = "高度穩定 (誤差幅度一致性高)"
-    elif rmse_e_ratio < 35:
-        rmse_e_assessment = "中度穩定 (誤差幅度存在一定波動)"
-    else:
-        rmse_e_assessment = "表現不穩 (誤差幅度波動劇烈，預測可靠性低)"
+    rmse_e_assessment = "高度穩定" if rmse_e_ratio < 15 else "中度穩定" if rmse_e_ratio < 35 else "表現不穩"
 
-    # 3. 前向測試 WAPE (Prequential WAPE) -> 評估真實誤差率
-    p_wape = 100 * np.sum(np.abs(errors)) / np.sum(np.abs(true_values)) if np.sum(np.abs(true_values)) > 0 else 0
-    
-    p_wape_assessment = ""
-    if p_wape < 15:
-        p_wape_assessment = "優秀"
-    elif p_wape < 30:
-        p_wape_assessment = "良好"
+    # 3. 預期未來誤差 (P-WAPE)
+    p_wape = 100 * np.sum(np.abs(errors)) / sum_abs_true if sum_abs_true > 0 else 0
+    p_wape_assessment = "優秀" if p_wape < 15 else "良好" if p_wape < 30 else "待改進"
+
+    # 4. 概念飄移適應性報告
+    drift_report = ""
+    if not drift_points:
+        drift_report = f"  - {colors.BOLD}模式適應性:{colors.RESET} 觀測期間內數據模式相對穩定，未觸發動態遺忘機制。"
     else:
-        p_wape_assessment = "待改進"
+        drift_dates = [full_df.iloc[i]['Parsed_Date'].strftime('%Y-%m') for i in drift_points]
+        drift_report = (f"  - {colors.BOLD}模式適應性:{colors.RESET} {colors.YELLOW}偵測到 {len(drift_dates)} 個模型適應點 (於 {', '.join(drift_dates)} 附近)，\n"
+                        f"             系統已自動啟用遺忘機制以適應新的數據模式。{colors.RESET}")
 
     report = [
-        f"\n{colors.CYAN}{colors.BOLD}>>> 前向測試儀表板 (動態穩定性評估){colors.RESET}",
+        f"\n{colors.CYAN}{colors.BOLD}>>> 前向測試儀表板 (動態穩定性與適應性評估){colors.RESET}",
         f"  - {colors.BOLD}系統性偏誤 (Bias):{colors.RESET} {cfe_assessment}",
         f"  - {colors.BOLD}預測一致性 (Consistency):{colors.RESET} {rmse_e_assessment} (誤差標準差: {rmse_e:,.2f})",
-        f"  - {colors.BOLD}預期未來誤差 (P-WAPE):{colors.RESET} {p_wape:.2f}% ({p_wape_assessment})"
+        f"  - {colors.BOLD}預期未來誤差 (P-WAPE):{colors.RESET} {p_wape:.2f}% ({p_wape_assessment})",
+        drift_report
     ]
     return "\n".join(report)
 
@@ -1342,17 +1356,12 @@ def run_monte_carlo_cv(full_df, base_models, n_iterations=100, colors=None):
         sum_abs_val_true = np.sum(np.abs(y_val_true))
         val_wape = (np.sum(np.abs(val_residuals)) / sum_abs_val_true * 100) if sum_abs_val_true > 1e-9 else 100.0
 
-        # 計算ERAI所需的分位數預測和穩健WAPE
-        # 在CV中，我們無法知道真實的衝擊，因此 robust wape 就等於全局 wape
         val_wape_robust = val_wape 
-        # 殘差是相對於預測值計算的，不是相對於歷史擬合值
         val_quantile_preds = {q: val_pred + np.percentile(val_residuals, q*100) for q in [0.10, 0.25, 0.75, 0.90]}
 
-        # 計算真實的相對優越性分數 (ERAI)
         rss_val = calculate_erai(y_val_true, val_pred, val_quantile_preds, val_wape_robust)
-        if rss_val is None: rss_val = 0 # 如果計算失敗，給予中性分數
+        if rss_val is None: rss_val = 0
 
-        # 計算絕對準確度分數
         val_wape_score = 1 - (val_wape / 100.0)
         ss_res_val = np.sum(val_residuals**2)
         ss_tot_val = np.sum((y_val_true - np.mean(y_val_true))**2)
@@ -1360,8 +1369,9 @@ def run_monte_carlo_cv(full_df, base_models, n_iterations=100, colors=None):
         r2_score_val = max(0, r2_val)
         aas_val = 0.7 * val_wape_score + 0.3 * r2_score_val
         
-        # 組合最終的MPI分數
-        mpi_score_val = 0.8 * aas_val + 0.2 * rss_val
+        # 在CV中，我們無法執行前向測試，因此FSS設為中性值0.5進行近似
+        fss_val_approx = 0.5
+        mpi_score_val = (0.25 * aas_val) + (0.25 * rss_val) + (0.50 * fss_val_approx)
         
         if np.isfinite(mpi_score_val): mpi_scores.append(mpi_score_val)
         
@@ -2117,7 +2127,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
 
             prequential_results = run_prequential_evaluation(df_for_seasonal_model, colors)
             mean_expense_for_report = monthly_expenses['Real_Amount'].mean() if not monthly_expenses.empty else 0
-            prequential_report = format_prequential_report(prequential_results, mean_expense_for_report, colors)
+            prequential_report = format_prequential_report(prequential_results, mean_expense_for_report, df_for_seasonal_model, colors)
 
         elif 18 <= num_months < 24:
             method_used = " (基於穩健迴歸IRLS-Huber)"
@@ -2183,11 +2193,9 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
 
                 erai_results = perform_internal_benchmarking(data, historical_pred, is_shock_flags)
                 
-                # 【MPI 3.0 整合點】
                 fss_results = calculate_fss(prequential_results, mean_expense_for_report)
                 fss_score = fss_results.get('fss_score', 0)
 
-                # 使用回測結果計算一個用於比較基準的 MPI 3.0 分數
                 temp_mpi_score = calculate_mpi_3_0_and_rate(data, historical_pred, historical_wape, erai_results['erai_score'], 100, fss_score)['mpi_score']
 
                 mpi_percentile_rank = None
