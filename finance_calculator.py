@@ -2177,7 +2177,9 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 slope, intercept, _, _, _ = linregress(x, data)
                 predicted_value = intercept + slope * (num_months + steps_ahead)
                 historical_pred = intercept + slope * x
-                n, x_mean, ssx = len(x), np.mean(x), np.sum((x-x_mean)**2)
+                n = len(x)
+                x_mean = np.mean(x)
+                ssx = np.sum((x - x_mean)**2)
                 if n > 2:
                     mse = np.sum((data-historical_pred)**2)/(n-2)
                     se = np.sqrt(mse * (1 + 1/n + ((num_months+steps_ahead)-x_mean)**2/ssx))
