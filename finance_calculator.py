@@ -1265,9 +1265,9 @@ def format_prequential_report(results, mean_expense, full_df, colors):
     sum_abs_true = np.sum(np.abs(true_values))
     
     bias_direction_text = ""
-    if final_cfe > (mean_expense * 0.05):
+    if cfe > (mean_expense * 0.05):
         bias_direction_text = "，持續性地低估實際支出"
-    elif final_cfe < -(mean_expense * 0.05):
+    elif cfe < -(mean_expense * 0.05):
         bias_direction_text = "，持續性地高估實際支出"
 
     cfe_ratio = cfe / sum_abs_true if sum_abs_true > 0 else 0
