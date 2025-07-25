@@ -1249,7 +1249,6 @@ def run_prequential_evaluation(full_df, colors, min_train_size=18, drift_window_
     }
 
 # --- 【升級】將前向測試報告拆分為兩個獨立函數 ---
-
 def format_prequential_metrics_report(results, mean_expense, colors):
     """
     格式化前向測試的量化指標部分。
@@ -1265,6 +1264,7 @@ def format_prequential_metrics_report(results, mean_expense, colors):
     sum_abs_true = np.sum(np.abs(true_values))
     
     bias_direction_text = ""
+    # 【錯誤修正】使用 cfe 而非未定義的 final_cfe
     if cfe > (mean_expense * 0.05):
         bias_direction_text = "，持續性地低估實際支出"
     elif cfe < -(mean_expense * 0.05):
@@ -2089,24 +2089,29 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
 
     net_balance = total_income - total_expense
 
+    # 【錯誤修正】目標月份邏輯重構
     now = datetime.now()
     current_year, current_month = now.year, now.month
-    if current_month == 12: target_month, target_year = 1, current_year + 1
-    else: target_month, target_year = current_month + 1, current_year
+    if current_month == 12:
+        target_year, target_month = current_year + 1, 1
+    else:
+        target_year, target_month = current_year, current_month + 1
     target_month_str = f"{target_year}-{target_month:02d}"
-
+    target_period = pd.Period(target_month_str, freq='M')
+    
     steps_ahead, step_warning = 1, ""
     if not monthly_expenses.empty:
         last_date = monthly_expenses['Parsed_Date'].max()
         last_period = last_date.to_period('M')
-        target_period = pd.Period(target_month_str, freq='M')
-        steps_ahead = (target_period.to_timestamp().year - last_period.to_timestamp().year) * 12 + (target_period.to_timestamp().month - last_period.to_timestamp().month)
+        
+        # 始終以真實世界的下一個月為目標，計算距離數據末端的步數
+        steps_ahead = (target_period.year - last_period.year) * 12 + (target_period.month - last_period.month)
+        
         if steps_ahead <= 0:
-            target_period_dt = last_period.to_timestamp() + pd.DateOffset(months=1)
-            target_month_str, target_month, target_year = target_period_dt.strftime('%Y-%m'), target_period_dt.month, target_period_dt.year
-            steps_ahead = 1
-            if "預測將順延" not in str(warnings_report):
-                 warnings_report += f"\n{colors.YELLOW}警告：目標月份已過期，預測將自動順延至 ({target_month_str})。{colors.RESET}"
+            warnings_report += f"\n{colors.YELLOW}警告：您的數據包含未來月份的記錄。預測仍將針對真實世界的下一個月份 ({target_month_str})。{colors.RESET}"
+            # 即使數據超前，也只預測一步，目標仍是下個月
+            steps_ahead = 1 
+        
         if steps_ahead > 12:
             step_warning = f"{colors.YELLOW}警告：預測步數超過12 ({steps_ahead})，遠期預測不確定性增加。{colors.RESET}"
 
@@ -2177,9 +2182,12 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 slope, intercept, _, _, _ = linregress(x, data)
                 predicted_value = intercept + slope * (num_months + steps_ahead)
                 historical_pred = intercept + slope * x
+                
+                # 【錯誤修正】拆分多重賦值以避免 UnboundLocalError
                 n = len(x)
                 x_mean = np.mean(x)
                 ssx = np.sum((x - x_mean)**2)
+                
                 if n > 2:
                     mse = np.sum((data-historical_pred)**2)/(n-2)
                     se = np.sqrt(mse * (1 + 1/n + ((num_months+steps_ahead)-x_mean)**2/ssx))
@@ -2276,7 +2284,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         acf_results = compute_acf_results(residuals, num_months)
         quantile_spread = compute_quantile_spread(p25, p75, predicted_value)
 
-    risk_status, risk_description, suggested_budget, _, _, _, _, data_reliability, error_coefficient, error_buffer, trend_scores, _, _, _, _ = assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly_expenses, p25, p75, historical_wape, historical_rmse, calibration_results=calibration_results, acf_results=acf_results, quantile_spread=quantile_spread)
+    risk_status, risk_description, suggested_budget, _, _, _, _, data_reliability, error_coefficient, error_buffer, trend_scores, _, _, _, risk_buffer = assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly_expenses, p25, p75, historical_wape, historical_rmse, calibration_results=calibration_results, acf_results=acf_results, quantile_spread=quantile_spread)
 
     diagnostic_report = ""
     if residuals is not None and len(residuals)>=2:
@@ -2361,13 +2369,9 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         
         is_advanced_model = isinstance(trend_scores, dict) and trend_scores.get('is_advanced')
         
-        if is_advanced_model:
-            change_date, num_shocks = trend_scores.get('change_date'), trend_scores.get('num_shocks', 0)
-            if change_date: print(f"{colors.YELLOW}模式偵測: 偵測到您的支出模式在 {colors.BOLD}{change_date}{colors.RESET}{colors.YELLOW} 附近發生結構性轉變，後續評估將更側重於近期數據。{colors.RESET}")
-            if num_shocks > 0: print(f"{colors.RED}衝擊偵測: 系統識別出 {colors.BOLD}{num_shocks} 次「真實衝擊」{colors.RESET}{colors.RED} (極端開銷)，已納入攤提金準備中。{colors.RESET}")
-
         if suggested_budget is not None:
             print(f"{colors.BOLD}建議 {target_month_str} 預算: {suggested_budget:,.2f} 元{colors.RESET}")
+            # 【錯誤修正】補全預算說明的 else 邏輯
             if is_advanced_model:
                 print(f"{colors.WHITE}    └ 計算依據 (三層式模型):{colors.RESET}")
                 print(f"{colors.GREEN}      - 基礎日常預算 (P75): {trend_scores.get('base', 0):,.2f}{colors.RESET}")
@@ -2375,8 +2379,10 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 print(f"{colors.RED}      - 模型誤差緩衝: {trend_scores.get('error', 0):,.2f}{colors.RESET}")
                 if error_coefficient is not None: print(f"\n{colors.BOLD}模型誤差係數: {error_coefficient:.2f}{colors.RESET}")
             else:
-                if error_buffer is not None and 'risk_buffer' in locals() and risk_buffer is not None: print(f"{colors.WHITE}    └ 計算依據：風險緩衝 ({risk_buffer:,.2f}) + 模型誤差緩衝 ({error_buffer:,.2f}){colors.RESET}")
-                elif "替代公式" in data_reliability: print(f"{colors.WHITE}    └ 計算依據：近期平均支出 + 15% 固定緩衝。{colors.RESET}")
+                if error_buffer is not None and risk_buffer is not None:
+                    print(f"{colors.WHITE}    └ 計算依據：風險緩衝 ({risk_buffer:,.2f}) + 模型誤差緩衝 ({error_buffer:,.2f}){colors.RESET}")
+                elif "替代公式" in data_reliability:
+                    print(f"{colors.WHITE}    └ 計算依據：近期平均支出 + 15% 固定緩衝。{colors.RESET}")
 
         if not is_advanced_model and trend_scores is not None and not isinstance(trend_scores, dict):
             pass
