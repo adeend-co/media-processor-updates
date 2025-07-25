@@ -1168,9 +1168,9 @@ def run_prequential_evaluation(full_df, colors, min_train_size=18):
     print(f"\n{color_cyan}正在執行前向測試以評估模型動態穩定性 (共 {num_tests} 次滾動預測)...{color_reset}")
     print_progress_bar(0, num_tests, prefix='進度:', suffix='完成', length=40)
     
-    for t in range(min_train_size, total_len):
-        train_df = full_df.iloc[:t]
-        true_value = full_df.iloc[t]['Real_Amount']
+    for t_step in range(min_train_size, total_len):
+        train_df = full_df.iloc[:t_step]
+        true_value = full_df.iloc[t_step]['Real_Amount']
         
         # 使用核心集成模型進行單步預測，關閉內部詳細輸出以保持簡潔
         pred_seq, _, _, _, _, _, _ = run_full_ensemble_pipeline(
@@ -1183,7 +1183,7 @@ def run_prequential_evaluation(full_df, colors, min_train_size=18):
             true_values.append(true_value)
             errors.append(true_value - pred)
 
-        print_progress_bar(t - min_train_size + 1, num_tests, prefix='進度:', suffix='完成', length=40)
+        print_progress_bar(t_step - min_train_size + 1, num_tests, prefix='進度:', suffix='完成', length=40)
 
     print("前向測試完成。")
     if not errors:
@@ -1195,9 +1195,10 @@ def run_prequential_evaluation(full_df, colors, min_train_size=18):
         "true_values": np.array(true_values)
     }
 
+# --- 【修改】加入方向性偏誤評估 ---
 def format_prequential_report(results, mean_expense, colors):
     """
-    格式化前向測試的結果，提供中立客觀的學術性解讀。
+    格式化前向測試的結果，提供包含方向性判斷的中立客觀學術性解讀。
     """
     if results is None:
         return ""
@@ -1209,23 +1210,31 @@ def format_prequential_report(results, mean_expense, colors):
     cfe_series = np.cumsum(errors)
     final_cfe = cfe_series[-1]
     
+    # 【新增】判斷偏誤方向
+    bias_direction_text = ""
+    # 設定一個小閾值(平均支出的5%)，避免將隨機噪聲誤判為方向性偏誤
+    if final_cfe > (mean_expense * 0.05):
+        bias_direction_text = "，持續性地低估實際支出"
+    elif final_cfe < -(mean_expense * 0.05):
+        bias_direction_text = "，持續性地高估實際支出"
+
+    # 判斷偏誤程度
     cfe_assessment = ""
-    # 透過分析最終CFE與誤差序列趨勢來判斷偏誤
-    cfe_ratio = final_cfe / mean_expense if mean_expense else 0
-    # 比較後一半誤差均值與前一半，觀察是否有漂移
+    cfe_ratio = final_cfe / np.sum(true_values) if np.sum(true_values) > 0 else 0
     mid_point = len(errors) // 2
     if mid_point > 1:
         drift = np.mean(errors[mid_point:]) - np.mean(errors[:mid_point])
-        drift_ratio = drift / mean_expense if mean_expense else 0
+        drift_ratio = drift / mean_expense if mean_expense > 0 else 0
     else:
         drift_ratio = 0
 
-    if abs(cfe_ratio) < 0.2 and abs(drift_ratio) < 0.1:
+    if abs(cfe_ratio) < 0.1 and abs(drift_ratio) < 0.1:
+        # 對於低偏誤，不強調方向性，因為正負誤差基本抵銷
         cfe_assessment = "低 (模型預測的高估與低估能有效自我校正)"
-    elif abs(cfe_ratio) < 0.5 and abs(drift_ratio) < 0.25:
-        cfe_assessment = "中 (模型存在輕微的單向預測漂移，適應性需觀察)"
+    elif abs(cfe_ratio) < 0.3 and abs(drift_ratio) < 0.25:
+        cfe_assessment = f"中 (模型存在輕微的單向預測漂移{bias_direction_text})"
     else:
-        cfe_assessment = "高 (模型存在顯著的系統性偏誤，未能適應數據模式)"
+        cfe_assessment = f"高 (模型存在顯著的系統性偏誤{bias_direction_text}，未能適應數據模式)"
 
     # 2. 誤差均方根 (Root Mean Squared Error of Errors, RMSE-E) -> 評估穩定性
     rmse_e = np.std(errors, ddof=1) if len(errors) > 1 else 0
