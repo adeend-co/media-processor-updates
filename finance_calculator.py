@@ -2,21 +2,21 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.1                 #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.2                 #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新 v3.1：集成具備概念飄移偵測與自適應遺忘機制的增強型前向測試框架，         #
-#           以提升模型對動態數據模式的適應能力。                                    #
+# 更新 v3.2：將前向測試報告拆分為「效能指標」與「動態適應性評估」，            #
+#           提供更具深度的模型行為洞察。                                            #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v3.1"  # Enhanced Prequential Analysis with Concept Drift Adaptation
+SCRIPT_VERSION = "v3.2"  # Refined Adaptive Dynamics Reporting
 SCRIPT_UPDATE_DATE = "2025-07-25"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -1248,17 +1248,17 @@ def run_prequential_evaluation(full_df, colors, min_train_size=18, drift_window_
         "drift_points": drift_points
     }
 
-# --- 【升級】加入方向性偏誤與概念飄移報告 ---
-def format_prequential_report(results, mean_expense, full_df, colors):
+# --- 【升級】將前向測試報告拆分為兩個獨立函數 ---
+
+def format_prequential_metrics_report(results, mean_expense, colors):
     """
-    格式化增強型前向測試的結果報告。
+    格式化前向測試的量化指標部分。
     """
     if results is None:
         return ""
 
     errors = results["errors"]
     true_values = results["true_values"]
-    drift_points = results["drift_points"]
     
     # 1. 系統性偏誤 (Bias)
     cfe = np.sum(errors)
@@ -1294,22 +1294,52 @@ def format_prequential_report(results, mean_expense, full_df, colors):
     p_wape = 100 * np.sum(np.abs(errors)) / sum_abs_true if sum_abs_true > 0 else 0
     p_wape_assessment = "優秀" if p_wape < 15 else "良好" if p_wape < 30 else "待改進"
 
-    # 4. 概念飄移適應性報告
-    drift_report = ""
-    if not drift_points:
-        drift_report = f"  - {colors.BOLD}模式適應性:{colors.RESET} 觀測期間內數據模式相對穩定，未觸發動態遺忘機制。"
-    else:
-        drift_dates = [full_df.iloc[i]['Parsed_Date'].strftime('%Y-%m') for i in drift_points]
-        drift_report = (f"  - {colors.BOLD}模式適應性:{colors.RESET} {colors.YELLOW}偵測到 {len(drift_dates)} 個模型適應點 (於 {', '.join(drift_dates)} 附近)，\n"
-                        f"             系統已自動啟用遺忘機制以適應新的數據模式。{colors.RESET}")
-
     report = [
-        f"\n{colors.CYAN}{colors.BOLD}>>> 前向測試儀表板 (動態穩定性與適應性評估){colors.RESET}",
+        f"\n{colors.CYAN}{colors.BOLD}>>> 前向測試儀表板 (動態效能指標){colors.RESET}",
         f"  - {colors.BOLD}系統性偏誤 (Bias):{colors.RESET} {cfe_assessment}",
         f"  - {colors.BOLD}預測一致性 (Consistency):{colors.RESET} {rmse_e_assessment} (誤差標準差: {rmse_e:,.2f})",
         f"  - {colors.BOLD}預期未來誤差 (P-WAPE):{colors.RESET} {p_wape:.2f}% ({p_wape_assessment})",
-        drift_report
     ]
+    return "\n".join(report)
+
+def format_adaptive_dynamics_report(results, full_df, colors):
+    """
+    格式化動態適應性評估的質化分析部分。
+    """
+    if results is None:
+        return ""
+    
+    num_simulations = len(results["errors"])
+    drift_points = results["drift_points"]
+    num_drifts = len(drift_points)
+
+    drift_detection_line = f"  - {colors.BOLD}概念飄移偵測:{colors.RESET} 在過去 {num_simulations} 個月的模擬中，共偵測到 {num_drifts} 次顯著的模式轉變。"
+    
+    if num_drifts == 0:
+        last_drift_line = f"  - {colors.BOLD}最後飄移時間:{colors.RESET} 未偵測到顯著模式轉變，顯示近期模式具備高度連續性。"
+        adaptation_strategy_line = ""
+    else:
+        last_drift_index = drift_points[-1]
+        last_drift_date_str = full_df.iloc[last_drift_index]['Parsed_Date'].strftime('%Y-%m')
+        
+        # 評估近期穩定性：如果最後一次飄移發生在超過6個測試步之前
+        steps_since_last_drift = (len(full_df) - 1) - last_drift_index
+        if steps_since_last_drift > 6:
+            stability_comment = "(近期模式相對穩定)"
+        else:
+            stability_comment = f"({colors.YELLOW}近期模式處於變動期{colors.RESET})"
+        
+        last_drift_line = f"  - {colors.BOLD}最後飄移時間:{colors.RESET} 約在 {last_drift_date_str} {stability_comment}"
+        adaptation_strategy_line = f"  - {colors.BOLD}模型適應策略:{colors.RESET} 已啟用「動態遺忘機制」，在偵測到飄移後自動聚焦於近期數據進行學習。"
+
+    report = [
+        f"\n{colors.CYAN}{colors.BOLD}>>> 動態適應性評估 (基於增強型前向測試){colors.RESET}",
+        drift_detection_line,
+        last_drift_line,
+    ]
+    if adaptation_strategy_line:
+        report.append(adaptation_strategy_line)
+        
     return "\n".join(report)
 
 # --- 【★★★ 此處為核心修正 ★★★】 ---
@@ -2090,7 +2120,8 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     meta_model_weights_report = ""
     mpi_results = None
     cv_mpi_scores = None
-    prequential_report = ""
+    prequential_metrics_report = "" 
+    adaptive_dynamics_report = ""
 
     if analysis_data is not None and len(analysis_data) >= 2:
         num_months = len(analysis_data)
@@ -2127,7 +2158,8 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
 
             prequential_results = run_prequential_evaluation(df_for_seasonal_model, colors)
             mean_expense_for_report = monthly_expenses['Real_Amount'].mean() if not monthly_expenses.empty else 0
-            prequential_report = format_prequential_report(prequential_results, mean_expense_for_report, df_for_seasonal_model, colors)
+            prequential_metrics_report = format_prequential_metrics_report(prequential_results, mean_expense_for_report, colors)
+            adaptive_dynamics_report = format_adaptive_dynamics_report(prequential_results, df_for_seasonal_model, colors)
 
         elif 18 <= num_months < 24:
             method_used = " (基於穩健迴歸IRLS-Huber)"
@@ -2289,8 +2321,11 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             print(f"{colors.WHITE}    └─ 絕對準確度: {components['absolute_accuracy']:.3f} | 相對優越性: {components['relative_superiority']:.3f} | 未來穩定性: {components['future_stability']:.3f}{colors.RESET}")
             print(f"{colors.WHITE}    └─ {suggestion}{colors.RESET}")
 
-    if prequential_report:
-        print(prequential_report)
+    if prequential_metrics_report:
+        print(prequential_metrics_report)
+    
+    if adaptive_dynamics_report:
+        print(adaptive_dynamics_report)
 
     if diagnostic_report:
         print(f"\n{colors.CYAN}{colors.BOLD}>>> 模型診斷儀表板 (進階誤差評估){colors.RESET}")
