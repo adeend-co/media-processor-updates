@@ -2,7 +2,7 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.63                #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.62                #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
@@ -15,8 +15,8 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.63"  # Final P-Rank & Meta-Model Logic Fix
-SCRIPT_UPDATE_DATE = "2025-07-25"
+SCRIPT_VERSION = "v2.62"  # Final P-Rank & Meta-Model Logic Fix
+SCRIPT_UPDATE_DATE = "2025-07-23"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
 # 說明：您可以直接修改這裡的數字，來調整報告中各表格欄位的寬度，以適應您的終端機字體。
@@ -1597,7 +1597,7 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, ense
             model_func = base_models[key]
             if key in ['seasonal']:
                  meta_features[val_idx, j] = model_func(df_train, len(x_val))
-            elif key in ['poly', 'huber']:
+            elif key in ['poly', 'huber', 'theta']: # Theta法也需要x軸
                  meta_features[val_idx, j] = model_func(x_train, y_train, x_val)
             else:
                  meta_features[val_idx, j] = model_func(y_train, len(x_val))
@@ -1620,7 +1620,7 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, ense
         model_func = base_models[key]
         if key in ['seasonal']:
             final_base_predictions[:, j] = model_func(monthly_expenses_df, steps_ahead)
-        elif key in ['poly', 'huber']:
+        elif key in ['poly', 'huber', 'theta']: # Theta法也需要x軸
             final_base_predictions[:, j] = model_func(x, data, x_future)
         else:
             final_base_predictions[:, j] = model_func(data, steps_ahead)
@@ -1786,7 +1786,7 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
         model_func = base_models[key]
         if key in ['seasonal']:
             future_base_predictions[:, j] = model_func(monthly_expenses_df, steps_ahead)
-        elif key in ['poly', 'huber']:
+        elif key in ['poly', 'huber', 'theta']: # Theta法也需要x軸
             future_base_predictions[:, j] = model_func(x, data, x_future)
         else:
             future_base_predictions[:, j] = model_func(data, steps_ahead)
@@ -1801,7 +1801,7 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
     historical_pred_fused = X_level2_hist_oof @ weights_level2
 
     # --- 階段 3: 殘差提升 ---
-    # 【方法三整合點】引入自適應早停機制的殘差提升
+    # 【方法三整合點與錯誤修正】引入自適應早停機制的殘差提升，並修復變數覆蓋問題
     if verbose: print(f"{colors.CYAN}--- 階段 3/3: 執行具備早停機制的殘差提升 (Boosting) ... ---{colors.RESET}")
     T = 10 # 最大迭代次數
     learning_rate = 0.1
@@ -1812,7 +1812,6 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
     weak_model_func = base_models['huber']
     
     # 初始化早停機制所需變量
-    # 確保 data 和 historical_pred_final 長度一致
     min_len_for_rmse = min(len(data), len(historical_pred_final))
     initial_residuals = data[:min_len_for_rmse] - historical_pred_final[:min_len_for_rmse]
     best_rmse = np.sqrt(np.mean(initial_residuals**2))
@@ -1821,33 +1820,29 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
     best_historical_pred = historical_pred_final.copy()
     best_future_pred = future_pred_final_seq.copy()
 
-    for t in range(T):
+    # 【錯誤修正】將迴圈變數從 't' 改為 'boost_iter' 以避免覆蓋 scipy.stats.t
+    for boost_iter in range(T):
         residuals_boost = data - historical_pred_final
         
-        # 擬合殘差
         res_pred_hist = weak_model_func(x, residuals_boost, x)
         res_pred_future_seq = weak_model_func(x, residuals_boost, x_future)
         
-        # 更新預測
         historical_pred_final += learning_rate * res_pred_hist
         future_pred_final_seq += learning_rate * res_pred_future_seq
         
-        # 檢查是否改善並觸發早停
         current_rmse = np.sqrt(np.mean((data - historical_pred_final)**2))
         if current_rmse < best_rmse:
             best_rmse = current_rmse
             epochs_without_improvement = 0
-            # 保存當前最佳預測
             best_historical_pred = historical_pred_final.copy()
             best_future_pred = future_pred_final_seq.copy()
         else:
             epochs_without_improvement += 1
         
         if epochs_without_improvement >= patience:
-            if verbose: print(f"{colors.YELLOW}資訊：殘差提升在第 {t+1} 次迭代觸發早停機制以防止過擬合。{colors.RESET}")
+            if verbose: print(f"{colors.YELLOW}資訊：殘差提升在第 {boost_iter + 1} 次迭代觸發早停機制以防止過擬合。{colors.RESET}")
             break
             
-    # 採用早停機制找到的最佳預測結果
     historical_pred_final = best_historical_pred
     future_pred_final_seq = best_future_pred
     
@@ -1859,7 +1854,7 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
         residuals_final = data - historical_pred_final
         mse = np.sum(residuals_final**2) / dof
         se = np.sqrt(mse) * np.sqrt(1 + 1/num_months)
-        t_val = t.ppf(0.975, dof)
+        t_val = t.ppf(0.975, dof) # 此處的 't' 現在可以正確引用 scipy.stats.t
         lower_seq, upper_seq = future_pred_final_seq - t_val*se, future_pred_final_seq + t_val*se
     
     meta_model_names = ["貪婪前向選擇法", "性能加權平均法", "非負最小平方法"]
@@ -1973,7 +1968,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             meta_model_weights_report = f"  - 元模型融合策略: {', '.join(report_parts_meta)}"
             
             # 【方法一整合點】加入新模型的中文名稱以供報告顯示
-            model_names_base = ["多項式", "穩健趨勢", "指數平滑", "漂移", "季節分解", "季節模仿", "單純", "移動平均", "滾動中位", "全局中位", "簡易平滑法", "Theta趨勢法"]
+            model_names_base = ["多項式", "穩健趨勢", "指數平滑", "漂移", "季節分解", "季節模仿", "單純", "移動平均", "滾動中位", "全局中位", "簡易平滑", "Theta趨勢"]
             sorted_parts = sorted(zip(effective_base_weights, model_names_base), reverse=True)
             report_parts_base_sorted = [f"{name}({weight:.1%})" for weight, name in sorted_parts if weight > 0.001]
             chunk_size = 3
@@ -2085,7 +2080,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     calibration_results, acf_results, quantile_spread = {}, {}, 0.0
     if residuals is not None and len(residuals)>=2:
         # 確保 data 和 quantile_preds 長度一致
-        min_len_diag = min(len(data), len(next(iter(quantile_preds.values()))))
+        min_len_diag = len(residuals) # residuals 已經是最小長度
         data_diag = data[:min_len_diag]
         quantile_preds_diag = {q: p[:min_len_diag] for q, p in quantile_preds.items()}
         
