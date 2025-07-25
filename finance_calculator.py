@@ -2,7 +2,7 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.62                #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v2.63                #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
@@ -15,7 +15,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v2.62"  # Final P-Rank & Meta-Model Logic Fix
+SCRIPT_VERSION = "v2.63"  # Final P-Rank & Meta-Model Logic Fix
 SCRIPT_UPDATE_DATE = "2025-07-23"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -1461,6 +1461,62 @@ def train_predict_moving_average(y_train, predict_steps, window_size=6):
     mean_value = np.mean(y_train[-actual_window:])
     return np.full(predict_steps, mean_value)
 
+# 【方法一 新增模型】
+def train_predict_ses(y_train, predict_steps, alpha=0.5):
+    """
+    簡易指數平滑法 (Simple Exponential Smoothing, SES)。
+    適用於無明顯趨勢或季節性的數據序列。
+    """
+    if len(y_train) == 0:
+        return np.zeros(predict_steps)
+    
+    smoothed = np.zeros_like(y_train, dtype=float)
+    smoothed[0] = y_train[0]
+    for i in range(1, len(y_train)):
+        smoothed[i] = alpha * y_train[i] + (1 - alpha) * smoothed[i-1]
+        
+    # 對於無趨勢模型，未來預測值等於最後一個平滑值
+    return np.full(predict_steps, smoothed[-1])
+
+# 【方法一 新增模型】
+def train_predict_theta(y_train, predict_steps, theta=2.0):
+    """
+    Theta 趨勢法。
+    一種結合線性趨勢外推與指數平滑的穩健預測模型。
+    """
+    n = len(y_train)
+    if n < 2:
+        return np.full(predict_steps, y_train[-1] if n > 0 else 0)
+
+    # 1. 擬合長期趨勢線
+    x = np.arange(n)
+    try:
+        slope, intercept, _, _, _ = linregress(x, y_train)
+    except ValueError:
+        return np.full(predict_steps, np.mean(y_train))
+    trend_line = intercept + slope * x
+
+    # 2. 構建並平滑Theta線
+    # Theta線旨在減弱原始序列的趨勢性
+    theta_line = theta * (y_train - trend_line) + trend_line
+    
+    # 對Theta線進行簡易指數平滑 (SES)
+    alpha = 0.5
+    smoothed_theta = np.zeros_like(theta_line, dtype=float)
+    smoothed_theta[0] = theta_line[0]
+    for i in range(1, n):
+        smoothed_theta[i] = alpha * theta_line[i] + (1 - alpha) * smoothed_theta[i-1]
+    
+    # 3. 預測未來
+    forecast_ses = np.full(predict_steps, smoothed_theta[-1])
+    
+    future_x = np.arange(n, n + predict_steps)
+    forecast_trend = intercept + slope * future_x
+    
+    # 4. 組合預測結果
+    final_forecast = (1/theta) * forecast_ses + (1 - 1/theta) * forecast_trend
+    return final_forecast
+
 # --- 【★★★ 此處為已修正的函數 ★★★】 ---
 def train_greedy_forward_ensemble(X_meta, y_true, model_keys, n_iterations=20, colors=None, verbose=True):
     """
@@ -1515,10 +1571,12 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, ense
     x = np.arange(1, len(data) + 1)
     n_samples = len(data)
     
+    # 【方法一整合點】將新模型加入基礎模型庫
     base_models = {
         'poly': train_predict_poly, 'huber': train_predict_huber, 'des': train_predict_des, 'drift': train_predict_drift,
         'seasonal': train_predict_seasonal, 'seasonal_naive': train_predict_seasonal_naive, 'naive': train_predict_naive,
         'moving_average': train_predict_moving_average, 'rolling_median': train_predict_rolling_median, 'global_median': train_predict_global_median,
+        'ses': train_predict_ses, 'theta': train_predict_theta,
     }
     
     model_keys = list(base_models.keys())
@@ -1650,10 +1708,12 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
     x = np.arange(1, len(data) + 1)
     num_months = len(data)
 
+    # 【方法一整合點】將新模型加入基礎模型庫
     base_models = {
         'poly': train_predict_poly, 'huber': train_predict_huber, 'des': train_predict_des, 'drift': train_predict_drift,
         'seasonal': train_predict_seasonal, 'seasonal_naive': train_predict_seasonal_naive, 'naive': train_predict_naive,
         'moving_average': train_predict_moving_average, 'rolling_median': train_predict_rolling_median, 'global_median': train_predict_global_median,
+        'ses': train_predict_ses, 'theta': train_predict_theta,
     }
     model_keys = list(base_models.keys())
     
@@ -1741,20 +1801,56 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
     historical_pred_fused = X_level2_hist_oof @ weights_level2
 
     # --- 階段 3: 殘差提升 ---
-    if verbose: print(f"{colors.CYAN}--- 階段 3/3: 執行殘差提升 (Boosting) 最終修正... ---{colors.RESET}")
-    T = 10
+    # 【方法三整合點】引入自適應早停機制的殘差提升
+    if verbose: print(f"{colors.CYAN}--- 階段 3/3: 執行具備早停機制的殘差提升 (Boosting) ... ---{colors.RESET}")
+    T = 10 # 最大迭代次數
     learning_rate = 0.1
+    patience = 3 # 連續3次無改善則停止
+    
     historical_pred_final = historical_pred_fused.copy()
     future_pred_final_seq = future_pred_fused_seq.copy()
     weak_model_func = base_models['huber']
+    
+    # 初始化早停機制所需變量
+    # 確保 data 和 historical_pred_final 長度一致
+    min_len_for_rmse = min(len(data), len(historical_pred_final))
+    initial_residuals = data[:min_len_for_rmse] - historical_pred_final[:min_len_for_rmse]
+    best_rmse = np.sqrt(np.mean(initial_residuals**2))
+    
+    epochs_without_improvement = 0
+    best_historical_pred = historical_pred_final.copy()
+    best_future_pred = future_pred_final_seq.copy()
 
-    for _ in range(T):
+    for t in range(T):
         residuals_boost = data - historical_pred_final
+        
+        # 擬合殘差
         res_pred_hist = weak_model_func(x, residuals_boost, x)
         res_pred_future_seq = weak_model_func(x, residuals_boost, x_future)
+        
+        # 更新預測
         historical_pred_final += learning_rate * res_pred_hist
         future_pred_final_seq += learning_rate * res_pred_future_seq
-
+        
+        # 檢查是否改善並觸發早停
+        current_rmse = np.sqrt(np.mean((data - historical_pred_final)**2))
+        if current_rmse < best_rmse:
+            best_rmse = current_rmse
+            epochs_without_improvement = 0
+            # 保存當前最佳預測
+            best_historical_pred = historical_pred_final.copy()
+            best_future_pred = future_pred_final_seq.copy()
+        else:
+            epochs_without_improvement += 1
+        
+        if epochs_without_improvement >= patience:
+            if verbose: print(f"{colors.YELLOW}資訊：殘差提升在第 {t+1} 次迭代觸發早停機制以防止過擬合。{colors.RESET}")
+            break
+            
+    # 採用早停機制找到的最佳預測結果
+    historical_pred_final = best_historical_pred
+    future_pred_final_seq = best_future_pred
+    
     effective_base_weights = (gfs_weights * weights_level2[0]) + (pwa_weights * weights_level2[1]) + (nnls_weights * weights_level2[2])
     
     dof = num_months - X_level2_hist_oof.shape[1] - 1
@@ -1855,10 +1951,12 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         num_months = len(analysis_data)
         data, x = analysis_data, np.arange(1, num_months + 1)
 
+        # 【方法一整合點】將新模型加入基礎模型庫
         base_models = {
             'poly': train_predict_poly, 'huber': train_predict_huber, 'des': train_predict_des, 'drift': train_predict_drift,
             'seasonal': train_predict_seasonal, 'seasonal_naive': train_predict_seasonal_naive, 'naive': train_predict_naive,
             'moving_average': train_predict_moving_average, 'rolling_median': train_predict_rolling_median, 'global_median': train_predict_global_median,
+            'ses': train_predict_ses, 'theta': train_predict_theta,
         }
         
         if num_months >= 24:
@@ -1874,7 +1972,8 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             report_parts_meta = [f"{name}({weight:.1%})" for name, weight in weights_level2_report.items() if weight > 0.001]
             meta_model_weights_report = f"  - 元模型融合策略: {', '.join(report_parts_meta)}"
             
-            model_names_base = ["多項式", "穩健趨勢", "指數平滑", "漂移", "季節分解", "季節模仿", "單純", "移動平均", "滾動中位", "全局中位"]
+            # 【方法一整合點】加入新模型的中文名稱以供報告顯示
+            model_names_base = ["多項式", "穩健趨勢", "指數平滑", "漂移", "季節分解", "季節模仿", "單純", "移動平均", "滾動中位", "全局中位", "簡易平滑法", "Theta趨勢法"]
             sorted_parts = sorted(zip(effective_base_weights, model_names_base), reverse=True)
             report_parts_base_sorted = [f"{name}({weight:.1%})" for weight, name in sorted_parts if weight > 0.001]
             chunk_size = 3
@@ -1910,12 +2009,15 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 predicted_value, historical_pred = ema.iloc[-1], ema.values
             
         if historical_pred is not None:
-            residuals = data - historical_pred
+            # 確保 data 和 historical_pred 長度一致以計算殘差
+            min_len_for_res = min(len(data), len(historical_pred))
+            residuals = data[:min_len_for_res] - historical_pred[:min_len_for_res]
+            
             ci_str = f" [下限：{lower:,.2f}，上限：{upper:,.2f}] (95% 信心)" if lower is not None and upper is not None else ""
             predicted_expense_str = f"{predicted_value:,.2f}"
             historical_mae, historical_rmse = np.mean(np.abs(residuals)), np.sqrt(np.mean(residuals**2))
             
-            sum_abs_actual = np.sum(np.abs(data))
+            sum_abs_actual = np.sum(np.abs(data[:min_len_for_res]))
             historical_wape = (np.sum(np.abs(residuals)) / sum_abs_actual * 100) if sum_abs_actual > 1e-9 else 100.0
             
             if len(data) > 1:
@@ -1926,13 +2028,14 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
 
             res_quantiles = np.percentile(residuals, [q * 100 for q in quantiles])
             for i, q in enumerate(quantiles):
+                # 確保 quantile_preds 和 historical_pred 長度相同
                 quantile_preds[q] = historical_pred + res_quantiles[i]
                 
             if num_months >= 12: 
                 anomaly_info = calculate_anomaly_scores(data)
-                is_shock_flags = anomaly_info['Is_Shock'].values
+                is_shock_flags = anomaly_info['Is_Shock'].values[:min_len_for_res]
                 residuals_clean = residuals[~is_shock_flags]
-                data_clean = data[~is_shock_flags]
+                data_clean = data[:min_len_for_res][~is_shock_flags]
                 if len(residuals_clean) > 0:
                     historical_rmse_robust = np.sqrt(np.mean(residuals_clean**2))
                 
@@ -1981,7 +2084,12 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
 
     calibration_results, acf_results, quantile_spread = {}, {}, 0.0
     if residuals is not None and len(residuals)>=2:
-        calibration_results = compute_calibration_results(data, quantile_preds, quantiles)
+        # 確保 data 和 quantile_preds 長度一致
+        min_len_diag = min(len(data), len(next(iter(quantile_preds.values()))))
+        data_diag = data[:min_len_diag]
+        quantile_preds_diag = {q: p[:min_len_diag] for q, p in quantile_preds.items()}
+        
+        calibration_results = compute_calibration_results(data_diag, quantile_preds_diag, quantiles)
         acf_results = compute_acf_results(residuals, num_months)
         quantile_spread = compute_quantile_spread(p25, p75, predicted_value)
 
@@ -1989,7 +2097,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
 
     diagnostic_report = ""
     if residuals is not None and len(residuals)>=2:
-        diagnostic_report = f"{quantile_loss_report(data, quantile_preds, quantiles, colors)}\n\n{model_calibration_analysis(data, quantile_preds, quantiles, colors)}\n\n{residual_autocorrelation_diagnosis(residuals, num_months, colors)}"
+        diagnostic_report = f"{quantile_loss_report(data_diag, quantile_preds_diag, quantiles, colors)}\n\n{model_calibration_analysis(data_diag, quantile_preds_diag, quantiles, colors)}\n\n{residual_autocorrelation_diagnosis(residuals, num_months, colors)}"
 
     print(f"\n{colors.CYAN}{colors.BOLD}========== 財務分析與預測報告 =========={colors.RESET}")
     if not is_wide_format_expense_only: print(f"{colors.BOLD}總收入: {colors.GREEN}{total_income:,.2f}{colors.RESET}")
