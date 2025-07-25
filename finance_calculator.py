@@ -1478,42 +1478,35 @@ def train_predict_ses(y_train, predict_steps, alpha=0.5):
     # 對於無趨勢模型，未來預測值等於最後一個平滑值
     return np.full(predict_steps, smoothed[-1])
 
-# 【方法一 新增模型】
-def train_predict_theta(y_train, predict_steps, theta=2.0):
+# 【方法一 新增模型與錯誤修正】
+def train_predict_theta(x_train, y_train, x_predict, theta=2.0):
     """
     Theta 趨勢法。
     一種結合線性趨勢外推與指數平滑的穩健預測模型。
     """
     n = len(y_train)
     if n < 2:
-        return np.full(predict_steps, y_train[-1] if n > 0 else 0)
+        return np.full(len(x_predict), y_train[-1] if n > 0 else 0)
 
-    # 1. 擬合長期趨勢線
-    x = np.arange(n)
+    # 1. 使用提供的 x_train 和 y_train 擬合長期趨勢線
     try:
-        slope, intercept, _, _, _ = linregress(x, y_train)
+        slope, intercept, _, _, _ = linregress(x_train, y_train)
     except ValueError:
-        return np.full(predict_steps, np.mean(y_train))
-    trend_line = intercept + slope * x
+        return np.full(len(x_predict), np.mean(y_train))
+    
+    # 計算歷史數據的趨勢線
+    trend_line_hist = intercept + slope * x_train
 
     # 2. 構建並平滑Theta線
-    # Theta線旨在減弱原始序列的趨勢性
-    theta_line = theta * (y_train - trend_line) + trend_line
+    theta_line_train = theta * (y_train - trend_line_hist) + trend_line_hist
     
-    # 對Theta線進行簡易指數平滑 (SES)
-    alpha = 0.5
-    smoothed_theta = np.zeros_like(theta_line, dtype=float)
-    smoothed_theta[0] = theta_line[0]
-    for i in range(1, n):
-        smoothed_theta[i] = alpha * theta_line[i] + (1 - alpha) * smoothed_theta[i-1]
+    # 3. 對Theta線進行簡易指數平滑 (SES) 預測
+    forecast_ses = train_predict_ses(theta_line_train, predict_steps=len(x_predict))
+
+    # 4. 預測未來的趨勢線
+    forecast_trend = intercept + slope * x_predict
     
-    # 3. 預測未來
-    forecast_ses = np.full(predict_steps, smoothed_theta[-1])
-    
-    future_x = np.arange(n, n + predict_steps)
-    forecast_trend = intercept + slope * future_x
-    
-    # 4. 組合預測結果
+    # 5. 組合預測結果
     final_forecast = (1/theta) * forecast_ses + (1 - 1/theta) * forecast_trend
     return final_forecast
 
@@ -1597,7 +1590,7 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, ense
             model_func = base_models[key]
             if key in ['seasonal']:
                  meta_features[val_idx, j] = model_func(df_train, len(x_val))
-            elif key in ['poly', 'huber', 'theta']: # Theta法也需要x軸
+            elif key in ['poly', 'huber', 'theta']: # 【錯誤修正】確保 theta 使用正確的呼叫方式
                  meta_features[val_idx, j] = model_func(x_train, y_train, x_val)
             else:
                  meta_features[val_idx, j] = model_func(y_train, len(x_val))
@@ -1620,7 +1613,7 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, ense
         model_func = base_models[key]
         if key in ['seasonal']:
             final_base_predictions[:, j] = model_func(monthly_expenses_df, steps_ahead)
-        elif key in ['poly', 'huber', 'theta']: # Theta法也需要x軸
+        elif key in ['poly', 'huber', 'theta']: # 【錯誤修正】確保 theta 使用正確的呼叫方式
             final_base_predictions[:, j] = model_func(x, data, x_future)
         else:
             final_base_predictions[:, j] = model_func(data, steps_ahead)
@@ -1786,7 +1779,7 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
         model_func = base_models[key]
         if key in ['seasonal']:
             future_base_predictions[:, j] = model_func(monthly_expenses_df, steps_ahead)
-        elif key in ['poly', 'huber', 'theta']: # Theta法也需要x軸
+        elif key in ['poly', 'huber', 'theta']: # 【錯誤修正】確保 theta 使用正確的呼叫方式
             future_base_predictions[:, j] = model_func(x, data, x_future)
         else:
             future_base_predictions[:, j] = model_func(data, steps_ahead)
