@@ -16,7 +16,7 @@
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
 SCRIPT_VERSION = "v2.63"  # Final P-Rank & Meta-Model Logic Fix
-SCRIPT_UPDATE_DATE = "2025-07-23"
+SCRIPT_UPDATE_DATE = "2025-07-25"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
 # 說明：您可以直接修改這裡的數字，來調整報告中各表格欄位的寬度，以適應您的終端機字體。
