@@ -1152,6 +1152,112 @@ def print_progress_bar(iteration, total, prefix='', suffix='', decimals=1, lengt
         sys.stdout.write('\n')
         sys.stdout.flush()
 
+# --- 【新增】前向測試 (Prequential Analysis) 相關函數 ---
+def run_prequential_evaluation(full_df, colors, min_train_size=18):
+    """
+    執行前向測試 (Prequential/Forward-Testing) 來評估模型的動態穩定性。
+    該方法模擬真實預測情境：使用過去所有數據預測下一個時間點。
+    """
+    total_len = len(full_df)
+    errors, predictions, true_values = [], [], []
+    
+    color_cyan = colors.CYAN if colors else ''
+    color_reset = colors.RESET if colors else ''
+    
+    num_tests = total_len - min_train_size
+    print(f"\n{color_cyan}正在執行前向測試以評估模型動態穩定性 (共 {num_tests} 次滾動預測)...{color_reset}")
+    print_progress_bar(0, num_tests, prefix='進度:', suffix='完成', length=40)
+    
+    for t in range(min_train_size, total_len):
+        train_df = full_df.iloc[:t]
+        true_value = full_df.iloc[t]['Real_Amount']
+        
+        # 使用核心集成模型進行單步預測，關閉內部詳細輸出以保持簡潔
+        pred_seq, _, _, _, _, _, _ = run_full_ensemble_pipeline(
+            train_df, steps_ahead=1, colors=colors, verbose=False
+        )
+        
+        if pred_seq is not None and len(pred_seq) > 0:
+            pred = pred_seq[0]
+            predictions.append(pred)
+            true_values.append(true_value)
+            errors.append(true_value - pred)
+
+        print_progress_bar(t - min_train_size + 1, num_tests, prefix='進度:', suffix='完成', length=40)
+
+    print("前向測試完成。")
+    if not errors:
+        return None
+    
+    return {
+        "errors": np.array(errors),
+        "predictions": np.array(predictions),
+        "true_values": np.array(true_values)
+    }
+
+def format_prequential_report(results, mean_expense, colors):
+    """
+    格式化前向測試的結果，提供中立客觀的學術性解讀。
+    """
+    if results is None:
+        return ""
+
+    errors = results["errors"]
+    true_values = results["true_values"]
+    
+    # 1. 累計預測誤差 (Cumulative Forecast Error, CFE) -> 評估系統性偏誤
+    cfe_series = np.cumsum(errors)
+    final_cfe = cfe_series[-1]
+    
+    cfe_assessment = ""
+    # 透過分析最終CFE與誤差序列趨勢來判斷偏誤
+    cfe_ratio = final_cfe / mean_expense if mean_expense else 0
+    # 比較後一半誤差均值與前一半，觀察是否有漂移
+    mid_point = len(errors) // 2
+    if mid_point > 1:
+        drift = np.mean(errors[mid_point:]) - np.mean(errors[:mid_point])
+        drift_ratio = drift / mean_expense if mean_expense else 0
+    else:
+        drift_ratio = 0
+
+    if abs(cfe_ratio) < 0.2 and abs(drift_ratio) < 0.1:
+        cfe_assessment = "低 (模型預測的高估與低估能有效自我校正)"
+    elif abs(cfe_ratio) < 0.5 and abs(drift_ratio) < 0.25:
+        cfe_assessment = "中 (模型存在輕微的單向預測漂移，適應性需觀察)"
+    else:
+        cfe_assessment = "高 (模型存在顯著的系統性偏誤，未能適應數據模式)"
+
+    # 2. 誤差均方根 (Root Mean Squared Error of Errors, RMSE-E) -> 評估穩定性
+    rmse_e = np.std(errors, ddof=1) if len(errors) > 1 else 0
+    rmse_e_ratio = (rmse_e / mean_expense) * 100 if mean_expense > 0 else 0
+    
+    rmse_e_assessment = ""
+    if rmse_e_ratio < 15:
+        rmse_e_assessment = "高度穩定 (誤差幅度一致性高)"
+    elif rmse_e_ratio < 35:
+        rmse_e_assessment = "中度穩定 (誤差幅度存在一定波動)"
+    else:
+        rmse_e_assessment = "表現不穩 (誤差幅度波動劇烈，預測可靠性低)"
+
+    # 3. 前向測試 WAPE (Prequential WAPE) -> 評估真實誤差率
+    p_wape = 100 * np.sum(np.abs(errors)) / np.sum(np.abs(true_values)) if np.sum(np.abs(true_values)) > 0 else 0
+    
+    p_wape_assessment = ""
+    if p_wape < 15:
+        p_wape_assessment = "優秀"
+    elif p_wape < 30:
+        p_wape_assessment = "良好"
+    else:
+        p_wape_assessment = "待改進"
+
+    report = [
+        f"\n{colors.CYAN}{colors.BOLD}>>> 前向測試儀表板 (動態穩定性評估){colors.RESET}",
+        f"  - {colors.BOLD}系統性偏誤 (Bias):{colors.RESET} {cfe_assessment}",
+        f"  - {colors.BOLD}預測一致性 (Consistency):{colors.RESET} {rmse_e_assessment} (誤差標準差: {rmse_e:,.2f})",
+        f"  - {colors.BOLD}預期未來誤差 (P-WAPE):{colors.RESET} {p_wape:.2f}% ({p_wape_assessment})"
+    ]
+    return "\n".join(report)
+
 # --- 【★★★ 此處為核心修正 ★★★】 ---
 def run_monte_carlo_cv(full_df, base_models, n_iterations=100, colors=None):
     """執行蒙地卡羅交叉驗證以生成動態MPI評級基準。"""
@@ -1934,6 +2040,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     meta_model_weights_report = ""
     mpi_results = None
     cv_mpi_scores = None
+    prequential_report = "" # 【新增】初始化前向測試報告變數
 
     if analysis_data is not None and len(analysis_data) >= 2:
         num_months = len(analysis_data)
@@ -1969,7 +2076,12 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             lines = [", ".join(chunk) for chunk in chunks]
             indentation = "\n" + " " * 16
             base_model_weights_report = f"  - 基礎模型權重: {indentation.join(lines)}"
-        
+
+            # 【新增】觸發前向測試
+            prequential_results = run_prequential_evaluation(df_for_seasonal_model, colors)
+            mean_expense_for_report = monthly_expenses['Real_Amount'].mean() if not monthly_expenses.empty else 0
+            prequential_report = format_prequential_report(prequential_results, mean_expense_for_report, colors)
+
         elif 18 <= num_months < 24:
             method_used = " (基於穩健迴歸IRLS-Huber)"
             pred_seq, historical_pred, _, lower_seq, upper_seq = huber_robust_regression(x, data, steps_ahead)
@@ -2128,6 +2240,9 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             print(f"{colors.WHITE}    └─ 絕對準確度: {components['absolute_accuracy']:.3f} | 相對優越性 (ERAI): {components['relative_superiority']:.3f}{colors.RESET}")
             print(f"{colors.WHITE}    └─ {suggestion}{colors.RESET}")
 
+    # 【新增】顯示前向測試報告
+    if prequential_report:
+        print(prequential_report)
 
     if diagnostic_report:
         print(f"\n{colors.CYAN}{colors.BOLD}>>> 模型診斷儀表板 (進階誤差評估){colors.RESET}")
