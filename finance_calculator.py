@@ -2422,10 +2422,10 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             change_date = trend_scores.get('change_date')
             
             if change_date:
-                print(f"{colors.WHITE}  - 模式偵測: 偵測到您的支出模式在{colors.YELLOW} {change_date} {colors.RESET}附近發生結構性轉變，後續評估將更側重於近期數據。{colors.RESET}")
+                print(f"{colors.YELLOW}  - 模式偵測{colors.RESET}: 偵測到您的支出模式在{colors.YELLOW}{colors.BOLD} {change_date} {colors.RESET}附近發生結構性轉變，後續評估將更側重於近期數據。{colors.RESET}")
             
             if num_shocks > 0:
-                print(f"{colors.RED}  - 衝擊偵測: 系統識別出{colors.BOLD} {num_shocks} {colors.RESET}{colors.RED}次「真實衝擊」(極端開銷)，已納入攤提金準備中。{colors.RESET}")
+                print(f"{colors.RED}  - 衝擊偵測{colors.RESET}: 系統識別出{colors.RED}{colors.BOLD} {num_shocks} {colors.RESET}{colors.RED}次「真實衝擊」(極端開銷)，已納入攤提金準備中。{colors.RESET}")
         # <<< END: 提示訊息結束 >>>
         
         if suggested_budget is not None:
