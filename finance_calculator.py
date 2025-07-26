@@ -16,7 +16,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v3.2.4"  # Feat: Integrate advanced SciPy modules for optimization and statistical testing
+SCRIPT_VERSION = "v3.2.5"  # Fix: Use Welch's t-test for robust drift detection
 SCRIPT_UPDATE_DATE = "2025-07-26"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -1228,11 +1228,11 @@ def print_progress_bar(iteration, total, prefix='', suffix='', decimals=1, lengt
         sys.stdout.write('\n')
         sys.stdout.flush()
 
-# --- 【升級】增強型前向測試 (Prequential Analysis) 框架 (★★★ 已整合 SciPy ttest_1samp ★★★) ---
+# --- 【★★★ 此處為核心升級 ★★★】---
 def run_prequential_evaluation(full_df, colors, min_train_size=18, drift_window_size=12):
     """
     執行增強型前向測試，內建概念飄移偵測與自適應遺忘機制。
-    【v3.2.4 升級】: 使用 scipy.stats.ttest_1samp 進行統計顯著性飄移偵測。
+    【v3.2.5 升級】: 使用 Welch's t-test (ttest_ind, equal_var=False) 進行更穩健的飄移偵測。
     """
     total_len = len(full_df)
     errors, predictions, true_values = [], [], []
@@ -1242,15 +1242,13 @@ def run_prequential_evaluation(full_df, colors, min_train_size=18, drift_window_
     color_reset = colors.RESET if colors else ''
     
     training_start_index = 0
-    # 使用 deque 作為滑動窗口
-    error_window = deque(maxlen=drift_window_size)
+    error_history = [] # 儲存所有歷史誤差
     
     num_tests = total_len - min_train_size
-    print(f"\n{color_cyan}正在執行增強型前向測試 (含統計顯著性飄移偵測)，共 {num_tests} 次滾動預測...{color_reset}")
+    print(f"\n{color_cyan}正在執行增強型前向測試 (含 Welch's t-檢定飄移偵測)，共 {num_tests} 次滾動預測...{color_reset}")
     print_progress_bar(0, num_tests, prefix='進度:', suffix='完成', length=40)
     
     for t_step in range(min_train_size, total_len):
-        # 動態調整訓練窗口
         train_df = full_df.iloc[training_start_index:t_step]
         true_value = full_df.iloc[t_step]['Real_Amount']
         
@@ -1264,21 +1262,25 @@ def run_prequential_evaluation(full_df, colors, min_train_size=18, drift_window_
             predictions.append(pred)
             true_values.append(true_value)
             errors.append(error)
-            error_window.append(error)
+            error_history.append(error)
             
-            # 【v3.2.4 核心改造】概念飄移偵測
-            # 僅在窗口滿時執行檢定，且窗口內至少有足夠樣本
-            if len(error_window) == drift_window_size and drift_window_size > 5:
-                # 虛無假設 H0: 近期誤差的平均值等於 0 (無顯著偏誤)
-                # 備擇假設 H1: 近期誤差的平均值不等於 0 (存在顯著偏誤)
-                _, p_value = stats.ttest_1samp(a=error_window, popmean=0)
+            # --- 【v3.2.5 核心改造】Welch's t-test 飄移偵測 ---
+            # 當有足夠的歷史誤差和當前窗口誤差時執行
+            current_window_size = len(error_history) - drift_window_size
+            if current_window_size >= 5 and drift_window_size >= 5: # 確保兩個樣本都有足夠數據
+                reference_errors = np.array(error_history[:-current_window_size])
+                detection_errors = np.array(error_history[-current_window_size:])
+
+                # 虛無假設 H0: 參考窗口和偵測窗口的誤差均值相等 (無飄移)
+                # 備擇假設 H1: 兩者均值不等 (有飄移)
+                # equal_var=False 執行 Welch's t-test，對兩樣本方差不敏感
+                _, p_value = stats.ttest_ind(reference_errors, detection_errors, equal_var=False)
                 
-                # 如果 p-value 小於 0.05，我們有足夠信心拒絕 H0，認為發生了飄移
                 if p_value < 0.05:
                     drift_points.append(t_step)
-                    # 觸發遺忘機制：更新下一次訓練的起點
+                    # 觸發遺忘機制
                     training_start_index = max(0, t_step - min_train_size)
-                    error_window.clear() # 清空窗口以重新建立基準
+                    error_history = [] # 清空歷史以重新建立基準
 
         print_progress_bar(t_step - min_train_size + 1, num_tests, prefix='進度:', suffix='完成', length=40)
 
@@ -1292,6 +1294,7 @@ def run_prequential_evaluation(full_df, colors, min_train_size=18, drift_window_
         "true_values": np.array(true_values),
         "drift_points": drift_points
     }
+
 
 # --- 【升級】將前向測試報告拆分為兩個獨立函數 ---
 def format_prequential_metrics_report(results, mean_expense, colors):
@@ -1358,7 +1361,7 @@ def format_adaptive_dynamics_report(results, full_df, colors):
     drift_points = results["drift_points"]
     num_drifts = len(drift_points)
 
-    drift_detection_line = f"  - {colors.BOLD}概念飄移偵測:{colors.RESET} 在過去 {num_simulations} 個月的模擬中，共偵測到 {num_drifts} 次顯著的模式轉變 (基於 t-檢定, p<0.05)。"
+    drift_detection_line = f"  - {colors.BOLD}概念飄移偵測:{colors.RESET} 在過去 {num_simulations} 個月的模擬中，共偵測到 {num_drifts} 次顯著的模式轉變 (基於 Welch's t-檢定, p<0.05)。"
     
     if num_drifts == 0:
         last_drift_line = f"  - {colors.BOLD}最後飄移時間:{colors.RESET} 未偵測到顯著模式轉變，顯示近期模式具備高度連續性。"
@@ -2165,7 +2168,6 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
                     w_future = model_func(x, residuals_hist, x_future)
                 else:
                     # SES, rolling_median 等模型預測歷史值較為複雜，此處為簡化實現
-                    # 它們將使用整個殘差序列來預測未來，並假設歷史預測為0
                     w_hist = np.zeros_like(residuals_hist) 
                     w_future = model_func(residuals_hist, steps_ahead)
                 
