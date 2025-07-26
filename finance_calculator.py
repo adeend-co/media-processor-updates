@@ -16,7 +16,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v3.2.5"  # Fix: Implement hybrid statistical drift detection for robustness
+SCRIPT_VERSION = "v3.2.6"  # Feat: Implement dual-track hybrid drift detection for sensitivity and robustness
 SCRIPT_UPDATE_DATE = "2025-07-26"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -1228,12 +1228,11 @@ def print_progress_bar(iteration, total, prefix='', suffix='', decimals=1, lengt
         sys.stdout.write('\n')
         sys.stdout.flush()
 
-# --- 【v3.2.5 核心升級】混合式統計飄移偵測框架 ---
+# --- 【v3.2.6 核心升級】雙軌式混合飄移偵測框架 ---
 def run_prequential_evaluation(full_df, colors, min_train_size=18, drift_window_size=12):
     """
-    執行增強型前向測試，採用混合式統計飄移偵測。
-    【v3.2.5 升級】: 恢復雙窗口比較，並結合獨立樣本 t-檢定 (ttest_ind) 和
-                     Mann-Whitney U 檢定，以實現對均值和分布變化的穩健偵測。
+    執行增強型前向測試，採用雙軌式混合飄移偵測。
+    【v3.2.6 升級】: 引入「快速通道」捕捉劇烈變化，並保留「統計通道」處理漸進變化。
     """
     total_len = len(full_df)
     errors, predictions, true_values = [], [], []
@@ -1246,7 +1245,7 @@ def run_prequential_evaluation(full_df, colors, min_train_size=18, drift_window_
     error_window = deque(maxlen=drift_window_size)
     
     num_tests = total_len - min_train_size
-    print(f"\n{color_cyan}正在執行增強型前向測試 (含混合式統計飄移偵測)，共 {num_tests} 次滾動預測...{color_reset}")
+    print(f"\n{color_cyan}正在執行增強型前向測試 (含雙軌式混合飄移偵測)，共 {num_tests} 次滾動預測...{color_reset}")
     print_progress_bar(0, num_tests, prefix='進度:', suffix='完成', length=40)
     
     for t_step in range(min_train_size, total_len):
@@ -1265,31 +1264,43 @@ def run_prequential_evaluation(full_df, colors, min_train_size=18, drift_window_
             errors.append(error)
             error_window.append(error)
 
-            # 【v3.2.5 核心改造】混合式統計飄移偵測
+            # 【v3.2.6 核心改造】雙軌式混合飄移偵測
             if len(error_window) == drift_window_size:
                 half_window = drift_window_size // 2
                 reference_errors = np.array(list(error_window)[:half_window])
                 detection_errors = np.array(list(error_window)[half_window:])
                 
-                # 確保兩個窗口都有足夠樣本進行比較
                 if len(reference_errors) < 3 or len(detection_errors) < 3:
                     continue
 
-                try:
-                    # 檢定 1: 獨立樣本 t-檢定 (比較均值)
-                    _, p_value_ttest = stats.ttest_ind(reference_errors, detection_errors, equal_var=False) # Welch's t-test
-                    
-                    # 檢定 2: Mann-Whitney U 檢定 (比較分布/中位數，對離群值穩健)
-                    _, p_value_mannwhitney = stats.mannwhitneyu(reference_errors, detection_errors, alternative='two-sided')
-                    
-                    # 只要任一檢定顯示顯著差異 (p < 0.05)，就認為發生飄移
-                    if p_value_ttest < 0.05 or p_value_mannwhitney < 0.05:
-                        drift_points.append(t_step)
-                        training_start_index = max(0, t_step - min_train_size)
-                        error_window.clear()
-                except ValueError:
-                    # 如果窗口內數據完全相同，檢定會報錯，此時跳過
-                    continue
+                drift_detected = False
+                
+                # --- 快速通道：偵測劇烈衝擊 ---
+                median_ref = np.median(reference_errors)
+                median_det = np.median(detection_errors)
+                q1_ref, q3_ref = np.percentile(reference_errors, [25, 75])
+                iqr_ref = q3_ref - q1_ref
+                
+                # 如果近期誤差中位數偏離歷史中位數超過 1.5 倍的歷史波動範圍，視為衝擊
+                if iqr_ref > 1e-6 and abs(median_det - median_ref) > 1.5 * iqr_ref:
+                    drift_detected = True
+                
+                # --- 常規通道：偵測統計轉變 (僅在快速通道未觸發時執行) ---
+                if not drift_detected:
+                    try:
+                        _, p_ttest = stats.ttest_ind(reference_errors, detection_errors, equal_var=False)
+                        _, p_mannwhitney = stats.mannwhitneyu(reference_errors, detection_errors, alternative='two-sided')
+                        
+                        if p_ttest < 0.05 or p_mannwhitney < 0.05:
+                            drift_detected = True
+                    except ValueError:
+                        pass # 數據完全相同，忽略
+
+                # --- 觸發飄移後的處理 ---
+                if drift_detected:
+                    drift_points.append(t_step)
+                    training_start_index = max(0, t_step - min_train_size)
+                    error_window.clear()
 
         print_progress_bar(t_step - min_train_size + 1, num_tests, prefix='進度:', suffix='完成', length=40)
 
@@ -1370,7 +1381,7 @@ def format_adaptive_dynamics_report(results, full_df, colors):
     drift_points = results["drift_points"]
     num_drifts = len(drift_points)
 
-    drift_detection_line = f"  - {colors.BOLD}概念飄移偵測:{colors.RESET} 在過去 {num_simulations} 個月的模擬中，共偵測到 {num_drifts} 次顯著的模式轉變 (基於 t-檢定與U-檢定, p<0.05)。"
+    drift_detection_line = f"  - {colors.BOLD}概念飄移偵測:{colors.RESET} 在過去 {num_simulations} 個月的模擬中，共偵測到 {num_drifts} 次顯著的模式轉變 (基於雙軌式混合偵測)。"
     
     if num_drifts == 0:
         last_drift_line = f"  - {colors.BOLD}最後飄移時間:{colors.RESET} 未偵測到顯著模式轉變，顯示近期模式具備高度連續性。"
