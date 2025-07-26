@@ -9,14 +9,14 @@
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新 v3.2.3：將殘差提升升級為集成殘差提升(ERB)，模擬N-BEATS的殘差堆疊思想，   #
-#             以增強對複雜模式的學習能力，同時確保無新增依賴。                    #
+# 更新 v3.2.2：恢復並優化了針對中期數據（6-23個月）的詳細風險因子分析報告，     #
+#             以提供更具解釋性的風險評估。                                          #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v3.2.3"  # Implemented Ensemble Residual Boosting (ERB)
+SCRIPT_VERSION = "v3.2.2"  # Fix: Restore and enhance detailed risk factor report
 SCRIPT_UPDATE_DATE = "2025-07-26"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -2006,7 +2006,7 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
         model_func = base_models[key]
         if key in ['seasonal']:
             future_base_predictions[:, j] = model_func(monthly_expenses_df, steps_ahead)
-        elif key in ['poly', 'huber', 'theta']: # 【錯誤修正】確保 theta 使用正確的呼叫方式
+        elif key in ['poly', 'huber', 'theta']:
             future_base_predictions[:, j] = model_func(x, data, x_future)
         else:
             future_base_predictions[:, j] = model_func(data, steps_ahead)
@@ -2020,58 +2020,74 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
     future_pred_fused_seq = X_level2_future @ weights_level2
     historical_pred_fused = X_level2_hist_oof @ weights_level2
 
-    # --- 階段 3: 殘差提升 ---
-    # 【方法三整合點與錯誤修正】引入自適應早停機制的殘差提升，並修復變數覆蓋問題
-    if verbose: print(f"{colors.CYAN}--- 階段 3/3: 執行具備早停機制的殘差提升 (Boosting) ... ---{colors.RESET}")
-    T = 10 # 最大迭代次數
-    learning_rate = 0.1
-    patience = 2 # 連續2次無改善則停止
+    # ---【!!! 核心修改區域 START !!!】---
+    # --- 階段 3: 集成殘差提升 (Ensemble Residual Boosting, ERB) ---
+    if verbose: print(f"{colors.CYAN}--- 階段 3/3: 執行集成殘差提升 (ERB)，模仿 N-BEATS 殘差堆疊 ... ---{colors.RESET}")
     
-    historical_pred_final = historical_pred_fused.copy()
-    future_pred_final_seq = future_pred_fused_seq.copy()
-    
-    # 【升級】定義 ERB 的弱學習器庫
+    # 定義弱學習器庫（專家小組）
     weak_learners = {
         'huber': base_models['huber'],
         'median': base_models['rolling_median'],
         'ses': base_models['ses']
     }
-    
-    # 初始化早停機制所需變量
+
+    T = 10 # 最大提升輪數
+    learning_rate = 0.1
+    patience = 2 # 連續2輪無改善則停止
+
+    historical_pred_final = historical_pred_fused.copy()
+    future_pred_final_seq = future_pred_fused_seq.copy()
+
+    # 初始化早停機制
     min_len_for_rmse = min(len(data), len(historical_pred_final))
     initial_residuals = data[:min_len_for_rmse] - historical_pred_final[:min_len_for_rmse]
     best_rmse = np.sqrt(np.mean(initial_residuals**2))
-    
     epochs_without_improvement = 0
+    
+    # 儲存最佳迭代結果以防止過擬合
     best_historical_pred = historical_pred_final.copy()
     best_future_pred = future_pred_final_seq.copy()
 
-    # 【錯誤修正】將迴圈變數從 't' 改為 'boost_iter' 以避免覆蓋 scipy.stats.t
     for boost_iter in range(T):
         residuals_boost = data - historical_pred_final
         
-        # 【升級】讓每個弱學習器都來預測當前的殘差
+        # 讓每個弱學習器都來預測當前的殘差
         weak_preds_hist = []
         weak_preds_future = []
         
         for name, model_func in weak_learners.items():
-            # 內部適配器邏輯，確保函數被正確呼叫
-            if name == 'huber':
-                res_pred_hist = model_func(x, residuals_boost, x)
-                res_pred_future_seq = model_func(x, residuals_boost, x_future)
-            else: # for median and ses (這兩種模型不使用 x 軸)
-                # 為了安全地處理邊界情況，我們需要一個包裝器或更複雜的調用
-                # 此處簡化為直接調用，但在真實情境中可能需要更穩健的適配器
-                try:
-                    res_pred_hist = model_func(residuals_boost, len(x))
-                    res_pred_future_seq = model_func(residuals_boost, steps_ahead)
-                except: # 如果任何非趨勢模型失敗，則用0填充
-                    res_pred_hist = np.zeros_like(historical_pred_final)
-                    res_pred_future_seq = np.zeros_like(future_pred_final_seq)
-
-            weak_preds_hist.append(res_pred_hist)
-            weak_preds_future.append(res_pred_future_seq)
+            res_pred_hist = None
+            res_pred_future_seq = None
             
+            try:
+                if name == 'huber':
+                    # Huber 模型可以直接預測歷史和未來
+                    res_pred_hist = model_func(x, residuals_boost, x)
+                    res_pred_future_seq = model_func(x, residuals_boost, x_future)
+                elif name == 'median':
+                    # 對於歷史，使用滾動中位數擬合；對於未來，使用原始的預測函數
+                    res_pred_hist = pd.Series(residuals_boost).rolling(window=6, min_periods=1).median().fillna(0).values
+                    res_pred_future_seq = model_func(residuals_boost, steps_ahead)
+                elif name == 'ses':
+                    # 對於歷史，使用指數平滑擬合；對於未來，使用原始的預測函數
+                    res_pred_hist = pd.Series(residuals_boost).ewm(alpha=0.5, adjust=False).mean().fillna(0).values
+                    res_pred_future_seq = model_func(residuals_boost, steps_ahead)
+                
+                # 驗證預測結果的有效性
+                if res_pred_hist is not None and res_pred_future_seq is not None and \
+                   len(res_pred_hist) == len(data) and len(res_pred_future_seq) == steps_ahead:
+                    weak_preds_hist.append(res_pred_hist)
+                    weak_preds_future.append(res_pred_future_seq)
+
+            except Exception:
+                # 如果任何弱學習器失敗，則跳過它，不影響整體流程
+                continue
+
+        # 如果沒有任何弱學習器成功預測，則提前退出循環
+        if not weak_preds_hist:
+            if verbose: print(f"{colors.YELLOW}警告：在第 {boost_iter + 1} 次殘差提升中，所有弱學習器均未能產生有效預測。提前終止提升。{colors.RESET}")
+            break
+
         # 對弱學習器的預測進行簡單平均，作為本輪的殘差預測
         combined_residual_pred_hist = np.mean(np.array(weak_preds_hist), axis=0)
         combined_residual_pred_future = np.mean(np.array(weak_preds_future), axis=0)
@@ -2080,21 +2096,25 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
         historical_pred_final += learning_rate * combined_residual_pred_hist
         future_pred_final_seq += learning_rate * combined_residual_pred_future
         
+        # 檢查是否改善並觸發早停
         current_rmse = np.sqrt(np.mean((data - historical_pred_final)**2))
         if current_rmse < best_rmse:
             best_rmse = current_rmse
             epochs_without_improvement = 0
+            # 儲存當前最佳的預測結果
             best_historical_pred = historical_pred_final.copy()
             best_future_pred = future_pred_final_seq.copy()
         else:
             epochs_without_improvement += 1
         
         if epochs_without_improvement >= patience:
-            if verbose: print(f"{colors.YELLOW}資訊：集成殘差提升在第 {boost_iter + 1} 次迭代觸發早停機制。{colors.RESET}")
+            if verbose: print(f"{colors.YELLOW}資訊：集成殘差提升在第 {boost_iter + 1} 次迭代觸發早停機制以防止過擬合。{colors.RESET}")
             break
             
+    # 在循環結束後，恢復到最佳迭代的結果
     historical_pred_final = best_historical_pred
     future_pred_final_seq = best_future_pred
+    # ---【!!! 核心修改區域 END !!!】---
     
     effective_base_weights = (gfs_weights * weights_level2[0]) + (pwa_weights * weights_level2[1]) + (nnls_weights * weights_level2[2])
     
@@ -2198,7 +2218,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     cv_mpi_scores = None
     prequential_metrics_report = "" 
     adaptive_dynamics_report = ""
-    risk_factors_report = ""
+    risk_factors_report = "" # 【新增】初始化風險因子報告變數
 
     if analysis_data is not None and len(analysis_data) >= 2:
         num_months = len(analysis_data)
@@ -2212,7 +2232,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         }
         
         if num_months >= 24:
-            method_used = " (基於三層式混合集成法 - 自舉法校準)"
+            method_used = " (基於三層式混合集成法 - ERB 強化)"
             
             future_pred_final_seq, historical_pred, effective_base_weights, weights_level2_report, lower_seq, upper_seq, _ = \
                 run_full_ensemble_pipeline(df_for_seasonal_model, steps_ahead, colors, verbose=True)
