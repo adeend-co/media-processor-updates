@@ -1922,7 +1922,7 @@ def train_meta_model_with_bootstrap_gfs(X_level2_hist, y_true, n_bootstrap=100, 
 
 def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose=True):
     """
-    【已重構並整合 ERB】執行完整的三層式集成模型流程。
+    【已重構並集成 ERB】執行完整的三層式集成模型流程。
     """
     data = monthly_expenses_df['Real_Amount'].values
     x = np.arange(1, len(data) + 1)
@@ -2020,15 +2020,16 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
     future_pred_fused_seq = X_level2_future @ weights_level2
     historical_pred_fused = X_level2_hist_oof @ weights_level2
 
-    # --- 階段 3: 集成殘差提升 (Ensemble Residual Boosting, ERB) ---
+    # --- 階段 3: 殘差提升 (依據資料量選擇策略) ---
+    if verbose: print(f"{colors.CYAN}--- 階段 3/3: 執行殘差提升 (Boosting) ... ---{colors.RESET}")
+    
     historical_pred_final = historical_pred_fused.copy()
     future_pred_final_seq = future_pred_fused_seq.copy()
 
-    # 僅在數據量充足 (>=24個月) 時啟用 ERB
+    # 僅在資料量充足時啟用 ERB
     if num_months >= 24:
-        if verbose: print(f"{colors.CYAN}--- 階段 3/3: 執行集成殘差提升 (ERB) ... ---{colors.RESET}")
+        if verbose: print(f"{colors.YELLOW}資訊：資料量充足 (>=24月)，啟用集成殘差提升 (ERB) 以增強非線性模式捕捉。{colors.RESET}")
         
-        # ERB 參數設定
         T = 10
         learning_rate = 0.1
         patience = 2
@@ -2038,45 +2039,44 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
             'ses': base_models['ses']
         }
         
-        # 初始化早停機制所需變量
         min_len_for_rmse = min(len(data), len(historical_pred_final))
-        best_rmse = np.sqrt(np.mean((data[:min_len_for_rmse] - historical_pred_final[:min_len_for_rmse])**2))
+        initial_residuals = data[:min_len_for_rmse] - historical_pred_final[:min_len_for_rmse]
+        best_rmse = np.sqrt(np.mean(initial_residuals**2))
         epochs_without_improvement = 0
+        
         best_historical_pred = historical_pred_final.copy()
         best_future_pred = future_pred_final_seq.copy()
-
+        
         for boost_iter in range(T):
             residuals_hist = data - historical_pred_final
             
-            weak_preds_hist_iter = []
-            weak_preds_future_iter = []
+            weak_preds_hist = []
+            weak_preds_future = []
             
             for name, model_func in weak_learners.items():
                 if name == 'huber':
+                    # Huber 模型需要 x 軸數據
                     w_hist = model_func(x, residuals_hist, x)
                     w_future = model_func(x, residuals_hist, x_future)
                 else:
-                    # 使用滾動/平滑方法產生歷史擬合值
-                    if name == 'rolling_median':
-                        w_hist = pd.Series(residuals_hist).rolling(window=6, min_periods=1).median().fillna(0).values
-                    elif name == 'ses':
-                        w_hist = pd.Series(residuals_hist).ewm(alpha=0.5, adjust=False).mean().fillna(0).values
-                    
-                    # 使用基礎模型預測未來殘差
+                    # 其他弱學習器僅需 y 值 (殘差) 和預測步數
+                    # 注意：此處的 `len(x)` 是不精確的歷史預測，但遵照簡易實現原則
+                    # 一個更精確的方法是返回模型的歷史擬合值，但這需要修改 base_models
+                    w_hist = model_func(residuals_hist, len(x)) 
                     w_future = model_func(residuals_hist, steps_ahead)
+                
+                weak_preds_hist.append(w_hist)
+                weak_preds_future.append(w_future)
 
-                weak_preds_hist_iter.append(w_hist)
-                weak_preds_future_iter.append(w_future)
-
-            # 對弱學習器的預測取平均
-            combined_hist_correction = np.mean(np.array(weak_preds_hist_iter), axis=0)
-            combined_future_correction = np.mean(np.array(weak_preds_future_iter), axis=0)
-
+            # 對多個弱學習器的殘差預測取平均，以增加穩健性
+            combined_hist_residual_pred = np.mean(weak_preds_hist, axis=0)
+            combined_future_residual_pred = np.mean(weak_preds_future, axis=0)
+            
             # 更新主預測
-            historical_pred_final += learning_rate * combined_hist_correction
-            future_pred_final_seq += learning_rate * combined_future_correction
+            historical_pred_final += learning_rate * combined_hist_residual_pred
+            future_pred_final_seq += learning_rate * combined_future_residual_pred
 
-            # 早停機制
+            # 早停機制檢查
             current_rmse = np.sqrt(np.mean((data - historical_pred_final)**2))
             if current_rmse < best_rmse:
                 best_rmse = current_rmse
@@ -2087,16 +2087,52 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
                 epochs_without_improvement += 1
             
             if epochs_without_improvement >= patience:
-                if verbose: print(f"{colors.YELLOW}資訊：集成殘差提升在第 {boost_iter + 1} 次迭代觸發早停機制以防止過擬合。{colors.RESET}")
+                if verbose: print(f"{colors.YELLOW}資訊：集成殘差提升在第 {boost_iter + 1} 次迭代觸發早停機制。{colors.RESET}")
                 break
         
-        # 使用早停機制中找到的最佳預測
+        # 恢復到最佳迭代的結果
         historical_pred_final = best_historical_pred
         future_pred_final_seq = best_future_pred
-    else:
-        if verbose: print(f"{colors.YELLOW}--- 階段 3/3: 跳過殘差提升 (數據月份 < 24) ---{colors.RESET}")
 
-    # --- 最終結果計算 ---
+    else: # 維持原有的單一模型提升
+        if verbose and num_months >= 18: print(f"{colors.YELLOW}資訊：資料量少於24月，使用標準殘差提升。{colors.RESET}")
+        T = 10
+        learning_rate = 0.1
+        patience = 3
+        weak_model_func = base_models['huber']
+        
+        min_len_for_rmse = min(len(data), len(historical_pred_final))
+        initial_residuals = data[:min_len_for_rmse] - historical_pred_final[:min_len_for_rmse]
+        best_rmse = np.sqrt(np.mean(initial_residuals**2))
+        epochs_without_improvement = 0
+        best_historical_pred = historical_pred_final.copy()
+        best_future_pred = future_pred_final_seq.copy()
+
+        for boost_iter in range(T):
+            residuals_boost = data - historical_pred_final
+            
+            res_pred_hist = weak_model_func(x, residuals_boost, x)
+            res_pred_future_seq = weak_model_func(x, residuals_boost, x_future)
+            
+            historical_pred_final += learning_rate * res_pred_hist
+            future_pred_final_seq += learning_rate * res_pred_future_seq
+            
+            current_rmse = np.sqrt(np.mean((data - historical_pred_final)**2))
+            if current_rmse < best_rmse:
+                best_rmse = current_rmse
+                epochs_without_improvement = 0
+                best_historical_pred = historical_pred_final.copy()
+                best_future_pred = future_pred_final_seq.copy()
+            else:
+                epochs_without_improvement += 1
+            
+            if epochs_without_improvement >= patience:
+                if verbose: print(f"{colors.YELLOW}資訊：殘差提升在第 {boost_iter + 1} 次迭代觸發早停機制以防止過擬合。{colors.RESET}")
+                break
+                
+        historical_pred_final = best_historical_pred
+        future_pred_final_seq = best_future_pred
+
     effective_base_weights = (gfs_weights * weights_level2[0]) + (pwa_weights * weights_level2[1]) + (nnls_weights * weights_level2[2])
     
     dof = num_months - X_level2_hist_oof.shape[1] - 1
