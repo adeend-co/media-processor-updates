@@ -1922,11 +1922,12 @@ def train_meta_model_with_bootstrap_gfs(X_level2_hist, y_true, n_bootstrap=100, 
 
 def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose=True):
     """
-    【已重構】執行完整的三層式集成模型流程。
+    【已重構 & 升級】執行完整的三層式集成模型流程，並整合了集成殘差提升 (ERB)。
     """
     data = monthly_expenses_df['Real_Amount'].values
     x = np.arange(1, len(data) + 1)
     num_months = len(data)
+    x_future = np.arange(num_months + 1, num_months + steps_ahead + 1)
 
     # 【方法一整合點】將新模型加入基礎模型庫
     base_models = {
@@ -2000,7 +2001,6 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
     else: nnls_weights.fill(1/len(base_models))
     
     # 計算未來基礎模型預測
-    x_future = np.arange(num_months + 1, num_months + steps_ahead + 1)
     future_base_predictions = np.zeros((steps_ahead, len(base_models)))
     for j, key in enumerate(model_keys):
         model_func = base_models[key]
@@ -2020,88 +2020,80 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
     future_pred_fused_seq = X_level2_future @ weights_level2
     historical_pred_fused = X_level2_hist_oof @ weights_level2
 
-    # ---【!!! 核心修改區域 START !!!】---
     # --- 階段 3: 集成殘差提升 (Ensemble Residual Boosting, ERB) ---
-    if verbose: print(f"{colors.CYAN}--- 階段 3/3: 執行集成殘差提升 (ERB)，模仿 N-BEATS 殘差堆疊 ... ---{colors.RESET}")
+    if verbose: print(f"{colors.CYAN}--- 階段 3/3: 執行集成殘差提升 (ERB)，模仿N-BEATS思想... ---{colors.RESET}")
     
-    # 定義弱學習器庫（專家小組）
+    # 定義用於殘差學習的弱學習器團隊
     weak_learners = {
         'huber': base_models['huber'],
         'median': base_models['rolling_median'],
         'ses': base_models['ses']
     }
-
+    
     T = 10 # 最大提升輪數
     learning_rate = 0.1
     patience = 2 # 連續2輪無改善則停止
-
+    
+    # 初始化最終預測序列
     historical_pred_final = historical_pred_fused.copy()
     future_pred_final_seq = future_pred_fused_seq.copy()
-
-    # 初始化早停機制
+    
+    # 初始化早停機制所需變量
     min_len_for_rmse = min(len(data), len(historical_pred_final))
     initial_residuals = data[:min_len_for_rmse] - historical_pred_final[:min_len_for_rmse]
     best_rmse = np.sqrt(np.mean(initial_residuals**2))
     epochs_without_improvement = 0
     
-    # 儲存最佳迭代結果以防止過擬合
+    # 儲存最佳預測結果
     best_historical_pred = historical_pred_final.copy()
     best_future_pred = future_pred_final_seq.copy()
 
     for boost_iter in range(T):
+        # 1. 計算當前總模型的殘差
         residuals_boost = data - historical_pred_final
         
-        # 讓每個弱學習器都來預測當前的殘差
-        weak_preds_hist = []
-        weak_preds_future = []
+        # 2. 讓每個弱學習器都來預測當前的殘差
+        weak_preds_hist_list = []
+        weak_preds_future_list = []
         
         for name, model_func in weak_learners.items():
-            res_pred_hist = None
-            res_pred_future_seq = None
+            res_pred_hist_i, res_pred_future_seq_i = None, None
             
-            try:
-                if name == 'huber':
-                    # Huber 模型可以直接預測歷史和未來
-                    res_pred_hist = model_func(x, residuals_boost, x)
-                    res_pred_future_seq = model_func(x, residuals_boost, x_future)
-                elif name == 'median':
-                    # 對於歷史，使用滾動中位數擬合；對於未來，使用原始的預測函數
-                    res_pred_hist = pd.Series(residuals_boost).rolling(window=6, min_periods=1).median().fillna(0).values
-                    res_pred_future_seq = model_func(residuals_boost, steps_ahead)
-                elif name == 'ses':
-                    # 對於歷史，使用指數平滑擬合；對於未來，使用原始的預測函數
-                    res_pred_hist = pd.Series(residuals_boost).ewm(alpha=0.5, adjust=False).mean().fillna(0).values
-                    res_pred_future_seq = model_func(residuals_boost, steps_ahead)
-                
-                # 驗證預測結果的有效性
-                if res_pred_hist is not None and res_pred_future_seq is not None and \
-                   len(res_pred_hist) == len(data) and len(res_pred_future_seq) == steps_ahead:
-                    weak_preds_hist.append(res_pred_hist)
-                    weak_preds_future.append(res_pred_future_seq)
+            # 處理不同模型的調用方式
+            if name == 'huber':
+                # Huber模型可以自然地對歷史和未來進行預測
+                res_pred_future_seq_i = model_func(x, residuals_boost, x_future)
+                # 為獲取歷史擬合，需要用 x 對 x 進行預測
+                res_pred_hist_i = model_func(x, residuals_boost, x)
+            else:
+                # 對於SES和Rolling Median，它們是純預測模型
+                res_pred_future_seq_i = model_func(residuals_boost, steps_ahead)
+                # 歷史擬合部分：我們使用它們對未來第一步的預測值來填充整個歷史序列
+                # 這代表它們捕捉到的殘差的「水平(level)」
+                historical_level_prediction = model_func(residuals_boost, 1)[0]
+                res_pred_hist_i = np.full(num_months, historical_level_prediction)
 
-            except Exception:
-                # 如果任何弱學習器失敗，則跳過它，不影響整體流程
-                continue
+            if res_pred_hist_i is not None and res_pred_future_seq_i is not None:
+                weak_preds_hist_list.append(res_pred_hist_i)
+                weak_preds_future_list.append(res_pred_future_seq_i)
 
-        # 如果沒有任何弱學習器成功預測，則提前退出循環
-        if not weak_preds_hist:
-            if verbose: print(f"{colors.YELLOW}警告：在第 {boost_iter + 1} 次殘差提升中，所有弱學習器均未能產生有效預測。提前終止提升。{colors.RESET}")
+        if not weak_preds_hist_list: # 如果沒有弱學習器成功預測，則終止
             break
 
-        # 對弱學習器的預測進行簡單平均，作為本輪的殘差預測
-        combined_residual_pred_hist = np.mean(np.array(weak_preds_hist), axis=0)
-        combined_residual_pred_future = np.mean(np.array(weak_preds_future), axis=0)
+        # 3. 對弱學習器的預測進行簡單平均，作為本輪的綜合殘差預測
+        combined_residual_pred_hist = np.mean(weak_preds_hist_list, axis=0)
+        combined_residual_pred_future = np.mean(weak_preds_future_list, axis=0)
 
-        # 更新總預測
+        # 4. 以一個小的學習率更新總預測
         historical_pred_final += learning_rate * combined_residual_pred_hist
         future_pred_final_seq += learning_rate * combined_residual_pred_future
         
-        # 檢查是否改善並觸發早停
+        # 5. 檢查是否改善並觸發早停機制
         current_rmse = np.sqrt(np.mean((data - historical_pred_final)**2))
         if current_rmse < best_rmse:
             best_rmse = current_rmse
             epochs_without_improvement = 0
-            # 儲存當前最佳的預測結果
+            # 即時保存當前最佳的預測結果
             best_historical_pred = historical_pred_final.copy()
             best_future_pred = future_pred_final_seq.copy()
         else:
@@ -2111,11 +2103,11 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
             if verbose: print(f"{colors.YELLOW}資訊：集成殘差提升在第 {boost_iter + 1} 次迭代觸發早停機制以防止過擬合。{colors.RESET}")
             break
             
-    # 在循環結束後，恢復到最佳迭代的結果
+    # 確保最終使用的是早停前的最佳預測結果
     historical_pred_final = best_historical_pred
     future_pred_final_seq = best_future_pred
-    # ---【!!! 核心修改區域 END !!!】---
     
+    # --- 後續計算 ---
     effective_base_weights = (gfs_weights * weights_level2[0]) + (pwa_weights * weights_level2[1]) + (nnls_weights * weights_level2[2])
     
     dof = num_months - X_level2_hist_oof.shape[1] - 1
@@ -2124,7 +2116,7 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
         residuals_final = data - historical_pred_final
         mse = np.sum(residuals_final**2) / dof
         se = np.sqrt(mse) * np.sqrt(1 + 1/num_months)
-        t_val = t.ppf(0.975, dof) # 此處的 't' 現在可以正確引用 scipy.stats.t
+        t_val = t.ppf(0.975, dof)
         lower_seq, upper_seq = future_pred_final_seq - t_val*se, future_pred_final_seq + t_val*se
     
     meta_model_names = ["貪婪前向選擇法", "性能加權平均法", "非負最小平方法"]
@@ -2232,7 +2224,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         }
         
         if num_months >= 24:
-            method_used = " (基於三層式混合集成法 - ERB 強化)"
+            method_used = " (基於三層式混合集成法 - 集成殘差提升)"
             
             future_pred_final_seq, historical_pred, effective_base_weights, weights_level2_report, lower_seq, upper_seq, _ = \
                 run_full_ensemble_pipeline(df_for_seasonal_model, steps_ahead, colors, verbose=True)
