@@ -16,7 +16,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v3.2.3"  # Fix: Restore and enhance detailed risk factor report
+SCRIPT_VERSION = "v3.2.4"  # Fix: Restore and enhance detailed risk factor report
 SCRIPT_UPDATE_DATE = "2025-07-26"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -2492,7 +2492,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 print(f"{colors.YELLOW}  - 模式偵測{colors.RESET}: 偵測到您的支出模式在{colors.YELLOW}{colors.BOLD} {change_date} {colors.RESET}附近發生結構性轉變，後續評估將更側重於近期數據。{colors.RESET}")
             
             if num_shocks > 0:
-                print(f"{colors.RED}  - 衝擊偵測{colors.RESET}: 系統識別出{colors.RED}{colors.BOLD} {num_shocks} {colors.RESET}{colors.RED}次「真實衝擊」(極端開銷)，已納入攤提金準備中。{colors.RESET}")
+                print(f"{colors.RED}  - 衝擊偵測{colors.RESET}: 系統識別出{colors.RED}{colors.BOLD} {num_shocks} 次{colors.RESET}「真實衝擊」(極端開銷)，已納入攤提金準備中。{colors.RESET}")
         # <<< END: 提示訊息結束 >>>
         
         if suggested_budget is not None:
