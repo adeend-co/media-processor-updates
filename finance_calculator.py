@@ -2359,7 +2359,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         if historical_wape is not None: 
             print(f"  - WAPE (全局): {historical_wape:.2f}% (含極端值，評估總體誤差比例)")
         if historical_wape_robust is not None:
-            print(f"  - WAPE (排除衝擊後): {colors.GREEN}{historical_wape_robust:.2f}% (反映日常預測誤差比例){colors.RESET}")
+            print(f"  - WAPE (排除衝擊後): {colors.GREEN}{historical_wape_robust:,.2f}% (反映日常預測誤差比例){colors.RESET}")
         if historical_mase is not None: 
             print(f"  - MASE (平均絕對標度誤差): {historical_mase:.2f} (小於1優於天真預測)")
 
@@ -2415,6 +2415,18 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         if data_reliability: print(f"{colors.BOLD}數據可靠性: {data_reliability}{colors.RESET}")
         
         is_advanced_model = isinstance(trend_scores, dict) and trend_scores.get('is_advanced')
+        
+        # <<< START: 已加入您指定的提示訊息 >>>
+        if is_advanced_model:
+            num_shocks = trend_scores.get('num_shocks', 0)
+            change_date = trend_scores.get('change_date')
+            
+            if change_date:
+                print(f"{colors.WHITE}  - 模式偵測: 偵測到您的支出模式在 {change_date} 附近發生結構性轉變，後續評估將更側重於近期數據。{colors.RESET}")
+            
+            if num_shocks > 0:
+                print(f"{colors.WHITE}  - 衝擊偵測: 系統識別出 {num_shocks} 次「真實衝擊」(極端開銷)，已納入攤提金準備中。{colors.RESET}")
+        # <<< END: 提示訊息結束 >>>
         
         if suggested_budget is not None:
             print(f"{colors.BOLD}建議 {target_month_str} 預算: {suggested_budget:,.2f} 元{colors.RESET}")
