@@ -50,7 +50,7 @@
 ############################################
 # 腳本設定
 ############################################
-SCRIPT_VERSION="v2.6.6-beta.13" # <<< 版本號更新
+SCRIPT_VERSION="v2.6.6-beta.14" # <<< 版本號更新
 
 ############################################
 # ★★★ 新增：使用者同意書版本號 ★★★
@@ -61,10 +61,10 @@ AGREEMENT_VERSION="1.6"
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
-SCRIPT_UPDATE_DATE="2025-07-13" # 請根據實際情況修改此日期
+SCRIPT_UPDATE_DATE="2025-07-31" # 請根據實際情況修改此日期
 
 # ... 其他設定 ...
-TARGET_DATE="2025-07-29" # <<< 新增：設定您的目標日期
+TARGET_DATE="2025-08-13" # <<< 新增：設定您的目標日期
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
 DEFAULT_URL="https://www.youtube.com/watch?v=siNFnlqtd8M"
 THREADS=4
@@ -599,7 +599,7 @@ display_countdown() {
         seconds=$(( remaining_seconds % 60 ))
 
         # 組合顯示訊息 (使用不同顏色區分)
-        countdown_message="${CYAN}距離「分科放榜」（ ${TARGET_DATE} ）尚餘： ${GREEN}${days} ${WHITE}天 ${GREEN}${hours} ${WHITE}時 ${GREEN}${minutes} ${WHITE}分 ${GREEN}${seconds} ${WHITE}秒${RESET}"
+        countdown_message="${CYAN}距離「分發入學放榜」（ ${TARGET_DATE} ）尚餘： ${GREEN}${days} ${WHITE}天 ${GREEN}${hours} ${WHITE}時 ${GREEN}${minutes} ${WHITE}分 ${GREEN}${seconds} ${WHITE}秒${RESET}"
     fi
 
     # 輸出倒數計時訊息
