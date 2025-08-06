@@ -3348,7 +3348,7 @@ _get_playlist_video_count() {
 }
 
 ###################################################################
-# 輔助函數 - 處理 YouTube 播放清單通用流程 (v3.4 - 優化單項失敗流程)
+# 輔助函數 - 處理 YouTube 播放清單通用流程 (v3.5 - 引入智能重試)
 ###################################################################
 _process_youtube_playlist() {
     local playlist_url="$1"
@@ -3357,11 +3357,28 @@ _process_youtube_playlist() {
 
     echo -e "${YELLOW}正在獲取播放清單的影片 ID 列表 (穩健模式)...${RESET}"
 
-    local id_list
-    id_list=$(yt-dlp --flat-playlist --print '%(id)s' "$playlist_url" 2> >(log_message "DEBUG" "yt-dlp stderr: " >&2))
+    # ★★★ 核心修正：引入智能重試機制 ★★★
+    local id_list=""
+    local attempts=3
+    for (( i=1; i<=attempts; i++ )); do
+        id_list=$(yt-dlp --flat-playlist --print '%(id)s' "$playlist_url" 2> >(log_message "DEBUG" "yt-dlp stderr (attempt $i): " >&2))
+        
+        # 如果成功獲取到 ID 列表，就立即跳出循環
+        if [ -n "$id_list" ]; then
+            log_message "INFO" "在第 $i 次嘗試中成功獲取到影片 ID 列表。"
+            break
+        fi
+        
+        # 如果還不是最後一次嘗試，就顯示提示並等待
+        if [ "$i" -lt "$attempts" ]; then
+            log_message "WARNING" "獲取影片 ID 列表失敗 (第 $i 次嘗試)，將在 2 秒後重試。"
+            echo -e "${YELLOW}獲取影片資訊失敗，2 秒後進行第 $((i+1)) 次重試...${RESET}"
+            sleep 2
+        fi
+    done
 
     if [ -z "$id_list" ]; then
-        log_message "ERROR" "無法從 yt-dlp 獲取影片 ID 列表 (輸出為空)。"
+        log_message "ERROR" "在 $attempts 次嘗試後，依然無法從 yt-dlp 獲取影片 ID 列表 (輸出為空)。"
         echo -e "${RED}錯誤：無法獲取播放清單的影片 ID 列表。請檢查 URL 或網路連線。${RESET}"
         return 1
     fi
@@ -3408,9 +3425,7 @@ _process_youtube_playlist() {
         fi
     done
 
-    # ★★★ 核心修正：處理單一影片失敗時的暫停邏輯 ★★★
     if [[ "$total_videos" -eq 1 ]] && [[ "$overall_fail_count" -gt 0 ]]; then
-        # 如果只有一個影片，且它處理失敗了，則暫停，讓使用者查看終端輸出
         read -p "處理時發生錯誤，請檢查上方輸出。按 Enter 繼續以查看摘要報告..."
     fi
     
