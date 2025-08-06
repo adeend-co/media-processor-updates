@@ -1562,7 +1562,7 @@ process_local_mp4() {
 }
 
 ######################################################################
-# 處理單一 YouTube 音訊（MP3）下載與處理 (v6.2 全面升級)
+# 處理單一 YouTube 音訊（MP3）下載與處理 (v6.3 - 通知邏輯優化)
 ######################################################################
 process_single_mp3() {
     local media_url="$1"
@@ -1571,6 +1571,10 @@ process_single_mp3() {
     temp_dir=$(mktemp -d)
     local result=1
     local final_result_string=""
+    local should_notify=false
+
+    ### --- 通知閥值設定 --- ###
+    local duration_threshold_secs=1800 # 30分鐘
 
     local media_json
     media_json=$(yt-dlp --no-warnings --dump-json "$media_url" 2>"$temp_dir/yt-dlp-json-dump.log")
@@ -1583,7 +1587,7 @@ process_single_mp3() {
         goto_cleanup=false
     fi
 
-    local video_title="" video_id="" artist_name="" album_artist_name=""
+    local video_title="" video_id="" artist_name="" album_artist_name="" duration_secs=0
     local final_audio_file="" output_audio="" temp_audio_file=""
 
     if ! $goto_cleanup; then
@@ -1591,7 +1595,17 @@ process_single_mp3() {
         video_id=$(echo "$media_json" | jq -r '.id // "id_$(date +%s_default)"')
         artist_name=$(echo "$media_json" | jq -r '.artist // .uploader // "[不明]"')
         album_artist_name=$(echo "$media_json" | jq -r '.uploader // "[不明]"')
+        duration_secs=$(echo "$media_json" | jq -r '.duration // 0')
         
+        # --- 通知判斷 (基於時間長度) ---
+        if [[ "$mode" != "playlist_mode" ]]; then
+            # 使用 bc 計算浮點數比較，更精確
+            if (( $(echo "$duration_secs > $duration_threshold_secs" | bc -l) )); then
+                should_notify=true
+                log_message "INFO" "MP3 標準化：時長 ($duration_secs s) 超過閥值 ($duration_threshold_secs s)，啟用通知。"
+            fi
+        fi
+
         local sanitized_title
         local safe_chars_regex='[^a-zA-Z0-9\u4e00-\u9fff\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uffef _.\[\]()-]'
         if command -v iconv &> /dev/null; then
@@ -1658,7 +1672,8 @@ process_single_mp3() {
 
     rm -rf "$temp_dir"
     
-    if [[ "$mode" != "playlist_mode" ]]; then
+    # --- 條件式通知 ---
+    if [[ "$mode" != "playlist_mode" ]] && $should_notify; then
         if [ $result -eq 0 ]; then
             _send_termux_notification 0 "媒體處理器：MP3 標準化" "處理音訊 '$sanitized_title'" "$output_audio"
         else
@@ -1666,7 +1681,6 @@ process_single_mp3() {
         fi
     fi
 
-    # --- ★★★ 核心修正 ★★★ ---
     if [[ "$mode" == "playlist_mode" ]]; then
         echo "${final_result_string}"
     fi
@@ -1674,7 +1688,7 @@ process_single_mp3() {
 }
 
 ######################################################################
-# 處理單一 YouTube 音訊（MP3）下載（無音量標準化）(v6.2 全面升級)
+# 處理單一 YouTube 音訊（MP3）下載（無標準化）(v6.3 - 通知邏輯優化)
 ######################################################################
 process_single_mp3_no_normalize() {
     local media_url="$1"
@@ -1683,6 +1697,10 @@ process_single_mp3_no_normalize() {
     temp_dir=$(mktemp -d)
     local result=1
     local final_result_string=""
+    local should_notify=false
+
+    ### --- 通知閥值設定 --- ###
+    local size_threshold_gb=0.1
 
     local media_json
     media_json=$(yt-dlp --no-warnings --dump-json "$media_url" 2>"$temp_dir/yt-dlp-json-dump.log")
@@ -1759,11 +1777,22 @@ process_single_mp3_no_normalize() {
         
         final_result_string="SUCCESS|${video_title}|MP3-320kbps"
         result=0
+
+        # --- 通知判斷 (基於實際檔案大小) ---
+        if [[ "$mode" != "playlist_mode" ]] && [ -f "$output_audio" ]; then
+            local actual_size_bytes=$(stat -c %s "$output_audio" 2>/dev/null)
+            local size_threshold_bytes=$(awk "BEGIN {printf \"%d\", $size_threshold_gb * 1024 * 1024 * 1024}")
+            if [[ "$actual_size_bytes" -gt "$size_threshold_bytes" ]]; then
+                should_notify=true
+                log_message "INFO" "MP3 無標準化：實際大小 ($actual_size_bytes B) 超過閥值 ($size_threshold_bytes B)，啟用通知。"
+            fi
+        fi
     fi
 
     rm -rf "$temp_dir"
     
-    if [[ "$mode" != "playlist_mode" ]]; then
+    # --- 條件式通知 ---
+    if [[ "$mode" != "playlist_mode" ]] && $should_notify; then
         if [ $result -eq 0 ]; then
             _send_termux_notification 0 "媒體處理器：MP3 無標準化" "處理音訊 '$sanitized_title'" "$output_audio"
         else
@@ -1771,7 +1800,6 @@ process_single_mp3_no_normalize() {
         fi
     fi
 
-    # --- ★★★ 核心修正 ★★★ ---
     if [[ "$mode" == "playlist_mode" ]]; then
         echo "${final_result_string}"
     fi
@@ -1779,8 +1807,7 @@ process_single_mp3_no_normalize() {
 }
 
 ######################################################################
-# 處理單一 YouTube 影片（MP4）下載與處理 (v6.2 - 彈性備案鏈最終版)
-# 返回一個包含狀態、標題、解析度或錯誤碼的字串
+# 處理單一 YouTube 影片（MP4）下載與處理 (v6.3 - 通知邏輯優化)
 ######################################################################
 process_single_mp4() {
     local video_url="$1"
@@ -1789,7 +1816,11 @@ process_single_mp4() {
     temp_dir=$(mktemp -d)
     local subtitle_files=()
     local final_result_string="" 
-    local result=1 
+    local result=1
+    local should_notify=false
+
+    ### --- 通知閥值設定 --- ###
+    local duration_threshold_secs=1260 # 0.35 小時 (21 分鐘)
 
     local media_json
     media_json=$(yt-dlp --no-warnings --dump-json "$video_url" 2>"$temp_dir/yt-dlp-json-dump.log")
@@ -1802,17 +1833,25 @@ process_single_mp4() {
         goto_cleanup=false
     fi
 
-    local video_title="" video_id=""
+    local video_title="" video_id="" duration_secs=0
     local final_video_file="" output_video=""
     local temp_video_file="" 
 
     if ! $goto_cleanup; then
         video_title=$(echo "$media_json" | jq -r '.title // "video_$(date +%s_default)"')
         video_id=$(echo "$media_json" | jq -r '.id // "id_$(date +%s_default)"')
+        duration_secs=$(echo "$media_json" | jq -r '.duration // 0')
+
+        # --- 通知判斷 (基於時間長度) ---
+        if [[ "$mode" != "playlist_mode" ]]; then
+            if (( $(echo "$duration_secs > $duration_threshold_secs" | bc -l) )); then
+                should_notify=true
+                log_message "INFO" "MP4 標準化：時長 ($duration_secs s) 超過閥值 ($duration_threshold_secs s)，啟用通知。"
+            fi
+        fi
         
         local sanitized_title
         local safe_chars_regex='[^a-zA-Z0-9\u4e00-\u9fff\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uffef _.\[\]()-]'
-        
         if command -v iconv &> /dev/null; then
             sanitized_title=$(echo "${video_title}" | iconv -f UTF-8 -t UTF-8 -c | sed -E "s/${safe_chars_regex}/_/g")
         else
@@ -1947,7 +1986,8 @@ process_single_mp4() {
     for sub_f in "${subtitle_files[@]}"; do safe_remove "$sub_f"; done
     rm -rf "$temp_dir"
     
-    if [[ "$mode" != "playlist_mode" ]]; then
+    # --- 條件式通知 ---
+    if [[ "$mode" != "playlist_mode" ]] && $should_notify; then
         if [ $result -eq 0 ]; then
             _send_termux_notification 0 "媒體處理器：MP4 標準化" "處理影片 '$sanitized_title'" "$output_video"
         else
@@ -1955,8 +1995,6 @@ process_single_mp4() {
         fi
     fi
 
-    # --- ★★★ 核心修正 ★★★ ---
-    # 僅在播放清單模式下，才將結果字串輸出到 stdout 以供主循環捕獲
     if [[ "$mode" == "playlist_mode" ]]; then
         echo "${final_result_string}"
     fi
@@ -1964,7 +2002,7 @@ process_single_mp4() {
 }
 
 ######################################################################
-# 處理單一 YouTube 影片（MP4）下載（無音量標準化） (v6.2 全面升級)
+# 處理單一 YouTube 影片（MP4）下載（無標準化）(v6.3 - 通知邏輯優化)
 ######################################################################
 process_single_mp4_no_normalize() {
     local video_url="$1"
@@ -1973,7 +2011,11 @@ process_single_mp4_no_normalize() {
     temp_dir=$(mktemp -d)
     local subtitle_files=()
     local final_result_string="" 
-    local result=1 
+    local result=1
+    local should_notify=false
+
+    ### --- 通知閥值設定 --- ###
+    local size_threshold_gb=1.0
 
     local media_json
     media_json=$(yt-dlp --no-warnings --dump-json "$video_url" 2>"$temp_dir/yt-dlp-json-dump.log")
@@ -2059,11 +2101,22 @@ process_single_mp4_no_normalize() {
         log_message "INFO" "(無標準化) 影片處理完成：$final_video_file, 解析度: $resolution"
         final_result_string="SUCCESS|${video_title}|${resolution}"
         result=0
+
+        # --- 通知判斷 (基於實際檔案大小) ---
+        if [[ "$mode" != "playlist_mode" ]] && [ -f "$final_video_file" ]; then
+            local actual_size_bytes=$(stat -c %s "$final_video_file" 2>/dev/null)
+            local size_threshold_bytes=$(awk "BEGIN {printf \"%d\", $size_threshold_gb * 1024 * 1024 * 1024}")
+            if [[ "$actual_size_bytes" -gt "$size_threshold_bytes" ]]; then
+                should_notify=true
+                log_message "INFO" "MP4 無標準化：實際大小 ($actual_size_bytes B) 超過閥值 ($size_threshold_bytes B)，啟用通知。"
+            fi
+        fi
     fi
     
     rm -rf "$temp_dir"
     
-    if [[ "$mode" != "playlist_mode" ]]; then
+    # --- 條件式通知 ---
+    if [[ "$mode" != "playlist_mode" ]] && $should_notify; then
         if [ $result -eq 0 ]; then
             _send_termux_notification 0 "媒體處理器：MP4 無標準化" "處理影片 '$sanitized_title'" "$final_video_file"
         else
@@ -2071,7 +2124,6 @@ process_single_mp4_no_normalize() {
         fi
     fi
 
-    # --- ★★★ 核心修正 ★★★ ---
     if [[ "$mode" == "playlist_mode" ]]; then
         echo "${final_result_string}"
     fi
