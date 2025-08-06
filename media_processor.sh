@@ -1775,7 +1775,7 @@ process_single_mp3_no_normalize() {
 }
 
 ######################################################################
-# 處理單一 YouTube 影片（MP4）下載與處理 (v6.1 - 安全處理，最後命名)
+# 處理單一 YouTube 影片（MP4）下載與處理 (v6.1 - 智能降級最終版)
 # 返回一個包含狀態、標題、解析度或錯誤碼的字串
 ######################################################################
 process_single_mp4() {
@@ -1799,77 +1799,117 @@ process_single_mp4() {
     fi
 
     local video_title="" video_id=""
-    local final_video_file="" # 最終的、包含標題的檔名
-    local temp_normalized_video="" # 處理過程中，只帶 ID 的檔名
+    local final_video_file="" output_video=""
+    local temp_video_file="" 
 
     if ! $goto_cleanup; then
         video_title=$(echo "$media_json" | jq -r '.title // "video_$(date +%s_default)"')
         video_id=$(echo "$media_json" | jq -r '.id // "id_$(date +%s_default)"')
         
-        # ★★★ 核心修正：全程使用安全 ID 命名 ★★★
-        local temp_video_file="${temp_dir}/${video_id}.mp4"
-        temp_normalized_video="${temp_dir}/${video_id}_normalized.mp4"
-
-        log_message "INFO" "將下載影片到臨時檔案: ${temp_video_file}"
+        # --- 下載邏輯保持不變 ---
+        log_message "INFO" "將下載影片到臨時目錄: ${temp_dir}"
         local temp_output_template="${temp_dir}/%(id)s.%(ext)s"
         local format_option="bestvideo[ext=mp4][vcodec^=avc][height<=1440]+bestaudio[ext=m4a]/bestvideo[ext=mp4][vcodec^=avc][height<=1080]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio[ext=m4a]"
-        
         local yt_dlp_video_args=(yt-dlp -f "$format_option" -o "$temp_output_template" "$video_url" --concurrent-fragments "$THREADS")
         
         if ! "${yt_dlp_video_args[@]}" 2> "$temp_dir/yt-dlp-video-std.log"; then
             log_message "WARNING" "yt-dlp 影片下載時回報錯誤，將進行錯誤分析。"
         fi
 
-        # 主動發現檔案，因為副檔名可能是 mkv 等
-        local actual_temp_video_file=$(find "$temp_dir" -maxdepth 1 -type f -name "${video_id}.*" \( -name "*.mp4" -o -name "*.mkv" -o -name "*.webm" \) -print -quit)
+        temp_video_file=$(find "$temp_dir" -maxdepth 1 -type f \( -name "*.mp4" -o -name "*.mkv" -o -name "*.webm" \) -print -quit)
 
-        if [ -z "$actual_temp_video_file" ]; then
+        if [ -z "$temp_video_file" ]; then
+            # ... 下載失敗的錯誤處理保持不變 ...
             local error_code_to_return="E_YTDLP_DL_GENERIC"
             if grep -q "HTTP Error 403" "$temp_dir/yt-dlp-video-std.log"; then error_code_to_return="E_YTDLP_DL_403";
             elif grep -q "Operation not permitted" "$temp_dir/yt-dlp-video-std.log"; then error_code_to_return="E_FS_PERM";
             else error_code_to_return="E_FILE_NOT_FOUND"; fi
-            
             log_message "ERROR" "$error_code_to_return: 下載失敗，在臨時目錄中找不到任何影片檔案。"
             local raw_err_b64=$(cat "$temp_dir/yt-dlp-video-std.log" | base64 -w 0)
             final_result_string="FAIL|${video_title}|${error_code_to_return}|${raw_err_b64}"
             goto_cleanup=true
         else
-            temp_video_file=$actual_temp_video_file # 更新為實際找到的檔案
+            # ★★★ 核心修正：智能降級重命名邏輯 ★★★
+            
+            # --- 第一道防線：嘗試使用清理後的標題 ---
+            local sanitized_title
+            local safe_chars_regex='[^a-zA-Z0-9\u4e00-\u9fff\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uffef _.\[\]()-]'
+            if command -v iconv &> /dev/null; then
+                sanitized_title=$(echo "${video_title}" | iconv -f UTF-8 -t UTF-8 -c | sed -E "s/${safe_chars_regex}/_/g")
+            else
+                sanitized_title=$(echo "${video_title}" | sed -E "s/${safe_chars_regex}/_/g")
+            fi
+            sanitized_title=$(echo "$sanitized_title" | sed -E 's/[_ ]+/_/g' | cut -c 1-80)
+            
+            local final_base_name="${sanitized_title} [${video_id}]"
+            local extension="${temp_video_file##*.}"
+            final_video_file="${DOWNLOAD_PATH}/${final_base_name}.${extension}"
+            
+            local mv_error
+            if ! mv_error=$(mv "$temp_video_file" "$final_video_file" 2>&1); then
+                # --- 第二道防線：如果第一次重命名失敗，觸發「最終保險」 ---
+                log_message "WARNING" "使用清理後的標題重命名失敗，將降級為僅使用影片 ID。"
+                
+                final_base_name="[${video_id}]" # 只使用 ID
+                final_video_file="${DOWNLOAD_PATH}/${final_base_name}.${extension}"
+                
+                if ! mv_error=$(mv "$temp_video_file" "$final_video_file" 2>&1); then
+                    # 如果連只用 ID 都失敗了，那問題一定出在權限或路徑
+                    log_message "ERROR" "E_FS_PERM: 降級後重命名依然失敗！"
+                    local raw_err_b64=$(echo -e "命令: mv \"$temp_video_file\" \"$final_video_file\"\n錯誤: $mv_error" | base64 -w 0)
+                    final_result_string="FAIL|${video_title}|E_FS_PERM|${raw_err_b64}"
+                    goto_cleanup=true
+                fi
+            fi
+            
+            # 只要 goto_cleanup 標記沒有被設置，就代表重命名成功了
+            if ! $goto_cleanup; then
+                 output_video="${DOWNLOAD_PATH}/${final_base_name}_normalized.mp4"
+                 # 下載字幕
+                 local target_sub_langs="zh-Hant,zh-TW,zh-Hans,zh-CN,zh"
+                 local yt_dlp_subs_args=(yt-dlp --skip-download --write-subs --sub-lang "$target_sub_langs" --convert-subs srt -o "${temp_dir}/%(id)s.%(sublang)s.%(ext)s" "$video_url")
+                 "${yt_dlp_subs_args[@]}" > /dev/null 2>&1
+            fi
         fi
     fi
 
     if ! $goto_cleanup; then
+        # ... 後續的 ffprobe, normalize_audio, ffmpeg 混流邏輯保持不變 ...
+        # 它們會基於成功創建的 final_video_file 和 final_base_name 進行操作
         local resolution
         local ffprobe_error
-        ffprobe_output=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$temp_video_file" 2>&1)
+        ffprobe_output=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$final_video_file" 2>&1)
         local ffprobe_exit_code=$?
+
         if [ $ffprobe_exit_code -ne 0 ] || [ -z "$ffprobe_output" ]; then
             resolution=""; ffprobe_error=$ffprobe_output
         else
             resolution=$ffprobe_output
         fi
+        
         if [ -z "$resolution" ]; then
-            log_message "ERROR" "E_FFPROBE_RES: 無法獲取影片解析度: $temp_video_file"
-            local raw_err_b64=$(echo -e "命令: ffprobe ... \"$temp_video_file\"\n錯誤: $ffprobe_error" | base64 -w 0)
+            log_message "ERROR" "E_FFPROBE_RES: 無法獲取影片解析度: $final_video_file"
+            safe_remove "$final_video_file"
+            local raw_err_b64=$(echo -e "命令: ffprobe ... \"$final_video_file\"\n錯誤: $ffprobe_error" | base64 -w 0)
             final_result_string="FAIL|${video_title}|E_FFPROBE_RES|${raw_err_b64}"
             goto_cleanup=true
         else
-            log_message "INFO" "臨時影片驗證成功：$temp_video_file, 解析度: $resolution"
+            log_message "INFO" "影片重命名並驗證成功：$final_video_file, 解析度: $resolution"
         fi
     fi
 
     if ! $goto_cleanup; then
-        local target_sub_langs="zh-Hant,zh-TW,zh-Hans,zh-CN,zh"
-        local yt_dlp_subs_args=(yt-dlp --skip-download --write-subs --sub-lang "$target_sub_langs" --convert-subs srt -o "${temp_dir}/%(id)s.%(sublang)s.%(ext)s" "$video_url")
-        "${yt_dlp_subs_args[@]}" > /dev/null 2>&1
-
         while IFS= read -r srt_file; do
-            subtitle_files+=("$srt_file"); log_message "INFO" "找到臨時字幕: $srt_file"
+            local srt_basename=$(basename "$srt_file")
+            local new_srt_path="${DOWNLOAD_PATH}/${final_base_name}.${srt_basename#*.}"
+            if mv "$srt_file" "$new_srt_path"; then
+                subtitle_files+=("$new_srt_path"); log_message "INFO" "找到並移動字幕到: $new_srt_path"
+            fi
         done < <(find "$temp_dir" -maxdepth 1 -type f -name "${video_id}.*.srt")
 
         local normalized_audio_temp="$temp_dir/audio_normalized.m4a"
-        if normalize_audio "$temp_video_file" "$normalized_audio_temp" "$temp_dir" true; then
-            local ffmpeg_mux_args=(ffmpeg -y -i "$temp_video_file" -i "$normalized_audio_temp")
+        if normalize_audio "$final_video_file" "$normalized_audio_temp" "$temp_dir" true; then
+            local ffmpeg_mux_args=(ffmpeg -y -i "$final_video_file" -i "$normalized_audio_temp")
             for sub_f in "${subtitle_files[@]}"; do ffmpeg_mux_args+=("-i" "$sub_f"); done
             ffmpeg_mux_args+=(-metadata "title=${video_title}")
             ffmpeg_mux_args+=(-map 0:v:0 -map 1:a:0 -c:v copy -c:a aac -b:a 256k -ar 44100)
@@ -1882,7 +1922,7 @@ process_single_mp4() {
                     ffmpeg_mux_args+=("-metadata:s:s:$i" "language=$ffmpeg_lang")
                 done
             fi
-            ffmpeg_mux_args+=(-movflags "+faststart" "$temp_normalized_video")
+            ffmpeg_mux_args+=(-movflags "+faststart" "$output_video")
             
             if ! "${ffmpeg_mux_args[@]}" > "$temp_dir/ffmpeg_mux.log" 2>&1; then
                 log_message "ERROR" "E_FFMPEG_MUX: 混流失敗！"
@@ -1890,40 +1930,9 @@ process_single_mp4() {
                 final_result_string="FAIL|${video_title}|E_FFMPEG_MUX|${raw_err_b64}"
                 result=1
             else
-                log_message "SUCCESS" "混流到臨時檔案成功: $temp_normalized_video"
-                
-                # ★★★ 最終重命名與自動降級 ★★★
-                local sanitized_title
-                local safe_chars_regex='[^a-zA-Z0-9\u4e00-\u9fff\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uffef _.\[\]()-]'
-                if command -v iconv &> /dev/null; then
-                    sanitized_title=$(echo "${video_title}" | iconv -f UTF-8 -t UTF-8 -c | sed -E "s/${safe_chars_regex}/_/g")
-                else
-                    sanitized_title=$(echo "${video_title}" | sed -E "s/${safe_chars_regex}/_/g")
-                fi
-                sanitized_title=$(echo "$sanitized_title" | sed -E 's/[_ ]+/_/g' | cut -c 1-80)
-                
-                final_video_file="${DOWNLOAD_PATH}/${sanitized_title} [${video_id}]_normalized.mp4"
-                
-                local mv_error
-                if ! mv_error=$(mv "$temp_normalized_video" "$final_video_file" 2>&1); then
-                    log_message "WARNING" "使用完整標題重命名失敗，自動降級為僅使用 ID。"
-                    # 自動降級：使用一個絕對安全的檔名
-                    final_video_file="${DOWNLOAD_PATH}/[${video_id}]_normalized.mp4"
-                    if ! mv "$temp_normalized_video" "$final_video_file"; then
-                        log_message "ERROR" "E_FS_PERM: 連降級重命名都失敗了！"
-                        local raw_err_b64=$(echo -e "命令: mv \"$temp_normalized_video\" \"...\"\n錯誤: $mv_error" | base64 -w 0)
-                        final_result_string="FAIL|${video_title}|E_FS_PERM|${raw_err_b64}"
-                        result=1
-                    else
-                        # 降級成功，也算是一種成功
-                        final_result_string="SUCCESS|${video_title}|${resolution}"
-                        result=0
-                    fi
-                else
-                    # 首次重命名成功
-                    final_result_string="SUCCESS|${video_title}|${resolution}"
-                    result=0
-                fi
+                log_message "SUCCESS" "混流成功"
+                final_result_string="SUCCESS|${video_title}|${resolution}"
+                result=0
             fi
         else
             log_message "ERROR" "E_NORMALIZE_FAIL: 音量標準化失敗！"
@@ -1933,13 +1942,16 @@ process_single_mp4() {
         fi
     fi
     
-    log_message "INFO" "清理檔案..."
-    safe_remove "$temp_video_file"
+    log_message "INFO" "清理檔案 (MP4 標準化)..."
+    if [ -f "$final_video_file" ]; then
+        safe_remove "$final_video_file"
+    fi
+    for sub_f in "${subtitle_files[@]}"; do safe_remove "$sub_f"; done
     rm -rf "$temp_dir"
     
     if [[ "$mode" != "playlist_mode" ]]; then
         if [ $result -eq 0 ]; then
-            _send_termux_notification 0 "媒體處理器：MP4 標準化" "處理影片 '$sanitized_title'" "$final_video_file"
+            _send_termux_notification 0 "媒體處理器：MP4 標準化" "處理影片 '$sanitized_title'" "$output_video"
         else
             _send_termux_notification 1 "媒體處理器：MP4 標準化" "處理影片 '$sanitized_title' 失敗" ""
         fi
