@@ -3276,7 +3276,7 @@ _get_playlist_video_count() {
 }
 
 ###################################################################
-# 輔助函數 - 處理 YouTube 播放清單通用流程 (v3.2 - 修正通知語法)
+# 輔助函數 - 處理 YouTube 播放清單通用流程 (v3.3 - 修正退出碼捕獲)
 ###################################################################
 _process_youtube_playlist() {
     local playlist_url="$1"
@@ -3325,7 +3325,11 @@ _process_youtube_playlist() {
 
         local processing_result
         processing_result=$("$single_item_processor_func_name" "$video_url" "playlist_mode" | tee /dev/tty | tail -n 1)
-        local exit_code=$?
+        
+        # ★★★ 核心修正 ★★★
+        # 在管道命令中，$? 只會返回最後一個命令(tail)的退出碼，這幾乎永遠是0。
+        # 我們必須使用 PIPESTATUS 陣列來獲取第一個命令(我們的處理函數)的真實退出碼。
+        local exit_code=${PIPESTATUS[0]}
         
         PLAYLIST_RESULTS+=("$processing_result")
 
@@ -3339,8 +3343,9 @@ _process_youtube_playlist() {
     if [[ "$total_videos" -gt 1 ]]; then
         local ovr=0
         if [ "$overall_fail_count" -gt 0 ]; then ovr=1; fi
-        # ★★★ 核心修正：使用正確的算術擴展 $(()) ★★★
+        
         local success_count=$((count - overall_fail_count))
+        # 現在 success_count 和 overall_fail_count 的計算是準確的
         _send_termux_notification "$ovr" "媒體處理器：播放清單完成" "播放清單處理完成 ($success_count/$count 成功)" ""
     fi
     
