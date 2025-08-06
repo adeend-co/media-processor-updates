@@ -690,7 +690,7 @@ spinner() {
 }
 
 ###########################################################
-# 全新輔助函數：解析錯誤碼並提供詳細資訊
+# 全新輔助函數：解析錯誤碼並提供詳細資訊 (v1.3 - 新增格式錯誤)
 ###########################################################
 _get_error_details() {
     local error_code="$1"
@@ -699,26 +699,29 @@ _get_error_details() {
         "E_YTDLP_JSON")
             error_message="${RED}原因: yt-dlp 無法獲取影片的元數據 (JSON)。\n      ${YELLOW}建議: 請檢查 URL 是否正確、影片是否為私有或已被刪除。${RESET}"
             ;;
+        "E_YTDLP_FORMAT") # ★★★ 新增的錯誤碼解釋 ★★★
+            error_message="${RED}原因: yt-dlp 報告 YouTube 未提供腳本請求的特定影片格式。\n      ${YELLOW}建議: 這是 YouTube 伺服器的動態行為，通常是暫時的。請直接重試，腳本的彈性備案機制通常能解決此問題。${RESET}"
+            ;;
         "E_YTDLP_DL_403")
-            error_message="${RED}原因: YouTube 伺服器拒絕存取 (HTTP 403 Forbidden)。\n      ${YELLOW}建議: 這是 YouTube 的臨時性阻擋，請稍後重試。${RESET}"
+            error_message="${RED}原因: YouTube 伺服器拒絕存取 (HTTP 403 Forbidden)。\n      ${YELLOW}建議: 這是 YouTube 的臨時性阻擋，請稍後重試或更換網路環境。${RESET}"
             ;;
         "E_YTDLP_DL_GENERIC")
-            error_message="${RED}原因: yt-dlp 下載時發生通用錯誤。\n      ${YELLOW}建議: 請檢查日誌中的 yt-dlp 原始錯誤訊息。${RESET}"
+            error_message="${RED}原因: yt-dlp 下載時發生通用錯誤。\n      ${YELLOW}建議: 請檢查下方提供的原始錯誤日誌以了解詳情。${RESET}"
             ;;
         "E_FS_PERM")
-            error_message="${RED}原因: 檔案系統權限錯誤 (Operation not permitted)。\n      ${YELLOW}建議: 1. 檢查 Termux 儲存權限 (termux-setup-storage)。 2. 可能是影片標題含有特殊字元導致檔名過長或無效。${RESET}"
+            error_message="${RED}原因: 檔案系統權限錯誤 (Operation not permitted)。\n      ${YELLOW}建議: 1. 檢查 Termux 儲存權限。 2. 可能是影片標題含有非法字元導致檔名無效，即使經過清理也無法創建。${RESET}"
             ;;
         "E_FFPROBE_RES")
-            error_message="${RED}原因: 下載後，ffprobe 無法讀取影片的解析度。\n      ${YELLOW}建議: 下載的檔案可能已損壞或格式異常。${RESET}"
+            error_message="${RED}原因: 下載後，ffprobe 無法讀取影片的解析度。\n      ${YELLOW}建議: 下載的檔案可能已損壞或格式異常。請檢查原始錯誤日誌。${RESET}"
             ;;
         "E_NORMALIZE_FAIL")
-            error_message="${RED}原因: FFmpeg 音量標準化過程失敗。\n      ${YELLOW}建議: 請檢查日誌，可能是音訊編碼不受支援。${RESET}"
+            error_message="${RED}原因: FFmpeg 音量標準化過程失敗。\n      ${YELLOW}建議: 影片的音訊編碼可能不受支援。請檢查原始錯誤日誌。${RESET}"
             ;;
         "E_FFMPEG_MUX")
-            error_message="${RED}原因: FFmpeg 最終混流 (合併影像、音訊、字幕) 失敗。\n      ${YELLOW}建議: 請檢查日誌中的 ffmpeg 錯誤訊息。${RESET}"
+            error_message="${RED}原因: FFmpeg 最終混流 (合併影像、音訊、字幕) 失敗。\n      ${YELLOW}建議: 請檢查下方提供的原始錯誤日誌以了解詳情。${RESET}"
             ;;
         "E_FILE_NOT_FOUND")
-            error_message="${RED}原因: yt-dlp 執行完畢，但找不到預期的影片檔案。\n      ${YELLOW}建議: 可能是因為下載中斷或檔名問題導致。${RESET}"
+            error_message="${RED}原因: yt-dlp 執行完畢，但找不到預期的影片檔案。\n      ${YELLOW}建議: 可能是因為下載被意外中斷或發生了未知錯誤。${RESET}"
             ;;
         *)
             error_message="${RED}原因: 未知的錯誤碼 ($error_code)。${RESET}"
