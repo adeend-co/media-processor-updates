@@ -1775,7 +1775,7 @@ process_single_mp3_no_normalize() {
 }
 
 ######################################################################
-# 處理單一 YouTube 影片（MP4）下載與處理 (v5.3 - 增強的檔名清理)
+# 處理單一 YouTube 影片（MP4）下載與處理 (v5.4 - 安全下載與重命名)
 # 返回一個包含狀態、標題、解析度或錯誤碼的字串
 ######################################################################
 process_single_mp4() {
@@ -1798,80 +1798,96 @@ process_single_mp4() {
         goto_cleanup=false
     fi
 
+    # 宣告變數以便在 goto 流程中使用
+    local video_title="" video_id="" sanitized_title=""
+    local final_video_file="" output_video=""
+    local temp_video_file=""
+
     if ! $goto_cleanup; then
-        local video_title video_id
         video_title=$(echo "$media_json" | jq -r '.title // "video_$(date +%s_default)"')
         video_id=$(echo "$media_json" | jq -r '.id // "id_$(date +%s_default)"')
         
-        # ★★★ 核心修正：增強的檔名清理邏輯 ★★★
-        # 1. 定義允許的字元白名單：
-        #    a-zA-Z0-9: 英數
-        #    \u4e00-\u9fff: CJK 主要漢字區 (包含繁體中文)
-        #    \u3000-\u303f: CJK 符號和標點 (包含「」【】)
-        #    \u3040-\u309f: 日文平假名
-        #    \u30a0-\u30ff: 日文片假名
-        #    \uff00-\uffef: 全形英數與半形片假名
-        #     _.[]()-: 其他安全符號 (空格, 底線, 點, 括號, 連字號)
-        # 2. 將任何「不在」白名單內的字元替換成底線 '_'
-        local sanitized_title=$(echo "${video_title}" | sed -E 's/[^a-zA-Z0-9\u4e00-\u9fff\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uffef _.\[\]()-]/_/g')
-        
-        # 3. 額外處理：將多個連續的底線或空格壓縮成一個底線
-        sanitized_title=$(echo "$sanitized_title" | sed -E 's/[_ ]+/_/g')
+        # ★★★ 核心修正：下載與重命名分離 ★★★
 
-        # 4. 限制最終長度
-        sanitized_title=$(echo "$sanitized_title" | cut -c 1-80)
-        # ★★★ 清理邏輯結束 ★★★
+        # 1. 定義一個絕對安全的臨時下載路徑和檔名
+        #    -o 的模板現在指向臨時目錄，且只使用 ID 作為檔名
+        local temp_output_template="${temp_dir}/%(id)s.%(ext)s"
+        temp_video_file="${temp_dir}/${video_id}.mp4"
 
-        local base_name="${sanitized_title} [${video_id}]"
-        local output_template="${DOWNLOAD_PATH}/${base_name}.%(ext)s"
-        local video_file="${DOWNLOAD_PATH}/${base_name}.mp4"
-        local output_video="${DOWNLOAD_PATH}/${base_name}_normalized.mp4"
+        # 2. 構建最終的、包含清理後標題的檔名（此時還未創建）
+        local safe_chars_regex='[^a-zA-Z0-9\u4e00-\u9fff\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uffef _.\[\]()-]'
+        sanitized_title=$(echo "${video_title}" | sed -E "s/${safe_chars_regex}/_/g" | sed -E 's/[_ ]+/_/g' | cut -c 1-80)
         
-        log_message "INFO" "將使用清理後的基礎檔名: ${base_name}"
+        local final_base_name="${sanitized_title} [${video_id}]"
+        final_video_file="${DOWNLOAD_PATH}/${final_base_name}.mp4"
+        output_video="${DOWNLOAD_PATH}/${final_base_name}_normalized.mp4"
         
+        log_message "INFO" "臨時下載檔: ${temp_video_file}"
+        log_message "INFO" "最終目標檔 (清理後): ${final_video_file}"
+        
+        # 3. 使用安全的臨時檔名進行下載
         local format_option="bestvideo[ext=mp4][vcodec^=avc][height<=1440]+bestaudio[ext=m4a]/bestvideo[ext=mp4][vcodec^=avc][height<=1080]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio[ext=m4a]"
         local target_sub_langs="zh-Hant,zh-TW,zh-Hans,zh-CN,zh"
-        local yt_dlp_dl_args=(yt-dlp -f "$format_option" -o "$output_template" "$video_url" --write-subs --sub-lang "$target_sub_langs" --convert-subs srt --concurrent-fragments "$THREADS")
+        
+        # 為了字幕，我們讓 yt-dlp 將字幕檔案也下載到臨時目錄
+        local temp_sub_template="${temp_dir}/%(id)s.%(sublang)s.%(ext)s"
+        local yt_dlp_dl_args=(yt-dlp -f "$format_option" -o "$temp_output_template" --write-subs --sub-lang "$target_sub_langs" --convert-subs srt -o "subtitles:${temp_sub_template}" "$video_url" --concurrent-fragments "$THREADS")
         
         if ! "${yt_dlp_dl_args[@]}" 2> "$temp_dir/yt-dlp-video-std.log"; then
             log_message "WARNING" "yt-dlp 執行時回報錯誤，將進行錯誤分析。"
         fi
 
-        if [ ! -f "$video_file" ]; then
+        # 4. 檢查臨時檔案是否存在
+        if [ ! -f "$temp_video_file" ]; then
             local error_code_to_return="E_YTDLP_DL_GENERIC"
             if grep -q "HTTP Error 403" "$temp_dir/yt-dlp-video-std.log"; then error_code_to_return="E_YTDLP_DL_403";
+            # 這個錯誤現在理論上不會發生，但保留以防萬一
             elif grep -q "Operation not permitted" "$temp_dir/yt-dlp-video-std.log"; then error_code_to_return="E_FS_PERM";
             else error_code_to_return="E_FILE_NOT_FOUND"; fi
             
-            log_message "ERROR" "$error_code_to_return: 下載失敗，找不到影片檔案: $video_file"
+            log_message "ERROR" "$error_code_to_return: 下載失敗，找不到臨時影片檔案: $temp_video_file"
             local raw_err_b64=$(cat "$temp_dir/yt-dlp-video-std.log" | base64 -w 0)
             final_result_string="FAIL|${video_title}|${error_code_to_return}|${raw_err_b64}"
             goto_cleanup=true
+        else
+            # 5. 下載成功，移動並重命名到最終位置
+            if ! mv "$temp_video_file" "$final_video_file"; then
+                 log_message "ERROR" "E_FS_PERM: 無法將臨時檔案移動到最終路徑！請檢查目標路徑權限或檔名。"
+                 local raw_err_b64=$(echo "mv ${temp_video_file} ${final_video_file} 失敗" | base64 -w 0)
+                 final_result_string="FAIL|${video_title}|E_FS_PERM|${raw_err_b64}"
+                 goto_cleanup=true
+            fi
         fi
     fi
 
     if ! $goto_cleanup; then
         local resolution
-        resolution=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$video_file")
+        resolution=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$final_video_file")
         if [ -z "$resolution" ]; then
-            log_message "ERROR" "E_FFPROBE_RES: 無法獲取影片解析度: $video_file"
-            safe_remove "$video_file"
+            log_message "ERROR" "E_FFPROBE_RES: 無法獲取影片解析度: $final_video_file"
+            safe_remove "$final_video_file"
             local raw_err_b64=$(echo "ffprobe 無法解析此檔案。" | base64 -w 0)
             final_result_string="FAIL|${video_title}|E_FFPROBE_RES|${raw_err_b64}"
             goto_cleanup=true
         else
-            log_message "INFO" "影片下載完成：$video_file, 解析度: $resolution"
+            log_message "INFO" "影片重命名並驗證成功：$final_video_file, 解析度: $resolution"
         fi
     fi
 
     if ! $goto_cleanup; then
-        local find_safe_base_name
-        find_safe_base_name=$(echo "$base_name" | sed -e 's/\[/\\\[/g' -e 's/\]/\\\]/g' -e 's/\*/\\\*/g' -e 's/\?/\\\?/g')
-        while IFS= read -r srt_file; do subtitle_files+=("$srt_file"); log_message "INFO" "找到字幕: $srt_file"; done < <(find "$DOWNLOAD_PATH" -maxdepth 1 -type f -name "${find_safe_base_name}.*.srt")
+        # 將臨時目錄中的字幕檔案移動到主下載目錄
+        while IFS= read -r srt_file; do
+            local srt_basename=$(basename "$srt_file")
+            local new_srt_path="${DOWNLOAD_PATH}/${final_base_name}.${srt_basename#*.}" # e.g. Cleaned Title [id].zh-Hant.srt
+            if mv "$srt_file" "$new_srt_path"; then
+                subtitle_files+=("$new_srt_path")
+                log_message "INFO" "找到並移動字幕到: $new_srt_path"
+            fi
+        done < <(find "$temp_dir" -maxdepth 1 -type f -name "${video_id}.*.srt")
 
         local normalized_audio_temp="$temp_dir/audio_normalized.m4a"
-        if normalize_audio "$video_file" "$normalized_audio_temp" "$temp_dir" true; then
-            local ffmpeg_mux_args=(ffmpeg -y -i "$video_file" -i "$normalized_audio_temp")
+        if normalize_audio "$final_video_file" "$normalized_audio_temp" "$temp_dir" true; then
+            local ffmpeg_mux_args=(ffmpeg -y -i "$final_video_file" -i "$normalized_audio_temp")
             for sub_f in "${subtitle_files[@]}"; do ffmpeg_mux_args+=("-i" "$sub_f"); done
             ffmpeg_mux_args+=(-map 0:v:0 -map 1:a:0 -c:v copy -c:a aac -b:a 256k -ar 44100)
             if [ ${#subtitle_files[@]} -gt 0 ]; then
@@ -1903,16 +1919,16 @@ process_single_mp4() {
         fi
     fi
     
-    log_message "INFO" "清理臨時檔案 (MP4 標準化)..."
-    if [ $result -eq 0 ]; then
-        safe_remove "$video_file"
+    log_message "INFO" "清理檔案 (MP4 標準化)..."
+    # 如果混流成功，原始的 (已重命名的) 影片就該刪除
+    if [ -f "$final_video_file" ]; then
+        safe_remove "$final_video_file"
     fi
     for sub_f in "${subtitle_files[@]}"; do safe_remove "$sub_f"; done
-    rm -rf "$temp_dir"
+    rm -rf "$temp_dir" # 總是清理臨時目錄
     
     if [[ "$mode" != "playlist_mode" ]]; then
         if [ $result -eq 0 ]; then
-            # 這裡的 sanitized_title 是已經清理過的，用於通知是安全的
             _send_termux_notification 0 "媒體處理器：MP4 標準化" "處理影片 '$sanitized_title'" "$output_video"
         else
             _send_termux_notification 1 "媒體處理器：MP4 標準化" "處理影片 '$sanitized_title' 失敗" ""
