@@ -728,31 +728,6 @@ _get_error_details() {
 }
 
 ###########################################################
-# 全新輔助函數：強化的檔名清理，保留 CJK 字元
-###########################################################
-_sanitize_filename() {
-    local input_string="$1"
-    local sanitized
-
-    # 步驟 1: 將在檔名中絕對非法的字元替換為空格
-    sanitized=$(echo "$input_string" | sed 's@[/\\:*?"<>|]@ @g')
-
-    # 步驟 2: 移除所有非打印字元。
-    # [[:print:]] 包含了字母、數字、標點符號以及所有可見的 CJK 字元。
-    # [^[:print:]] 則匹配所有不可見的字元，包括控制字元和無效的字元序列。
-    # 這是解決 \udce6 問題的關鍵。
-    sanitized=$(echo "$sanitized" | sed 's/[^[:print:]]//g')
-
-    # 步驟 3: 將連續的空格壓縮為單一空格
-    sanitized=$(echo "$sanitized" | sed 's/\s\+/ /g')
-
-    # 步驟 4: 移除檔名前後的空格
-    sanitized=$(echo "$sanitized" | sed 's/^[ ]*//;s/[ ]*$//')
-    
-    echo "$sanitized"
-}
-
-###########################################################
 # 全新輔助函數：顯示播放清單處理的最終摘要 (v1.2 - 顯示原始錯誤)
 ###########################################################
 _display_playlist_summary() {
@@ -1800,7 +1775,7 @@ process_single_mp3_no_normalize() {
 }
 
 ######################################################################
-# 處理單一 YouTube 影片（MP4）下載與處理 (v5.3 - 強化檔名清理)
+# 處理單一 YouTube 影片（MP4）下載與處理 (v5.3 - 增強的檔名清理)
 # 返回一個包含狀態、標題、解析度或錯誤碼的字串
 ######################################################################
 process_single_mp4() {
@@ -1828,10 +1803,24 @@ process_single_mp4() {
         video_title=$(echo "$media_json" | jq -r '.title // "video_$(date +%s_default)"')
         video_id=$(echo "$media_json" | jq -r '.id // "id_$(date +%s_default)"')
         
-        # ★★★ 核心修改：調用新的、強化的清理函數 ★★★
-        local sanitized_title=$(_sanitize_filename "${video_title}")
-        # 在清理後再進行截斷
+        # ★★★ 核心修正：增強的檔名清理邏輯 ★★★
+        # 1. 定義允許的字元白名單：
+        #    a-zA-Z0-9: 英數
+        #    \u4e00-\u9fff: CJK 主要漢字區 (包含繁體中文)
+        #    \u3000-\u303f: CJK 符號和標點 (包含「」【】)
+        #    \u3040-\u309f: 日文平假名
+        #    \u30a0-\u30ff: 日文片假名
+        #    \uff00-\uffef: 全形英數與半形片假名
+        #     _.[]()-: 其他安全符號 (空格, 底線, 點, 括號, 連字號)
+        # 2. 將任何「不在」白名單內的字元替換成底線 '_'
+        local sanitized_title=$(echo "${video_title}" | sed -E 's/[^a-zA-Z0-9\u4e00-\u9fff\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uffef _.\[\]()-]/_/g')
+        
+        # 3. 額外處理：將多個連續的底線或空格壓縮成一個底線
+        sanitized_title=$(echo "$sanitized_title" | sed -E 's/[_ ]+/_/g')
+
+        # 4. 限制最終長度
         sanitized_title=$(echo "$sanitized_title" | cut -c 1-80)
+        # ★★★ 清理邏輯結束 ★★★
 
         local base_name="${sanitized_title} [${video_id}]"
         local output_template="${DOWNLOAD_PATH}/${base_name}.%(ext)s"
@@ -1923,6 +1912,7 @@ process_single_mp4() {
     
     if [[ "$mode" != "playlist_mode" ]]; then
         if [ $result -eq 0 ]; then
+            # 這裡的 sanitized_title 是已經清理過的，用於通知是安全的
             _send_termux_notification 0 "媒體處理器：MP4 標準化" "處理影片 '$sanitized_title'" "$output_video"
         else
             _send_termux_notification 1 "媒體處理器：MP4 標準化" "處理影片 '$sanitized_title' 失敗" ""
