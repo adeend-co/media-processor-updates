@@ -3491,20 +3491,35 @@ process_mp3_no_normalize() {
 # 處理 MP4 影片（支援單一或播放清單、本機檔案）
 ############################################
 process_mp4() {
-    # --- 此函數邏輯不變，它現在會調用更新後的 _process_youtube_playlist ---
+    # 提示使用者輸入，並設定預設值
     read -p "輸入 YouTube 網址或本機路徑 [預設: $DEFAULT_URL]: " input; input=${input:-$DEFAULT_URL}
-    if [ -f "$input" ]; then 
+    
+    ### --- 核心修正：明確區分本機檔案、播放列表和單一影片，進行正確分流 --- ###
+    if [ -f "$input" ]; then
+        # 情況一：輸入的是一個存在的本機檔案。
+        # 直接交給本機檔案處理器。
+        log_message "INFO" "process_mp4: 檢測到本機檔案 '$input'，將調用本機處理器。"
         process_local_mp4 "$input"
-    elif [[ "$input" == *"list="* || "$input" == *"youtu"* ]]; then 
-        # 將單一影片和播放清單都交給 _process_youtube_playlist 處理
+        
+    elif [[ "$input" == *"list="* ]]; then
+        # 情況二：輸入的網址包含 'list='，明確是播放列表。
+        # 將播放列表交給專為處理播放列表設計的函數。
+        log_message "INFO" "process_mp4: 檢測到播放列表 '$input'，將調用播放列表處理器。"
         _process_youtube_playlist "$input" "process_single_mp4"
-    else 
+        
+    elif [[ "$input" == *"youtube.com"* || "$input" == *"youtu.be"* ]]; then
+        # 情況三：輸入的是 YouTube 網址，但不是播放列表，視為單一影片。
+        # 直接調用為處理單一影片設計的函數，這才是正確的流程。
+        log_message "INFO" "process_mp4: 檢測到單一 YouTube 影片 '$input'，將調用單項處理器。"
+        process_single_mp4 "$input"
+        
+    else
+        # 情況四：輸入的不是上述任何一種有效格式。
         echo -e "${RED}錯誤：輸入的不是有效的 YouTube 網址或本機檔案路徑。${RESET}"
         log_message "ERROR" "process_mp4: 無效的輸入 '$input'"
         return 1
     fi
 }
-
 ############################################
 # 處理 MP4 影片（無音量標準化，僅網路下載）
 ############################################
