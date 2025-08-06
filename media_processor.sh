@@ -1816,28 +1816,26 @@ process_single_mp4() {
         sanitized_title=$(echo "$sanitized_title" | sed -E 's/[_ ]+/_/g' | cut -c 1-80)
         local final_base_name="${sanitized_title} [${video_id}]"
         
-        # ★★★ 核心修正：更有彈性的格式選擇 ★★★
-        # bv* = best video preference, ba* = best audio preference, / is fallback
-        # 1. 偏好 MP4 容器的最好視訊 + M4A 容器的最好音訊
-        # 2. 如果不行，退一步找一個本身就是 MP4 容器的最好檔案
-        # 3. 如果還不行，就讓 yt-dlp 選擇最好的格式，並確保最終合併為 mp4
-        local format_option="bv*[ext=mp4]+ba*[ext=m4a]/b[ext=mp4]/best"
-        
-        log_message "INFO" "將下載影片到臨時目錄: ${temp_dir} (格式偏好: ${format_option})"
+        # ★★★ 核心修正：採用彈性格式選擇器與強制 MP4 合併 ★★★
+        log_message "INFO" "將下載影片到臨時目錄: ${temp_dir}"
         local temp_output_template="${temp_dir}/%(id)s.%(ext)s"
         
-        # --merge-output-format mp4 確保即使下載了 mkv 或 webm，最終也會變成 mp4
-        local yt_dlp_video_args=(yt-dlp -f "$format_option" --merge-output-format mp4 -o "$temp_output_template" "$video_url" --concurrent-fragments "$THREADS")
+        # 1. 彈性格式選擇器，建立一個包含多個降級選項的選擇鏈
+        local format_option="bestvideo[ext=mp4][vcodec^=avc][height<=1080]+bestaudio[ext=m4a]/bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[ext=mp4][height<=1080]/best[height<=1080]"
+        
+        # 2. 準備下載指令，加入 --merge-output-format mp4 來確保最終輸出為 MP4
+        local yt_dlp_video_args=(yt-dlp -f "$format_option" -o "$temp_output_template" --merge-output-format mp4 "$video_url" --concurrent-fragments "$THREADS")
         
         if ! "${yt_dlp_video_args[@]}" 2> "$temp_dir/yt-dlp-video-std.log"; then
             log_message "WARNING" "yt-dlp 影片下載時回報錯誤，將進行錯誤分析。"
         fi
 
-        temp_video_file=$(find "$temp_dir" -maxdepth 1 -type f \( -name "*.mp4" -o -name "*.mkv" -o -name "*.webm" \) -print -quit)
+        # 主動發現檔案（現在應該總是能找到一個 .mp4 檔案）
+        temp_video_file=$(find "$temp_dir" -maxdepth 1 -type f \( -name "*.mp4" -o -name "*.mkv" \) -print -quit)
 
         if [ -z "$temp_video_file" ]; then
             local error_code_to_return="E_YTDLP_DL_GENERIC"
-            if grep -q "Requested format is not available" "$temp_dir/yt-dlp-video-std.log"; then error_code_to_return="E_YTDLP_FORMAT"; # 新增一個更精確的錯誤碼
+            if grep -q "Requested format is not available" "$temp_dir/yt-dlp-video-std.log"; then error_code_to_return="E_YTDLP_FORMAT"; # 新增一個更精準的錯誤碼
             elif grep -q "HTTP Error 403" "$temp_dir/yt-dlp-video-std.log"; then error_code_to_return="E_YTDLP_DL_403";
             else error_code_to_return="E_FILE_NOT_FOUND"; fi
             
@@ -1850,8 +1848,8 @@ process_single_mp4() {
             local yt_dlp_subs_args=(yt-dlp --skip-download --write-subs --sub-lang "$target_sub_langs" --convert-subs srt -o "${temp_dir}/%(id)s.%(sublang)s.%(ext)s" "$video_url")
             "${yt_dlp_subs_args[@]}" > /dev/null 2>&1
 
-            local extension="${temp_video_file##*.}"
-            final_video_file="${DOWNLOAD_PATH}/${final_base_name}.${extension}"
+            # 因為合併後一定是 .mp4，所以可以直接指定
+            final_video_file="${DOWNLOAD_PATH}/${final_base_name}.mp4"
             output_video="${DOWNLOAD_PATH}/${final_base_name}_normalized.mp4"
 
             local mv_error
@@ -1869,13 +1867,11 @@ process_single_mp4() {
         local ffprobe_error
         ffprobe_output=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$final_video_file" 2>&1)
         local ffprobe_exit_code=$?
-
         if [ $ffprobe_exit_code -ne 0 ] || [ -z "$ffprobe_output" ]; then
             resolution=""; ffprobe_error=$ffprobe_output
         else
             resolution=$ffprobe_output
         fi
-        
         if [ -z "$resolution" ]; then
             log_message "ERROR" "E_FFPROBE_RES: 無法獲取影片解析度: $final_video_file"
             safe_remove "$final_video_file"
