@@ -50,7 +50,7 @@
 ############################################
 # 腳本設定
 ############################################
-SCRIPT_VERSION="v2.6.6-beta.15" # <<< 版本號更新
+SCRIPT_VERSION="v2.6.6-beta.16" # <<< 版本號更新
 
 ############################################
 # ★★★ 新增：使用者同意書版本號 ★★★
@@ -61,7 +61,7 @@ AGREEMENT_VERSION="1.6"
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
-SCRIPT_UPDATE_DATE="2025-08-06" # 請根據實際情況修改此日期
+SCRIPT_UPDATE_DATE="2025-08-07" # 請根據實際情況修改此日期
 
 # ... 其他設定 ...
 TARGET_DATE="2025-08-13" # <<< 新增：設定您的目標日期
@@ -687,6 +687,114 @@ spinner() {
     done
     # 清理最後的 spinner 字元
     echo -ne " \r"
+}
+
+###########################################################
+# 全新輔助函數：解析錯誤碼並提供詳細資訊
+###########################################################
+_get_error_details() {
+    local error_code="$1"
+    local error_message=""
+    case "$error_code" in
+        "E_YTDLP_JSON")
+            error_message="${RED}原因: yt-dlp 無法獲取影片的元數據 (JSON)。\n      ${YELLOW}建議: 請檢查 URL 是否正確、影片是否為私有或已被刪除。${RESET}"
+            ;;
+        "E_YTDLP_DL_403")
+            error_message="${RED}原因: YouTube 伺服器拒絕存取 (HTTP 403 Forbidden)。\n      ${YELLOW}建議: 這是 YouTube 的臨時性阻擋，請稍後重試。${RESET}"
+            ;;
+        "E_YTDLP_DL_GENERIC")
+            error_message="${RED}原因: yt-dlp 下載時發生通用錯誤。\n      ${YELLOW}建議: 請檢查日誌中的 yt-dlp 原始錯誤訊息。${RESET}"
+            ;;
+        "E_FS_PERM")
+            error_message="${RED}原因: 檔案系統權限錯誤 (Operation not permitted)。\n      ${YELLOW}建議: 1. 檢查 Termux 儲存權限 (termux-setup-storage)。 2. 可能是影片標題含有特殊字元導致檔名過長或無效。${RESET}"
+            ;;
+        "E_FFPROBE_RES")
+            error_message="${RED}原因: 下載後，ffprobe 無法讀取影片的解析度。\n      ${YELLOW}建議: 下載的檔案可能已損壞或格式異常。${RESET}"
+            ;;
+        "E_NORMALIZE_FAIL")
+            error_message="${RED}原因: FFmpeg 音量標準化過程失敗。\n      ${YELLOW}建議: 請檢查日誌，可能是音訊編碼不受支援。${RESET}"
+            ;;
+        "E_FFMPEG_MUX")
+            error_message="${RED}原因: FFmpeg 最終混流 (合併影像、音訊、字幕) 失敗。\n      ${YELLOW}建議: 請檢查日誌中的 ffmpeg 錯誤訊息。${RESET}"
+            ;;
+        "E_FILE_NOT_FOUND")
+            error_message="${RED}原因: yt-dlp 執行完畢，但找不到預期的影片檔案。\n      ${YELLOW}建議: 可能是因為下載中斷或檔名問題導致。${RESET}"
+            ;;
+        *)
+            error_message="${RED}原因: 未知的錯誤碼 ($error_code)。${RESET}"
+            ;;
+    esac
+    echo -e "$error_message"
+}
+
+###########################################################
+# 全新輔助函數：顯示播放清單處理的最終摘要
+###########################################################
+_display_playlist_summary() {
+    local results_array=("$@")
+    local total_items=${#results_array[@]}
+    local success_items=()
+    local failed_items=()
+    local i=1
+
+    # 分類成功與失敗的項目
+    for result_line in "${results_array[@]}"; do
+        local status
+        IFS='|' read -r status _ <<< "$result_line"
+        if [[ "$status" == "SUCCESS" ]]; then
+            success_items+=("$result_line")
+        else
+            failed_items+=("$result_line")
+        fi
+    done
+
+    clear
+    echo -e "${CYAN}=====================================================${RESET}"
+    echo -e "              ${BOLD}播 放 清 單 處 理 完 成 摘 要${RESET}"
+    echo -e "${CYAN}=====================================================${RESET}"
+    echo -e "總項目數: ${total_items}, 成功: ${#success_items[@]}, 失敗: ${#failed_items[@]}\n"
+
+    # --- 顯示成功項目 ---
+    if [ ${#success_items[@]} -gt 0 ]; then
+        echo -e "${GREEN}--- ✔ 成功項目 (${#success_items[@]}) ---${RESET}"
+        for item in "${success_items[@]}"; do
+            local title resolution
+            IFS='|' read -r _ title resolution <<< "$item"
+            # 截斷標題，保留約 50 個字元寬度
+            local truncated_title
+            if [ ${#title} -gt 50 ]; then
+                truncated_title="$(echo "$title" | cut -c 1-47)..."
+            else
+                truncated_title="$title"
+            fi
+            printf "%2d. %-50s ${GREEN}[%s]${RESET}\n" "$i" "$truncated_title" "$resolution"
+            i=$((i + 1))
+        done
+        echo ""
+    fi
+
+    # --- 顯示失敗項目 ---
+    if [ ${#failed_items[@]} -gt 0 ]; then
+        echo -e "${RED}--- ✗ 失敗項目 (${#failed_items[@]}) ---${RESET}"
+        for item in "${failed_items[@]}"; do
+            local title error_code
+            IFS='|' read -r _ title error_code <<< "$item"
+            local truncated_title
+            if [ ${#title} -gt 60 ]; then
+                truncated_title="$(echo "$title" | cut -c 1-57)..."
+            else
+                truncated_title="$title"
+            fi
+            printf "%2d. %s\n" "$i" "$truncated_title"
+            _get_error_details "$error_code" # 調用函數顯示詳細錯誤
+            echo "-----------------------------------------------------"
+            i=$((i + 1))
+        done
+        echo ""
+    fi
+
+    log_message "SUCCESS" "播放清單摘要顯示完畢。總共: $total_items, 成功: ${#success_items[@]}, 失敗: ${#failed_items[@]}"
+    read -p "摘要顯示完畢，按 Enter 返回..."
 }
 
 ######################################################################
@@ -1653,137 +1761,132 @@ process_single_mp3_no_normalize() {
     return $result
 }
 
-###############################################################
-# 處理單一 YouTube 影片（MP4）下載與處理 (最終確定版 v4.6)
-# 修正 find 命令的模式匹配問題，確保字幕能被準確找到並清理
-###############################################################
+######################################################################
+# 處理單一 YouTube 影片（MP4）下載與處理 (v5.0 - 錯誤碼與結果回傳)
+# 返回一個包含狀態、標題、解析度或錯誤碼的字串
+######################################################################
 process_single_mp4() {
     local video_url="$1"
     local mode="$2"
-    local temp_dir=$(mktemp -d)
-    local result=0
-    local should_notify=false
+    local temp_dir
+    temp_dir=$(mktemp -d)
     local subtitle_files=()
 
-    echo -e "${YELLOW}正在獲取媒體完整資訊 (優化流程)...${RESET}"
+    # --- 步驟 1: 獲取元數據 ---
     local media_json
     media_json=$(yt-dlp --no-warnings --dump-json "$video_url" 2>"$temp_dir/yt-dlp-json-dump.log")
     if [ -z "$media_json" ]; then
-        log_message "ERROR" "無法獲取媒體的 JSON 資訊。URL: $video_url"
-        echo -e "${RED}錯誤：無法獲取媒體資訊，請檢查網址或網路。${RESET}"
-        cat "$temp_dir/yt-dlp-json-dump.log"; rm -rf "$temp_dir"; return 1
+        log_message "ERROR" "E_YTDLP_JSON: 無法獲取媒體的 JSON 資訊。URL: $video_url"
+        echo "FAIL|${video_url}|E_YTDLP_JSON"
+        rm -rf "$temp_dir"
+        return 1
     fi
 
-    local video_title video_id duration_secs
+    local video_title video_id
     video_title=$(echo "$media_json" | jq -r '.title // "video_$(date +%s_default)"')
     video_id=$(echo "$media_json" | jq -r '.id // "id_$(date +%s_default)"')
-    duration_secs=$(echo "$media_json" | jq -r '.duration // 0')
-
-    local format_option="bestvideo[ext=mp4][height<=1440]+bestaudio[ext=m4a]/best[ext=mp4]"
-    local is_youtube_url=true
-    if [[ "$video_url" != *"youtube.com"* && "$video_url" != *"youtu.be"* ]]; then
-        is_youtube_url=false; format_option="best";
-    fi
-
-    if [[ "$mode" != "playlist_mode" ]]; then
-        local duration_threshold_secs=1260
-        if (( $(echo "$duration_secs > $duration_threshold_secs" | bc -l) )); then
-            should_notify=true;
-        fi
-    fi
-
-    mkdir -p "$DOWNLOAD_PATH"; if [ ! -w "$DOWNLOAD_PATH" ]; then log_message "ERROR" "無法寫入目錄"; rm -rf "$temp_dir"; return 1; fi
-
-    echo -e "${YELLOW}處理影片 (MP4 標準化)：$video_title${RESET}"
     
-    local sanitized_title=$(echo "${video_title}" | sed 's@[/\\:*?"<>|]@_@g')
-    local base_name=$(echo "${sanitized_title} [${video_id}]" | cut -c 1-150)
-    
+    # --- 步驟 2: 準備檔名和路徑 ---
+    # 更嚴格的檔名清理和長度限制
+    local sanitized_title=$(echo "${video_title}" | sed 's@[/\\:*?"<>|]@_@g' | sed 's/\s\+/ /g' | cut -c 1-80)
+    local base_name="${sanitized_title} [${video_id}]"
     local output_template="${DOWNLOAD_PATH}/${base_name}.%(ext)s"
     local video_file="${DOWNLOAD_PATH}/${base_name}.mp4"
     local output_video="${DOWNLOAD_PATH}/${base_name}_normalized.mp4"
-
+    
     log_message "INFO" "將使用確定的基礎檔名: ${base_name}"
     
-    echo -e "${YELLOW}開始下載影片及字幕...${RESET}"
+    # --- 步驟 3: 下載影片和字幕 ---
+    # 優化格式選擇，優先分離的 AVC1 MP4 流，避免回退到低品質合併流
+    local format_option="bestvideo[ext=mp4][vcodec^=avc][height<=1440]+bestaudio[ext=m4a]/bestvideo[ext=mp4][vcodec^=avc][height<=1080]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio[ext=m4a]"
     local target_sub_langs="zh-Hant,zh-TW,zh-Hans,zh-CN,zh"
     
-    local yt_dlp_dl_args=(yt-dlp -f "$format_option" -o "$output_template" "$video_url" --newline --progress --concurrent-fragments "$THREADS")
+    local yt_dlp_dl_args=(yt-dlp -f "$format_option" -o "$output_template" "$video_url" --write-subs --sub-lang "$target_sub_langs" --convert-subs srt --concurrent-fragments "$THREADS")
     
-    if $is_youtube_url; then
-        echo -e "${YELLOW}將嘗試下載繁/簡/通用中文字幕...${RESET}"
-        yt_dlp_dl_args+=(--write-subs --sub-lang "$target_sub_langs" --convert-subs srt)
-    fi
-
+    # 執行下載並將 stderr 存到日誌檔
     if ! "${yt_dlp_dl_args[@]}" 2> "$temp_dir/yt-dlp-video-std.log"; then
-        log_message "WARNING" "yt-dlp 執行時回報錯誤 (可能為字幕問題)，繼續檢查主檔案。";
+        log_message "WARNING" "yt-dlp 執行時回報錯誤，將進行錯誤分析。"
     fi
 
+    # 錯誤分析與檔案驗證
     if [ ! -f "$video_file" ]; then
-        log_message "ERROR" "下載失敗，找不到預期的影片檔案: $video_file";
-        cat "$temp_dir/yt-dlp-video-std.log"; result=1
-    else
-        log_message "INFO" "影片下載完成：$video_file"
+        local error_code_to_return="E_YTDLP_DL_GENERIC"
+        # 檢查特定錯誤
+        if grep -q "HTTP Error 403" "$temp_dir/yt-dlp-video-std.log"; then error_code_to_return="E_YTDLP_DL_403";
+        elif grep -q "Operation not permitted" "$temp_dir/yt-dlp-video-std.log"; then error_code_to_return="E_FS_PERM";
+        else error_code_to_return="E_FILE_NOT_FOUND"; fi
+
+        log_message "ERROR" "$error_code_to_return: 下載失敗，找不到影片檔案: $video_file"
+        echo "FAIL|${video_title}|${error_code_to_return}"
+        rm -rf "$temp_dir"
+        return 1
     fi
 
-    if [ $result -eq 0 ]; then
-        if $is_youtube_url; then
-            # ★★★ 核心修正：對 base_name 進行轉義，以應對 find 命令的模式匹配 ★★★
-            local find_safe_base_name
-            find_safe_base_name=$(echo "$base_name" | sed -e 's/\[/\\\[/g' -e 's/\]/\\\]/g' -e 's/\*/\\\*/g' -e 's/\?/\\\?/g')
-            log_message "INFO" "檢查字幕 (使用轉義後的基礎檔名: ${find_safe_base_name}.*.srt)"
-            
-            # 使用轉義後的 find_safe_base_name 進行查找
-            while IFS= read -r srt_file; do
-                subtitle_files+=("$srt_file")
-                log_message "INFO" "找到字幕: $srt_file"
-                echo -e "${GREEN}找到字幕: $(basename "$srt_file")${RESET}"
-            done < <(find "$DOWNLOAD_PATH" -maxdepth 1 -type f -name "${find_safe_base_name}.*.srt")
-        fi
+    # --- 步驟 4: 獲取實際解析度 ---
+    local resolution
+    resolution=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$video_file")
+    if [ -z "$resolution" ]; then
+        log_message "ERROR" "E_FFPROBE_RES: 無法獲取影片解析度: $video_file"
+        safe_remove "$video_file" # 刪除損壞的檔案
+        echo "FAIL|${video_title}|E_FFPROBE_RES"
+        rm -rf "$temp_dir"
+        return 1
+    fi
+    log_message "INFO" "影片下載完成：$video_file, 解析度: $resolution"
 
-        local normalized_audio_temp="$temp_dir/audio_normalized.m4a"
-        echo -e "${YELLOW}開始音量標準化...${RESET}"
-        if normalize_audio "$video_file" "$normalized_audio_temp" "$temp_dir" true; then
-            # ... (混流邏輯不變) ...
-            echo -e "${YELLOW}正在混流標準化音訊、影片與字幕...${RESET}"
-            local ffmpeg_mux_args=(ffmpeg -y -i "$video_file" -i "$normalized_audio_temp")
-            for sub_f in "${subtitle_files[@]}"; do ffmpeg_mux_args+=("-i" "$sub_f"); done
-            ffmpeg_mux_args+=(-map 0:v:0 -map 1:a:0 -c:v copy -c:a aac -b:a 256k -ar 44100)
-            if [ ${#subtitle_files[@]} -gt 0 ]; then
-                ffmpeg_mux_args+=("-c:s" mov_text)
-                for ((i=0; i<${#subtitle_files[@]}; i++)); do
-                    ffmpeg_mux_args+=(-map $((i+2)):0);
-                    local sub_lang_code=$(basename "${subtitle_files[$i]}" | rev | cut -d'.' -f2 | rev)
-                    local ffmpeg_lang="und"; case "$sub_lang_code" in zh-Hant|zh-TW) ffmpeg_lang="zht" ;; zh-Hans|zh-CN) ffmpeg_lang="zhs" ;; zh) ffmpeg_lang="chi" ;; esac
-                    ffmpeg_mux_args+=("-metadata:s:s:$i" "language=$ffmpeg_lang")
-                done
-            fi
-            ffmpeg_mux_args+=(-movflags "+faststart" "$output_video")
-            if ! "${ffmpeg_mux_args[@]}" > "$temp_dir/ffmpeg_mux.log" 2>&1; then
-                log_message "ERROR" "混流失敗！"; cat "$temp_dir/ffmpeg_mux.log"; result=1
-            else
-                log_message "SUCCESS" "混流成功"
-            fi
+    # --- 步驟 5: 處理字幕 ---
+    local find_safe_base_name
+    find_safe_base_name=$(echo "$base_name" | sed -e 's/\[/\\\[/g' -e 's/\]/\\\]/g' -e 's/\*/\\\*/g' -e 's/\?/\\\?/g')
+    while IFS= read -r srt_file; do
+        subtitle_files+=("$srt_file")
+        log_message "INFO" "找到字幕: $srt_file"
+    done < <(find "$DOWNLOAD_PATH" -maxdepth 1 -type f -name "${find_safe_base_name}.*.srt")
+
+    # --- 步驟 6: 音量標準化與混流 ---
+    local normalized_audio_temp="$temp_dir/audio_normalized.m4a"
+    if normalize_audio "$video_file" "$normalized_audio_temp" "$temp_dir" true; then
+        local ffmpeg_mux_args=(ffmpeg -y -i "$video_file" -i "$normalized_audio_temp")
+        for sub_f in "${subtitle_files[@]}"; do ffmpeg_mux_args+=("-i" "$sub_f"); done
+        ffmpeg_mux_args+=(-map 0:v:0 -map 1:a:0 -c:v copy -c:a aac -b:a 256k -ar 44100)
+        if [ ${#subtitle_files[@]} -gt 0 ]; then
+            ffmpeg_mux_args+=("-c:s" mov_text)
+            for ((i=0; i<${#subtitle_files[@]}; i++)); do
+                ffmpeg_mux_args+=(-map $((i+2)):0);
+                local sub_lang_code=$(basename "${subtitle_files[$i]}" | rev | cut -d'.' -f2 | rev)
+                local ffmpeg_lang="und"; case "$sub_lang_code" in zh-Hant|zh-TW) ffmpeg_lang="zht" ;; zh-Hans|zh-CN) ffmpeg_lang="zhs" ;; zh) ffmpeg_lang="chi" ;; esac
+                ffmpeg_mux_args+=("-metadata:s:s:$i" "language=$ffmpeg_lang")
+            done
+        fi
+        ffmpeg_mux_args+=(-movflags "+faststart" "$output_video")
+        
+        if ! "${ffmpeg_mux_args[@]}" > "$temp_dir/ffmpeg_mux.log" 2>&1; then
+            log_message "ERROR" "E_FFMPEG_MUX: 混流失敗！"
+            echo "FAIL|${video_title}|E_FFMPEG_MUX"
+            result=1
         else
-            log_message "ERROR" "音量標準化失敗！"; result=1
+            log_message "SUCCESS" "混流成功"
+            # 成功，回傳結果
+            echo "SUCCESS|${video_title}|${resolution}"
+            result=0
         fi
+    else
+        log_message "ERROR" "E_NORMALIZE_FAIL: 音量標準化失敗！"
+        echo "FAIL|${video_title}|E_NORMALIZE_FAIL"
+        result=1
     fi
 
+    # --- 步驟 7: 清理 ---
     log_message "INFO" "清理臨時檔案 (MP4 標準化)..."
-    if [ -f "$video_file" ]; then safe_remove "$video_file"; fi
-    
-    for sub_f in "${subtitle_files[@]}"; do
-        safe_remove "$sub_f"
-    done
-    
+    safe_remove "$video_file"
+    for sub_f in "${subtitle_files[@]}"; do safe_remove "$sub_f"; done
     rm -rf "$temp_dir"
-
-    if [ $result -eq 0 ]; then
-        if [ -f "$output_video" ]; then echo -e "${GREEN}處理完成！影片已儲存至：$output_video${RESET}";
-        else echo -e "${RED}處理似乎已完成，但最終檔案 '$output_video' 未找到！${RESET}"; result=1; fi
-    else echo -e "${RED}處理失敗 (MP4 標準化)！${RESET}"; fi
-    if [[ "$mode" != "playlist_mode" ]] && $should_notify; then
-        _send_termux_notification "$result" "媒體處理器：MP4 標準化" "處理影片 '$sanitized_title'" "$output_video";
+    
+    if [[ "$mode" != "playlist_mode" ]]; then
+        if [ $result -eq 0 ]; then
+            _send_termux_notification 0 "媒體處理器：MP4 標準化" "處理影片 '$sanitized_title'" "$output_video"
+        else
+            _send_termux_notification 1 "媒體處理器：MP4 標準化" "處理影片 '$sanitized_title' 失敗" ""
+        fi
     fi
 
     return $result
@@ -3161,8 +3264,7 @@ _get_playlist_video_count() {
 }
 
 ###################################################################
-# 輔助函數 - 處理 YouTube 播放清單通用流程 (最終穩健版 v2.6)
-# 改為只獲取 ID 列表，避免因單一項目 JSON 格式錯誤導致的解析失敗
+# 輔助函數 - 處理 YouTube 播放清單通用流程 (v3.0 - 結果收集與摘要)
 ###################################################################
 _process_youtube_playlist() {
     local playlist_url="$1"
@@ -3171,7 +3273,6 @@ _process_youtube_playlist() {
 
     echo -e "${YELLOW}正在獲取播放清單的影片 ID 列表 (穩健模式)...${RESET}"
 
-    # --- 使用 --print '%(id)s' 直接獲取乾淨的 ID 列表 ---
     local id_list
     id_list=$(yt-dlp --flat-playlist --print '%(id)s' "$playlist_url" 2> >(log_message "DEBUG" "yt-dlp stderr: " >&2))
 
@@ -3181,20 +3282,11 @@ _process_youtube_playlist() {
         return 1
     fi
 
-    # --- 將 ID 列表讀入 Bash 陣列 ---
     local video_ids=()
-    while IFS= read -r line; do
-        # 確保讀入的不是空行
-        if [ -n "$line" ]; then
-            video_ids+=("$line")
-        fi
-    done <<< "$id_list"
-
+    while IFS= read -r line; do [ -n "$line" ] && video_ids+=("$line"); done <<< "$id_list"
     local total_videos=${#video_ids[@]}
     if [ "$total_videos" -eq 0 ]; then
-        log_message "ERROR" "解析後，影片 ID 列表為空。"
-        echo -e "${RED}錯誤：未找到任何有效的影片 ID。${RESET}"
-        return 1
+        log_message "ERROR" "解析後，影片 ID 列表為空。"; echo -e "${RED}錯誤：未找到任何有效的影片 ID。${RESET}"; return 1
     fi
 
     if [[ "$total_videos" -gt 1 ]]; then
@@ -3204,50 +3296,54 @@ _process_youtube_playlist() {
     fi
 
     local count=0
-    local success_count=0
-    local fail_count=0
+    local PLAYLIST_RESULTS=() # <<< 核心：用於儲存每個影片的處理結果
+    local overall_fail_count=0
 
-    # --- 遍歷儲存 ID 的陣列 ---
     for video_id in "${video_ids[@]}"; do
         count=$((count + 1))
         local video_url="https://www.youtube.com/watch?v=$video_id"
         
+        clear
         log_message "INFO" "[$count/$total_videos] 處理影片: $video_url"
-        if [[ "$total_videos" -gt 1 ]]; then
-            echo -e "${CYAN}--- 正在處理第 $count/$total_videos 個影片 ---${RESET}"
-        fi
+        echo -e "${CYAN}--- 正在處理第 $count/$total_videos 個影片 ---${RESET}"
+        echo -e "${YELLOW}URL: $video_url${RESET}"
 
-        # 調用單項處理函數，並傳入 'playlist_mode' 標記以禁用單項通知
-        if "$single_item_processor_func_name" "$video_url" "playlist_mode"; then
-            success_count=$((success_count + 1))
-        else
-            fail_count=$((fail_count + 1))
-            log_message "WARNING" "處理失敗: $video_url"
-            echo -e "${RED}處理失敗: $video_url${RESET}"
+        # 調用單項處理函數，並捕獲其回傳的結果字串
+        local processing_result
+        processing_result=$("$single_item_processor_func_name" "$video_url" "playlist_mode")
+        local exit_code=$?
+        
+        # 將結果存入陣列
+        PLAYLIST_RESULTS+=("$processing_result")
+
+        if [ $exit_code -ne 0 ]; then
+            overall_fail_count=$((overall_fail_count + 1))
         fi
-        echo "" # 每個項目處理完後加一個空行
+        # 移除原來的即時成功/失敗訊息
     done
-
 
     # --- 僅在處理多個項目時顯示總結 ---
     if [[ "$total_videos" -gt 1 ]]; then
-        echo -e "${GREEN}播放清單處理完成！共 $count 個影片，成功 $success_count 個，失敗 $fail_count 個${RESET}"
-        log_message "SUCCESS" "播放清單 $playlist_url 完成！共 $count 個，成功 $success_count 個，失敗 $fail_count 個"
+        _display_playlist_summary "${PLAYLIST_RESULTS[@]}"
 
         # 發送總結通知
         local ovr=0
-        if [ "$fail_count" -gt 0 ]; then
-            ovr=1
+        if [ "$overall_fail_count" -gt 0 ]; then ovr=1; fi
+        _send_termux_notification "$ovr" "媒體處理器：播放清單完成" "播放清單處理完成 (${count - overall_fail_count}/$count 成功)" ""
+    else
+        # 如果只有單一項目，直接在控制台顯示簡短結果
+        local status title detail
+        IFS='|' read -r status title detail <<< "${PLAYLIST_RESULTS[0]}"
+        if [[ "$status" == "SUCCESS" ]]; then
+            echo -e "${GREEN}處理完成！ 影片 '$title' (${detail}) 已儲存。${RESET}"
+        else
+            echo -e "${RED}處理失敗！ 影片 '$title'。${RESET}"
+            _get_error_details "$detail"
         fi
-        _send_termux_notification "$ovr" "媒體處理器：播放清單完成" "播放清單處理完成 ($success_count/$count 成功)" ""
+        read -p "按 Enter 繼續..."
     fi
     
-    # 根據是否有失敗來決定函數的返回狀態碼
-    if [ "$fail_count" -gt 0 ]; then
-        return 1
-    else
-        return 0
-    fi
+    if [ "$overall_fail_count" -gt 0 ]; then return 1; else return 0; fi
 }
 
 # ================================================
@@ -3291,9 +3387,18 @@ process_mp3_no_normalize() {
 # 處理 MP4 影片（支援單一或播放清單、本機檔案）
 ############################################
 process_mp4() {
-    # --- 函數邏輯不變 ---
+    # --- 此函數邏輯不變，它現在會調用更新後的 _process_youtube_playlist ---
     read -p "輸入 YouTube 網址或本機路徑 [預設: $DEFAULT_URL]: " input; input=${input:-$DEFAULT_URL}
-    if [ -f "$input" ]; then process_local_mp4 "$input"; elif [[ "$input" == *"list="* ]]; then _process_youtube_playlist "$input" "process_single_mp4"; else process_single_mp4 "$input"; fi
+    if [ -f "$input" ]; then 
+        process_local_mp4 "$input"
+    elif [[ "$input" == *"list="* || "$input" == *"youtu"* ]]; then 
+        # 將單一影片和播放清單都交給 _process_youtube_playlist 處理
+        _process_youtube_playlist "$input" "process_single_mp4"
+    else 
+        echo -e "${RED}錯誤：輸入的不是有效的 YouTube 網址或本機檔案路徑。${RESET}"
+        log_message "ERROR" "process_mp4: 無效的輸入 '$input'"
+        return 1
+    fi
 }
 
 ############################################
