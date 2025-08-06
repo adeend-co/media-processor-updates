@@ -1775,7 +1775,7 @@ process_single_mp3_no_normalize() {
 }
 
 ######################################################################
-# 處理單一 YouTube 影片（MP4）下載與處理 (v5.6 - 權威路徑獲取)
+# 處理單一 YouTube 影片（MP4）下載與處理 (v5.6 - 使用收據檔案獲取路徑)
 # 返回一個包含狀態、標題、解析度或錯誤碼的字串
 ######################################################################
 process_single_mp4() {
@@ -1800,7 +1800,7 @@ process_single_mp4() {
 
     local video_title="" video_id=""
     local final_video_file="" output_video=""
-    local temp_video_file="" # 儲存 yt-dlp 告知的、在臨時目錄中的確切檔案路徑
+    local temp_video_file="" # 儲存從「收據」中讀取的臨時檔案路徑
 
     if ! $goto_cleanup; then
         video_title=$(echo "$media_json" | jq -r '.title // "video_$(date +%s_default)"')
@@ -1808,37 +1808,44 @@ process_single_mp4() {
         
         local safe_chars_regex='[^a-zA-Z0-9\u4e00-\u9fff\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uffef _.\[\]()-]'
         local sanitized_title=$(echo "${video_title}" | sed -E "s/${safe_chars_regex}/_/g" | sed -E 's/[_ ]+/_/g' | cut -c 1-80)
-        local final_base_name="${sanitized_title} [${video_id}]"
         
+        # ★★★ 核心修正：使用「收據」檔案來獲取最終路徑 ★★★
         local temp_output_template="${temp_dir}/%(id)s.%(ext)s"
+        local receipt_file="${temp_dir}/filepath.txt" # 定義「收據」檔案的路徑
+        
         log_message "INFO" "將下載到臨時目錄: ${temp_dir}"
         
         local format_option="bestvideo[ext=mp4][vcodec^=avc][height<=1440]+bestaudio[ext=m4a]/bestvideo[ext=mp4][vcodec^=avc][height<=1080]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio[ext=m4a]"
         local target_sub_langs="zh-Hant,zh-TW,zh-Hans,zh-CN,zh"
         local temp_sub_template="${temp_dir}/%(id)s.%(sublang)s.%(ext)s"
-        local yt_dlp_dl_args=(yt-dlp -f "$format_option" -o "$temp_output_template" --write-subs --sub-lang "$target_sub_langs" --convert-subs srt -o "subtitles:${temp_sub_template}" "$video_url" --concurrent-fragments "$THREADS")
+        
+        # 在 yt-dlp 命令中加入 --print-to-file
+        local yt_dlp_dl_args=(yt-dlp -f "$format_option" -o "$temp_output_template" --write-subs --sub-lang "$target_sub_langs" --convert-subs srt -o "subtitles:${temp_sub_template}" --print-to-file filepath "$receipt_file" "$video_url" --concurrent-fragments "$THREADS")
         
         if ! "${yt_dlp_dl_args[@]}" 2> "$temp_dir/yt-dlp-video-std.log"; then
-            log_message "WARNING" "yt-dlp 執行時回報錯誤，但仍將檢查檔案是否存在。"
+            log_message "WARNING" "yt-dlp 執行時回報錯誤，將進行錯誤分析。"
         fi
 
-        # ★★★ 核心修正：不再使用 find，改用 --print filename 獲取權威路徑 ★★★
-        log_message "INFO" "向 yt-dlp 查詢已下載檔案的確切路徑..."
-        temp_video_file=$(yt-dlp --no-download --print filename -f "$format_option" -o "$temp_output_template" "$video_url" 2>/dev/null | head -n 1)
+        # 讀取「收據」來獲取檔名，而不是 find
+        if [ -s "$receipt_file" ]; then # -s 檢查檔案是否存在且不為空
+            temp_video_file=$(cat "$receipt_file")
+        fi
 
+        # 檢查檔案是否真實存在
         if [ -z "$temp_video_file" ] || [ ! -f "$temp_video_file" ]; then
             local error_code_to_return="E_YTDLP_DL_GENERIC"
             if grep -q "HTTP Error 403" "$temp_dir/yt-dlp-video-std.log"; then error_code_to_return="E_YTDLP_DL_403";
             elif grep -q "Operation not permitted" "$temp_dir/yt-dlp-video-std.log"; then error_code_to_return="E_FS_PERM";
             else error_code_to_return="E_FILE_NOT_FOUND"; fi
             
-            log_message "ERROR" "$error_code_to_return: 下載失敗或 yt-dlp 未能回報已創建的檔案路徑。"
+            log_message "ERROR" "$error_code_to_return: 下載失敗，yt-dlp 未能成功生成最終檔案。"
             local raw_err_b64=$(cat "$temp_dir/yt-dlp-video-std.log" | base64 -w 0)
             final_result_string="FAIL|${video_title}|${error_code_to_return}|${raw_err_b64}"
             goto_cleanup=true
         else
-            log_message "INFO" "yt-dlp 確認檔案已創建於: ${temp_video_file}"
+            # 成功獲取檔案，移動並重命名到最終位置
             local extension="${temp_video_file##*.}"
+            local final_base_name="${sanitized_title} [${video_id}]"
             final_video_file="${DOWNLOAD_PATH}/${final_base_name}.${extension}"
             output_video="${DOWNLOAD_PATH}/${final_base_name}_normalized.mp4"
 
@@ -1854,18 +1861,17 @@ process_single_mp4() {
 
     if ! $goto_cleanup; then
         local resolution
-        local ffprobe_output
-        ffprobe_output=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$final_video_file" 2>&1)
-        local ffprobe_exit_code=$?
+        local ffprobe_error
+        # 將 ffprobe 的 stdout 和 stderr 分開處理
+        resolution=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$final_video_file" 2> "$temp_dir/ffprobe.log")
         
-        if [ $ffprobe_exit_code -ne 0 ] || [ -z "$ffprobe_output" ]; then
+        if [ $? -ne 0 ] || [ -z "$resolution" ]; then
             log_message "ERROR" "E_FFPROBE_RES: 無法獲取影片解析度: $final_video_file"
             safe_remove "$final_video_file"
-            local raw_err_b64=$(echo -e "命令: ffprobe ... \"$final_video_file\"\n錯誤: $ffprobe_output" | base64 -w 0)
+            local raw_err_b64=$(echo -e "命令: ffprobe ... \"$final_video_file\"\n錯誤: $(cat "$temp_dir/ffprobe.log")" | base64 -w 0)
             final_result_string="FAIL|${video_title}|E_FFPROBE_RES|${raw_err_b64}"
             goto_cleanup=true
         else
-            resolution=$ffprobe_output
             log_message "INFO" "影片重命名並驗證成功：$final_video_file, 解析度: $resolution"
         fi
     fi
