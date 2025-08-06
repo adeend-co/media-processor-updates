@@ -50,7 +50,7 @@
 ############################################
 # 腳本設定
 ############################################
-SCRIPT_VERSION="v2.6.6-beta.16" # <<< 版本號更新
+SCRIPT_VERSION="v2.6.6-beta.17" # <<< 版本號更新
 
 ############################################
 # ★★★ 新增：使用者同意書版本號 ★★★
@@ -3264,7 +3264,7 @@ _get_playlist_video_count() {
 }
 
 ###################################################################
-# 輔助函數 - 處理 YouTube 播放清單通用流程 (v3.0 - 結果收集與摘要)
+# 輔助函數 - 處理 YouTube 播放清單通用流程 (v3.1 - 修正輸出捕獲)
 ###################################################################
 _process_youtube_playlist() {
     local playlist_url="$1"
@@ -3296,51 +3296,48 @@ _process_youtube_playlist() {
     fi
 
     local count=0
-    local PLAYLIST_RESULTS=() # <<< 核心：用於儲存每個影片的處理結果
+    local PLAYLIST_RESULTS=()
     local overall_fail_count=0
 
     for video_id in "${video_ids[@]}"; do
         count=$((count + 1))
         local video_url="https://www.youtube.com/watch?v=$video_id"
         
-        clear
+        # 在處理單個影片前，先顯示標題，讓使用者知道現在處理的是哪個
+        if [[ "$total_videos" -gt 1 ]]; then
+            clear
+            echo -e "${CYAN}--- 正在處理第 $count/$total_videos 個影片 ---${RESET}"
+            echo -e "${YELLOW}URL: $video_url${RESET}"
+        fi
+        
         log_message "INFO" "[$count/$total_videos] 處理影片: $video_url"
-        echo -e "${CYAN}--- 正在處理第 $count/$total_videos 個影片 ---${RESET}"
-        echo -e "${YELLOW}URL: $video_url${RESET}"
 
-        # 調用單項處理函數，並捕獲其回傳的結果字串
+        # ★★★ 核心修正 ★★★
+        # 使用 tee 將所有輸出即時顯示到終端 (/dev/tty)
+        # 然後用 tail -n 1 只捕獲處理函數的最後一行輸出（即我們的結果字串）
         local processing_result
-        processing_result=$("$single_item_processor_func_name" "$video_url" "playlist_mode")
+        processing_result=$("$single_item_processor_func_name" "$video_url" "playlist_mode" | tee /dev/tty | tail -n 1)
         local exit_code=$?
         
-        # 將結果存入陣列
         PLAYLIST_RESULTS+=("$processing_result")
 
         if [ $exit_code -ne 0 ]; then
             overall_fail_count=$((overall_fail_count + 1))
         fi
-        # 移除原來的即時成功/失敗訊息
     done
 
-    # --- 僅在處理多個項目時顯示總結 ---
+    # --- 顯示總結報告 ---
     if [[ "$total_videos" -gt 1 ]]; then
         _display_playlist_summary "${PLAYLIST_RESULTS[@]}"
 
-        # 發送總結通知
         local ovr=0
         if [ "$overall_fail_count" -gt 0 ]; then ovr=1; fi
         _send_termux_notification "$ovr" "媒體處理器：播放清單完成" "播放清單處理完成 (${count - overall_fail_count}/$count 成功)" ""
     else
-        # 如果只有單一項目，直接在控制台顯示簡短結果
-        local status title detail
-        IFS='|' read -r status title detail <<< "${PLAYLIST_RESULTS[0]}"
-        if [[ "$status" == "SUCCESS" ]]; then
-            echo -e "${GREEN}處理完成！ 影片 '$title' (${detail}) 已儲存。${RESET}"
-        else
-            echo -e "${RED}處理失敗！ 影片 '$title'。${RESET}"
-            _get_error_details "$detail"
-        fi
-        read -p "按 Enter 繼續..."
+        # 對於單一影片，處理完畢後，因為進度已經由 tee 顯示，
+        # 這裡只需要等待使用者按 Enter 即可返回。
+        # _display_playlist_summary 會處理單一影片的最終結果顯示。
+        _display_playlist_summary "${PLAYLIST_RESULTS[@]}"
     fi
     
     if [ "$overall_fail_count" -gt 0 ]; then return 1; else return 0; fi
