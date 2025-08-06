@@ -1775,7 +1775,7 @@ process_single_mp3_no_normalize() {
 }
 
 ######################################################################
-# 處理單一 YouTube 影片（MP4）下載與處理 (v6.2 - 彈性格式選擇最終版)
+# 處理單一 YouTube 影片（MP4）下載與處理 (v6.2 - 彈性備案鏈最終版)
 # 返回一個包含狀態、標題、解析度或錯誤碼的字串
 ######################################################################
 process_single_mp4() {
@@ -1808,6 +1808,7 @@ process_single_mp4() {
         
         local sanitized_title
         local safe_chars_regex='[^a-zA-Z0-9\u4e00-\u9fff\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uffef _.\[\]()-]'
+        
         if command -v iconv &> /dev/null; then
             sanitized_title=$(echo "${video_title}" | iconv -f UTF-8 -t UTF-8 -c | sed -E "s/${safe_chars_regex}/_/g")
         else
@@ -1816,27 +1817,30 @@ process_single_mp4() {
         sanitized_title=$(echo "$sanitized_title" | sed -E 's/[_ ]+/_/g' | cut -c 1-80)
         local final_base_name="${sanitized_title} [${video_id}]"
         
-        # ★★★ 核心修正：採用彈性格式選擇器與強制 MP4 合併 ★★★
         log_message "INFO" "將下載影片到臨時目錄: ${temp_dir}"
         local temp_output_template="${temp_dir}/%(id)s.%(ext)s"
         
-        # 1. 彈性格式選擇器，建立一個包含多個降級選項的選擇鏈
-        local format_option="bestvideo[ext=mp4][vcodec^=avc][height<=1080]+bestaudio[ext=m4a]/bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[ext=mp4][height<=1080]/best[height<=1080]"
+        # ★★★ 核心修正：使用彈性備案鏈 ★★★
+        # 1. 最佳首選：高畫質 H.264 編碼的 MP4 + 最佳音訊
+        # 2. 備案A：放寬編碼限制，只要是高畫質 MP4 即可
+        # 3. 備案B：放寬畫質限制，只要是 MP4 即可
+        # 4. 最終保險：下載畫質最好的影片，無論格式
+        local format_option="bestvideo[ext=mp4][vcodec^=avc][height<=1440]+bestaudio[ext=m4a]/bestvideo[ext=mp4][height<=1440]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio/best[ext=mp4]/best"
         
-        # 2. 準備下載指令，加入 --merge-output-format mp4 來確保最終輸出為 MP4
-        local yt_dlp_video_args=(yt-dlp -f "$format_option" -o "$temp_output_template" --merge-output-format mp4 "$video_url" --concurrent-fragments "$THREADS")
+        local yt_dlp_video_args=(yt-dlp -f "$format_option" -o "$temp_output_template" "$video_url" --concurrent-fragments "$THREADS")
         
         if ! "${yt_dlp_video_args[@]}" 2> "$temp_dir/yt-dlp-video-std.log"; then
             log_message "WARNING" "yt-dlp 影片下載時回報錯誤，將進行錯誤分析。"
         fi
 
-        # 主動發現檔案（現在應該總是能找到一個 .mp4 檔案）
-        temp_video_file=$(find "$temp_dir" -maxdepth 1 -type f \( -name "*.mp4" -o -name "*.mkv" \) -print -quit)
+        temp_video_file=$(find "$temp_dir" -maxdepth 1 -type f \( -name "*.mp4" -o -name "*.mkv" -o -name "*.webm" \) -print -quit)
 
         if [ -z "$temp_video_file" ]; then
             local error_code_to_return="E_YTDLP_DL_GENERIC"
-            if grep -q "Requested format is not available" "$temp_dir/yt-dlp-video-std.log"; then error_code_to_return="E_YTDLP_FORMAT"; # 新增一個更精準的錯誤碼
+            # 優先判斷是否為「格式不可用」錯誤
+            if grep -q "Requested format is not available" "$temp_dir/yt-dlp-video-std.log"; then error_code_to_return="E_YTDLP_FORMAT";
             elif grep -q "HTTP Error 403" "$temp_dir/yt-dlp-video-std.log"; then error_code_to_return="E_YTDLP_DL_403";
+            elif grep -q "Operation not permitted" "$temp_dir/yt-dlp-video-std.log"; then error_code_to_return="E_FS_PERM";
             else error_code_to_return="E_FILE_NOT_FOUND"; fi
             
             log_message "ERROR" "$error_code_to_return: 下載失敗，在臨時目錄中找不到任何影片檔案。"
@@ -1848,16 +1852,25 @@ process_single_mp4() {
             local yt_dlp_subs_args=(yt-dlp --skip-download --write-subs --sub-lang "$target_sub_langs" --convert-subs srt -o "${temp_dir}/%(id)s.%(sublang)s.%(ext)s" "$video_url")
             "${yt_dlp_subs_args[@]}" > /dev/null 2>&1
 
-            # 因為合併後一定是 .mp4，所以可以直接指定
-            final_video_file="${DOWNLOAD_PATH}/${final_base_name}.mp4"
+            local extension="${temp_video_file##*.}"
+            final_video_file="${DOWNLOAD_PATH}/${final_base_name}.${extension}"
             output_video="${DOWNLOAD_PATH}/${final_base_name}_normalized.mp4"
 
             local mv_error
             if ! mv_error=$(mv "$temp_video_file" "$final_video_file" 2>&1); then
-                 log_message "ERROR" "E_FS_PERM: 無法將臨時檔案移動到最終路徑！"
-                 local raw_err_b64=$(echo -e "命令: mv \"$temp_video_file\" \"$final_video_file\"\n錯誤: $mv_error" | base64 -w 0)
-                 final_result_string="FAIL|${video_title}|E_FS_PERM|${raw_err_b64}"
-                 goto_cleanup=true
+                log_message "WARNING" "使用清理後的標題重命名失敗，將降級為僅使用影片 ID。"
+                final_base_name="[${video_id}]"
+                final_video_file="${DOWNLOAD_PATH}/${final_base_name}.${extension}"
+                if ! mv_error=$(mv "$temp_video_file" "$final_video_file" 2>&1); then
+                    log_message "ERROR" "E_FS_PERM: 降級後重命名依然失敗！"
+                    local raw_err_b64=$(echo -e "命令: mv \"$temp_video_file\" \"$final_video_file\"\n錯誤: $mv_error" | base64 -w 0)
+                    final_result_string="FAIL|${video_title}|E_FS_PERM|${raw_err_b64}"
+                    goto_cleanup=true
+                fi
+            fi
+            
+            if ! $goto_cleanup; then
+                 output_video="${DOWNLOAD_PATH}/${final_base_name}_normalized.mp4"
             fi
         fi
     fi
@@ -1867,11 +1880,13 @@ process_single_mp4() {
         local ffprobe_error
         ffprobe_output=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$final_video_file" 2>&1)
         local ffprobe_exit_code=$?
+
         if [ $ffprobe_exit_code -ne 0 ] || [ -z "$ffprobe_output" ]; then
             resolution=""; ffprobe_error=$ffprobe_output
         else
             resolution=$ffprobe_output
         fi
+        
         if [ -z "$resolution" ]; then
             log_message "ERROR" "E_FFPROBE_RES: 無法獲取影片解析度: $final_video_file"
             safe_remove "$final_video_file"
