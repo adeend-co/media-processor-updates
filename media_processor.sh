@@ -1828,7 +1828,7 @@ process_single_mp3_no_normalize() {
 }
 
 ######################################################################
-# 處理單一 YouTube 影片（MP4）下載與處理 (v6.4 - 修正終端回饋)
+# 處理單一 YouTube 影片（MP4）下載與處理 (v6.5 - 畫質邏輯修正)
 ######################################################################
 process_single_mp4() {
     local video_url="$1"
@@ -1883,7 +1883,8 @@ process_single_mp4() {
         log_message "INFO" "將下載影片到臨時目錄: ${temp_dir}"
         local temp_output_template="${temp_dir}/%(id)s.%(ext)s"
         
-        local format_option="bestvideo[ext=mp4][vcodec^=avc][height<=1440]+bestaudio[ext=m4a]/bestvideo[ext=mp4][height<=1440]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio/best[ext=mp4]/best"
+        ### --- 核心修正：優化畫質選擇字串，優先保證畫質 --- ###
+        local format_option="bestvideo[height<=1440]+bestaudio/best[height<=1440]/best"
         
         local yt_dlp_video_args=(yt-dlp -f "$format_option" -o "$temp_output_template" "$video_url" --concurrent-fragments "$THREADS")
         
@@ -1999,7 +2000,6 @@ process_single_mp4() {
         fi
     fi
     
-    ### --- ★★★ 核心修正：補回控制台最終報告 ★★★ --- ###
     if [ $result -eq 0 ]; then
         if [ -f "$output_video" ]; then
             echo -e "${GREEN}處理完成！影片已儲存至：$output_video${RESET}"
@@ -2034,7 +2034,7 @@ process_single_mp4() {
 }
 
 ######################################################################
-# 處理單一 YouTube 影片（MP4）下載（無標準化）(v6.4 - 修正終端回饋)
+# 處理單一 YouTube 影片（MP4）下載（無標準化）(v6.5 - 畫質邏輯修正)
 ######################################################################
 process_single_mp4_no_normalize() {
     local video_url="$1"
@@ -2079,7 +2079,9 @@ process_single_mp4_no_normalize() {
         
         log_message "INFO" "(無標準化) 將下載影片到臨時目錄: ${temp_dir}"
         local temp_output_template="${temp_dir}/%(id)s.%(ext)s"
-        local format_option="bestvideo[ext=mp4][vcodec^=avc][height<=1440]+bestaudio[ext=m4a]/bestvideo[ext=mp4][height<=1440]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio/best[ext=mp4]/best"
+        
+        ### --- 核心修正：優化畫質選擇字串，優先保證畫質 --- ###
+        local format_option="bestvideo[height<=1440]+bestaudio/best[height<=1440]/best"
         
         local yt_dlp_video_args=(yt-dlp -f "$format_option" -o "$temp_output_template" "$video_url" --concurrent-fragments "$THREADS" --merge-output-format mp4 --write-subs --embed-subs --sub-lang "zh-Hant,zh-TW,zh-Hans,zh-CN,zh")
         
@@ -2132,9 +2134,8 @@ process_single_mp4_no_normalize() {
         
         log_message "INFO" "(無標準化) 影片處理完成：$final_video_file, 解析度: $resolution"
         final_result_string="SUCCESS|${video_title}|${resolution}"
-        result=0 # 標記為成功
+        result=0
 
-        # --- 通知判斷 (基於實際檔案大小) ---
         if [[ "$mode" != "playlist_mode" ]] && [ -f "$final_video_file" ]; then
             local actual_size_bytes=$(stat -c %s "$final_video_file" 2>/dev/null)
             local size_threshold_bytes=$(awk "BEGIN {printf \"%d\", $size_threshold_gb * 1024 * 1024 * 1024}")
@@ -2145,7 +2146,6 @@ process_single_mp4_no_normalize() {
         fi
     fi
     
-    # --- ★★★ 核心修正：加入控制台最終報告 ★★★ ---
     if [ $result -eq 0 ]; then
         if [ -f "$final_video_file" ]; then
             echo -e "${GREEN}處理完成！影片已儲存至：$final_video_file${RESET}"
@@ -2160,7 +2160,6 @@ process_single_mp4_no_normalize() {
 
     rm -rf "$temp_dir"
     
-    # --- 條件式通知 (Termux) ---
     if [[ "$mode" != "playlist_mode" ]] && $should_notify; then
         if [ $result -eq 0 ]; then
             _send_termux_notification 0 "媒體處理器：MP4 無標準化" "處理影片 '$sanitized_title'" "$final_video_file"
