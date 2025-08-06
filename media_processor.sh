@@ -1616,7 +1616,6 @@ process_single_mp3() {
 
         if [ -z "$temp_audio_file" ]; then
             local error_code_to_return="E_YTDLP_DL_GENERIC"
-            # ... 錯誤分析 ...
             log_message "ERROR" "$error_code_to_return: (MP3) 下載失敗。"
             local raw_err_b64=$(cat "$temp_dir/yt-dlp-audio-std.log" | base64 -w 0)
             final_result_string="FAIL|${video_title}|${error_code_to_return}|${raw_err_b64}"
@@ -1667,7 +1666,10 @@ process_single_mp3() {
         fi
     fi
 
-    echo "${final_result_string}"
+    # --- ★★★ 核心修正 ★★★ ---
+    if [[ "$mode" == "playlist_mode" ]]; then
+        echo "${final_result_string}"
+    fi
     return $result
 }
 
@@ -1714,7 +1716,6 @@ process_single_mp3_no_normalize() {
         
         log_message "INFO" "(MP3 無標準化) 將下載音訊到臨時目錄: ${temp_dir}"
         local temp_output_template="${temp_dir}/%(id)s.%(ext)s"
-        # 直接讓 yt-dlp 轉換為 MP3
         local format_option="bestaudio/best"
         local yt_dlp_audio_args=(yt-dlp -f "$format_option" -o "$temp_output_template" "$media_url" --concurrent-fragments "$THREADS" --extract-audio --audio-format mp3 --audio-quality 0)
         
@@ -1726,7 +1727,6 @@ process_single_mp3_no_normalize() {
 
         if [ -z "$temp_audio_file" ]; then
             local error_code_to_return="E_YTDLP_DL_GENERIC"
-            # ... 錯誤分析 ...
             log_message "ERROR" "$error_code_to_return: (MP3 無標準化) 下載失敗。"
             local raw_err_b64=$(cat "$temp_dir/yt-dlp-audio-std.log" | base64 -w 0)
             final_result_string="FAIL|${video_title}|${error_code_to_return}|${raw_err_b64}"
@@ -1734,11 +1734,9 @@ process_single_mp3_no_normalize() {
         else
             output_audio="${DOWNLOAD_PATH}/${final_base_name}.mp3"
             if ! mv "$temp_audio_file" "$output_audio"; then
-                # ... 降級重命名 ...
                 final_base_name="[${video_id}]"
                 output_audio="${DOWNLOAD_PATH}/${final_base_name}.mp3"
                 if ! mv "$temp_audio_file" "$output_audio"; then
-                    # ... 最終失敗 ...
                     goto_cleanup=true
                 fi
             fi
@@ -1773,7 +1771,10 @@ process_single_mp3_no_normalize() {
         fi
     fi
 
-    echo "${final_result_string}"
+    # --- ★★★ 核心修正 ★★★ ---
+    if [[ "$mode" == "playlist_mode" ]]; then
+        echo "${final_result_string}"
+    fi
     return $result
 }
 
@@ -1823,11 +1824,6 @@ process_single_mp4() {
         log_message "INFO" "將下載影片到臨時目錄: ${temp_dir}"
         local temp_output_template="${temp_dir}/%(id)s.%(ext)s"
         
-        # ★★★ 核心修正：使用彈性備案鏈 ★★★
-        # 1. 最佳首選：高畫質 H.264 編碼的 MP4 + 最佳音訊
-        # 2. 備案A：放寬編碼限制，只要是高畫質 MP4 即可
-        # 3. 備案B：放寬畫質限制，只要是 MP4 即可
-        # 4. 最終保險：下載畫質最好的影片，無論格式
         local format_option="bestvideo[ext=mp4][vcodec^=avc][height<=1440]+bestaudio[ext=m4a]/bestvideo[ext=mp4][height<=1440]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio/best[ext=mp4]/best"
         
         local yt_dlp_video_args=(yt-dlp -f "$format_option" -o "$temp_output_template" "$video_url" --concurrent-fragments "$THREADS")
@@ -1840,7 +1836,6 @@ process_single_mp4() {
 
         if [ -z "$temp_video_file" ]; then
             local error_code_to_return="E_YTDLP_DL_GENERIC"
-            # 優先判斷是否為「格式不可用」錯誤
             if grep -q "Requested format is not available" "$temp_dir/yt-dlp-video-std.log"; then error_code_to_return="E_YTDLP_FORMAT";
             elif grep -q "HTTP Error 403" "$temp_dir/yt-dlp-video-std.log"; then error_code_to_return="E_YTDLP_DL_403";
             elif grep -q "Operation not permitted" "$temp_dir/yt-dlp-video-std.log"; then error_code_to_return="E_FS_PERM";
@@ -1960,7 +1955,11 @@ process_single_mp4() {
         fi
     fi
 
-    echo "${final_result_string}"
+    # --- ★★★ 核心修正 ★★★ ---
+    # 僅在播放清單模式下，才將結果字串輸出到 stdout 以供主循環捕獲
+    if [[ "$mode" == "playlist_mode" ]]; then
+        echo "${final_result_string}"
+    fi
     return $result
 }
 
@@ -2008,7 +2007,6 @@ process_single_mp4_no_normalize() {
         local temp_output_template="${temp_dir}/%(id)s.%(ext)s"
         local format_option="bestvideo[ext=mp4][vcodec^=avc][height<=1440]+bestaudio[ext=m4a]/bestvideo[ext=mp4][height<=1440]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio/best[ext=mp4]/best"
         
-        # 在「無標準化」模式下，我們讓 yt-dlp 直接處理字幕嵌入和合併，更高效
         local yt_dlp_video_args=(yt-dlp -f "$format_option" -o "$temp_output_template" "$video_url" --concurrent-fragments "$THREADS" --merge-output-format mp4 --write-subs --embed-subs --sub-lang "zh-Hant,zh-TW,zh-Hans,zh-CN,zh")
         
         if ! "${yt_dlp_video_args[@]}" 2> "$temp_dir/yt-dlp-video-std.log"; then
@@ -2058,7 +2056,6 @@ process_single_mp4_no_normalize() {
             resolution=$ffprobe_output
         fi
         
-        # 在此模式下，即使無法獲取解析度，我們也將其視為成功，因為檔案已存在
         log_message "INFO" "(無標準化) 影片處理完成：$final_video_file, 解析度: $resolution"
         final_result_string="SUCCESS|${video_title}|${resolution}"
         result=0
@@ -2074,7 +2071,10 @@ process_single_mp4_no_normalize() {
         fi
     fi
 
-    echo "${final_result_string}"
+    # --- ★★★ 核心修正 ★★★ ---
+    if [[ "$mode" == "playlist_mode" ]]; then
+        echo "${final_result_string}"
+    fi
     return $result
 }
 
