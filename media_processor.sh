@@ -1775,7 +1775,7 @@ process_single_mp3_no_normalize() {
 }
 
 ######################################################################
-# 處理單一 YouTube 影片（MP4）下載與處理 (v5.8 - 指令分離最終版)
+# 處理單一 YouTube 影片（MP4）下載與處理 (v5.9 - 強力淨化與元數據保存)
 # 返回一個包含狀態、標題、解析度或錯誤碼的字串
 ######################################################################
 process_single_mp4() {
@@ -1806,13 +1806,18 @@ process_single_mp4() {
         video_title=$(echo "$media_json" | jq -r '.title // "video_$(date +%s_default)"')
         video_id=$(echo "$media_json" | jq -r '.id // "id_$(date +%s_default)"')
         
+        # ★★★ 核心修正：強力淨化 + 元數據保存 ★★★
+
+        # 1. 強力淨化檔名
         local safe_chars_regex='[^a-zA-Z0-9\u4e00-\u9fff\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uffef _.\[\]()-]'
-        local sanitized_title=$(echo "${video_title}" | sed -E "s/${safe_chars_regex}/_/g" | sed -E 's/[_ ]+/_/g' | cut -c 1-80)
+        #   a) 使用 iconv -c 強制丟棄所有無效的 UTF-8 字元
+        #   b) 繼續使用白名單 sed 進行二次清理
+        #   c) 壓縮多餘的底線和空格
+        #   d) 截斷長度
+        local sanitized_title=$(echo "${video_title}" | iconv -f UTF-8 -t UTF-8 -c | sed -E "s/${safe_chars_regex}/_/g" | sed -E 's/[_ ]+/_/g' | cut -c 1-80)
         local final_base_name="${sanitized_title} [${video_id}]"
         
-        # ★★★ 核心修正：指令分離 ★★★
-
-        # --- 第一步：專心下載影片 ---
+        # --- 兩階段處理邏輯保持不變 ---
         log_message "INFO" "將下載影片到臨時目錄: ${temp_dir}"
         local temp_output_template="${temp_dir}/%(id)s.%(ext)s"
         local format_option="bestvideo[ext=mp4][vcodec^=avc][height<=1440]+bestaudio[ext=m4a]/bestvideo[ext=mp4][vcodec^=avc][height<=1080]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio[ext=m4a]"
@@ -1823,7 +1828,6 @@ process_single_mp4() {
             log_message "WARNING" "yt-dlp 影片下載時回報錯誤，將進行錯誤分析。"
         fi
 
-        # --- 第二步：主動發現檔案 ---
         temp_video_file=$(find "$temp_dir" -maxdepth 1 -type f \( -name "*.mp4" -o -name "*.mkv" -o -name "*.webm" \) -print -quit)
 
         if [ -z "$temp_video_file" ]; then
@@ -1837,12 +1841,10 @@ process_single_mp4() {
             final_result_string="FAIL|${video_title}|${error_code_to_return}|${raw_err_b64}"
             goto_cleanup=true
         else
-            # --- 第三步：專心下載字幕 (在影片成功後) ---
             local target_sub_langs="zh-Hant,zh-TW,zh-Hans,zh-CN,zh"
             local yt_dlp_subs_args=(yt-dlp --skip-download --write-subs --sub-lang "$target_sub_langs" --convert-subs srt -o "${temp_dir}/%(id)s.%(sublang)s.%(ext)s" "$video_url")
             "${yt_dlp_subs_args[@]}" > /dev/null 2>&1
 
-            # --- 第四步：移動與重命名 ---
             local extension="${temp_video_file##*.}"
             final_video_file="${DOWNLOAD_PATH}/${final_base_name}.${extension}"
             output_video="${DOWNLOAD_PATH}/${final_base_name}_normalized.mp4"
@@ -1864,8 +1866,7 @@ process_single_mp4() {
         local ffprobe_exit_code=$?
 
         if [ $ffprobe_exit_code -ne 0 ] || [ -z "$ffprobe_output" ]; then
-            resolution=""
-            ffprobe_error=$ffprobe_output
+            resolution=""; ffprobe_error=$ffprobe_output
         else
             resolution=$ffprobe_output
         fi
@@ -1894,6 +1895,11 @@ process_single_mp4() {
         if normalize_audio "$final_video_file" "$normalized_audio_temp" "$temp_dir" true; then
             local ffmpeg_mux_args=(ffmpeg -y -i "$final_video_file" -i "$normalized_audio_temp")
             for sub_f in "${subtitle_files[@]}"; do ffmpeg_mux_args+=("-i" "$sub_f"); done
+            
+            # 2. 元數據保存
+            # 將未經修改的原始 video_title 寫入檔案的 title 元數據中
+            ffmpeg_mux_args+=(-metadata "title=${video_title}")
+            
             ffmpeg_mux_args+=(-map 0:v:0 -map 1:a:0 -c:v copy -c:a aac -b:a 256k -ar 44100)
             if [ ${#subtitle_files[@]} -gt 0 ]; then
                 ffmpeg_mux_args+=("-c:s" mov_text)
