@@ -1775,7 +1775,7 @@ process_single_mp3_no_normalize() {
 }
 
 ######################################################################
-# 處理單一 YouTube 影片（MP4）下載與處理 (v5.6 - 直接獲取路徑與全面捕獲)
+# 處理單一 YouTube 影片（MP4）下載與處理 (v5.7 - 兩階段處理最終版)
 # 返回一個包含狀態、標題、解析度或錯誤碼的字串
 ######################################################################
 process_single_mp4() {
@@ -1810,33 +1810,38 @@ process_single_mp4() {
         local sanitized_title=$(echo "${video_title}" | sed -E "s/${safe_chars_regex}/_/g" | sed -E 's/[_ ]+/_/g' | cut -c 1-80)
         local final_base_name="${sanitized_title} [${video_id}]"
         
-        # ★★★ 核心修正：使用 --print filename 來獲取 yt-dlp 創建的實際檔名 ★★★
+        # ★★★ 核心修正：兩階段處理 ★★★
+
+        # --- 第一階段：專心下載 ---
         log_message "INFO" "將下載到臨時目錄: ${temp_dir}"
         local temp_output_template="${temp_dir}/%(id)s.%(ext)s"
         local format_option="bestvideo[ext=mp4][vcodec^=avc][height<=1440]+bestaudio[ext=m4a]/bestvideo[ext=mp4][vcodec^=avc][height<=1080]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio[ext=m4a]"
         local target_sub_langs="zh-Hant,zh-TW,zh-Hans,zh-CN,zh"
         local temp_sub_template="${temp_dir}/%(id)s.%(sublang)s.%(ext)s"
         
-        # 準備下載指令，並加入 --print filename
-        local yt_dlp_dl_args=(yt-dlp -f "$format_option" -o "$temp_output_template" --write-subs --sub-lang "$target_sub_langs" --convert-subs srt -o "subtitles:${temp_sub_template}" "$video_url" --concurrent-fragments "$THREADS" --print filename)
+        # 準備下載指令，不再使用 --print filename
+        local yt_dlp_dl_args=(yt-dlp -f "$format_option" -o "$temp_output_template" --write-subs --sub-lang "$target_sub_langs" --convert-subs srt -o "subtitles:${temp_sub_template}" "$video_url" --concurrent-fragments "$THREADS")
         
-        set -o pipefail
-        # 執行下載，並將最後一行的檔名路徑存入變數
-        temp_video_file=$( "${yt_dlp_dl_args[@]}" 2> "$temp_dir/yt-dlp-video-std.log" | tee /dev/tty | tail -n 1 )
-        local ytdlp_exit_code=$?
-        set +o pipefail
+        if ! "${yt_dlp_dl_args[@]}" 2> "$temp_dir/yt-dlp-video-std.log"; then
+            log_message "WARNING" "yt-dlp 執行時回報錯誤，將進行錯誤分析。"
+        fi
 
-        if [ $ytdlp_exit_code -ne 0 ] || [ -z "$temp_video_file" ] || [ ! -f "$temp_video_file" ]; then
+        # --- 第二階段：主動發現檔案 ---
+        temp_video_file=$(find "$temp_dir" -maxdepth 1 -type f \( -name "*.mp4" -o -name "*.mkv" -o -name "*.webm" \) -print -quit)
+
+        if [ -z "$temp_video_file" ]; then
+            # 如果找不到檔案，證明是 yt-dlp 真的下載失敗了
             local error_code_to_return="E_YTDLP_DL_GENERIC"
             if grep -q "HTTP Error 403" "$temp_dir/yt-dlp-video-std.log"; then error_code_to_return="E_YTDLP_DL_403";
             elif grep -q "Operation not permitted" "$temp_dir/yt-dlp-video-std.log"; then error_code_to_return="E_FS_PERM";
             else error_code_to_return="E_FILE_NOT_FOUND"; fi
             
-            log_message "ERROR" "$error_code_to_return: 下載失敗或未能獲取到有效的檔案路徑。"
+            log_message "ERROR" "$error_code_to_return: 下載失敗，在臨時目錄中找不到任何影片檔案。"
             local raw_err_b64=$(cat "$temp_dir/yt-dlp-video-std.log" | base64 -w 0)
             final_result_string="FAIL|${video_title}|${error_code_to_return}|${raw_err_b64}"
             goto_cleanup=true
         else
+            # 成功找到檔案，繼續後續流程
             local extension="${temp_video_file##*.}"
             final_video_file="${DOWNLOAD_PATH}/${final_base_name}.${extension}"
             output_video="${DOWNLOAD_PATH}/${final_base_name}_normalized.mp4"
@@ -1854,7 +1859,6 @@ process_single_mp4() {
     if ! $goto_cleanup; then
         local resolution
         local ffprobe_error
-        # 將 ffprobe 的 stderr 重定向到 stdout，以便捕獲
         ffprobe_output=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$final_video_file" 2>&1)
         local ffprobe_exit_code=$?
 
