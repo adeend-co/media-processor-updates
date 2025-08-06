@@ -728,6 +728,31 @@ _get_error_details() {
 }
 
 ###########################################################
+# 全新輔助函數：強化的檔名清理，保留 CJK 字元
+###########################################################
+_sanitize_filename() {
+    local input_string="$1"
+    local sanitized
+
+    # 步驟 1: 將在檔名中絕對非法的字元替換為空格
+    sanitized=$(echo "$input_string" | sed 's@[/\\:*?"<>|]@ @g')
+
+    # 步驟 2: 移除所有非打印字元。
+    # [[:print:]] 包含了字母、數字、標點符號以及所有可見的 CJK 字元。
+    # [^[:print:]] 則匹配所有不可見的字元，包括控制字元和無效的字元序列。
+    # 這是解決 \udce6 問題的關鍵。
+    sanitized=$(echo "$sanitized" | sed 's/[^[:print:]]//g')
+
+    # 步驟 3: 將連續的空格壓縮為單一空格
+    sanitized=$(echo "$sanitized" | sed 's/\s\+/ /g')
+
+    # 步驟 4: 移除檔名前後的空格
+    sanitized=$(echo "$sanitized" | sed 's/^[ ]*//;s/[ ]*$//')
+    
+    echo "$sanitized"
+}
+
+###########################################################
 # 全新輔助函數：顯示播放清單處理的最終摘要 (v1.2 - 顯示原始錯誤)
 ###########################################################
 _display_playlist_summary() {
@@ -1775,7 +1800,7 @@ process_single_mp3_no_normalize() {
 }
 
 ######################################################################
-# 處理單一 YouTube 影片（MP4）下載與處理 (v5.2 - 捕獲原始錯誤日誌)
+# 處理單一 YouTube 影片（MP4）下載與處理 (v5.3 - 強化檔名清理)
 # 返回一個包含狀態、標題、解析度或錯誤碼的字串
 ######################################################################
 process_single_mp4() {
@@ -1803,13 +1828,17 @@ process_single_mp4() {
         video_title=$(echo "$media_json" | jq -r '.title // "video_$(date +%s_default)"')
         video_id=$(echo "$media_json" | jq -r '.id // "id_$(date +%s_default)"')
         
-        local sanitized_title=$(echo "${video_title}" | sed 's@[/\\:*?"<>|]@_@g' | sed 's/\s\+/ /g' | cut -c 1-80)
+        # ★★★ 核心修改：調用新的、強化的清理函數 ★★★
+        local sanitized_title=$(_sanitize_filename "${video_title}")
+        # 在清理後再進行截斷
+        sanitized_title=$(echo "$sanitized_title" | cut -c 1-80)
+
         local base_name="${sanitized_title} [${video_id}]"
         local output_template="${DOWNLOAD_PATH}/${base_name}.%(ext)s"
         local video_file="${DOWNLOAD_PATH}/${base_name}.mp4"
         local output_video="${DOWNLOAD_PATH}/${base_name}_normalized.mp4"
         
-        log_message "INFO" "將使用確定的基礎檔名: ${base_name}"
+        log_message "INFO" "將使用清理後的基礎檔名: ${base_name}"
         
         local format_option="bestvideo[ext=mp4][vcodec^=avc][height<=1440]+bestaudio[ext=m4a]/bestvideo[ext=mp4][vcodec^=avc][height<=1080]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio[ext=m4a]"
         local target_sub_langs="zh-Hant,zh-TW,zh-Hans,zh-CN,zh"
