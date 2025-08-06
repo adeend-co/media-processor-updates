@@ -1775,7 +1775,7 @@ process_single_mp3_no_normalize() {
 }
 
 ######################################################################
-# 處理單一 YouTube 影片（MP4）下載與處理 (v6.1 - 智能降級最終版)
+# 處理單一 YouTube 影片（MP4）下載與處理 (v6.2 - 彈性格式選擇最終版)
 # 返回一個包含狀態、標題、解析度或錯誤碼的字串
 ######################################################################
 process_single_mp4() {
@@ -1806,11 +1806,28 @@ process_single_mp4() {
         video_title=$(echo "$media_json" | jq -r '.title // "video_$(date +%s_default)"')
         video_id=$(echo "$media_json" | jq -r '.id // "id_$(date +%s_default)"')
         
-        # --- 下載邏輯保持不變 ---
-        log_message "INFO" "將下載影片到臨時目錄: ${temp_dir}"
+        local sanitized_title
+        local safe_chars_regex='[^a-zA-Z0-9\u4e00-\u9fff\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uffef _.\[\]()-]'
+        if command -v iconv &> /dev/null; then
+            sanitized_title=$(echo "${video_title}" | iconv -f UTF-8 -t UTF-8 -c | sed -E "s/${safe_chars_regex}/_/g")
+        else
+            sanitized_title=$(echo "${video_title}" | sed -E "s/${safe_chars_regex}/_/g")
+        fi
+        sanitized_title=$(echo "$sanitized_title" | sed -E 's/[_ ]+/_/g' | cut -c 1-80)
+        local final_base_name="${sanitized_title} [${video_id}]"
+        
+        # ★★★ 核心修正：更有彈性的格式選擇 ★★★
+        # bv* = best video preference, ba* = best audio preference, / is fallback
+        # 1. 偏好 MP4 容器的最好視訊 + M4A 容器的最好音訊
+        # 2. 如果不行，退一步找一個本身就是 MP4 容器的最好檔案
+        # 3. 如果還不行，就讓 yt-dlp 選擇最好的格式，並確保最終合併為 mp4
+        local format_option="bv*[ext=mp4]+ba*[ext=m4a]/b[ext=mp4]/best"
+        
+        log_message "INFO" "將下載影片到臨時目錄: ${temp_dir} (格式偏好: ${format_option})"
         local temp_output_template="${temp_dir}/%(id)s.%(ext)s"
-        local format_option="bestvideo[ext=mp4][vcodec^=avc][height<=1440]+bestaudio[ext=m4a]/bestvideo[ext=mp4][vcodec^=avc][height<=1080]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio[ext=m4a]"
-        local yt_dlp_video_args=(yt-dlp -f "$format_option" -o "$temp_output_template" "$video_url" --concurrent-fragments "$THREADS")
+        
+        # --merge-output-format mp4 確保即使下載了 mkv 或 webm，最終也會變成 mp4
+        local yt_dlp_video_args=(yt-dlp -f "$format_option" --merge-output-format mp4 -o "$temp_output_template" "$video_url" --concurrent-fragments "$THREADS")
         
         if ! "${yt_dlp_video_args[@]}" 2> "$temp_dir/yt-dlp-video-std.log"; then
             log_message "WARNING" "yt-dlp 影片下載時回報錯誤，將進行錯誤分析。"
@@ -1819,63 +1836,35 @@ process_single_mp4() {
         temp_video_file=$(find "$temp_dir" -maxdepth 1 -type f \( -name "*.mp4" -o -name "*.mkv" -o -name "*.webm" \) -print -quit)
 
         if [ -z "$temp_video_file" ]; then
-            # ... 下載失敗的錯誤處理保持不變 ...
             local error_code_to_return="E_YTDLP_DL_GENERIC"
-            if grep -q "HTTP Error 403" "$temp_dir/yt-dlp-video-std.log"; then error_code_to_return="E_YTDLP_DL_403";
-            elif grep -q "Operation not permitted" "$temp_dir/yt-dlp-video-std.log"; then error_code_to_return="E_FS_PERM";
+            if grep -q "Requested format is not available" "$temp_dir/yt-dlp-video-std.log"; then error_code_to_return="E_YTDLP_FORMAT"; # 新增一個更精確的錯誤碼
+            elif grep -q "HTTP Error 403" "$temp_dir/yt-dlp-video-std.log"; then error_code_to_return="E_YTDLP_DL_403";
             else error_code_to_return="E_FILE_NOT_FOUND"; fi
+            
             log_message "ERROR" "$error_code_to_return: 下載失敗，在臨時目錄中找不到任何影片檔案。"
             local raw_err_b64=$(cat "$temp_dir/yt-dlp-video-std.log" | base64 -w 0)
             final_result_string="FAIL|${video_title}|${error_code_to_return}|${raw_err_b64}"
             goto_cleanup=true
         else
-            # ★★★ 核心修正：智能降級重命名邏輯 ★★★
-            
-            # --- 第一道防線：嘗試使用清理後的標題 ---
-            local sanitized_title
-            local safe_chars_regex='[^a-zA-Z0-9\u4e00-\u9fff\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uffef _.\[\]()-]'
-            if command -v iconv &> /dev/null; then
-                sanitized_title=$(echo "${video_title}" | iconv -f UTF-8 -t UTF-8 -c | sed -E "s/${safe_chars_regex}/_/g")
-            else
-                sanitized_title=$(echo "${video_title}" | sed -E "s/${safe_chars_regex}/_/g")
-            fi
-            sanitized_title=$(echo "$sanitized_title" | sed -E 's/[_ ]+/_/g' | cut -c 1-80)
-            
-            local final_base_name="${sanitized_title} [${video_id}]"
+            local target_sub_langs="zh-Hant,zh-TW,zh-Hans,zh-CN,zh"
+            local yt_dlp_subs_args=(yt-dlp --skip-download --write-subs --sub-lang "$target_sub_langs" --convert-subs srt -o "${temp_dir}/%(id)s.%(sublang)s.%(ext)s" "$video_url")
+            "${yt_dlp_subs_args[@]}" > /dev/null 2>&1
+
             local extension="${temp_video_file##*.}"
             final_video_file="${DOWNLOAD_PATH}/${final_base_name}.${extension}"
-            
+            output_video="${DOWNLOAD_PATH}/${final_base_name}_normalized.mp4"
+
             local mv_error
             if ! mv_error=$(mv "$temp_video_file" "$final_video_file" 2>&1); then
-                # --- 第二道防線：如果第一次重命名失敗，觸發「最終保險」 ---
-                log_message "WARNING" "使用清理後的標題重命名失敗，將降級為僅使用影片 ID。"
-                
-                final_base_name="[${video_id}]" # 只使用 ID
-                final_video_file="${DOWNLOAD_PATH}/${final_base_name}.${extension}"
-                
-                if ! mv_error=$(mv "$temp_video_file" "$final_video_file" 2>&1); then
-                    # 如果連只用 ID 都失敗了，那問題一定出在權限或路徑
-                    log_message "ERROR" "E_FS_PERM: 降級後重命名依然失敗！"
-                    local raw_err_b64=$(echo -e "命令: mv \"$temp_video_file\" \"$final_video_file\"\n錯誤: $mv_error" | base64 -w 0)
-                    final_result_string="FAIL|${video_title}|E_FS_PERM|${raw_err_b64}"
-                    goto_cleanup=true
-                fi
-            fi
-            
-            # 只要 goto_cleanup 標記沒有被設置，就代表重命名成功了
-            if ! $goto_cleanup; then
-                 output_video="${DOWNLOAD_PATH}/${final_base_name}_normalized.mp4"
-                 # 下載字幕
-                 local target_sub_langs="zh-Hant,zh-TW,zh-Hans,zh-CN,zh"
-                 local yt_dlp_subs_args=(yt-dlp --skip-download --write-subs --sub-lang "$target_sub_langs" --convert-subs srt -o "${temp_dir}/%(id)s.%(sublang)s.%(ext)s" "$video_url")
-                 "${yt_dlp_subs_args[@]}" > /dev/null 2>&1
+                 log_message "ERROR" "E_FS_PERM: 無法將臨時檔案移動到最終路徑！"
+                 local raw_err_b64=$(echo -e "命令: mv \"$temp_video_file\" \"$final_video_file\"\n錯誤: $mv_error" | base64 -w 0)
+                 final_result_string="FAIL|${video_title}|E_FS_PERM|${raw_err_b64}"
+                 goto_cleanup=true
             fi
         fi
     fi
 
     if ! $goto_cleanup; then
-        # ... 後續的 ffprobe, normalize_audio, ffmpeg 混流邏輯保持不變 ...
-        # 它們會基於成功創建的 final_video_file 和 final_base_name 進行操作
         local resolution
         local ffprobe_error
         ffprobe_output=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$final_video_file" 2>&1)
