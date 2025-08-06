@@ -3276,7 +3276,7 @@ _get_playlist_video_count() {
 }
 
 ###################################################################
-# 輔助函數 - 處理 YouTube 播放清單通用流程 (v3.3 - 修正退出碼捕獲)
+# 輔助函數 - 處理 YouTube 播放清單通用流程 (v3.3 - 修正 pipefail 邏輯)
 ###################################################################
 _process_youtube_playlist() {
     local playlist_url="$1"
@@ -3323,13 +3323,13 @@ _process_youtube_playlist() {
         
         log_message "INFO" "[$count/$total_videos] 處理影片: $video_url"
 
+        # ★★★ 核心修正：啟用 pipefail ★★★
+        set -o pipefail
         local processing_result
         processing_result=$("$single_item_processor_func_name" "$video_url" "playlist_mode" | tee /dev/tty | tail -n 1)
-        
-        # ★★★ 核心修正 ★★★
-        # 在管道命令中，$? 只會返回最後一個命令(tail)的退出碼，這幾乎永遠是0。
-        # 我們必須使用 PIPESTATUS 陣列來獲取第一個命令(我們的處理函數)的真實退出碼。
-        local exit_code=${PIPESTATUS[0]}
+        local exit_code=$?
+        # ★★★ 核心修正：恢復預設行為 ★★★
+        set +o pipefail
         
         PLAYLIST_RESULTS+=("$processing_result")
 
@@ -3342,11 +3342,19 @@ _process_youtube_playlist() {
 
     if [[ "$total_videos" -gt 1 ]]; then
         local ovr=0
-        if [ "$overall_fail_count" -gt 0 ]; then ovr=1; fi
-        
         local success_count=$((count - overall_fail_count))
-        # 現在 success_count 和 overall_fail_count 的計算是準確的
-        _send_termux_notification "$ovr" "媒體處理器：播放清單完成" "播放清單處理完成 ($success_count/$count 成功)" ""
+        local summary_msg=""
+        
+        # ★★★ 核心修正：優化通知訊息 ★★★
+        if [ "$overall_fail_count" -gt 0 ]; then
+            ovr=1 # 設置為失敗通知
+            summary_msg="播放清單處理有 ${overall_fail_count} 個項目失敗"
+        else
+            ovr=0 # 設置為成功通知
+            summary_msg="播放清單處理完成 ($success_count/$count 全部成功)"
+        fi
+
+        _send_termux_notification "$ovr" "媒體處理器：播放清單完成" "$summary_msg" ""
     fi
     
     if [ "$overall_fail_count" -gt 0 ]; then return 1; else return 0; fi
