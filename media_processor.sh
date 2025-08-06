@@ -1562,218 +1562,218 @@ process_local_mp4() {
 }
 
 ######################################################################
-# 處理單一 YouTube 音訊（MP3）下載與處理 (最終確定版 v4.5)
-# 手動構建檔名以確保確定性，徹底解決檔名問題
+# 處理單一 YouTube 音訊（MP3）下載與處理 (v6.2 全面升級)
 ######################################################################
 process_single_mp3() {
     local media_url="$1"
     local mode="$2"
     local temp_dir
     temp_dir=$(mktemp -d)
-    local result=0
-    local should_notify=false
+    local result=1
+    local final_result_string=""
 
-    echo -e "${YELLOW}正在獲取媒體完整資訊 (優化流程)...${RESET}"
     local media_json
     media_json=$(yt-dlp --no-warnings --dump-json "$media_url" 2>"$temp_dir/yt-dlp-json-dump.log")
     if [ -z "$media_json" ]; then
-        log_message "ERROR" "無法獲取媒體的 JSON 資訊。URL: $media_url"
-        echo -e "${RED}錯誤：無法獲取媒體資訊，請檢查網址或網路。${RESET}"
-        cat "$temp_dir/yt-dlp-json-dump.log"; rm -rf "$temp_dir"; return 1
-    fi
-
-    local video_title video_id artist_name album_artist_name duration_secs
-    video_title=$(echo "$media_json" | jq -r '.title // "audio_$(date +%s_default)"')
-    video_id=$(echo "$media_json" | jq -r '.id // "id_$(date +%s_default)"')
-    duration_secs=$(echo "$media_json" | jq -r '.duration // 0')
-    artist_name=$(echo "$media_json" | jq -r '.artist // .uploader // "[不明]"')
-    album_artist_name=$(echo "$media_json" | jq -r '.uploader // "[不明]"')
-
-    if [[ "$mode" != "playlist_mode" ]]; then
-        local duration_threshold_secs=1800 # 30分鐘
-        if (( $(echo "$duration_secs > $duration_threshold_secs" | bc -l) )); then
-            should_notify=true;
-        fi
-    fi
-
-    mkdir -p "$DOWNLOAD_PATH"; if [ ! -w "$DOWNLOAD_PATH" ]; then log_message "ERROR" "無法寫入目錄"; rm -rf "$temp_dir"; return 1; fi
-
-    echo -e "${YELLOW}處理媒體 (MP3 標準化)：$video_title${RESET}"
-    
-    # ★★★ 核心修正：手動構建確定的檔名 ★★★
-    local sanitized_title=$(echo "${video_title}" | sed 's@[/\\:*?"<>|]@_@g')
-    local base_name=$(echo "${sanitized_title} [${video_id}]" | cut -c 1-150)
-    
-    # 預測所有將要生成的檔案路徑
-    # 我們先下載最佳音訊(通常是m4a)，再處理
-    local temp_audio_file="${temp_dir}/${base_name}.m4a" 
-    local output_audio="${DOWNLOAD_PATH}/${base_name}_normalized.mp3"
-
-    log_message "INFO" "將使用確定的基礎檔名: ${base_name}"
-
-    echo -e "${YELLOW}開始下載音訊...${RESET}"
-    # 將下載的音訊直接命名為我們確定的檔名
-    if ! yt-dlp -f bestaudio -o "$temp_audio_file" "$media_url" --newline --progress --concurrent-fragments "$THREADS" 2> "$temp_dir/yt-dlp-mp3-std.log"; then
-        log_message "ERROR" "音訊下載失敗(標準化)，詳見日誌"; cat "$temp_dir/yt-dlp-mp3-std.log"; result=1
-    elif [ ! -f "$temp_audio_file" ]; then
-        log_message "ERROR" "下載後找不到預期的音訊檔案: '$temp_audio_file'"; result=1
+        log_message "ERROR" "E_YTDLP_JSON: (MP3) 無法獲取媒體的 JSON 資訊。URL: $media_url"
+        local raw_err_b64=$(echo "無法獲取元數據，無特定日誌檔案。" | base64 -w 0)
+        final_result_string="FAIL|${media_url}|E_YTDLP_JSON|${raw_err_b64}"
+        goto_cleanup=true
     else
-        log_message "SUCCESS" "成功下載原始音訊檔案：$temp_audio_file"
+        goto_cleanup=false
     fi
 
-    if [ $result -eq 0 ]; then
-        local cover_image="$temp_dir/cover.jpg"
+    local video_title="" video_id="" artist_name="" album_artist_name=""
+    local final_audio_file="" output_audio="" temp_audio_file=""
+
+    if ! $goto_cleanup; then
+        video_title=$(echo "$media_json" | jq -r '.title // "audio_$(date +%s_default)"')
+        video_id=$(echo "$media_json" | jq -r '.id // "id_$(date +%s_default)"')
+        artist_name=$(echo "$media_json" | jq -r '.artist // .uploader // "[不明]"')
+        album_artist_name=$(echo "$media_json" | jq -r '.uploader // "[不明]"')
         
-        echo -e "${YELLOW}下載封面圖片...${RESET}"
-        if ! download_high_res_thumbnail "$video_id" "$cover_image"; then
-            cover_image=""
+        local sanitized_title
+        local safe_chars_regex='[^a-zA-Z0-9\u4e00-\u9fff\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uffef _.\[\]()-]'
+        if command -v iconv &> /dev/null; then
+            sanitized_title=$(echo "${video_title}" | iconv -f UTF-8 -t UTF-8 -c | sed -E "s/${safe_chars_regex}/_/g")
+        else
+            sanitized_title=$(echo "${video_title}" | sed -E "s/${safe_chars_regex}/_/g")
         fi
+        sanitized_title=$(echo "$sanitized_title" | sed -E 's/[_ ]+/_/g' | cut -c 1-80)
+        local final_base_name="${sanitized_title} [${video_id}]"
+        
+        log_message "INFO" "(MP3) 將下載音訊到臨時目錄: ${temp_dir}"
+        local temp_output_template="${temp_dir}/%(id)s.%(ext)s"
+        local format_option="bestaudio[ext=m4a]/bestaudio"
+        
+        local yt_dlp_audio_args=(yt-dlp -f "$format_option" -o "$temp_output_template" "$media_url" --concurrent-fragments "$THREADS")
+        
+        if ! "${yt_dlp_audio_args[@]}" 2> "$temp_dir/yt-dlp-audio-std.log"; then
+            log_message "WARNING" "(MP3) yt-dlp 音訊下載時回報錯誤，將進行錯誤分析。"
+        fi
+
+        temp_audio_file=$(find "$temp_dir" -maxdepth 1 -type f \( -name "*.m4a" -o -name "*.opus" -o -name "*.webm" -o -name "*.mp3" \) -print -quit)
+
+        if [ -z "$temp_audio_file" ]; then
+            local error_code_to_return="E_YTDLP_DL_GENERIC"
+            # ... 錯誤分析 ...
+            log_message "ERROR" "$error_code_to_return: (MP3) 下載失敗。"
+            local raw_err_b64=$(cat "$temp_dir/yt-dlp-audio-std.log" | base64 -w 0)
+            final_result_string="FAIL|${video_title}|${error_code_to_return}|${raw_err_b64}"
+            goto_cleanup=true
+        else
+            output_audio="${DOWNLOAD_PATH}/${final_base_name}_normalized.mp3"
+        fi
+    fi
+
+    if ! $goto_cleanup; then
+        local cover_image="$temp_dir/cover.jpg"
+        download_high_res_thumbnail "$video_id" "$cover_image" > /dev/null 2>&1
 
         local normalized_temp="$temp_dir/temp_normalized.mp3"
-        echo -e "${YELLOW}開始音量標準化...${RESET}"
-        
         if normalize_audio "$temp_audio_file" "$normalized_temp" "$temp_dir" false; then
-            echo -e "${YELLOW}正在加入封面和元數據...${RESET}"
             local ffmpeg_embed_args=(ffmpeg -y -i "$normalized_temp")
-            if [ -n "$cover_image" ] && [ -f "$cover_image" ]; then
-                ffmpeg_embed_args+=(-i "$cover_image" -map 0:a -map 1:v -c copy -id3v2_version 3 -metadata "title=$video_title" -metadata "artist=$artist_name" -metadata "album_artist=$album_artist_name" -metadata:s:v title="Album cover" -metadata:s:v comment="Cover (front)" -disposition:v attached_pic)
+            if [ -f "$cover_image" ]; then
+                ffmpeg_embed_args+=(-i "$cover_image" -map 0:a -map 1:v -c copy -id3v2_version 3 -disposition:v attached_pic)
             else
-                ffmpeg_embed_args+=(-c copy -id3v2_version 3 -metadata "title=$video_title" -metadata "artist=$artist_name" -metadata "album_artist=$album_artist_name")
+                ffmpeg_embed_args+=(-c copy -id3v2_version 3)
             fi
-            ffmpeg_embed_args+=("$output_audio")
+            ffmpeg_embed_args+=(-metadata "title=${video_title}" -metadata "artist=${artist_name}" -metadata "album_artist=${album_artist_name}" "$output_audio")
             
-            if ! "${ffmpeg_embed_args[@]}" > /dev/null 2>&1; then
-                log_message "ERROR" "加入封面和元數據失敗！"; result=1
+            if ! "${ffmpeg_embed_args[@]}" > "$temp_dir/ffmpeg_embed.log" 2>&1; then
+                log_message "ERROR" "E_FFMPEG_MUX: (MP3) 加入封面和元數據失敗！";
+                local raw_err_b64=$(cat "$temp_dir/ffmpeg_embed.log" | base64 -w 0)
+                final_result_string="FAIL|${video_title}|E_FFMPEG_MUX|${raw_err_b64}"
+                result=1
+            else
+                final_result_string="SUCCESS|${video_title}|MP3-320kbps"
+                result=0
             fi
         else
-            log_message "ERROR" "音量標準化失敗！"; result=1
+            log_message "ERROR" "E_NORMALIZE_FAIL: (MP3) 音量標準化失敗！"
+            local raw_err_b64=$(echo "normalize_audio 函數執行失敗" | base64 -w 0)
+            final_result_string="FAIL|${video_title}|E_NORMALIZE_FAIL|${raw_err_b64}"
+            result=1
         fi
     fi
 
     rm -rf "$temp_dir"
-
-    if [ $result -eq 0 ]; then
-        if [ -f "$output_audio" ]; then
-            echo -e "${GREEN}處理完成！音量標準化後的高品質音訊已儲存至：$output_audio${RESET}"
+    
+    if [[ "$mode" != "playlist_mode" ]]; then
+        if [ $result -eq 0 ]; then
+            _send_termux_notification 0 "媒體處理器：MP3 標準化" "處理音訊 '$sanitized_title'" "$output_audio"
         else
-            echo -e "${RED}處理似乎已完成，但最終檔案 '$output_audio' 未找到！${RESET}"; result=1
+            _send_termux_notification 1 "媒體處理器：MP3 標準化" "處理音訊 '$sanitized_title' 失敗" ""
         fi
-    else
-        echo -e "${RED}處理失敗 (MP3 標準化)！${RESET}"
     fi
 
-    if [[ "$mode" != "playlist_mode" ]] && $should_notify; then
-        local notification_title="媒體處理器：MP3 標準化"
-        _send_termux_notification "$result" "$notification_title" "處理音訊 '$sanitized_title'" "$output_audio"
-    fi
-
+    echo "${final_result_string}"
     return $result
 }
 
 ######################################################################
-# 處理單一 YouTube 音訊（MP3）下載（無音量標準化）(最終品質版 v4.4)
-# 重新引入高品質縮圖下載與 FFmpeg 嵌入邏輯
+# 處理單一 YouTube 音訊（MP3）下載（無音量標準化）(v6.2 全面升級)
 ######################################################################
 process_single_mp3_no_normalize() {
     local media_url="$1"
     local mode="$2"
     local temp_dir
     temp_dir=$(mktemp -d)
-    local result=0
-    local should_notify=false
-    local output_audio=""
+    local result=1
+    local final_result_string=""
 
-    echo -e "${YELLOW}正在獲取媒體完整資訊 (優化流程)...${RESET}"
     local media_json
     media_json=$(yt-dlp --no-warnings --dump-json "$media_url" 2>"$temp_dir/yt-dlp-json-dump.log")
     if [ -z "$media_json" ]; then
-        log_message "ERROR" "無法獲取媒體的 JSON 資訊 (MP3 無標準化)。URL: $media_url"
-        echo -e "${RED}錯誤：無法獲取媒體資訊，請檢查網址或網路。${RESET}"
-        cat "$temp_dir/yt-dlp-json-dump.log"; rm -rf "$temp_dir"; return 1
+        log_message "ERROR" "E_YTDLP_JSON: (MP3 無標準化) 無法獲取媒體的 JSON 資訊。"
+        local raw_err_b64=$(echo "無法獲取元數據" | base64 -w 0)
+        final_result_string="FAIL|${media_url}|E_YTDLP_JSON|${raw_err_b64}"
+        goto_cleanup=true
+    else
+        goto_cleanup=false
     fi
 
-    local video_title video_id artist_name album_artist_name
-    local duration_secs=0
-    video_title=$(echo "$media_json" | jq -r '.title // "audio_$(date +%s_default)"')
-    video_id=$(echo "$media_json" | jq -r '.id // "id_$(date +%s_default)"')
-    duration_secs=$(echo "$media_json" | jq -r '.duration // 0')
-    artist_name=$(echo "$media_json" | jq -r '.artist // .uploader // "[不明]"')
-    album_artist_name=$(echo "$media_json" | jq -r '.uploader // "[不明]"')
-    local sanitized_title=$(echo "${video_title}" | sed 's@[/\\:*?"<>|]@_@g')
+    local video_title="" video_id="" artist_name="" album_artist_name=""
+    local output_audio="" temp_audio_file=""
 
-    if [[ "$mode" != "playlist_mode" ]]; then
-        local estimated_size_bytes
-        estimated_size_bytes=$(echo "$media_json" | jq -r '(.filesize // .filesize_approx // 0)')
-        local size_threshold_gb_mp3nn=0.1
-        local size_threshold_bytes=$(awk "BEGIN {printf \"%d\", $size_threshold_gb_mp3nn * 1024 * 1024 * 1024}")
-        log_message "INFO" "MP3 無標準化：預估大小 = ${estimated_size_bytes}B, 通知閾值 = ${size_threshold_bytes}B."
-        if [[ "$estimated_size_bytes" -gt "$size_threshold_bytes" ]]; then
-            should_notify=true
-            log_message "INFO" "大小超過閾值，已啟用完成後通知。"
-        fi
-    fi
-
-    mkdir -p "$DOWNLOAD_PATH"; if [ ! -w "$DOWNLOAD_PATH" ]; then log_message "ERROR" "無法寫入目錄"; rm -rf "$temp_dir"; return 1; fi
-
-    echo -e "${YELLOW}處理媒體 (MP3 無標準化)：$video_title${RESET}"
-    
-    # ★★★ 核心修正：分步處理以確保高品質封面 ★★★
-    
-    # 步驟1: 下載最佳音訊到臨時檔案
-    echo -e "${YELLOW}開始下載音訊...${RESET}"
-    local temp_audio_file="$temp_dir/temp_audio.m4a" # 下載最佳音訊(通常是m4a)
-    if ! yt-dlp -f bestaudio -o "$temp_audio_file" "$media_url" --newline --progress --concurrent-fragments "$THREADS" 2> "$temp_dir/yt-dlp-audio-dl.log"; then
-        log_message "ERROR" "音訊下載失敗(無標準化)，詳見日誌"; cat "$temp_dir/yt-dlp-audio-dl.log"; result=1
-    fi
-
-    # 步驟2: 下載最高品質封面
-    local cover_image=""
-    if [ $result -eq 0 ]; then
-        echo -e "${YELLOW}下載封面圖片...${RESET}"
-        cover_image="$temp_dir/cover.jpg"
-        if ! download_high_res_thumbnail "$video_id" "$cover_image"; then
-            cover_image=""
-        fi
-    fi
-    
-    # 步驟3: 使用 FFmpeg 合併音訊、封面、元數據並轉換為 MP3
-    if [ $result -eq 0 ]; then
-        echo -e "${YELLOW}正在轉換為 MP3 並嵌入封面與元數據...${RESET}"
-        local base_name=$(echo "${sanitized_title} [${video_id}]" | sed 's@[/\\:*?"<>|]@_@g' | cut -c 1-150)
-        output_audio="$DOWNLOAD_PATH/${base_name}.mp3"
-
-        local ffmpeg_embed_args=(ffmpeg -y -i "$temp_audio_file")
-        if [ -n "$cover_image" ] && [ -f "$cover_image" ]; then
-            ffmpeg_embed_args+=(-i "$cover_image" -map 0:a -map 1:v -disposition:v attached_pic)
+    if ! $goto_cleanup; then
+        video_title=$(echo "$media_json" | jq -r '.title // "audio_$(date +%s_default)"')
+        video_id=$(echo "$media_json" | jq -r '.id // "id_$(date +%s_default)"')
+        artist_name=$(echo "$media_json" | jq -r '.artist // .uploader // "[不明]"')
+        album_artist_name=$(echo "$media_json" | jq -r '.uploader // "[不明]"')
+        
+        local sanitized_title
+        local safe_chars_regex='[^a-zA-Z0-9\u4e00-\u9fff\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uffef _.\[\]()-]'
+        if command -v iconv &> /dev/null; then
+            sanitized_title=$(echo "${video_title}" | iconv -f UTF-8 -t UTF-8 -c | sed -E "s/${safe_chars_regex}/_/g")
         else
-            ffmpeg_embed_args+=(-map 0:a)
+            sanitized_title=$(echo "${video_title}" | sed -E "s/${safe_chars_regex}/_/g")
         fi
-        ffmpeg_embed_args+=(-c:a libmp3lame -b:a 320k -id3v2_version 3 -metadata "title=$video_title" -metadata "artist=$artist_name" -metadata "album_artist=$album_artist_name")
-        if [ -n "$cover_image" ] && [ -f "$cover_image" ]; then
-             ffmpeg_embed_args+=(-metadata:s:v title="Album cover" -metadata:s:v comment="Cover (front)")
+        sanitized_title=$(echo "$sanitized_title" | sed -E 's/[_ ]+/_/g' | cut -c 1-80)
+        local final_base_name="${sanitized_title} [${video_id}]"
+        
+        log_message "INFO" "(MP3 無標準化) 將下載音訊到臨時目錄: ${temp_dir}"
+        local temp_output_template="${temp_dir}/%(id)s.%(ext)s"
+        # 直接讓 yt-dlp 轉換為 MP3
+        local format_option="bestaudio/best"
+        local yt_dlp_audio_args=(yt-dlp -f "$format_option" -o "$temp_output_template" "$media_url" --concurrent-fragments "$THREADS" --extract-audio --audio-format mp3 --audio-quality 0)
+        
+        if ! "${yt_dlp_audio_args[@]}" 2> "$temp_dir/yt-dlp-audio-std.log"; then
+            log_message "WARNING" "(MP3 無標準化) yt-dlp 下載時回報錯誤。"
         fi
-        ffmpeg_embed_args+=("$output_audio")
 
-        if ! "${ffmpeg_embed_args[@]}" > "$temp_dir/ffmpeg_embed.log" 2>&1; then
-            log_message "ERROR" "FFmpeg 轉換或嵌入失敗！詳見日誌。"; cat "$temp_dir/ffmpeg_embed.log"; result=1
+        temp_audio_file=$(find "$temp_dir" -maxdepth 1 -type f -name "*.mp3" -print -quit)
+
+        if [ -z "$temp_audio_file" ]; then
+            local error_code_to_return="E_YTDLP_DL_GENERIC"
+            # ... 錯誤分析 ...
+            log_message "ERROR" "$error_code_to_return: (MP3 無標準化) 下載失敗。"
+            local raw_err_b64=$(cat "$temp_dir/yt-dlp-audio-std.log" | base64 -w 0)
+            final_result_string="FAIL|${video_title}|${error_code_to_return}|${raw_err_b64}"
+            goto_cleanup=true
         else
-            log_message "SUCCESS" "FFmpeg 處理成功。"
+            output_audio="${DOWNLOAD_PATH}/${final_base_name}.mp3"
+            if ! mv "$temp_audio_file" "$output_audio"; then
+                # ... 降級重命名 ...
+                final_base_name="[${video_id}]"
+                output_audio="${DOWNLOAD_PATH}/${final_base_name}.mp3"
+                if ! mv "$temp_audio_file" "$output_audio"; then
+                    # ... 最終失敗 ...
+                    goto_cleanup=true
+                fi
+            fi
         fi
+    fi
+
+    if ! $goto_cleanup; then
+        local cover_image="$temp_dir/cover.jpg"
+        download_high_res_thumbnail "$video_id" "$cover_image" > /dev/null 2>&1
+        
+        if [ -f "$cover_image" ]; then
+            local temp_final_audio="${temp_dir}/final.mp3"
+            local ffmpeg_embed_args=(ffmpeg -y -i "$output_audio" -i "$cover_image" -map 0:a -map 1:v -c copy -id3v2_version 3 -disposition:v attached_pic)
+            ffmpeg_embed_args+=(-metadata "title=${video_title}" -metadata "artist=${artist_name}" -metadata "album_artist=${album_artist_name}" "$temp_final_audio")
+            
+            if "${ffmpeg_embed_args[@]}" > /dev/null 2>&1; then
+                mv "$temp_final_audio" "$output_audio"
+            fi
+        fi
+        
+        final_result_string="SUCCESS|${video_title}|MP3-320kbps"
+        result=0
     fi
 
     rm -rf "$temp_dir"
-
-    if [ $result -eq 0 ]; then
-        echo -e "${GREEN}處理完成！高品質 MP3 音訊已儲存至：$output_audio${RESET}"
-    else
-        echo -e "${RED}處理失敗 (MP3 無標準化)！${RESET}"
+    
+    if [[ "$mode" != "playlist_mode" ]]; then
+        if [ $result -eq 0 ]; then
+            _send_termux_notification 0 "媒體處理器：MP3 無標準化" "處理音訊 '$sanitized_title'" "$output_audio"
+        else
+            _send_termux_notification 1 "媒體處理器：MP3 無標準化" "處理音訊 '$sanitized_title' 失敗" ""
+        fi
     fi
 
-    if [[ "$mode" != "playlist_mode" ]] && $should_notify; then
-        local notification_title="媒體處理器：MP3 無標準化"
-        _send_termux_notification "$result" "$notification_title" "處理音訊 '$sanitized_title'" "$output_audio"
-    fi
-
+    echo "${final_result_string}"
     return $result
 }
 
@@ -1965,104 +1965,116 @@ process_single_mp4() {
 }
 
 ######################################################################
-# 處理單一 YouTube 影片（MP4）下載（無音量標準化）(最終保險版 v4.6)
-# 手動構建檔名，並在執行後強制清理所有殘餘字幕檔
+# 處理單一 YouTube 影片（MP4）下載（無音量標準化） (v6.2 全面升級)
 ######################################################################
 process_single_mp4_no_normalize() {
     local video_url="$1"
     local mode="$2"
-    local temp_dir=$(mktemp -d)
-    local result=0
-    local should_notify=false
+    local temp_dir
+    temp_dir=$(mktemp -d)
+    local subtitle_files=()
+    local final_result_string="" 
+    local result=1 
 
-    echo -e "${YELLOW}正在獲取媒體完整資訊 (優化流程)...${RESET}"
     local media_json
     media_json=$(yt-dlp --no-warnings --dump-json "$video_url" 2>"$temp_dir/yt-dlp-json-dump.log")
     if [ -z "$media_json" ]; then
-        log_message "ERROR" "無法獲取媒體的 JSON 資訊 (MP4 無標準化)。URL: $video_url"
-        echo -e "${RED}錯誤：無法獲取媒體資訊，請檢查網址或網路。${RESET}"
-        cat "$temp_dir/yt-dlp-json-dump.log"; rm -rf "$temp_dir"; return 1
+        log_message "ERROR" "E_YTDLP_JSON: (無標準化) 無法獲取媒體的 JSON 資訊。URL: $video_url"
+        local raw_err_b64=$(echo "無法獲取元數據，無特定日誌檔案。" | base64 -w 0)
+        final_result_string="FAIL|${video_url}|E_YTDLP_JSON|${raw_err_b64}"
+        goto_cleanup=true
+    else
+        goto_cleanup=false
     fi
 
-    local video_title video_id estimated_size_bytes
-    video_title=$(echo "$media_json" | jq -r '.title // "video_$(date +%s_default)"')
-    video_id=$(echo "$media_json" | jq -r '.id // "id_$(date +%s_default)"')
-    estimated_size_bytes=$(echo "$media_json" | jq -r '(.filesize // .filesize_approx // 0)')
+    local video_title="" video_id=""
+    local final_video_file="" temp_video_file="" 
 
-    local format_option="bestvideo[ext=mp4][height<=1440]+bestaudio[ext=m4a]/bestvideo[ext=mp4][height<=1440]+bestaudio/best[ext=mp4][height<=1440]/best[height<=1440]/best"
-    local is_youtube_url=true
-    if [[ "$video_url" != *"youtube.com"* && "$video_url" != *"youtu.be"* ]]; then
-        is_youtube_url=false; format_option="best";
-    fi
+    if ! $goto_cleanup; then
+        video_title=$(echo "$media_json" | jq -r '.title // "video_$(date +%s_default)"')
+        video_id=$(echo "$media_json" | jq -r '.id // "id_$(date +%s_default)"')
+        
+        local sanitized_title
+        local safe_chars_regex='[^a-zA-Z0-9\u4e00-\u9fff\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uffef _.\[\]()-]'
+        if command -v iconv &> /dev/null; then
+            sanitized_title=$(echo "${video_title}" | iconv -f UTF-8 -t UTF-8 -c | sed -E "s/${safe_chars_regex}/_/g")
+        else
+            sanitized_title=$(echo "${video_title}" | sed -E "s/${safe_chars_regex}/_/g")
+        fi
+        sanitized_title=$(echo "$sanitized_title" | sed -E 's/[_ ]+/_/g' | cut -c 1-80)
+        local final_base_name="${sanitized_title} [${video_id}]"
+        
+        log_message "INFO" "(無標準化) 將下載影片到臨時目錄: ${temp_dir}"
+        local temp_output_template="${temp_dir}/%(id)s.%(ext)s"
+        local format_option="bestvideo[ext=mp4][vcodec^=avc][height<=1440]+bestaudio[ext=m4a]/bestvideo[ext=mp4][height<=1440]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio/best[ext=mp4]/best"
+        
+        # 在「無標準化」模式下，我們讓 yt-dlp 直接處理字幕嵌入和合併，更高效
+        local yt_dlp_video_args=(yt-dlp -f "$format_option" -o "$temp_output_template" "$video_url" --concurrent-fragments "$THREADS" --merge-output-format mp4 --write-subs --embed-subs --sub-lang "zh-Hant,zh-TW,zh-Hans,zh-CN,zh")
+        
+        if ! "${yt_dlp_video_args[@]}" 2> "$temp_dir/yt-dlp-video-std.log"; then
+            log_message "WARNING" "(無標準化) yt-dlp 影片下載時回報錯誤，將進行錯誤分析。"
+        fi
 
-    if [[ "$mode" != "playlist_mode" ]]; then
-        local size_threshold_gb_mp4nn=1.0
-        local size_threshold_bytes=$(awk "BEGIN {printf \"%d\", $size_threshold_gb_mp4nn * 1024 * 1024 * 1024}")
-        if [[ "$estimated_size_bytes" -gt "$size_threshold_bytes" ]]; then
-            should_notify=true;
+        temp_video_file=$(find "$temp_dir" -maxdepth 1 -type f \( -name "*.mp4" -o -name "*.mkv" -o -name "*.webm" \) -print -quit)
+
+        if [ -z "$temp_video_file" ]; then
+            local error_code_to_return="E_YTDLP_DL_GENERIC"
+            if grep -q "Requested format is not available" "$temp_dir/yt-dlp-video-std.log"; then error_code_to_return="E_YTDLP_FORMAT";
+            elif grep -q "HTTP Error 403" "$temp_dir/yt-dlp-video-std.log"; then error_code_to_return="E_YTDLP_DL_403";
+            elif grep -q "Operation not permitted" "$temp_dir/yt-dlp-video-std.log"; then error_code_to_return="E_FS_PERM";
+            else error_code_to_return="E_FILE_NOT_FOUND"; fi
+            
+            log_message "ERROR" "$error_code_to_return: (無標準化) 下載失敗。"
+            local raw_err_b64=$(cat "$temp_dir/yt-dlp-video-std.log" | base64 -w 0)
+            final_result_string="FAIL|${video_title}|${error_code_to_return}|${raw_err_b64}"
+            goto_cleanup=true
+        else
+            local extension="${temp_video_file##*.}"
+            final_video_file="${DOWNLOAD_PATH}/${final_base_name}.${extension}"
+            
+            local mv_error
+            if ! mv_error=$(mv "$temp_video_file" "$final_video_file" 2>&1); then
+                log_message "WARNING" "(無標準化) 使用清理後的標題重命名失敗，將降級為僅使用影片 ID。"
+                final_base_name="[${video_id}]"
+                final_video_file="${DOWNLOAD_PATH}/${final_base_name}.${extension}"
+                if ! mv_error=$(mv "$temp_video_file" "$final_video_file" 2>&1); then
+                    log_message "ERROR" "E_FS_PERM: (無標準化) 降級後重命名依然失敗！"
+                    local raw_err_b64=$(echo -e "命令: mv \"$temp_video_file\" \"$final_video_file\"\n錯誤: $mv_error" | base64 -w 0)
+                    final_result_string="FAIL|${video_title}|E_FS_PERM|${raw_err_b64}"
+                    goto_cleanup=true
+                fi
+            fi
         fi
     fi
 
-    mkdir -p "$DOWNLOAD_PATH"; if [ ! -w "$DOWNLOAD_PATH" ]; then log_message "ERROR" "無法寫入目錄"; rm -rf "$temp_dir"; return 1; fi
-
-    echo -e "${YELLOW}處理影片 (無標準化)：$video_title${RESET}"
-    
-    # 手動構建確定的檔名
-    local sanitized_title=$(echo "${video_title}" | sed 's@[/\\:*?"<>|]@_@g')
-    local base_name=$(echo "${sanitized_title} [${video_id}]" | cut -c 1-150)
-    local final_video_file="${DOWNLOAD_PATH}/${base_name}.mp4"
-
-    log_message "INFO" "將使用確定的輸出檔名: ${final_video_file}"
-    
-    echo -e "${YELLOW}開始下載、合併、嵌入字幕 (單一指令)...${RESET}"
-    local target_sub_langs="zh-Hant,zh-TW,zh-Hans,zh-CN,zh"
-    
-    local yt_dlp_dl_args=(
-        yt-dlp -f "$format_option" -o "$final_video_file" --merge-output-format mp4
-        "$video_url" --newline --progress --concurrent-fragments "$THREADS"
-    )
-    
-    if $is_youtube_url; then
-        echo -e "${YELLOW}將嘗試下載並嵌入繁/簡/通用中文字幕...${RESET}"
-        # 即使使用 --embed-subs，yt-dlp 仍可能先下載為獨立檔案
-        yt_dlp_dl_args+=( --write-subs --embed-subs --sub-lang "$target_sub_langs" )
+    if ! $goto_cleanup; then
+        local resolution
+        local ffprobe_error
+        ffprobe_output=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$final_video_file" 2>&1)
+        local ffprobe_exit_code=$?
+        if [ $ffprobe_exit_code -ne 0 ] || [ -z "$ffprobe_output" ]; then
+            resolution="未知"; ffprobe_error=$ffprobe_output
+        else
+            resolution=$ffprobe_output
+        fi
+        
+        # 在此模式下，即使無法獲取解析度，我們也將其視為成功，因為檔案已存在
+        log_message "INFO" "(無標準化) 影片處理完成：$final_video_file, 解析度: $resolution"
+        final_result_string="SUCCESS|${video_title}|${resolution}"
+        result=0
     fi
-
-    # 執行 yt-dlp
-    if ! "${yt_dlp_dl_args[@]}" 2> "$temp_dir/yt-dlp-video-nonorm.log"; then
-        log_message "WARNING" "yt-dlp 執行時回報錯誤，將繼續後續檢查與清理。";
-    fi
-
-    # ★★★ 核心修正：加入手動字幕清理保險 ★★★
-    log_message "INFO" "執行強制字幕檔案清理..."
-    # 查找所有與 base_name 匹配的 .srt 和 .vtt 檔案並刪除它們
-    find "$DOWNLOAD_PATH" -maxdepth 1 -type f \
-        \( -name "${base_name}.*.srt" -o -name "${base_name}.*.vtt" \) \
-        -print -exec rm -f {} \;
-    log_message "INFO" "強制字幕檔案清理完成。"
-
-    # 檢查最終影片檔案是否存在
-    if [ ! -f "$final_video_file" ]; then
-        log_message "ERROR" "下載失敗，最終影片檔案 '$final_video_file' 未找到。";
-        cat "$temp_dir/yt-dlp-video-nonorm.log";
-        result=1
-    else
-        log_message "SUCCESS" "下載處理完成，最終檔案為: $final_video_file"
-    fi
-
+    
     rm -rf "$temp_dir"
-
-    if [ $result -eq 0 ]; then
-        echo -e "${GREEN}處理完成！影片已儲存至：$final_video_file${RESET}"
-    else
-        echo -e "${RED}處理失敗 (MP4 無標準化)！請檢查日誌。${RESET}"
+    
+    if [[ "$mode" != "playlist_mode" ]]; then
+        if [ $result -eq 0 ]; then
+            _send_termux_notification 0 "媒體處理器：MP4 無標準化" "處理影片 '$sanitized_title'" "$final_video_file"
+        else
+            _send_termux_notification 1 "媒體處理器：MP4 無標準化" "處理影片 '$sanitized_title' 失敗" ""
+        fi
     fi
 
-    if [[ "$mode" != "playlist_mode" ]] && $should_notify; then
-        local notification_title="媒體處理器：MP4 無標準化"
-        _send_termux_notification "$result" "$notification_title" "處理影片 '$sanitized_title'" "$final_video_file"
-    fi
-
+    echo "${final_result_string}"
     return $result
 }
 
