@@ -794,7 +794,6 @@ _display_playlist_summary() {
     fi
 
     log_message "SUCCESS" "播放清單摘要顯示完畢。總共: $total_items, 成功: ${#success_items[@]}, 失敗: ${#failed_items[@]}"
-    read -p "摘要顯示完畢，按 Enter 返回..."
 }
 
 ######################################################################
@@ -1762,7 +1761,7 @@ process_single_mp3_no_normalize() {
 }
 
 ######################################################################
-# 處理單一 YouTube 影片（MP4）下載與處理 (v5.0 - 錯誤碼與結果回傳)
+# 處理單一 YouTube 影片（MP4）下載與處理 (v5.1 - 修正結果輸出時機)
 # 返回一個包含狀態、標題、解析度或錯誤碼的字串
 ######################################################################
 process_single_mp4() {
@@ -1771,113 +1770,114 @@ process_single_mp4() {
     local temp_dir
     temp_dir=$(mktemp -d)
     local subtitle_files=()
+    local final_result_string="" # 用於儲存最終結果
+    local result=1 # 預設失敗
 
     # --- 步驟 1: 獲取元數據 ---
     local media_json
     media_json=$(yt-dlp --no-warnings --dump-json "$video_url" 2>"$temp_dir/yt-dlp-json-dump.log")
     if [ -z "$media_json" ]; then
         log_message "ERROR" "E_YTDLP_JSON: 無法獲取媒體的 JSON 資訊。URL: $video_url"
-        echo "FAIL|${video_url}|E_YTDLP_JSON"
-        rm -rf "$temp_dir"
-        return 1
-    fi
-
-    local video_title video_id
-    video_title=$(echo "$media_json" | jq -r '.title // "video_$(date +%s_default)"')
-    video_id=$(echo "$media_json" | jq -r '.id // "id_$(date +%s_default)"')
-    
-    # --- 步驟 2: 準備檔名和路徑 ---
-    # 更嚴格的檔名清理和長度限制
-    local sanitized_title=$(echo "${video_title}" | sed 's@[/\\:*?"<>|]@_@g' | sed 's/\s\+/ /g' | cut -c 1-80)
-    local base_name="${sanitized_title} [${video_id}]"
-    local output_template="${DOWNLOAD_PATH}/${base_name}.%(ext)s"
-    local video_file="${DOWNLOAD_PATH}/${base_name}.mp4"
-    local output_video="${DOWNLOAD_PATH}/${base_name}_normalized.mp4"
-    
-    log_message "INFO" "將使用確定的基礎檔名: ${base_name}"
-    
-    # --- 步驟 3: 下載影片和字幕 ---
-    # 優化格式選擇，優先分離的 AVC1 MP4 流，避免回退到低品質合併流
-    local format_option="bestvideo[ext=mp4][vcodec^=avc][height<=1440]+bestaudio[ext=m4a]/bestvideo[ext=mp4][vcodec^=avc][height<=1080]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio[ext=m4a]"
-    local target_sub_langs="zh-Hant,zh-TW,zh-Hans,zh-CN,zh"
-    
-    local yt_dlp_dl_args=(yt-dlp -f "$format_option" -o "$output_template" "$video_url" --write-subs --sub-lang "$target_sub_langs" --convert-subs srt --concurrent-fragments "$THREADS")
-    
-    # 執行下載並將 stderr 存到日誌檔
-    if ! "${yt_dlp_dl_args[@]}" 2> "$temp_dir/yt-dlp-video-std.log"; then
-        log_message "WARNING" "yt-dlp 執行時回報錯誤，將進行錯誤分析。"
-    fi
-
-    # 錯誤分析與檔案驗證
-    if [ ! -f "$video_file" ]; then
-        local error_code_to_return="E_YTDLP_DL_GENERIC"
-        # 檢查特定錯誤
-        if grep -q "HTTP Error 403" "$temp_dir/yt-dlp-video-std.log"; then error_code_to_return="E_YTDLP_DL_403";
-        elif grep -q "Operation not permitted" "$temp_dir/yt-dlp-video-std.log"; then error_code_to_return="E_FS_PERM";
-        else error_code_to_return="E_FILE_NOT_FOUND"; fi
-
-        log_message "ERROR" "$error_code_to_return: 下載失敗，找不到影片檔案: $video_file"
-        echo "FAIL|${video_title}|${error_code_to_return}"
-        rm -rf "$temp_dir"
-        return 1
-    fi
-
-    # --- 步驟 4: 獲取實際解析度 ---
-    local resolution
-    resolution=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$video_file")
-    if [ -z "$resolution" ]; then
-        log_message "ERROR" "E_FFPROBE_RES: 無法獲取影片解析度: $video_file"
-        safe_remove "$video_file" # 刪除損壞的檔案
-        echo "FAIL|${video_title}|E_FFPROBE_RES"
-        rm -rf "$temp_dir"
-        return 1
-    fi
-    log_message "INFO" "影片下載完成：$video_file, 解析度: $resolution"
-
-    # --- 步驟 5: 處理字幕 ---
-    local find_safe_base_name
-    find_safe_base_name=$(echo "$base_name" | sed -e 's/\[/\\\[/g' -e 's/\]/\\\]/g' -e 's/\*/\\\*/g' -e 's/\?/\\\?/g')
-    while IFS= read -r srt_file; do
-        subtitle_files+=("$srt_file")
-        log_message "INFO" "找到字幕: $srt_file"
-    done < <(find "$DOWNLOAD_PATH" -maxdepth 1 -type f -name "${find_safe_base_name}.*.srt")
-
-    # --- 步驟 6: 音量標準化與混流 ---
-    local normalized_audio_temp="$temp_dir/audio_normalized.m4a"
-    if normalize_audio "$video_file" "$normalized_audio_temp" "$temp_dir" true; then
-        local ffmpeg_mux_args=(ffmpeg -y -i "$video_file" -i "$normalized_audio_temp")
-        for sub_f in "${subtitle_files[@]}"; do ffmpeg_mux_args+=("-i" "$sub_f"); done
-        ffmpeg_mux_args+=(-map 0:v:0 -map 1:a:0 -c:v copy -c:a aac -b:a 256k -ar 44100)
-        if [ ${#subtitle_files[@]} -gt 0 ]; then
-            ffmpeg_mux_args+=("-c:s" mov_text)
-            for ((i=0; i<${#subtitle_files[@]}; i++)); do
-                ffmpeg_mux_args+=(-map $((i+2)):0);
-                local sub_lang_code=$(basename "${subtitle_files[$i]}" | rev | cut -d'.' -f2 | rev)
-                local ffmpeg_lang="und"; case "$sub_lang_code" in zh-Hant|zh-TW) ffmpeg_lang="zht" ;; zh-Hans|zh-CN) ffmpeg_lang="zhs" ;; zh) ffmpeg_lang="chi" ;; esac
-                ffmpeg_mux_args+=("-metadata:s:s:$i" "language=$ffmpeg_lang")
-            done
-        fi
-        ffmpeg_mux_args+=(-movflags "+faststart" "$output_video")
-        
-        if ! "${ffmpeg_mux_args[@]}" > "$temp_dir/ffmpeg_mux.log" 2>&1; then
-            log_message "ERROR" "E_FFMPEG_MUX: 混流失敗！"
-            echo "FAIL|${video_title}|E_FFMPEG_MUX"
-            result=1
-        else
-            log_message "SUCCESS" "混流成功"
-            # 成功，回傳結果
-            echo "SUCCESS|${video_title}|${resolution}"
-            result=0
-        fi
+        final_result_string="FAIL|${video_url}|E_YTDLP_JSON"
+        # 直接跳到結尾清理並退出
+        goto_cleanup=true
     else
-        log_message "ERROR" "E_NORMALIZE_FAIL: 音量標準化失敗！"
-        echo "FAIL|${video_title}|E_NORMALIZE_FAIL"
-        result=1
+        goto_cleanup=false
     fi
 
+    if ! $goto_cleanup; then
+        local video_title video_id
+        video_title=$(echo "$media_json" | jq -r '.title // "video_$(date +%s_default)"')
+        video_id=$(echo "$media_json" | jq -r '.id // "id_$(date +%s_default)"')
+        
+        # --- 步驟 2: 準備檔名和路徑 ---
+        local sanitized_title=$(echo "${video_title}" | sed 's@[/\\:*?"<>|]@_@g' | sed 's/\s\+/ /g' | cut -c 1-80)
+        local base_name="${sanitized_title} [${video_id}]"
+        local output_template="${DOWNLOAD_PATH}/${base_name}.%(ext)s"
+        local video_file="${DOWNLOAD_PATH}/${base_name}.mp4"
+        local output_video="${DOWNLOAD_PATH}/${base_name}_normalized.mp4"
+        
+        log_message "INFO" "將使用確定的基礎檔名: ${base_name}"
+        
+        # --- 步驟 3: 下載影片和字幕 ---
+        local format_option="bestvideo[ext=mp4][vcodec^=avc][height<=1440]+bestaudio[ext=m4a]/bestvideo[ext=mp4][vcodec^=avc][height<=1080]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio[ext=m4a]"
+        local target_sub_langs="zh-Hant,zh-TW,zh-Hans,zh-CN,zh"
+        local yt_dlp_dl_args=(yt-dlp -f "$format_option" -o "$output_template" "$video_url" --write-subs --sub-lang "$target_sub_langs" --convert-subs srt --concurrent-fragments "$THREADS")
+        
+        if ! "${yt_dlp_dl_args[@]}" 2> "$temp_dir/yt-dlp-video-std.log"; then
+            log_message "WARNING" "yt-dlp 執行時回報錯誤，將進行錯誤分析。"
+        fi
+
+        if [ ! -f "$video_file" ]; then
+            local error_code_to_return="E_YTDLP_DL_GENERIC"
+            if grep -q "HTTP Error 403" "$temp_dir/yt-dlp-video-std.log"; then error_code_to_return="E_YTDLP_DL_403";
+            elif grep -q "Operation not permitted" "$temp_dir/yt-dlp-video-std.log"; then error_code_to_return="E_FS_PERM";
+            else error_code_to_return="E_FILE_NOT_FOUND"; fi
+            log_message "ERROR" "$error_code_to_return: 下載失敗，找不到影片檔案: $video_file"
+            final_result_string="FAIL|${video_title}|${error_code_to_return}"
+            goto_cleanup=true
+        fi
+    fi
+
+    if ! $goto_cleanup; then
+        # --- 步驟 4: 獲取實際解析度 ---
+        local resolution
+        resolution=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$video_file")
+        if [ -z "$resolution" ]; then
+            log_message "ERROR" "E_FFPROBE_RES: 無法獲取影片解析度: $video_file"
+            safe_remove "$video_file"
+            final_result_string="FAIL|${video_title}|E_FFPROBE_RES"
+            goto_cleanup=true
+        else
+            log_message "INFO" "影片下載完成：$video_file, 解析度: $resolution"
+        fi
+    fi
+
+    if ! $goto_cleanup; then
+        # --- 步驟 5: 處理字幕 ---
+        local find_safe_base_name
+        find_safe_base_name=$(echo "$base_name" | sed -e 's/\[/\\\[/g' -e 's/\]/\\\]/g' -e 's/\*/\\\*/g' -e 's/\?/\\\?/g')
+        while IFS= read -r srt_file; do subtitle_files+=("$srt_file"); log_message "INFO" "找到字幕: $srt_file"; done < <(find "$DOWNLOAD_PATH" -maxdepth 1 -type f -name "${find_safe_base_name}.*.srt")
+
+        # --- 步驟 6: 音量標準化與混流 ---
+        local normalized_audio_temp="$temp_dir/audio_normalized.m4a"
+        if normalize_audio "$video_file" "$normalized_audio_temp" "$temp_dir" true; then
+            local ffmpeg_mux_args=(ffmpeg -y -i "$video_file" -i "$normalized_audio_temp")
+            for sub_f in "${subtitle_files[@]}"; do ffmpeg_mux_args+=("-i" "$sub_f"); done
+            ffmpeg_mux_args+=(-map 0:v:0 -map 1:a:0 -c:v copy -c:a aac -b:a 256k -ar 44100)
+            if [ ${#subtitle_files[@]} -gt 0 ]; then
+                ffmpeg_mux_args+=("-c:s" mov_text)
+                for ((i=0; i<${#subtitle_files[@]}; i++)); do
+                    ffmpeg_mux_args+=(-map $((i+2)):0)
+                    local sub_lang_code=$(basename "${subtitle_files[$i]}" | rev | cut -d'.' -f2 | rev); local ffmpeg_lang="und"
+                    case "$sub_lang_code" in zh-Hant|zh-TW) ffmpeg_lang="zht" ;; zh-Hans|zh-CN) ffmpeg_lang="zhs" ;; zh) ffmpeg_lang="chi" ;; esac
+                    ffmpeg_mux_args+=("-metadata:s:s:$i" "language=$ffmpeg_lang")
+                done
+            fi
+            ffmpeg_mux_args+=(-movflags "+faststart" "$output_video")
+            
+            if ! "${ffmpeg_mux_args[@]}" > "$temp_dir/ffmpeg_mux.log" 2>&1; then
+                log_message "ERROR" "E_FFMPEG_MUX: 混流失敗！"
+                final_result_string="FAIL|${video_title}|E_FFMPEG_MUX"
+                result=1
+            else
+                log_message "SUCCESS" "混流成功"
+                final_result_string="SUCCESS|${video_title}|${resolution}"
+                result=0
+            fi
+        else
+            log_message "ERROR" "E_NORMALIZE_FAIL: 音量標準化失敗！"
+            final_result_string="FAIL|${video_title}|E_NORMALIZE_FAIL"
+            result=1
+        fi
+    fi
+    
     # --- 步驟 7: 清理 ---
     log_message "INFO" "清理臨時檔案 (MP4 標準化)..."
-    safe_remove "$video_file"
+    # 如果處理成功，原始的 video_file 就應該被刪除
+    if [ $result -eq 0 ]; then
+        safe_remove "$video_file"
+    fi
     for sub_f in "${subtitle_files[@]}"; do safe_remove "$sub_f"; done
     rm -rf "$temp_dir"
     
@@ -1889,6 +1889,8 @@ process_single_mp4() {
         fi
     fi
 
+    # ★★★ 核心修正：將結果 echo 放在函數的絕對末尾 ★★★
+    echo "${final_result_string}"
     return $result
 }
 
