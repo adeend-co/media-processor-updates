@@ -1562,7 +1562,7 @@ process_local_mp4() {
 }
 
 ######################################################################
-# 處理單一 YouTube 音訊（MP3）下載與處理 (v6.3 - 通知邏輯優化)
+# 處理單一 YouTube 音訊（MP3）下載與處理 (v6.4 - 修正終端回饋)
 ######################################################################
 process_single_mp3() {
     local media_url="$1"
@@ -1597,9 +1597,7 @@ process_single_mp3() {
         album_artist_name=$(echo "$media_json" | jq -r '.uploader // "[不明]"')
         duration_secs=$(echo "$media_json" | jq -r '.duration // 0')
         
-        # --- 通知判斷 (基於時間長度) ---
         if [[ "$mode" != "playlist_mode" ]]; then
-            # 使用 bc 計算浮點數比較，更精確
             if (( $(echo "$duration_secs > $duration_threshold_secs" | bc -l) )); then
                 should_notify=true
                 log_message "INFO" "MP3 標準化：時長 ($duration_secs s) 超過閥值 ($duration_threshold_secs s)，啟用通知。"
@@ -1670,9 +1668,21 @@ process_single_mp3() {
         fi
     fi
 
+    ### --- ★★★ 核心修正：補回控制台最終報告 ★★★ --- ###
+    if [ $result -eq 0 ]; then
+        if [ -f "$output_audio" ]; then
+            echo -e "${GREEN}處理完成！音訊已儲存至：$output_audio${RESET}"
+        else
+            echo -e "${RED}處理似乎已完成，但最終檔案 '$output_audio' 未找到！${RESET}"
+            log_message "ERROR" "(MP3 標準化) 處理完成但最終檔案未找到"
+            result=1
+        fi
+    else
+        echo -e "${RED}處理失敗 (MP3 標準化)！請檢查日誌。${RESET}"
+    fi
+
     rm -rf "$temp_dir"
     
-    # --- 條件式通知 ---
     if [[ "$mode" != "playlist_mode" ]] && $should_notify; then
         if [ $result -eq 0 ]; then
             _send_termux_notification 0 "媒體處理器：MP3 標準化" "處理音訊 '$sanitized_title'" "$output_audio"
@@ -1688,7 +1698,7 @@ process_single_mp3() {
 }
 
 ######################################################################
-# 處理單一 YouTube 音訊（MP3）下載（無標準化）(v6.3 - 通知邏輯優化)
+# 處理單一 YouTube 音訊（MP3）下載（無標準化）(v6.4 - 修正終端回饋)
 ######################################################################
 process_single_mp3_no_normalize() {
     local media_url="$1"
@@ -1778,7 +1788,6 @@ process_single_mp3_no_normalize() {
         final_result_string="SUCCESS|${video_title}|MP3-320kbps"
         result=0
 
-        # --- 通知判斷 (基於實際檔案大小) ---
         if [[ "$mode" != "playlist_mode" ]] && [ -f "$output_audio" ]; then
             local actual_size_bytes=$(stat -c %s "$output_audio" 2>/dev/null)
             local size_threshold_bytes=$(awk "BEGIN {printf \"%d\", $size_threshold_gb * 1024 * 1024 * 1024}")
@@ -1789,9 +1798,21 @@ process_single_mp3_no_normalize() {
         fi
     fi
 
+    ### --- ★★★ 核心修正：補回控制台最終報告 ★★★ --- ###
+    if [ $result -eq 0 ]; then
+        if [ -f "$output_audio" ]; then
+            echo -e "${GREEN}處理完成！音訊已儲存至：$output_audio${RESET}"
+        else
+            echo -e "${RED}處理似乎已完成，但最終檔案 '$output_audio' 未找到！${RESET}"
+            log_message "ERROR" "(MP3 無標準化) 處理完成但最終檔案未找到"
+            result=1
+        fi
+    else
+        echo -e "${RED}處理失敗 (MP3 無標準化)！請檢查日誌。${RESET}"
+    fi
+
     rm -rf "$temp_dir"
     
-    # --- 條件式通知 ---
     if [[ "$mode" != "playlist_mode" ]] && $should_notify; then
         if [ $result -eq 0 ]; then
             _send_termux_notification 0 "媒體處理器：MP3 無標準化" "處理音訊 '$sanitized_title'" "$output_audio"
@@ -1807,7 +1828,7 @@ process_single_mp3_no_normalize() {
 }
 
 ######################################################################
-# 處理單一 YouTube 影片（MP4）下載與處理 (v6.3 - 通知邏輯優化)
+# 處理單一 YouTube 影片（MP4）下載與處理 (v6.4 - 修正終端回饋)
 ######################################################################
 process_single_mp4() {
     local video_url="$1"
@@ -1842,7 +1863,6 @@ process_single_mp4() {
         video_id=$(echo "$media_json" | jq -r '.id // "id_$(date +%s_default)"')
         duration_secs=$(echo "$media_json" | jq -r '.duration // 0')
 
-        # --- 通知判斷 (基於時間長度) ---
         if [[ "$mode" != "playlist_mode" ]]; then
             if (( $(echo "$duration_secs > $duration_threshold_secs" | bc -l) )); then
                 should_notify=true
@@ -1979,6 +1999,19 @@ process_single_mp4() {
         fi
     fi
     
+    ### --- ★★★ 核心修正：補回控制台最終報告 ★★★ --- ###
+    if [ $result -eq 0 ]; then
+        if [ -f "$output_video" ]; then
+            echo -e "${GREEN}處理完成！影片已儲存至：$output_video${RESET}"
+        else
+            echo -e "${RED}處理似乎已完成，但最終檔案 '$output_video' 未找到！${RESET}"
+            log_message "ERROR" "(MP4 標準化) 處理完成但最終檔案未找到"
+            result=1
+        fi
+    else
+        echo -e "${RED}處理失敗 (MP4 標準化)！請檢查日誌。${RESET}"
+    fi
+    
     log_message "INFO" "清理檔案 (MP4 標準化)..."
     if [ -f "$final_video_file" ]; then
         safe_remove "$final_video_file"
@@ -1986,7 +2019,6 @@ process_single_mp4() {
     for sub_f in "${subtitle_files[@]}"; do safe_remove "$sub_f"; done
     rm -rf "$temp_dir"
     
-    # --- 條件式通知 ---
     if [[ "$mode" != "playlist_mode" ]] && $should_notify; then
         if [ $result -eq 0 ]; then
             _send_termux_notification 0 "媒體處理器：MP4 標準化" "處理影片 '$sanitized_title'" "$output_video"
@@ -2002,7 +2034,7 @@ process_single_mp4() {
 }
 
 ######################################################################
-# 處理單一 YouTube 影片（MP4）下載（無標準化）(v6.3 - 通知邏輯優化)
+# 處理單一 YouTube 影片（MP4）下載（無標準化）(v6.4 - 修正終端回饋)
 ######################################################################
 process_single_mp4_no_normalize() {
     local video_url="$1"
@@ -2014,7 +2046,7 @@ process_single_mp4_no_normalize() {
     local result=1
     local should_notify=false
 
-    ### --- 通知閥值設定 --- ###
+    ### --- 通知閥值設定 (易於修改) --- ###
     local size_threshold_gb=1.0
 
     local media_json
@@ -2100,7 +2132,7 @@ process_single_mp4_no_normalize() {
         
         log_message "INFO" "(無標準化) 影片處理完成：$final_video_file, 解析度: $resolution"
         final_result_string="SUCCESS|${video_title}|${resolution}"
-        result=0
+        result=0 # 標記為成功
 
         # --- 通知判斷 (基於實際檔案大小) ---
         if [[ "$mode" != "playlist_mode" ]] && [ -f "$final_video_file" ]; then
@@ -2113,9 +2145,22 @@ process_single_mp4_no_normalize() {
         fi
     fi
     
+    # --- ★★★ 核心修正：加入控制台最終報告 ★★★ ---
+    if [ $result -eq 0 ]; then
+        if [ -f "$final_video_file" ]; then
+            echo -e "${GREEN}處理完成！影片已儲存至：$final_video_file${RESET}"
+        else
+            echo -e "${RED}處理似乎已完成，但最終檔案 '$final_video_file' 未找到！${RESET}"
+            log_message "ERROR" "(無標準化) 處理完成但最終檔案未找到"
+            result=1
+        fi
+    else
+        echo -e "${RED}處理失敗 (MP4 無標準化)！請檢查日誌。${RESET}"
+    fi
+
     rm -rf "$temp_dir"
     
-    # --- 條件式通知 ---
+    # --- 條件式通知 (Termux) ---
     if [[ "$mode" != "playlist_mode" ]] && $should_notify; then
         if [ $result -eq 0 ]; then
             _send_termux_notification 0 "媒體處理器：MP4 無標準化" "處理影片 '$sanitized_title'" "$final_video_file"
