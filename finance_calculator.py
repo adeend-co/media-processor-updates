@@ -16,8 +16,8 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v3.2.6"  # Feat: Implement dual-track hybrid drift detection for sensitivity and robustness
-SCRIPT_UPDATE_DATE = "2025-07-26"
+SCRIPT_VERSION = "v3.2.7"  # Feat: Implement dual-track hybrid drift detection for sensitivity and robustness
+SCRIPT_UPDATE_DATE = "2025-08-09"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
 # 說明：您可以直接修改這裡的數字，來調整報告中各表格欄位的寬度，以適應您的終端機字體。
@@ -77,29 +77,37 @@ INFLATION_RATES = {
 }
 
 # --- 計算 CPI 指數的輔助函數 (強化版，修正 2019 年問題) ---
+
 def calculate_cpi_values(input_years, inflation_rates):
+    """
+    輸入：
+      - input_years: iterable of years (ints) 出現在你資料中的年份
+      - inflation_rates: dict {year: annual_inflation_percent}
+    回傳：
+      - (cpi_values: dict year->index(100 base), base_year:int)
+    註：若 input_years 為空集合，回傳 ({}, None) 以避免呼叫端 unpack 錯誤
+    """
     if not input_years:
-        return {}
-    base_year = min(input_years)  # 以輸入數據最早年份作為基準
+        return {}, None
+    base_year = int(min(input_years))  # 以輸入數據最早年份作為基準
     years = sorted(set(input_years) | set(inflation_rates.keys()))
     cpi_values = {}
     cpi_values[base_year] = 100.0
     # 向後計算
     for y in range(base_year + 1, max(years) + 1):
         prev_cpi = cpi_values.get(y - 1, 100.0)
-        rate = inflation_rates.get(y, 0.0) / 100
-        cpi_values[y] = prev_cpi * (1 + rate)
+        rate = inflation_rates.get(y, 0.0) / 100.0
+        cpi_values[y] = prev_cpi * (1.0 + rate)
     # 向前計算（如果有更早年份）
     for y in range(base_year - 1, min(years) - 1, -1):
         next_cpi = cpi_values.get(y + 1, 100.0)
-        rate = inflation_rates.get(y + 1, 0.0) / 100
-        if rate != -1:  # 避免除零
-            cpi_values[y] = next_cpi / (1 + rate)
+        rate = inflation_rates.get(y + 1, 0.0) / 100.0
+        if rate != -1:
+            cpi_values[y] = next_cpi / (1.0 + rate)
         else:
             cpi_values[y] = next_cpi
     return cpi_values, base_year
 
-# --- 計算實質金額的輔助函數 (強化版) ---
 def adjust_to_real_amount(amount, data_year, target_year, cpi_values):
     if data_year not in cpi_values or target_year not in cpi_values:
         return amount  # 無數據時返回原始金額
@@ -191,10 +199,11 @@ def normalize_date(date_str):
     return None
 
 # --- 單檔處理函數 (未變更) ---
+
 def process_finance_data_individual(file_path, colors):
     encodings_to_try = ['utf-8', 'utf-8-sig', 'cp950', 'big5', 'gb18030']
     df = None
-    
+
     for enc in encodings_to_try:
         try:
             df = pd.read_csv(file_path.strip(), encoding=enc, on_bad_lines='skip')
@@ -202,25 +211,44 @@ def process_finance_data_individual(file_path, colors):
             break
         except (UnicodeDecodeError, FileNotFoundError):
             continue
-    
+
     if df is None:
-        return None, f"無法讀取檔案 '{file_path.strip()}'"
-    
+        return None, f"無法讀取檔案 '{file_path.strip()}'", None
+
     df.columns = df.columns.str.strip()
-    
-    date_col = find_column_by_synonyms(df.columns, ['日期', '時間', 'Date', 'time', '月份'])
-    type_col = find_column_by_synonyms(df.columns, ['類型', 'Type', '收支項目', '收支'])
-    amount_col = find_column_by_synonyms(df.columns, ['金額', 'Amount', 'amount', '價格'])
-    income_col = find_column_by_synonyms(df.columns, ['收入', 'income'])
-    expense_col = find_column_by_synonyms(df.columns, ['支出', 'expense'])
-    
+    possible_cols = {c.lower(): c for c in df.columns}
+    # 簡易欄位辨識
+    date_col = None
+    amount_col = None
+    type_col = None
+    income_col = None
+    expense_col = None
+
+    for k, v in possible_cols.items():
+        if 'date' in k or '日期' in k or 'time' in k:
+            date_col = v
+        if 'amount' in k or '金額' in k or 'value' in k:
+            if amount_col is None:
+                amount_col = v
+        if 'type' in k or '類型' in k:
+            type_col = v
+        if 'income' in k or '收入' in k or 'earning' in k:
+            income_col = v
+        if 'expense' in k or '支出' in k or 'cost' in k:
+            expense_col = v
+
     extracted_data = []
-    file_format_type = "unknown"
-    
+    file_format_type = None
+
+    # 多種格式容錯
     if date_col and income_col and expense_col:
-        file_format_type = "income_expense_separate"
+        file_format_type = "split_income_expense"
         for _, row in df.iterrows():
             date_val = row[date_col]
+            try:
+                date_val = pd.to_datetime(str(date_val), errors='coerce')
+            except Exception:
+                date_val = None
             if pd.notna(row[income_col]) and pd.to_numeric(row[income_col], errors='coerce') > 0:
                 extracted_data.append({
                     'Date': date_val,
@@ -233,61 +261,66 @@ def process_finance_data_individual(file_path, colors):
                     'Amount': pd.to_numeric(row[expense_col], errors='coerce'),
                     'Type': 'expense'
                 })
-    
+
     elif date_col and type_col and amount_col:
         file_format_type = "standard"
         for _, row in df.iterrows():
             amount_val = pd.to_numeric(row[amount_col], errors='coerce')
-            if pd.notna(amount_val) and amount_val > 0:
+            date_val = row[date_col]
+            try:
+                date_val = pd.to_datetime(str(date_val), errors='coerce')
+            except Exception:
+                date_val = None
+            if pd.notna(amount_val):
                 extracted_data.append({
-                    'Date': row[date_col],
+                    'Date': date_val,
                     'Amount': amount_val,
-                    'Type': row[type_col]
+                    'Type': row[type_col] if pd.notna(row[type_col]) else None
                 })
-    
-    elif date_col and len(df.columns) > 2:
-        file_format_type = "wide_format"
-        
-        for col in df.columns:
-            if col != date_col:
-                df[col] = df[col].astype(str).str.replace(',', '').str.strip()
-                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-        
-        is_vertical_month = (df[date_col].dropna().astype(str).str.contains('月|Month', na=False).any() or 
-                             df[date_col].dropna().astype(str).str.isdigit().all())
-        
-        if is_vertical_month:
+    else:
+        # 嘗試更廣泛的欄位匹配（若找不到明確欄位）
+        numeric_candidates = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+        text_candidates = [c for c in df.columns if not pd.api.types.is_numeric_dtype(df[c])]
+        if numeric_candidates and text_candidates:
+            # 假設第一個 numeric candidate 為金額，第一個 text candidate 為日期
+            file_format_type = "fallback_guess"
+            guess_amount = numeric_candidates[0]
+            guess_date = text_candidates[0]
             for _, row in df.iterrows():
-                date_val = row[date_col]
-                total_amount = df.drop(columns=[date_col]).loc[_].sum()
-                if total_amount > 0:
+                try:
+                    date_val = pd.to_datetime(str(row[guess_date]), errors='coerce')
+                except Exception:
+                    date_val = None
+                amount_val = pd.to_numeric(row[guess_amount], errors='coerce')
+                if pd.notna(amount_val):
                     extracted_data.append({
                         'Date': date_val,
-                        'Amount': total_amount,
-                        'Type': 'expense'
+                        'Amount': amount_val,
+                        'Type': None
                     })
         else:
-            monthly_amounts = df.drop(columns=[date_col]).sum(axis=0)
-            for col_name, amount in monthly_amounts.items():
-                if amount > 0:
-                    extracted_data.append({
-                        'Date': col_name,
-                        'Amount': amount,
-                        'Type': 'expense'
-                    })
-    
-    else:
-        return None, f"檔案 '{file_path}' 格式無法辨識"
-    
-    return extracted_data, None, file_format_type
+            return None, f"檔案 '{file_path}' 格式無法辨識", None
 
-# --- 多檔處理函數 (未變更) ---
+    # 清理與回傳
+    # 移除無效日期或金額
+    for r in extracted_data:
+        if pd.isnull(r['Date']):
+            r['Date'] = None
+
+    df_out = extracted_data
+    if not df_out:
+        return None, f"檔案 '{file_path}' 經解析後沒有有效的日期或金額資料", None
+
+    # 若成功回傳 list of dict；呼叫端會轉成 DataFrame
+    return df_out, None, file_format_type
+
+
 def process_finance_data_multiple(file_paths, colors):
     all_extracted_data = []
     warnings_report = []
     format_summary = {}
     month_missing_count = 0
-    
+
     for file_path in file_paths:
         extracted_data, error, file_format = process_finance_data_individual(file_path, colors)
         if error:
@@ -295,17 +328,17 @@ def process_finance_data_multiple(file_paths, colors):
         else:
             all_extracted_data.extend(extracted_data)
             warnings_report.append(f"{colors.GREEN}成功提取 {len(extracted_data)} 筆資料從 '{file_path}' (格式：{file_format}){colors.RESET}")
-            
+
             if file_format in format_summary:
                 format_summary[file_format] += 1
             else:
                 format_summary[file_format] = 1
-    
+
     if not all_extracted_data:
         return None, None, "沒有成功提取任何資料"
-    
+
     combined_df = pd.DataFrame(all_extracted_data)
-    
+
     def parse_date_enhanced(date_str):
         nonlocal month_missing_count
         if pd.isnull(date_str):
@@ -314,103 +347,65 @@ def process_finance_data_multiple(file_paths, colors):
             return pd.to_datetime(str(date_str), errors='raise')
         except (ValueError, TypeError):
             s_date = str(date_str).strip()
-            current_year = datetime.now().year
-            
-            if ('-' in s_date or '/' in s_date or '月' in s_date) and str(current_year) not in s_date:
+            # 若已含有明確年份嘗試解析
+            digits = ''.join(ch for ch in s_date if ch.isdigit())
+            if len(digits) >= 4:
                 try:
-                    month_missing_count += 1
-                    return pd.to_datetime(f"{current_year}-{s_date.replace('月','-').replace('日','').replace('號','')}")
-                except ValueError:
-                    normalized = normalize_date(s_date)
-                    if normalized:
-                        return pd.to_datetime(normalized, errors='coerce')
-                    return pd.NaT
-            elif len(s_date) <= 4 and s_date.replace('.', '', 1).isdigit():
-                try:
-                    numeric_val = int(float(s_date))
-                    s_date = str(numeric_val)
-                    
-                    if len(s_date) < 3:
-                        s_date = '0' * (3 - len(s_date)) + s_date
-                    
-                    if len(s_date) >= 3:
-                        month_missing_count += 1
-                        if len(s_date) == 3:
-                            month = int(s_date[0])
-                            day = int(s_date[1:])
-                        else:
-                            month = int(s_date[:-2])
-                            day = int(s_date[-2:])
-                        
-                        if 1 <= month <= 12 and 1 <= day <= 31:
-                            return pd.to_datetime(f"{current_year}-{month}-{day}", errors='coerce')
-                except (ValueError, IndexError):
+                    return pd.to_datetime(s_date, errors='coerce')
+                except Exception:
                     pass
-            elif s_date.isdigit() and 1 <= int(s_date) <= 12:
+            # 嘗試 normalize_date，僅在其結果包含年份時才使用
+            normalized = normalize_date(s_date)
+            if normalized:
+                if any(ch.isdigit() for ch in normalized) and len(''.join([c for c in normalized if c.isdigit()])) >= 4:
+                    try:
+                        parsed = pd.to_datetime(normalized, errors='coerce')
+                        if not pd.isnull(parsed) and parsed.year > 1900:
+                            return parsed
+                    except Exception:
+                        pass
+            # 若只剩下月/日或純月份（無年），則記錄缺年，回傳 NaT（不自動補今年）
+            if s_date.replace('.', '', 1).isdigit() and 1 <= int(float(s_date)) <= 12:
                 month_missing_count += 1
-                return pd.to_datetime(f"{current_year}-{int(s_date)}-01", errors='coerce')
-            else:
-                normalized = normalize_date(s_date)
-                if normalized:
-                    return pd.to_datetime(normalized, errors='coerce')
+                return pd.NaT
+            if ('-' in s_date or '/' in s_date or '月' in s_date) and not any(ch.isdigit() for ch in s_date[:4]):
+                month_missing_count += 1
+                return pd.NaT
             return pd.NaT
-    
-    combined_df['Parsed_Date'] = combined_df['Date'].apply(parse_date_enhanced)
-    combined_df = combined_df.dropna(subset=['Parsed_Date'])
-    
-    combined_df['Amount'] = pd.to_numeric(combined_df['Amount'], errors='coerce')
-    combined_df = combined_df[combined_df['Amount'] > 0]
-    
-    unique_months = combined_df['Parsed_Date'].dt.to_period('M').nunique()
-    if unique_months > 0:
-        warnings_report.append(f"資料時間橫跨 {colors.BOLD}{unique_months}{colors.RESET} 個不同月份。")
-    if month_missing_count > 0:
-        warnings_report.append(f"{colors.YELLOW}警告：有 {colors.BOLD}{month_missing_count}{colors.RESET} 筆紀錄的日期缺少明確年份，已自動假定為今年。{colors.RESET}")
-    
-    if format_summary:
-        format_report = "、".join([f"{fmt}({count}個檔案)" for fmt, count in format_summary.items()])
-        warnings_report.append(f"{colors.YELLOW}注意：偵測到的檔案格式包括：{format_report}，已為您自動統一處理。{colors.RESET}")
-    
-    expense_df = combined_df[combined_df['Type'].str.lower() == 'expense']
-    monthly_expenses = None
-    if not expense_df.empty:
-        monthly_expenses = expense_df.set_index('Parsed_Date').resample('M')['Amount'].sum().reset_index()
-        monthly_expenses['Amount'] = monthly_expenses['Amount'].fillna(0)
-        monthly_expenses = monthly_expenses[monthly_expenses['Amount'] > 0]
-        
-        monthly_expenses['Real_Amount'] = monthly_expenses['Amount']
-    
-    base_year = datetime.now().year
-    year_range = set()
-    year_cpi_used = {}
-    
-    if monthly_expenses is not None and not monthly_expenses.empty:
-        monthly_expenses['Year'] = monthly_expenses['Parsed_Date'].dt.year
-        year_range = set(monthly_expenses['Year'])
-        if year_range:
-            try:
-                cpi_values, cpi_base_year = calculate_cpi_values(year_range, INFLATION_RATES)
-                for idx, row in monthly_expenses.iterrows():
-                    year = row['Year']
-                    monthly_expenses.at[idx, 'Real_Amount'] = adjust_to_real_amount(row['Amount'], year, base_year, cpi_values)
-                    year_cpi_used[year] = cpi_values.get(year, '無數據')
-                
-                warnings_report.append(f"{colors.GREEN}CPI 基準年份：{cpi_base_year} 年（基於輸入數據最早年份，指数設為 100）。計算到目標年：{base_year} 年。{colors.RESET}")
-                
-                min_year = min(year_range)
-                max_year = max(year_range)
-                cross_years = len(year_range) > 1
-                warnings_report.append(f"{colors.GREEN}偵測到年份範圍：{min_year} - {max_year} (是否有跨年份：{'是' if cross_years else '否'})。{colors.RESET}")
-                for y in sorted(year_range):
-                    cpi_val = year_cpi_used[y]
-                    warnings_report.append(f"  - 年份 {y} 使用 CPI：{cpi_val:.2f}" if isinstance(cpi_val, float) else f"  - 年份 {y} 使用 CPI：{cpi_val}")
-            except Exception as e:
-                warnings_report.append(f"{colors.RED}通膨調整錯誤：{str(e)}。使用原始金額繼續分析。{colors.RESET}")
-                monthly_expenses['Real_Amount'] = monthly_expenses['Amount']
-    
-    return combined_df, monthly_expenses, "\n".join(warnings_report)
 
-# --- 季節性分解函數 (未變更) ---
+    # 將 Parsed_Date 寫回 DataFrame（若無法解析的會是 NaT，呼叫端可決定是否 drop）
+    combined_df['Parsed_Date'] = combined_df['Date'].apply(parse_date_enhanced)
+    combined_df['Year'] = combined_df['Parsed_Date'].dt.year
+    combined_df['Month'] = combined_df['Parsed_Date'].dt.month
+    combined_df['Amount'] = pd.to_numeric(combined_df['Amount'], errors='coerce')
+    combined_df = combined_df.dropna(subset=['Parsed_Date', 'Amount']).copy()
+
+    # 實際保留的資料（依需求可以改成不 drop）
+    if combined_df.empty:
+        return None, warnings_report, format_summary
+
+    # 計算一些統計量
+    monthly_expenses = combined_df.groupby(pd.Grouper(key='Parsed_Date', freq='M'))['Amount'].sum().reset_index()
+    monthly_expenses.rename(columns={'Amount': 'Total_Amount'}, inplace=True)
+
+    # 基本統計
+    stats = {
+        'total_periods': len(monthly_expenses),
+        'mean_monthly': monthly_expenses['Total_Amount'].mean(),
+        'median_monthly': monthly_expenses['Total_Amount'].median(),
+        'std_monthly': monthly_expenses['Total_Amount'].std(ddof=1)
+    }
+
+    # 轉成報告格式
+    report = {
+        'warnings': warnings_report,
+        'format_summary': format_summary,
+        'month_missing_count': month_missing_count,
+        'stats': stats,
+        'monthly_series': monthly_expenses
+    }
+    return combined_df, report, format_summary
+
 def seasonal_decomposition(monthly_expenses):
     monthly_expenses['Month'] = monthly_expenses['Parsed_Date'].dt.month
     monthly_avg = monthly_expenses.groupby('Month')['Real_Amount'].mean()
@@ -439,24 +434,47 @@ def optimized_monte_carlo(monthly_expenses, predicted_value, num_simulations=100
     return p25, p75, p95
 
 # --- 多項式迴歸與信賴區間計算函數 (未變更) ---
+
 def polynomial_regression_with_ci(x, y, degree, predict_x, confidence=0.95):
-    coeffs = np.polyfit(x, y, degree)
-    p = np.poly1d(coeffs)
-    y_pred = p(x)
-    n = len(x)
-    k = degree
-    residuals = y - y_pred
-    mse = np.sum(residuals**2) / (n - k - 1)
-    y_pred_p = p(predict_x)
-    x_mean = np.mean(x)
-    ssx = np.sum((x - x_mean)**2)
-    se = np.sqrt(mse * (1 + 1/n + ((predict_x - x_mean)**2) / ssx))
-    t_val = t.ppf((1 + confidence) / 2, n - k - 1)
-    lower = y_pred_p - t_val * se
-    upper = y_pred_p + t_val * se
+    """
+    多項式回歸（degree）+ 預測點 predict_x 的信賴區間（百分之 confidence）。
+    使用設計矩陣 (Vandermonde) 計算 beta 共變異數，若 XtX 病態則使用 pseudo-inverse。
+    回傳 (y_pred, lower, upper) 為 float。
+    """
+    import numpy as _np
+    from scipy.stats import t as _t
+
+    x_arr = _np.asarray(x, dtype=float)
+    y_arr = _np.asarray(y, dtype=float)
+    n = x_arr.shape[0]
+    k = degree + 1  # 參數個數
+    if n <= degree:
+        raise ValueError("樣本數需大於多項式次數")
+
+    # 設計矩陣
+    X = _np.vander(x_arr, N=k)
+    beta, *_ = _np.linalg.lstsq(X, y_arr, rcond=None)
+    y_pred_vec = X.dot(beta)
+    residuals = y_arr - y_pred_vec
+    df = n - k
+    if df <= 0:
+        raise ValueError("自由度不足以估計 MSE")
+    mse = _np.sum(residuals**2) / df
+
+    XtX = X.T.dot(X)
+    try:
+        cov_beta = mse * _np.linalg.inv(XtX)
+    except _np.linalg.LinAlgError:
+        cov_beta = mse * _np.linalg.pinv(XtX)
+
+    x0 = _np.vander([predict_x], N=k)[0]
+    y_pred_p = float(x0.dot(beta))
+    se_pred = float(_np.sqrt(x0.T.dot(cov_beta).dot(x0) + mse))
+    tval = float(_t.ppf((1.0 + confidence) / 2.0, df))
+    lower = y_pred_p - tval * se_pred
+    upper = y_pred_p + tval * se_pred
     return y_pred_p, lower, upper
 
-# --- 蒙地卡羅儀表板函式 (未變更) ---
 def monte_carlo_dashboard(monthly_expense_data, num_simulations=10000):
     if len(monthly_expense_data) < 2:
         return None, None, None
@@ -800,20 +818,49 @@ def calculate_historical_factors(data, min_months=12):
             
     return historical_results
 
+
 def calculate_dynamic_error_coefficient(calibration_results, acf_results, quantile_spread):
     """
-    根據三大診斷維度，動態計算模型誤差係數。
+    根據校準 (calibration)、自相關 (acf) 以及不確定性 (quantile_spread) 計算一個動態誤差權重。
+    calibration_results 期待格式：{q: {'quantile': q, 'observed_freq': obs}, ...}
+    注意：spreads 與 quantiles 可能是 fraction (0-1) 或百分比 (1-100)，此函數會嘗試自動偵測並統一為 fraction.
     """
-    calibration_errors = [abs(res['observed_freq'] - res['quantile']) for res in calibration_results.values()]
-    calibration_penalty = np.mean(calibration_errors) / 100.0 if calibration_errors else 0.0
-    autocorrelation_penalty = abs(acf_results.get(1, {}).get('acf', 0))
-    uncertainty_factor = quantile_spread
+    import numpy as _np
+
+    calibration_errors = []
+    for res in calibration_results.values():
+        q = res.get('quantile', None)
+        obs = res.get('observed_freq', None)
+        if q is None or obs is None:
+            continue
+        # 若是 0..100 的格式（>1），轉成 fraction
+        try:
+            if float(q) > 1:
+                q = float(q) / 100.0
+            else:
+                q = float(q)
+            if float(obs) > 1:
+                obs = float(obs) / 100.0
+            else:
+                obs = float(obs)
+        except Exception:
+            continue
+        calibration_errors.append(abs(obs - q))
+
+    calibration_penalty = float(_np.mean(calibration_errors)) if calibration_errors else 0.0
+    autocorrelation_penalty = abs(acf_results.get(1, {}).get('acf', 0) or 0)
+    try:
+        uncertainty_factor = float(quantile_spread) if quantile_spread is not None else 0.0
+    except Exception:
+        uncertainty_factor = 0.0
+
     base_coefficient = 0.25
     w_calib = 1.5
     w_acf = 0.5
     w_unc = 0.25
+
     dynamic_coefficient = base_coefficient + (w_calib * calibration_penalty) + (w_acf * autocorrelation_penalty) + (w_unc * uncertainty_factor)
-    final_coefficient = np.clip(dynamic_coefficient, base_coefficient, 1.2)
+    final_coefficient = float(_np.clip(dynamic_coefficient, base_coefficient, 1.2))
     return final_coefficient
 
 def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly_expenses, p25, p75, historical_wape, historical_rmse, calibration_results, acf_results, quantile_spread):
