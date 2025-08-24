@@ -16,8 +16,8 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v3.2.7"  # Feat: Implement dual-track hybrid drift detection for sensitivity and robustness
-SCRIPT_UPDATE_DATE = "2025-08-09"
+SCRIPT_VERSION = "v3.2.8"  # Feat: Implement dual-track hybrid drift detection for sensitivity and robustness
+SCRIPT_UPDATE_DATE = "2025-08-24"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
 # 說明：您可以直接修改這裡的數字，來調整報告中各表格欄位的寬度，以適應您的終端機字體。
@@ -190,21 +190,28 @@ def normalize_date(date_str):
     
     return None
 
-# --- 單檔處理函數 (未變更) ---
+# --- 單檔處理函數 (【已修正】) ---
 def process_finance_data_individual(file_path, colors):
     encodings_to_try = ['utf-8', 'utf-8-sig', 'cp950', 'big5', 'gb18030']
     df = None
     
     for enc in encodings_to_try:
         try:
-            df = pd.read_csv(file_path.strip(), encoding=enc, on_bad_lines='skip')
-            print(f"{colors.GREEN}成功讀取檔案 '{file_path.strip()}' (編碼: {enc}){colors.RESET}")
+            # 【修正點】移除路徑前後可能存在的空格
+            clean_path = file_path.strip()
+            if not os.path.exists(clean_path):
+                continue # 如果檔案不存在，直接嘗試下一個
+            df = pd.read_csv(clean_path, encoding=enc, on_bad_lines='skip')
+            print(f"{colors.GREEN}成功讀取檔案 '{clean_path}' (編碼: {enc}){colors.RESET}")
             break
         except (UnicodeDecodeError, FileNotFoundError):
             continue
     
+    # 【*** 核心修正點 1 ***】
     if df is None:
-        return None, f"無法讀取檔案 '{file_path.strip()}'"
+        # 原始碼: return None, f"無法讀取檔案 '{file_path.strip()}'" (回傳 2 個值)
+        # 修正後，補上第三個回傳值 None
+        return None, f"無法讀取或找到檔案 '{file_path.strip()}'", None
     
     df.columns = df.columns.str.strip()
     
@@ -221,16 +228,20 @@ def process_finance_data_individual(file_path, colors):
         file_format_type = "income_expense_separate"
         for _, row in df.iterrows():
             date_val = row[date_col]
-            if pd.notna(row[income_col]) and pd.to_numeric(row[income_col], errors='coerce') > 0:
+            # 處理收入
+            income_val = pd.to_numeric(row[income_col], errors='coerce')
+            if pd.notna(income_val) and income_val > 0:
                 extracted_data.append({
                     'Date': date_val,
-                    'Amount': pd.to_numeric(row[income_col], errors='coerce'),
+                    'Amount': income_val,
                     'Type': 'income'
                 })
-            if pd.notna(row[expense_col]) and pd.to_numeric(row[expense_col], errors='coerce') > 0:
+            # 處理支出
+            expense_val = pd.to_numeric(row[expense_col], errors='coerce')
+            if pd.notna(expense_val) and expense_val > 0:
                 extracted_data.append({
                     'Date': date_val,
-                    'Amount': pd.to_numeric(row[expense_col], errors='coerce'),
+                    'Amount': expense_val,
                     'Type': 'expense'
                 })
     
@@ -277,8 +288,12 @@ def process_finance_data_individual(file_path, colors):
                     })
     
     else:
-        return None, f"檔案 '{file_path}' 格式無法辨識"
+        # 【*** 核心修正點 2 ***】
+        # 原始碼: return None, f"檔案 '{file_path}' 格式無法辨識" (回傳 2 個值)
+        # 修正後，補上第三個回傳值 "unknown"
+        return None, f"檔案 '{file_path}' 格式無法辨識", "unknown"
     
+    # 這是成功的路徑，本身就是回傳 3 個值，不需修改
     return extracted_data, None, file_format_type
 
 # --- 多檔處理函數 (未變更) ---
