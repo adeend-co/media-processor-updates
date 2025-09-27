@@ -61,10 +61,10 @@ AGREEMENT_VERSION="1.6"
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
-SCRIPT_UPDATE_DATE="2025-08-24" # 請根據實際情況修改此日期
+SCRIPT_UPDATE_DATE="2025-09-27" # 請根據實際情況修改此日期
 
 # ... 其他設定 ...
-TARGET_DATE="2025-09-08" # <<< 新增：設定您的目標日期
+TARGET_DATE="2026-01-11" # <<< 新增：設定您的目標日期
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
 DEFAULT_URL="https://www.youtube.com/watch?v=siNFnlqtd8M"
 THREADS=4
@@ -599,7 +599,7 @@ display_countdown() {
         seconds=$(( remaining_seconds % 60 ))
 
         # 組合顯示訊息 (使用不同顏色區分)
-        countdown_message="${CYAN}距離「大學開學」（ ${TARGET_DATE} ）尚餘： ${GREEN}${days} ${WHITE}天 ${GREEN}${hours} ${WHITE}時 ${GREEN}${minutes} ${WHITE}分 ${GREEN}${seconds} ${WHITE}秒${RESET}"
+        countdown_message="${CYAN}距離「寒假」（ ${TARGET_DATE} ）尚餘： ${GREEN}${days} ${WHITE}天 ${GREEN}${hours} ${WHITE}時 ${GREEN}${minutes} ${WHITE}分 ${GREEN}${seconds} ${WHITE}秒${RESET}"
     fi
 
     # 輸出倒數計時訊息
@@ -2083,7 +2083,7 @@ process_single_mp4_no_normalize() {
         ### --- 核心修正：優化畫質選擇字串，優先保證畫質 --- ###
         local format_option="bestvideo[height<=1440]+bestaudio/best[height<=1440]/best"
         
-        local yt_dlp_video_args=(yt-dlp -f "$format_option" -o "$temp_output_template" "$video_url" --concurrent-fragments "$THREADS" --merge-output-format mp4 --write-subs --embed-subs --sub-lang "zh-Hant,zh-TW,zh-Hans,zh-CN,zh")
+        local yt_dlp_video_args=(yt-dlp -f "$format_option" -o "$temp_output_template" "$video_url" --concurrent-fragments "$THREADS" --merge-output-format mp4 --write-subs --embed-subs --sub-lang "zh-Hant,zh-TW,zh-Hans,zh-CN,zh,zh-Hant-AAj-uoGhMZA")
         
         if ! "${yt_dlp_video_args[@]}" 2> "$temp_dir/yt-dlp-video-std.log"; then
             log_message "WARNING" "(無標準化) yt-dlp 影片下載時回報錯誤，將進行錯誤分析。"
