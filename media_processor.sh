@@ -50,7 +50,7 @@
 ############################################
 # 腳本設定
 ############################################
-SCRIPT_VERSION="v2.6.7" # <<< 版本號更新
+SCRIPT_VERSION="v2.7.0" # <<< 版本號更新
 
 ############################################
 # ★★★ 新增：使用者同意書版本號 ★★★
@@ -61,7 +61,7 @@ AGREEMENT_VERSION="1.6"
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
-SCRIPT_UPDATE_DATE="2025-09-27" # 請根據實際情況修改此日期
+SCRIPT_UPDATE_DATE="2025-10-21" # 請根據實際情況修改此日期
 
 # ... 其他設定 ...
 TARGET_DATE="2026-01-11" # <<< 新增：設定您的目標日期
@@ -96,6 +96,12 @@ PYTHON_ESTIMATOR_SCRIPT_PATH="$HOME/media-processor-updates/estimate_size.py" # 
 
 # Python 輔助腳本的完整路徑 (也在根目錄)（備份功能）
 PYTHON_SYNC_HELPER_SCRIPT_PATH="$HOME/media-processor-updates/sync_helper.py" # <<< 新增
+
+# --- 【重要】新增：智慧型元數據豐富化模組路徑 ---
+# Python 元數據處理核心
+PYTHON_METADATA_ENRICHER_SCRIPT_PATH="$HOME/media-processor-updates/enrich_metadata.py"
+# Bash 音訊處理與流程控制器
+BASH_AUDIO_ENRICHER_SCRIPT_PATH="$HOME/media-processor-updates/audio_enricher.sh"
 
 # Python 版本變數保留 (現在由設定檔管理，不再需要遠程檢查)
 PYTHON_CONVERTER_VERSION="1.0.0" # 可以設定一個基礎版本或從設定檔讀取
@@ -910,6 +916,8 @@ auto_update_script() {
         "$SCRIPT_DIR/network_speed_test.sh"        # 網路測速工具 (新加入)
         "$SCRIPT_DIR/finance_calculator.py"        # 進階財務分析與預測器（獨立）
         "$SCRIPT_DIR/monthly_expense_tracker.py"   # 月份支出追蹤器（獨立）
+        "$BASH_AUDIO_ENRICHER_SCRIPT_PATH"         # 音訊豐富化 Bash 控制器
+        "$PYTHON_METADATA_ENRICHER_SCRIPT_PATH"    # 音訊豐富化 Python 核心
         # 未來若有新腳本，直接在此處增加一行即可
     )
     
@@ -3890,8 +3898,62 @@ EOF
     return 0
 }
 
+####################################################################
+# 新增：觸發外部音訊豐富化模組的橋接函數
+####################################################################
+process_mp3_with_enrichment() {
+    clear
+    echo -e "${CYAN}--- MP3 下載與智慧型元數據豐富化 ---${RESET}"
+    log_message "INFO" "使用者選擇 MP3 智慧型元數據豐富化功能。"
+
+    # 步驟 1: 檢查必要的外部腳本是否存在
+    if [ ! -f "$BASH_AUDIO_ENRICHER_SCRIPT_PATH" ]; then
+        log_message "ERROR" "找不到音訊豐富化控制器腳本: $BASH_AUDIO_ENRICHER_SCRIPT_PATH"
+        echo -e "${RED}錯誤：找不到核心處理腳本 'audio_enricher.sh'！${RESET}"
+        echo -e "${YELLOW}請確保所有腳本都已正確放置在 '$SCRIPT_DIR' 目錄下。${RESET}"
+        read -p "按 Enter 返回..."
+        return 1
+    fi
+    if [ ! -f "$PYTHON_METADATA_ENRICHER_SCRIPT_PATH" ]; then
+        log_message "ERROR" "找不到 Python 元數據核心腳本: $PYTHON_METADATA_ENRICHER_SCRIPT_PATH"
+        echo -e "${RED}錯誤：找不到核心處理腳本 'enrich_metadata.py'！${RESET}"
+        echo -e "${YELLOW}請確保所有腳本都已正確放置在 '$SCRIPT_DIR' 目錄下。${RESET}"
+        read -p "按 Enter 返回..."
+        return 1
+    fi
+
+    # 步驟 2: 獲取使用者輸入
+    local input_url
+    read -p "請輸入 YouTube 網址或本機檔案路徑: " input_url
+    if [ -z "$input_url" ]; then
+        log_message "INFO" "使用者未輸入任何內容，取消操作。"
+        echo -e "${YELLOW}未輸入任何內容，操作已取消。${RESET}"
+        return 0
+    fi
+
+    # 步驟 3: 執行外部腳本並傳遞參數
+    echo -e "\n${YELLOW}正在將處理任務交由外部音訊豐富化模組...${RESET}"
+    echo -e "${CYAN}-------------------------------------------------${RESET}"
+    
+    # 直接執行外部 Bash 腳本，並將用戶輸入的 URL/路徑 作為第一個參數傳遞
+    "$BASH_AUDIO_ENRICHER_SCRIPT_PATH" "$input_url"
+    local exit_code=$? # 捕獲外部腳本的退出碼
+
+    echo -e "${CYAN}-------------------------------------------------${RESET}"
+    if [ $exit_code -eq 0 ]; then
+        log_message "SUCCESS" "外部音訊豐富化模組報告成功。"
+        echo -e "${GREEN}外部模組處理完成。${RESET}"
+    else
+        log_message "ERROR" "外部音訊豐富化模組報告失敗，退出碼: $exit_code"
+        echo -e "${RED}外部模組處理失敗！請檢查上方由該模組提供的詳細輸出。${RESET}"
+    fi
+    
+    # 返回主腳本的選單
+    return $exit_code
+}
+
 ############################################
-# <<< 新增：MP3 處理選單 >>>
+# MP3 處理選單 (v2 - 新增智慧型元數據選項)
 ############################################
 mp3_menu() {
     while true; do
@@ -3900,25 +3962,32 @@ mp3_menu() {
         echo -e "${YELLOW}請選擇操作：${RESET}"
         echo -e " 1. 下載/處理 MP3 (${BOLD}含${RESET}音量標準化 / YouTube 或 本機檔案)"
         echo -e " 2. 下載 MP3 (${BOLD}無${RESET}音量標準化 / 僅限 YouTube)"
+        # ★★★ 新增選項 ★★★
+        echo -e " 3. ${CYAN}下載 MP3 (${BOLD}含${RESET}音量標準化 + ${PURPLE}MusicBrainz 智慧型元數據${RESET}${CYAN})${RESET}"
         echo -e "---------------------------------------------"
         echo -e " 0. ${YELLOW}返回主選單${RESET}"
         echo -e "---------------------------------------------"
 
         read -t 0.1 -N 10000 discard
         local choice
-        read -rp "輸入選項 (0-2): " choice
+        read -rp "輸入選項 (0-3): " choice # <<< 修改範圍
 
         case $choice in
             1)
-                process_mp3 # 調用原有的標準化處理函數
+                process_mp3
                 echo ""; read -p "按 Enter 返回 MP3 選單..."
                 ;;
             2)
-                process_mp3_no_normalize # 調用原有的無標準化處理函數
+                process_mp3_no_normalize
+                echo ""; read -p "按 Enter 返回 MP3 選單..."
+                ;;
+            # ★★★ 新增 Case ★★★
+            3)
+                process_mp3_with_enrichment # 調用新的橋接函數
                 echo ""; read -p "按 Enter 返回 MP3 選單..."
                 ;;
             0)
-                return # 返回到調用它的 main_menu
+                return
                 ;;
             *)
                 if [[ -z "$choice" ]]; then continue; else echo -e "${RED}無效選項 '$choice'${RESET}"; log_message "WARNING" "MP3 選單輸入無效選項: $choice"; sleep 1; fi
