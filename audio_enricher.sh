@@ -1,15 +1,20 @@
 #!/bin/bash
 
-# --- 腳本設定 ---
+# --- 腳本設定 (v1.1 - 支援環境變數覆寫) ---
 # 這個版本被設計為由主腳本呼叫，故移除了所有互動式選單。
 # 它接收一個參數 (URL 或本機路徑) 並直接處理。
-SCRIPT_VERSION="v2.1.3_external_module"
+SCRIPT_VERSION="v2.1.4_external_module"
 
-# ★★★ 核心路徑修正 ★★★
-# 假設此腳本與主腳本、Python腳本在同一個目錄
+# ★★★ 核心修改：優先使用環境變數，若無則使用預設值 ★★★
+# 這允許主腳本傳遞設定過來
 SCRIPT_DIR=$(dirname "$(realpath "$0")")
-DOWNLOAD_PATH="$SCRIPT_DIR/downloads" # 預設下載路徑，主腳本中可能會有更詳細的設定
-LOG_FILE="$DOWNLOAD_PATH/audio_enricher_log.txt"
+
+# 如果環境變數 DOWNLOAD_PATH 已被設定，則使用它；否則，使用預設路徑。
+DOWNLOAD_PATH="${DOWNLOAD_PATH:-$SCRIPT_DIR/downloads}"
+# 日誌檔案也應遵循相同的邏輯，儲存到正確的路徑
+LOG_FILE="${LOG_FILE:-$DOWNLOAD_PATH/audio_enricher_log.txt}"
+
+# Python 腳本路徑保持不變
 METADATA_ENRICHER_SCRIPT_PATH="$SCRIPT_DIR/enrich_metadata.py"
 
 # 顏色代碼
