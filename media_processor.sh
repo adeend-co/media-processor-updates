@@ -3899,54 +3899,99 @@ EOF
 }
 
 ####################################################################
-# 觸發外部音訊豐富化模組的橋接函數 (v1.1 - 增加權限自動修復)
+# 觸發外部音訊豐富化模組的橋接函數 (v1.2 - 整合依賴檢查與即時安裝)
 ####################################################################
 process_mp3_with_enrichment() {
     clear
     echo -e "${CYAN}--- MP3 下載與智慧型元數據豐富化 ---${RESET}"
     log_message "INFO" "使用者選擇 MP3 智慧型元數據豐富化功能。"
 
-    # 步驟 1: 檢查必要的外部腳本是否存在
-    local required_scripts=(
-        "$BASH_AUDIO_ENRICHER_SCRIPT_PATH"
-        "$PYTHON_METADATA_ENRICHER_SCRIPT_PATH"
-    )
-    local script_check_ok=true
-
-    for script_path in "${required_scripts[@]}"; do
-        if [ ! -f "$script_path" ]; then
-            log_message "ERROR" "找不到必要的外部腳本: $script_path"
-            echo -e "${RED}錯誤：找不到核心處理腳本 '$(basename "$script_path")'！${RESET}"
-            echo -e "${YELLOW}請確保所有腳本都已正確放置在 '$SCRIPT_DIR' 目錄下。${RESET}"
-            script_check_ok=false
-        fi
-    done
-
-    if ! $script_check_ok; then
+    # --- 步驟 1: 檢查 Python 環境 ---
+    local python_cmd=""
+    if command -v python3 &> /dev/null; then python_cmd="python3";
+    elif command -v python &> /dev/null; then python_cmd="python";
+    else
+        log_message "ERROR" "音訊豐富化失敗：找不到 Python 環境。"
+        echo -e "${RED}錯誤：此功能需要 Python 環境，但未找到 'python' 或 'python3' 命令。${RESET}"
+        echo -e "${YELLOW}請先從『腳本設定與工具』選單中更新依賴套件。${RESET}"
         read -p "按 Enter 返回..."
         return 1
     fi
+    log_message "DEBUG" "檢測到 Python 命令: $python_cmd"
 
-    # ★★★ 新增：執行權限檢查與自動修復 ★★★
+    # --- 步驟 2: 檢查外部腳本檔案與權限 (保留權限自動修復) ---
+    local required_scripts=("$BASH_AUDIO_ENRICHER_SCRIPT_PATH" "$PYTHON_METADATA_ENRICHER_SCRIPT_PATH")
     for script_path in "${required_scripts[@]}"; do
+        if [ ! -f "$script_path" ]; then
+            log_message "ERROR" "找不到必要的外部腳本: $script_path"
+            echo -e "${RED}錯誤：找不到核心處理腳本 '$(basename "$script_path")'！${RESET}"; read -p "按 Enter 返回..."; return 1
+        fi
         if [ ! -x "$script_path" ]; then
-            log_message "WARNING" "腳本 '$(basename "$script_path")' 缺少執行權限，正在嘗試自動修復..."
             echo -e "${YELLOW}偵測到 '$(basename "$script_path")' 缺少執行權限，正在自動修復...${RESET}"
-            if chmod +x "$script_path"; then
-                log_message "INFO" "成功為 '$(basename "$script_path")' 添加執行權限。"
-                echo -e "${GREEN}權限修復成功。${RESET}"
-                sleep 0.5
-            else
-                log_message "ERROR" "自動修復 '$(basename "$script_path")' 的執行權限失敗！"
-                echo -e "${RED}錯誤：自動修復權限失敗！請手動執行 'chmod +x \"$script_path\"'。${RESET}"
-                read -p "按 Enter 返回..."
-                return 1
+            if ! chmod +x "$script_path"; then
+                log_message "ERROR" "自動修復 '$(basename "$script_path")' 權限失敗！"
+                echo -e "${RED}錯誤：自動修復權限失敗！請手動設定。${RESET}"; read -p "按 Enter 返回..."; return 1
             fi
         fi
     done
-    # ★★★ 權限檢查結束 ★★★
 
-    # 步驟 2: 獲取使用者輸入
+    # ★★★ 核心修改：在此處進行 Python 函式庫依賴檢查 ★★★
+    echo -e "${YELLOW}正在檢查此功能所需的 Python 函式庫...${RESET}"
+    local missing_libs=()
+    local libs_to_check=("mutagen" "requests" "musicbrainzngs" "PIL")
+    local install_names=("mutagen" "requests" "musicbrainzngs" "Pillow") # 對應的 pip 安裝名
+    
+    for i in "${!libs_to_check[@]}"; do
+        local lib_import_name="${libs_to_check[$i]}"
+        local lib_install_name="${install_names[$i]}"
+        # 使用 python -c "import ..." 進行安靜檢查
+        if ! $python_cmd -c "import $lib_import_name" &> /dev/null; then
+            log_message "WARNING" "音訊豐富化模組缺少 Python 函式庫: $lib_install_name"
+            missing_libs+=("$lib_install_name")
+        fi
+    done
+
+    # 如果發現有缺少的函式庫，則提示使用者安裝
+    if [ ${#missing_libs[@]} -ne 0 ]; then
+        echo -e "\n${RED}警告：執行此功能需要以下 Python 函式庫，但目前尚未安裝：${RESET}"
+        for lib in "${missing_libs[@]}"; do
+            echo -e "${YELLOW}  - $lib${RESET}"
+        done
+        echo ""
+        local confirm_install
+        read -p "是否要立即嘗試使用 pip 自動安裝它們？ (y/n): " confirm_install
+
+        if [[ "$confirm_install" =~ ^[Yy]$ ]]; then
+            log_message "INFO" "使用者同意安裝缺少的 Python 函式庫: ${missing_libs[*]}"
+            echo -e "\n${CYAN}正在使用 '$python_cmd -m pip install ...' 進行安裝...${RESET}"
+            
+            # 執行 pip install 命令
+            if $python_cmd -m pip install --upgrade "${missing_libs[@]}"; then
+                log_message "SUCCESS" "成功安裝缺少的 Python 函式庫。"
+                echo -e "\n${GREEN}函式庫安裝成功！準備繼續...${RESET}"
+                sleep 2
+            else
+                log_message "ERROR" "使用 pip 安裝函式庫失敗。"
+                echo -e "\n${RED}錯誤：pip 安裝失敗！${RESET}"
+                echo -e "${YELLOW}請檢查您的網路連線，或嘗試手動執行 'pip install ${missing_libs[*]}'。${RESET}"
+                read -p "按 Enter 返回..."
+                return 1
+            fi
+        else
+            log_message "INFO" "使用者拒絕安裝缺少的 Python 函式庫，功能中止。"
+            echo -e "\n${YELLOW}操作已取消。此功能無法在缺少必要函式庫的情況下運行。${RESET}"
+            read -p "按 Enter 返回..."
+            return 1
+        fi
+    else
+        log_message "INFO" "音訊豐富化模組所需 Python 函式庫均已安裝。"
+        echo -e "${GREEN}Python 函式庫檢查通過。${RESET}"
+        sleep 1
+    fi
+    # ★★★ 依賴檢查與安裝結束 ★★★
+
+    # --- 後續步驟保持不變 ---
+    # 步驟 3: 獲取使用者輸入
     local input_url
     read -p "請輸入 YouTube 網址或本機檔案路徑: " input_url
     if [ -z "$input_url" ]; then
@@ -3955,7 +4000,7 @@ process_mp3_with_enrichment() {
         return 0
     fi
 
-    # 步驟 3: 執行外部腳本並傳遞參數
+    # 步驟 4: 執行外部腳本並傳遞參數
     echo -e "\n${YELLOW}正在將處理任務交由外部音訊豐富化模組...${RESET}"
     echo -e "${CYAN}-------------------------------------------------${RESET}"
     
