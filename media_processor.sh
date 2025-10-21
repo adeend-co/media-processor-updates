@@ -3899,7 +3899,7 @@ EOF
 }
 
 ####################################################################
-# 新增：觸發外部音訊豐富化模組的橋接函數
+# 觸發外部音訊豐富化模組的橋接函數 (v1.1 - 增加權限自動修復)
 ####################################################################
 process_mp3_with_enrichment() {
     clear
@@ -3907,20 +3907,44 @@ process_mp3_with_enrichment() {
     log_message "INFO" "使用者選擇 MP3 智慧型元數據豐富化功能。"
 
     # 步驟 1: 檢查必要的外部腳本是否存在
-    if [ ! -f "$BASH_AUDIO_ENRICHER_SCRIPT_PATH" ]; then
-        log_message "ERROR" "找不到音訊豐富化控制器腳本: $BASH_AUDIO_ENRICHER_SCRIPT_PATH"
-        echo -e "${RED}錯誤：找不到核心處理腳本 'audio_enricher.sh'！${RESET}"
-        echo -e "${YELLOW}請確保所有腳本都已正確放置在 '$SCRIPT_DIR' 目錄下。${RESET}"
+    local required_scripts=(
+        "$BASH_AUDIO_ENRICHER_SCRIPT_PATH"
+        "$PYTHON_METADATA_ENRICHER_SCRIPT_PATH"
+    )
+    local script_check_ok=true
+
+    for script_path in "${required_scripts[@]}"; do
+        if [ ! -f "$script_path" ]; then
+            log_message "ERROR" "找不到必要的外部腳本: $script_path"
+            echo -e "${RED}錯誤：找不到核心處理腳本 '$(basename "$script_path")'！${RESET}"
+            echo -e "${YELLOW}請確保所有腳本都已正確放置在 '$SCRIPT_DIR' 目錄下。${RESET}"
+            script_check_ok=false
+        fi
+    done
+
+    if ! $script_check_ok; then
         read -p "按 Enter 返回..."
         return 1
     fi
-    if [ ! -f "$PYTHON_METADATA_ENRICHER_SCRIPT_PATH" ]; then
-        log_message "ERROR" "找不到 Python 元數據核心腳本: $PYTHON_METADATA_ENRICHER_SCRIPT_PATH"
-        echo -e "${RED}錯誤：找不到核心處理腳本 'enrich_metadata.py'！${RESET}"
-        echo -e "${YELLOW}請確保所有腳本都已正確放置在 '$SCRIPT_DIR' 目錄下。${RESET}"
-        read -p "按 Enter 返回..."
-        return 1
-    fi
+
+    # ★★★ 新增：執行權限檢查與自動修復 ★★★
+    for script_path in "${required_scripts[@]}"; do
+        if [ ! -x "$script_path" ]; then
+            log_message "WARNING" "腳本 '$(basename "$script_path")' 缺少執行權限，正在嘗試自動修復..."
+            echo -e "${YELLOW}偵測到 '$(basename "$script_path")' 缺少執行權限，正在自動修復...${RESET}"
+            if chmod +x "$script_path"; then
+                log_message "INFO" "成功為 '$(basename "$script_path")' 添加執行權限。"
+                echo -e "${GREEN}權限修復成功。${RESET}"
+                sleep 0.5
+            else
+                log_message "ERROR" "自動修復 '$(basename "$script_path")' 的執行權限失敗！"
+                echo -e "${RED}錯誤：自動修復權限失敗！請手動執行 'chmod +x \"$script_path\"'。${RESET}"
+                read -p "按 Enter 返回..."
+                return 1
+            fi
+        fi
+    done
+    # ★★★ 權限檢查結束 ★★★
 
     # 步驟 2: 獲取使用者輸入
     local input_url
@@ -3935,9 +3959,8 @@ process_mp3_with_enrichment() {
     echo -e "\n${YELLOW}正在將處理任務交由外部音訊豐富化模組...${RESET}"
     echo -e "${CYAN}-------------------------------------------------${RESET}"
     
-    # 直接執行外部 Bash 腳本，並將用戶輸入的 URL/路徑 作為第一個參數傳遞
     "$BASH_AUDIO_ENRICHER_SCRIPT_PATH" "$input_url"
-    local exit_code=$? # 捕獲外部腳本的退出碼
+    local exit_code=$? 
 
     echo -e "${CYAN}-------------------------------------------------${RESET}"
     if [ $exit_code -eq 0 ]; then
@@ -3948,7 +3971,6 @@ process_mp3_with_enrichment() {
         echo -e "${RED}外部模組處理失敗！請檢查上方由該模組提供的詳細輸出。${RESET}"
     fi
     
-    # 返回主腳本的選單
     return $exit_code
 }
 
