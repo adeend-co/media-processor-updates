@@ -4844,6 +4844,115 @@ check_environment() {
     return 0 # 返回成功狀態碼
 }
 
+####################################################################
+# Invidious 後備方案入口 (v1.1 - 整合智慧型元數據豐富化)
+#
+# 工作流程:
+# 1. 前置檢查 (Python, 依賴庫, 外部腳本)
+# 2. 獲取使用者輸入 (URL)
+# 3. [分發] 呼叫 invidious_downloader.py 下載原始音訊到臨時檔案
+# 4. [分發] 將下載好的【本地臨時檔案路徑】交給 audio_enricher.sh
+# 5. audio_enricher.sh 執行完整的標準化 + 元數據豐富化流程
+# 6. 清理
+####################################################################
+process_invidious_entry() {
+    clear
+    echo -e "${CYAN}--- Invidious 後備下載方案 (含智慧型元數據) ---${RESET}"
+    log_message "INFO" "使用者啟動 Invidious 後備下載方案 (含元數據豐富化)。"
+
+    # --- 步驟 1: 前置檢查 (更全面的檢查) ---
+    
+    # 1a. 檢查 Python 環境和 requests 函式庫
+    local python_cmd=""
+    if command -v python3 &> /dev/null; then python_cmd="python3"; elif command -v python &> /dev/null; then python_cmd="python"; fi
+    if [ -z "$python_cmd" ]; then
+        echo -e "${RED}錯誤：此功能需要 Python！${RESET}"; read -p "按 Enter 返回..."; return 1
+    fi
+    if ! $python_cmd -c "import requests" &>/dev/null; then
+        echo -e "${YELLOW}偵測到缺少 'requests' 函式庫，正在嘗試自動安裝...${RESET}"
+        if ! $python_cmd -m pip install --upgrade requests; then
+            echo -e "${RED}錯誤：自動安裝 'requests' 失敗！${RESET}"; read -p "按 Enter 返回..."; return 1
+        fi
+    fi
+    
+    # 1b. ★★★ 核心修改：檢查所有與此流程相關的外部腳本 ★★★
+    local all_required_scripts=(
+        "$INVIDIOUS_DOWNLOADER_SCRIPT_PATH"
+        "$BASH_AUDIO_ENRICHER_SCRIPT_PATH"
+        "$PYTHON_METADATA_ENRICHER_SCRIPT_PATH"
+    )
+    for script_path in "${all_required_scripts[@]}"; do
+        if [ ! -f "$script_path" ]; then
+            log_message "ERROR" "Invidious 流程缺少必要的腳本: $script_path"
+            echo -e "${RED}錯誤：找不到核心處理腳本 '$(basename "$script_path")'！${RESET}"
+            read -p "按 Enter 返回..."
+            return 1
+        fi
+        # 順便確保它們都有執行權限
+        [ ! -x "$script_path" ] && chmod +x "$script_path"
+    done
+    
+    # --- 步驟 2: 獲取使用者輸入 (簡化，因為目標明確) ---
+    local input_url
+    read -p "請輸入 YouTube 影片網址: " input_url
+    if [ -z "$input_url" ]; then echo -e "${YELLOW}已取消。${RESET}"; return 0; fi
+
+    # --- 步驟 3: 分發任務 - 下載階段 ---
+    echo -e "\n${CYAN}>>> 階段一：呼叫 Invidious 下載器獲取原始音訊...${RESET}"
+    local temp_dir_invidious=$(mktemp -d)
+    log_message "INFO" "Invidious 流程：創建臨時目錄 $temp_dir_invidious"
+    
+    local raw_audio_file
+    raw_audio_file=$("$python_cmd" "$INVIDIOUS_DOWNLOADER_SCRIPT_PATH" "$input_url" "$temp_dir_invidious")
+    local download_exit_code=$?
+    
+    if [ $download_exit_code -ne 0 ] || [ -z "$raw_audio_file" ] || [ ! -f "$raw_audio_file" ]; then
+        log_message "ERROR" "Invidious 下載器執行失敗。"
+        echo -e "${RED}錯誤：透過 Invidious 下載原始音訊失敗！請檢查上方日誌。${RESET}"
+        rm -rf "$temp_dir_invidious"
+        read -p "按 Enter 返回..."
+        return 1
+    fi
+    
+    log_message "SUCCESS" "Invidious 下載器成功獲取原始檔案: $raw_audio_file"
+    echo -e "${GREEN}原始音訊檔案下載成功！將交由後續模組處理...${RESET}"
+    sleep 1
+
+    # --- ★★★ 步驟 4: 分發任務 - 智慧型加工階段 (核心修改處) ★★★ ---
+    echo -e "\n${CYAN}>>> 階段二：將原始音訊交給【智慧型元數據豐富化模組】進行完整處理...${RESET}"
+    echo -e "${CYAN}-------------------------------------------------${RESET}"
+    
+    # 我們不再自己調用 normalize_audio，而是將下載好的【本地檔案路徑】
+    # 作為參數，直接傳遞給 audio_enricher.sh。
+    # audio_enricher.sh 會自動識別這是一個本地檔案，並執行它內部的完整流程。
+    
+    # 為了讓 audio_enricher.sh 將最終檔案儲存到正確位置，
+    # 我們需要像之前一樣，透過環境變數傳遞 DOWNLOAD_PATH。
+    DOWNLOAD_PATH="$DOWNLOAD_PATH" \
+    "$BASH_AUDIO_ENRICHER_SCRIPT_PATH" "$raw_audio_file"
+    
+    local enricher_exit_code=$?
+
+    echo -e "${CYAN}-------------------------------------------------${RESET}"
+    
+    # --- 步驟 5: 根據加工結果進行報告 ---
+    if [ $enricher_exit_code -eq 0 ]; then
+        log_message "SUCCESS" "Invidious 流程 -> 智慧型元數據豐富化模組處理成功。"
+        echo -e "${GREEN}Invidious 流程處理完成！${RESET}"
+        # 最終檔案路徑由 audio_enricher.sh 自己顯示，這裡無需重複
+    else
+        log_message "ERROR" "Invidious 流程 -> 智慧型元數據豐富化模組處理失敗，退出碼: $enricher_exit_code"
+        echo -e "${RED}錯誤：後續的智慧型處理流程失敗！請檢查上方日誌。${RESET}"
+    fi
+
+    # --- 步驟 6: 清理 ---
+    # 由於 audio_enricher.sh 會處理它自己的臨時檔案，我們這裡只需要清理
+    # Invidious 下載器創建的最外層臨時目錄即可。
+    log_message "INFO" "Invidious 流程：清理最外層臨時目錄 $temp_dir_invidious"
+    rm -rf "$temp_dir_invidious"
+    read -p "按 Enter 返回..."
+}
+
 ############################################
 # 主選單 (v5.3 - 整合網路測速工具)
 ############################################
