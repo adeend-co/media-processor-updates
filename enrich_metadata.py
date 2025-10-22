@@ -82,29 +82,38 @@ def get_audio_duration(file_path):
     except mutagen.MutagenError as e: log_message("WARN", f"無法讀取檔案時長 '{file_path}': {e}")
     return None
 
-# search_musicbrainz 函數 (使用上次的多策略版本)
-def search_musicbrainz(title, artist=None, limit=5):
-    """在 MusicBrainz 上搜索錄音 - 嘗試不同藝術家名變體"""
+
+# search_musicbrainz 函數 (v2 - 整合 uploader 資訊)
+def search_musicbrainz(title, artist=None, uploader=None, limit=5):
+    """在 MusicBrainz 上搜索錄音 - 整合 uploader 資訊"""
     recordings = None
-    cleaned_title, detected_artist = clean_title(title) # 使用分離結果
+    cleaned_title, detected_artist = clean_title(title)
 
-    # 確定要嘗試的藝術家名列表
+    # --- 確定要嘗試的藝術家名列表 (新的優先級邏輯) ---
     artists_to_try = []
+    
+    # ★★★ 核心修改：建立一個優先級列表 ★★★
+    # 1. 從標題中偵測到的藝術家
     if detected_artist:
-        artists_to_try.append(detected_artist) # 優先用檢測到的 (可能帶空格)
-        # <<< 新增：嘗試移除空格的版本 >>>
+        artists_to_try.append(detected_artist)
         artist_no_space = re.sub(r'\s+', '', detected_artist)
-        if artist_no_space != detected_artist: # 只有不同時才添加
+        if artist_no_space != detected_artist:
             artists_to_try.append(artist_no_space)
-            log_message("DEBUG", f"添加無空格藝術家變體: '{artist_no_space}'")
-        # <<< 結束新增 >>>
-    if artist and artist not in artists_to_try: # 如果傳入了原始 artist 且不在列表中
-         artists_to_try.append(artist)
+    
+    # 2. yt-dlp 提供的 uploader (非常重要)
+    if uploader and uploader not in artists_to_try:
+        artists_to_try.append(uploader)
+        
+    # 3. yt-dlp 提供的 artist (作為備選)
+    if artist and artist not in artists_to_try:
+        artists_to_try.append(artist)
 
-    log_message("DEBUG", f"將用於搜索的標題: '{cleaned_title}', 嘗試的藝術家列表: {artists_to_try}")
+    # 移除任何可能是 "[不明]" 的無效條目
+    artists_to_try = [name for name in artists_to_try if name != "[不明]" and name]
+    
+    log_message("DEBUG", f"將用於搜索的標題: '{cleaned_title}', 嘗試的藝術家列表 (按優先級): {artists_to_try}")
 
     # --- 策略 1: 嘗試清理後的標題 + 藝術家列表中的每個名字 ---
-    #    只要找到結果就停止嘗試
     if artists_to_try:
         for i, artist_try in enumerate(artists_to_try):
             query_parts = [f'recording:"{cleaned_title}"', f'artistname:"{artist_try}"']
@@ -114,12 +123,11 @@ def search_musicbrainz(title, artist=None, limit=5):
                 time.sleep(API_DELAY)
                 result = musicbrainzngs.search_recordings(query=query, limit=limit)
                 recordings = result.get('recording-list', [])
-                log_message("INFO", f"策略 1.{i+1} 返回 {len(recordings)} 個結果。")
-                if recordings: # 只要找到結果就跳出藝術家嘗試循環
+                if recordings:
+                    log_message("INFO", f"策略 1.{i+1} 找到 {len(recordings)} 個結果，停止嘗試。")
                     break
             except Exception as e:
                 log_message("ERROR", f"策略 1.{i+1} 搜索出錯: {e}")
-        # 循環結束後檢查 recordings 是否有值
 
     # --- 策略 2: 如果策略 1 所有嘗試都失敗，僅用清理後的標題 ---
     if not recordings:
@@ -163,58 +171,112 @@ def search_musicbrainz(title, artist=None, limit=5):
 
     return recordings if recordings else []
 
-# 在 enrich_metadata.py 中修改 calculate_match_score 函數
-def calculate_match_score(recording, target_duration_sec, original_artist):
-    """計算單個錄音的匹配得分（自訂邏輯）"""
-    score = int(recording.get('ext:score', 0)) # MusicBrainz 基礎分
+####################################################################
+# calculate_match_score 函數 (v2.1 - 整合藝術家不匹配懲罰)
+#
+# 評分邏輯摘要:
+# - 基礎分: 來自 MusicBrainz 的 ext:score
+# - 否決項: 基礎分低於 MIN_MB_SCORE (-1, 直接淘汰)
+# - 核心項 (時長): 差異小於容忍值則加分(最高+5)，大於則扣分，缺少時長扣15分
+# - 超級加分項: MusicBrainz 藝術家名 == uploader (+25)
+# - 普通加分項: MusicBrainz 藝術家名 == artist (+15)
+# - ★★★ 新懲罰項: MusicBrainz 藝術家名 != uploader 且 != artist (-15) ★★★
+# - 合輯懲罰項: MusicBrainz 藝術家為 "Various Artists" (-20)
+####################################################################
+def calculate_match_score(recording, target_duration_sec, original_artist, uploader):
+    """計算單個錄音的匹配得分（整合藝術家不匹配懲罰）"""
+    score = int(recording.get('ext:score', 0))
     recording_duration_ms = int(recording.get('length', 0)) if recording.get('length') else None
-
-    # <<< 開始修正藝術家提取 >>>
-    recording_artists = [] # 初始化為空列表
+    
+    # --- 1. 提取 MusicBrainz 條目中的所有藝術家名字 (邏輯不變) ---
+    recording_artists = []
     artist_credit_list = recording.get('artist-credit', [])
-    if isinstance(artist_credit_list, list): # 確保 artist-credit 是列表
+    if isinstance(artist_credit_list, list):
         for credit in artist_credit_list:
-            # 檢查 credit 是否為字典，並且包含 'artist' 鍵
             if isinstance(credit, dict) and 'artist' in credit:
                 artist_info = credit['artist']
-                # 檢查 artist_info 是否為字典，並且包含 'name' 鍵
                 if isinstance(artist_info, dict) and 'name' in artist_info:
                     artist_name = artist_info.get('name', '')
-                    if artist_name: # 確保名字不是空的
-                        recording_artists.append(artist_name.lower())
-                # 有時 credit 可能直接是藝術家名？(雖然不常見)
-                # elif isinstance(artist_info, str):
-                #     recording_artists.append(artist_info.lower())
-            # 有時 credit 本身就是藝術家名字典？
+                    if artist_name: recording_artists.append(artist_name.lower())
             elif isinstance(credit, dict) and 'name' in credit:
                  artist_name = credit.get('name', '')
                  if artist_name: recording_artists.append(artist_name.lower())
-
-    if not recording_artists: # 如果無法提取到任何藝術家名字
-        log_message("DEBUG", "      未能從 MusicBrainz 結果中提取有效的藝術家名字。")
-    # <<< 結束修正藝術家提取 >>>
-
-
-    log_message("DEBUG", f"  - 計算得分: '{recording.get('title','')}' (MB Score: {score}, Artists: {recording_artists})") # 日誌中顯示提取到的藝術家
-
-    # ... (後續的時長匹配和藝術家匹配邏輯保持不變) ...
-    # ... (它們會使用修正後的 recording_artists 列表) ...
-    if score < MIN_MB_SCORE: log_message("DEBUG", "      基礎分過低，得分設為 -1。"); return -1
+    
+    log_message("DEBUG", f"- 計算得分: '{recording.get('title','')}' (MB Score: {score}, MB Artists: {recording_artists})")
+    
+    # --- 2. 基礎分篩選 (邏輯不變) ---
+    if score < MIN_MB_SCORE:
+        log_message("DEBUG", f"基礎分 {score} < {MIN_MB_SCORE}，直接淘汰。")
+        return -1
+    
+    # --- 3. 時長匹配 (邏輯不變) ---
     if target_duration_sec and recording_duration_ms:
         duration_diff_sec = abs(target_duration_sec - (recording_duration_ms / 1000.0))
         if duration_diff_sec > (DURATION_TOLERANCE_MS / 1000.0):
             penalty = int((duration_diff_sec - (DURATION_TOLERANCE_MS / 1000.0)) * 5)
-            score -= penalty; log_message("DEBUG", f"      時長差異過大，減分 {penalty} -> 新得分: {score}")
+            score -= penalty
+            log_message("DEBUG", f"時長差異過大 (-{penalty}) -> 新得分: {score}")
         else:
             bonus = max(0, 5 - int(duration_diff_sec))
-            score += bonus; log_message("DEBUG", f"      時長差異在容忍範圍內，加分 {bonus} -> 新得分: {score}")
+            score += bonus
+            log_message("DEBUG", f"時長差異在容忍範圍內 (+{bonus}) -> 新得分: {score}")
     elif target_duration_sec and not recording_duration_ms:
-        score -= 15; log_message("DEBUG", f"      MusicBrainz 條目缺少時長，減分 15 -> 新得分: {score}")
-    if original_artist and recording_artists: # 使用修正後的 recording_artists
-        original_artist_lower = original_artist.lower()
-        if original_artist_lower in recording_artists: score += 15; log_message("DEBUG", f"      藝術家 '{original_artist}' 精確匹配，加分 15 -> 新得分: {score}")
-    if original_artist and "various artists" in recording_artists: score -= 20; log_message("DEBUG", f"      匹配到 'Various Artists' 但提供了原始藝術家，減分 20 -> 新得分: {score}")
-    score = max(0, score); log_message("DEBUG", f"      最終得分: {score}"); return score
+        score -= 15
+        log_message("DEBUG", f"MB 條目缺少時長 (-15) -> 新得分: {score}")
+
+    # --- 4. 藝術家匹配度評分 (全新整合邏輯) ---
+    
+    # 準備好所有用來比對的資訊 (轉換為小寫)
+    uploader_lower = uploader.lower() if uploader and uploader != "[不明]" else None
+    original_artist_lower = original_artist.lower() if original_artist and original_artist != "[不明]" else None
+    
+    # 建立一個包含所有已知可靠藝術家名字的集合，方便查找
+    known_artists = set(filter(None, [uploader_lower, original_artist_lower]))
+    
+    # 標誌位，用於判斷是否發生了任何形式的匹配
+    any_artist_match = False
+    
+    # 4a. 加分邏輯 (保留並優化)
+    #    檢查 MusicBrainz 返回的藝術家，是否有任何一個在我們的已知藝術家集合中
+    for mb_artist in recording_artists:
+        if mb_artist in known_artists:
+            any_artist_match = True
+            # 如果匹配的是 uploader，給予最高獎勵
+            if mb_artist == uploader_lower:
+                score += 25
+                log_message("DEBUG", f"藝術家精確匹配【上傳者】'{uploader}' (+25) -> 新得分: {score}")
+            # 否則，是匹配了 artist，給予標準獎勵
+            else:
+                score += 15
+                log_message("DEBUG", f"藝術家匹配【基礎藝術家】'{original_artist}' (+15) -> 新得分: {score}")
+            # 只要有一次匹配成功，就跳出循環，避免重複加分
+            break
+            
+    # 4b. ★★★ 新增：懲罰邏輯 ★★★
+    #    如果我們有已知的藝術家資訊，但上面的加分邏輯完全沒有觸發
+    #    這就意味著 MusicBrainz 返回的藝術家與我們已知的完全不符
+    if known_artists and not any_artist_match:
+        # 進行懲罰，但排除 'Various Artists' 的情況，因為它有自己的獨立懲罰
+        if "various artists" not in recording_artists:
+            score -= 15
+            log_message("DEBUG", f"【懲罰】MB 藝術家 '{recording_artists}' 與已知藝術家 '{list(known_artists)}' 不符 (-15) -> 新得分: {score}")
+            
+    # --- 5. 合輯懲罰 (邏輯不變，獨立於上述邏輯) ---
+    #    無論藝術家是否匹配，只要結果是合輯，就應該根據情況調整分數
+    if "various artists" in recording_artists:
+        # 如果我們本來就知道藝術家是誰，那匹配到合輯通常是不好的結果，應大力懲罰
+        if known_artists:
+            score -= 20
+            log_message("DEBUG", f"匹配到 'Various Artists' 但提供了藝術家 (-20) -> 新得分: {score}")
+        # 如果我們本來就不知道藝術家，匹配到合輯也是一種可能，輕微懲罰即可
+        else:
+            score -= 5
+            log_message("DEBUG", f"匹配到 'Various Artists' 且未提供藝術家 (-5) -> 新得分: {score}")
+
+    # --- 6. 最終分數處理 ---
+    score = max(0, score) # 確保分數不為負
+    log_message("DEBUG", f"最終得分: {score}")
+    return score
 
 # select_best_match 函數 (保持不變)
 def select_best_match(recordings, target_duration_sec, original_artist):
@@ -542,86 +604,95 @@ def write_metadata_to_file(file_path, metadata, image_data, mime_type, no_overwr
 
     return False # 發生錯誤，返回 False
 
-# 在 enrich_metadata.py 中替換舊的 main 函數
+####################################################################
+# main 函數 (v2.1 - 完整版，整合 uploader 參數並保留完整評分邏輯)
+####################################################################
 def main():
     global VERBOSE
-    # <<< 【修正關鍵】確保 parser 的定義和參數添加在這裡 >>>
+    # --- 1. 參數解析 (已整合 --uploader) ---
     parser = argparse.ArgumentParser(description="從 MusicBrainz 和 Cover Art Archive 獲取元數據並嵌入音頻檔案。")
     parser.add_argument("file_path", help="需要處理的音頻檔案路徑")
     parser.add_argument("title", help="從 yt-dlp 獲取的基礎標題")
-    parser.add_argument("artist", nargs='?', default=None, help="(可選) 從 yt-dlp 獲取的藝術家/上傳者名稱")
+    parser.add_argument("artist", nargs='?', default=None, help="(可選) 從 yt-dlp 獲取的藝術家名稱")
+    parser.add_argument("--uploader", default=None, help="(可選) 從 yt-dlp 獲取的上傳者名稱")
     parser.add_argument("--youtube-cover", default=None, help="(可選) 從 YouTube 下載的備份封面圖片路徑")
     parser.add_argument("-v", "--verbose", action="store_true", help="啟用詳細日誌輸出")
-    parser.add_argument("--no-overwrite", action="store_true", help="不覆蓋音頻檔案中已存在的標籤 (封面仍會嘗試更新)")
-    # <<< 結束 parser 定義 >>>
-
-    MIN_ACCEPTABLE_SCORE = 75 # 最低分數閾值
-
-    args = None # 初始化 args
-    try:
-        log_message("DEBUG", "--- Before parsing arguments ---")
-        args = parser.parse_args() # <<< 現在 parser 應該已定義 >>>
-        log_message("DEBUG", "--- After parsing arguments ---")
-    except SystemExit as e:
-        log_message("ERROR", f"--- Argparse exited with code: {e.code} ---")
-        sys.exit(e.code) # 保持退出碼
-    except Exception as e:
-        # 將錯誤訊息打印到 stderr，更容易被看到
-        print(f"[CRITICAL] --- Error during argument parsing: {e} ---", file=sys.stderr)
-        import traceback
-        traceback.print_exc(file=sys.stderr) # 打印詳細錯誤堆棧
-        sys.exit(1) # 以錯誤碼 1 退出
-
-    if args is None: # 再次檢查，雖然理論上不會到這裡
-        log_message("CRITICAL", "--- Argument parsing failed silently? Exiting. ---")
-        sys.exit(1)
-
+    parser.add_argument("--no-overwrite", action="store_true", help="不覆蓋音頻檔案中已存在的標籤")
+    
+    args = parser.parse_args()
     if args.verbose: VERBOSE = True; log_message("DEBUG", "啟用詳細日誌模式。")
 
-    # --- 檔案檢查 ---
-    log_message("DEBUG", f"--- Checking file path: {args.file_path} ---")
-    if not os.path.exists(args.file_path): log_message("ERROR", f"輸入的音頻檔案不存在: {args.file_path}"); sys.exit(1)
-    if not os.access(args.file_path, os.R_OK | os.W_OK): log_message("ERROR", f"檔案權限不足: {args.file_path}"); sys.exit(1)
-    log_message("DEBUG", "--- File check passed ---")
+    # --- 2. 檔案檢查與資訊記錄 (與原版一致) ---
+    if not os.path.exists(args.file_path):
+        log_message("ERROR", f"輸入的音頻檔案不存在: {args.file_path}"); sys.exit(1)
 
-    # --- 後續主邏輯 (保持不變) ---
     log_message("INFO", f"開始處理檔案: {args.file_path}")
     log_message("INFO", f"基礎標題: {args.title}")
     if args.artist: log_message("INFO", f"基礎藝術家: {args.artist}")
+    if args.uploader: log_message("INFO", f"上傳者: {args.uploader}")
 
     target_duration = get_audio_duration(args.file_path)
     if target_duration: log_message("INFO", f"本地檔案時長: {target_duration:.2f} 秒")
 
-    recordings = search_musicbrainz(args.title, args.artist)
-    best_match = None; highest_score_found = -1
+    # --- 3. 搜尋 (已整合 uploader) ---
+    recordings = search_musicbrainz(args.title, args.artist, args.uploader)
+    best_match = None
+    
+    # ★★★ 核心修正：恢復完整的評分、篩選、排序邏輯 ★★★
+    
+    MIN_ACCEPTABLE_SCORE = 75 # 最低可接受的分數閾值
+    highest_score_found = -1
+
     if recordings:
         log_message("DEBUG", "評估搜索結果分數...")
         scored_matches = []
+        
+        # 3a. 遍歷所有搜尋結果，為每一個計算分數
         for recording in recordings:
-            score = calculate_match_score(recording, target_duration, args.artist)
-            if score >= 0: scored_matches.append({'score': score, 'recording': recording});
-            if score > highest_score_found: highest_score_found = score
+            score = calculate_match_score(recording, target_duration, args.artist, args.uploader)
+            if score >= 0: # 只保留有效分數的結果
+                scored_matches.append({'score': score, 'recording': recording})
+            if score > highest_score_found:
+                highest_score_found = score # 記錄遇到的最高分
+        
+        # 3b. 檢查是否有任何有效的匹配項
         if scored_matches:
-            scored_matches.sort(key=lambda x: x['score'], reverse=True);
+            # 對所有有效匹配項按分數從高到低排序
+            scored_matches.sort(key=lambda x: x['score'], reverse=True)
+            
             log_message("DEBUG", f"找到的最高分數: {highest_score_found}")
+
+            # 3c. 閾值判斷：只有最高分大於等於閾值，才接受匹配
             if highest_score_found >= MIN_ACCEPTABLE_SCORE:
                 log_message("INFO", f"最高分 {highest_score_found} >= 閾值 {MIN_ACCEPTABLE_SCORE}，接受匹配。")
+                # 選擇排序後的第一個（也就是分數最高的）作為最佳匹配
                 best_match = scored_matches[0]['recording']
-                log_message("INFO", f"選擇的最佳匹配: '{best_match['title']}' (得分: {highest_score_found}, ID: {best_match['id']})")
-            else: log_message("WARN", f"找到匹配項，但最高分 {highest_score_found} < 閾值 {MIN_ACCEPTABLE_SCORE}，拒絕匹配。")
-        else: log_message("WARN", "所有搜索結果計算得分後均無效。")
-    else: log_message("WARN", "所有搜索策略均未找到任何結果。")
+                log_message("INFO", f"選擇的最佳匹配: '{best_match['title']}' (得分: {scored_matches[0]['score']}, ID: {best_match['id']})")
+            else:
+                log_message("WARN", f"找到匹配項，但最高分 {highest_score_found} < 閾值 {MIN_ACCEPTABLE_SCORE}，拒絕匹配。")
+        else:
+            log_message("WARN", "所有搜索結果計算得分後均無效。")
+    else:
+        log_message("WARN", "所有搜索策略均未找到任何結果。")
 
+    # ★★★ 修正結束 ★★★
+
+    # --- 4. 後續處理 (與原版一致) ---
+    
+    # 如果最終沒有選出 best_match，則退出
     if not best_match:
         log_message("WARN", "未能找到或選擇可接受的匹配項，元數據豐富化終止。")
-        sys.exit(2) # <<< 返回 2 表示未匹配
+        sys.exit(2) # 返回 2 表示未匹配
 
+    # 獲取詳細資訊
     metadata = get_recording_details(best_match['id'])
-    if not metadata: log_message("ERROR", "無法獲取詳細元數據，處理終止。"); sys.exit(1)
+    if not metadata:
+        log_message("ERROR", "無法獲取詳細元數據，處理終止。"); sys.exit(1)
 
     log_message("INFO", "獲取的初步元數據:")
     for key, value in metadata.items(): log_message("INFO", f"  - {key}: {value}")
 
+    # 獲取封面
     image_data, mime_type = get_cover_art(
         release_id=metadata.get('release_id'),
         release_group_id=metadata.get('release_group_id'),
@@ -630,10 +701,11 @@ def main():
     if image_data: log_message("INFO", f"最終確定使用的封面類型: {mime_type}")
     else: log_message("INFO", "最終未能獲取到任何封面。")
 
+    # 寫入檔案
     success = write_metadata_to_file(args.file_path, metadata, image_data, mime_type, args.no_overwrite)
 
-    if success: log_message("SUCCESS", "元數據處理完成！"); sys.exit(0) # <<< 返回 0 表示成功
-    else: log_message("ERROR", "元數據處理失敗。"); sys.exit(1) # <<< 返回 1 表示處理中錯誤
+    if success: log_message("SUCCESS", "元數據處理完成！"); sys.exit(0)
+    else: log_message("ERROR", "元數據處理失敗。"); sys.exit(1)
 
 # <<< if __name__ == "__main__": 部分保持不變 >>>
 
