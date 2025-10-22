@@ -8,15 +8,22 @@ import re
 import random
 from urllib.parse import urlparse, parse_qs
 
-# --- 設定 ---
+# --- 設定 ---# --- 設定 ---
 # 一個可靠的 Invidious 公開實例列表。腳本會隨機選取並在失敗時嘗試下一個。
 # 您可以自行增減這個列表，尋找響應速度快的實例。
+# (v1.1 - 2025-10-22 更新)
 INVIDIOUS_INSTANCES = [
-    "https://invidious.io.lol",
-    "https://inv.id.is",
-    "https://invidious.projectsegfau.lt",
-    "https://vid.puffyan.us",
-    "https://invidious.kavin.rocks",
+    # --- 歐洲區 (通常較穩定) ---
+    "https://invidious.protokoll.fi",
+    "https://invidious.really-sucks.org",
+    "https://iv.ggtyler.dev",
+    "https://invidious.privacydev.net",
+    # --- 美洲區 ---
+    "https://invidious.esmailelbob.xyz",
+    "https://iv.nboeck.de",
+    "https://invidious.private.coffee",
+    # --- 亞洲區 (可以嘗試，速度可能較快) ---
+    "https://invidious.tiekoetter.com",
 ]
 SCRIPT_VERSION = "1.0.0"
 
