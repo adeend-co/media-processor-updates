@@ -5,12 +5,12 @@ import sys
 import argparse
 import re
 import json
-from urllib.parse import urlparse, parse_qs
+import asyncio # ★★★ 新增：引入 asyncio 來處理異步函數 ★★★
 
 # --- 設定 ---
-# (v4.0.0 - 終極版：整合 cloudscraper 進階偽裝與 curl_cffi 後備方案)
+# (v4.1.0 - 適應 curl_cffi 新版本用法)
 PIPED_INSTANCE = "https://pipedapi.kavin.rocks"
-SCRIPT_VERSION = "4.0.0"
+SCRIPT_VERSION = "4.1.0"
 
 def log_message(level, message):
     print(f"[{level}] {message}", file=sys.stderr)
@@ -22,10 +22,11 @@ except ImportError:
     log_message("ERROR", "缺少 'cloudscraper' 模組。請執行 'pip install cloudscraper'。")
     sys.exit(1)
 try:
-    from curl_cffi.requests import Session as CurlCffiSession
+    # ★★★ 核心修改：使用新的導入方式 ★★★
+    from curl_cffi.aio import AsyncSession
     CURL_CFFI_AVAILABLE = True
 except ImportError:
-    log_message("WARN", "未找到 'curl_cffi' 模組。後備方案將不可用。可執行 'pip install curl_cffi' 安裝。")
+    log_message("WARN", "未找到 'curl_cffi' 模組。後備方案將不可用。可執行 'pip install curl_cffi'。")
     CURL_CFFI_AVAILABLE = False
 
 
@@ -37,17 +38,10 @@ def parse_youtube_url(url):
     return None, None
 
 def get_data_with_cloudscraper(api_url):
-    """策略一：使用 cloudscraper 並進行進階偽裝"""
+    # ... (此函數邏輯不變) ...
     try:
         log_message("INFO", f"【策略 1: cloudscraper】正在嘗試從 {api_url} 獲取資訊...")
-        # 建立一個更像真實瀏覽器的 scraper 實例
-        scraper = cloudscraper.create_scraper(
-            browser={
-                'browser': 'chrome',
-                'platform': 'windows',
-                'desktop': True
-            }
-        )
+        scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True})
         response = scraper.get(api_url, timeout=25)
         response.raise_for_status()
         return response.json()
@@ -55,59 +49,57 @@ def get_data_with_cloudscraper(api_url):
         log_message("WARN", f"【策略 1: cloudscraper】失敗: {e}")
         return None
 
-def get_data_with_curl_cffi(api_url):
-    """策略二：使用 curl_cffi 作為後備，它能更好地模擬 TLS 指紋"""
+# ★★★ 核心修改：重寫 curl_cffi 的用法 ★★★
+async def _get_data_with_curl_cffi_async(api_url):
+    """異步函數，專門用於執行 curl_cffi 的請求"""
     if not CURL_CFFI_AVAILABLE:
         return None
     try:
         log_message("INFO", f"【策略 2: curl_cffi】正在嘗試從 {api_url} 獲取資訊...")
-        # curl_cffi 會模擬 Chrome 瀏覽器的 JA3/TLS 指紋
-        with CurlCffiSession() as session:
-            response = session.get(api_url, impersonate="chrome110", timeout=25)
+        async with AsyncSession() as session:
+            response = await session.get(api_url, impersonate="chrome110", timeout=25)
             response.raise_for_status()
             return response.json()
     except Exception as e:
         log_message("WARN", f"【策略 2: curl_cffi】失敗: {e}")
         return None
 
+def get_data_with_curl_cffi(api_url):
+    """同步包裝器，讓我們可以在普通腳本中調用異步函數"""
+    return asyncio.run(_get_data_with_curl_cffi_async(api_url))
+
+
 def get_best_audio_stream_from_piped(video_id):
+    # ... (此函數的策略調用邏輯不變) ...
     api_url = f"{PIPED_INSTANCE}/streams/{video_id}"
-    data = None
-    
-    # 依次嘗試不同的策略
     data = get_data_with_cloudscraper(api_url)
     if data is None:
         data = get_data_with_curl_cffi(api_url)
-        
     if data is None:
         log_message("ERROR", "所有策略均告失敗，無法獲取影片資訊。")
         return None, None, None
-        
     try:
+        # ... (後續的 JSON 解析邏輯不變) ...
         audio_streams = data.get('audioStreams', [])
         if not audio_streams:
             log_message("ERROR", "成功獲取數據，但在其中未找到 'audioStreams'。")
             return None, None, None
-            
         best_stream = sorted(audio_streams, key=lambda x: x.get('bitrate', 0), reverse=True)[0]
-        
         stream_url = best_stream.get('url')
         video_title = data.get('title', video_id)
         safe_title = re.sub(r'[\\/*?:"<>|]', "_", video_title)
         extension = best_stream.get('mimeType', 'audio/webm').split('/')[-1]
-        
-        # 修正 Piped 可能返回 'mp4' 擴展名的問題
         if extension == 'mp4' and 'opus' in best_stream.get('codec', '').lower():
             extension = 'm4a'
-            
         return stream_url, safe_title, extension
     except Exception as e:
         log_message("ERROR", f"解析 Piped 數據時發生錯誤: {e}")
         return None, None, None
 
 def download_file(url, output_path):
+    # ... (此函數邏輯不變，它使用標準 requests，已在 v4.0.0 中修正) ...
     try:
-        # 下載時使用標準 requests 即可，因為下載連結通常沒有反爬蟲保護
+        import requests # 在函數內部導入，避免與 curl_cffi 衝突
         headers = {'User-Agent': 'Mozilla/5.0'}
         with requests.get(url, stream=True, timeout=90, headers=headers) as r:
             r.raise_for_status()
@@ -126,24 +118,21 @@ def download_file(url, output_path):
         return False
 
 def main():
+    # ... (main 函數邏輯不變) ...
     parser = argparse.ArgumentParser(description=f"Piped 音訊下載器 v{SCRIPT_VERSION}")
     parser.add_argument("url", help="YouTube 影片的 URL")
     parser.add_argument("output_dir", help="儲存下載檔案的目錄")
     args = parser.parse_args()
-    
     url_type, media_id = parse_youtube_url(args.url)
     if not media_id or url_type != 'video':
         log_message("CRITICAL", "無法從 URL 中解析出有效的 YouTube 影片 ID。")
         sys.exit(1)
-    
     audio_url, title, extension = get_best_audio_stream_from_piped(media_id)
-    
     if audio_url:
         output_path = f"{args.output_dir}/{title} [{media_id}].{extension}"
         if download_file(audio_url, output_path):
             print(output_path)
             sys.exit(0)
-            
     log_message("CRITICAL", "最終下載失敗。")
     sys.exit(1)
 
