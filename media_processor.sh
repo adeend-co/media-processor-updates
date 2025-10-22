@@ -103,6 +103,9 @@ PYTHON_METADATA_ENRICHER_SCRIPT_PATH="$HOME/media-processor-updates/enrich_metad
 # Bash 音訊處理與流程控制器
 BASH_AUDIO_ENRICHER_SCRIPT_PATH="$HOME/media-processor-updates/audio_enricher.sh"
 
+# --- 【重要】新增：Invidious 後備下載模組路徑 ---
+INVIDIOUS_DOWNLOADER_SCRIPT_PATH="$HOME/media-processor-updates/invidious_downloader.py"
+
 # Python 版本變數保留 (現在由設定檔管理，不再需要遠程檢查)
 PYTHON_CONVERTER_VERSION="1.0.0" # 可以設定一個基礎版本或從設定檔讀取
 
@@ -918,6 +921,7 @@ auto_update_script() {
         "$SCRIPT_DIR/monthly_expense_tracker.py"   # 月份支出追蹤器（獨立）
         "$BASH_AUDIO_ENRICHER_SCRIPT_PATH"         # 音訊豐富化 Bash 控制器
         "$PYTHON_METADATA_ENRICHER_SCRIPT_PATH"    # 音訊豐富化 Python 核心
+        "$INVIDIOUS_DOWNLOADER_SCRIPT_PATH"        # Invidious（下載備用方案）
         # 未來若有新腳本，直接在此處增加一行即可
     )
     
@@ -4861,13 +4865,14 @@ main_menu() {
         echo -e " 1. ${BOLD}MP3 相關處理${RESET} (YouTube/本機)"
         echo -e " 2. ${BOLD}MP4 / MKV 相關處理${RESET} (YouTube/本機)"
         echo -e " 3. ${BOLD}通用媒體下載${RESET} (其他網站 / ${YELLOW}實驗性${RESET})"
-        echo -e " 4. ${BOLD}執行同步 (新手機 -> 舊手機)${RESET}"
+        echo -e " 4. ${CYAN}${BOLD}Invidious 後備下載方案${RESET} (yt-dlp 失效時使用)"
+        echo -e " 5. ${BOLD}執行同步 (新手機 -> 舊手機)${RESET}"
         echo -e "---------------------------------------------"
-        echo -e " 5. ${BOLD}腳本設定與工具${RESET}"
-        echo -e " 6. ${BOLD}關於此工具${RESET}"
-        echo -e " 7. ${PURPLE}${BOLD}啟動個人財務管理器${RESET}"
+        echo -e " 6. ${BOLD}腳本設定與工具${RESET}"
+        echo -e " 7. ${BOLD}關於此工具${RESET}"
+        echo -e " 8. ${PURPLE}${BOLD}啟動個人財務管理器${RESET}"
         # --- ▼▼▼ 新增選項 ▼▼▼ ---
-        echo -e " 8. ${BLUE}${BOLD}啟動網路測速工具${RESET}"
+        echo -e " 9. ${BLUE}${BOLD}啟動網路測速工具${RESET}"
         # --- ▲▲▲ 修改結束 ▲▲▲ ---
         echo -e " 0. ${RED}退出腳本${RESET}"
         echo -e "---------------------------------------------"
@@ -4884,10 +4889,11 @@ main_menu() {
             1) mp3_menu ;;
             2) mp4_mkv_menu ;;
             3) general_download_menu ;;
-            4) perform_sync_to_old_phone ;;
-            5) utilities_menu ;;
-            6) show_about_enhanced ;;
-            7) # 財務管理器 (邏輯不變)
+            4) process_invidious_entry ;;
+            5) perform_sync_to_old_phone ;;
+            6) utilities_menu ;;
+            7) show_about_enhanced ;;
+            8) # 財務管理器 (邏輯不變)
                 local finance_script_path="$SCRIPT_DIR/finance_manager.sh"
                 if [ ! -f "$finance_script_path" ]; then
                     echo -e "${RED}錯誤：找不到財務管理器腳本 'finance_manager.sh'！${RESET}"; sleep 3; continue
@@ -4904,7 +4910,7 @@ main_menu() {
                 fi
                 ;;
             # --- ▼▼▼ 新增 Case 邏輯 ▼▼▼ ---
-            8)
+            9)
                 local nst_script_path="$SCRIPT_DIR/network_speed_test.sh"
                 if [ ! -f "$nst_script_path" ]; then
                     echo -e "${RED}錯誤：找不到網路測速腳本 'network_speed_test.sh'！${RESET}"
