@@ -181,8 +181,7 @@ normalize_audio() {
 }
 
 ############################################
-# <<< 替換：完整的 process_media 函數 (Bash 程式碼) >>>
-# 使用 normalize_audio 函數，整合 Python 調用並根據退出碼判斷
+# 核心處理函數 (v2.0 - 增加 uploader 參數傳遞)
 ############################################
 process_media() {
     local input="$1"
@@ -190,148 +189,140 @@ process_media() {
     local audio_file=""         # 原始下載/本地檔案
     local video_title=""        # 基礎標題
     local artist_name="[不明]"
-    local album_artist_name="[不明]"
+    # ★★★ 新增：專門儲存上傳者資訊的變數 ★★★
+    local uploader_name="[不明]"
     local base_name=""
     local media_url=""          # 僅用於網路資源
     local result=0
-    local python_enricher_success=false # 標記 Python 是否成功處理並寫入
+    local python_enricher_success=false 
     local cover_image=""        # YouTube 封面路徑
 
     # --- 初始化 ---
-    log_message "INFO" "開始處理輸入: $input" # Bash 函數調用
+    log_message "INFO" "開始處理輸入: $input"
     echo -e "${YELLOW}初始化處理...${RESET}"
-    # 創建臨時目錄
     local temp_dir=$(mktemp -d)
-    # 檢查 mktemp 是否成功
     if [ -z "$temp_dir" ] || [ ! -d "$temp_dir" ]; then
-        log_message "ERROR" "無法創建臨時目錄！"
-        echo -e "${RED}錯誤：無法創建臨時目錄！${RESET}"
-        return 1
+        log_message "ERROR" "無法創建臨時目錄！"; echo -e "${RED}錯誤：無法創建臨時目錄！${RESET}"; return 1
     fi
     log_message "DEBUG" "臨時目錄已創建: $temp_dir"
-    local wav_audio=""          # 轉換後的 WAV 路徑
-    local normalized_mp3="$temp_dir/normalized_audio.mp3" # normalize_audio 的輸出路徑
+    local wav_audio=""
+    local normalized_mp3="$temp_dir/normalized_audio.mp3"
 
     # --- 檢查下載目錄 ---
-    echo -e "${YELLOW}檢查下載目錄...${RESET}"
     mkdir -p "$DOWNLOAD_PATH"
     if [ ! -w "$DOWNLOAD_PATH" ]; then
-        log_message "ERROR" "無法寫入下載目錄：$DOWNLOAD_PATH"
-        echo -e "${RED}錯誤：無法寫入下載目錄${RESET}"
-        rm -rf "$temp_dir" # 清理已創建的臨時目錄
-        return 1
+        log_message "ERROR" "無法寫入下載目錄：$DOWNLOAD_PATH"; echo -e "${RED}錯誤：無法寫入下載目錄${RESET}"; rm -rf "$temp_dir"; return 1
     fi
 
-    # --- 1. 處理輸入 (區分本地/網路，獲取資訊，下載音頻) ---
+    # --- 1. 處理輸入 ---
     if [ -f "$input" ]; then
         is_local=true
         audio_file="$input"
         base_name="$(basename "$audio_file" | sed 's/\.[^.]*$//')"
         wav_audio="$temp_dir/${base_name}.wav"
-        log_message "INFO" "處理本機音訊檔案：$audio_file" # Bash 函數調用
+        log_message "INFO" "處理本機音訊檔案：$audio_file"
         echo -e "${YELLOW}處理本機音訊檔案: $base_name ${RESET}"
-        video_title="$base_name" # 使用檔名作為基礎標題
-        artist_name="[不明]" # 本地檔案無藝術家信息
-        album_artist_name="[不明]"
-        # 本地檔案無 cover_image
+        video_title="$base_name"
+        # 本地檔案沒有藝術家和上傳者資訊
+        artist_name="[不明]"
+        uploader_name="[不明]"
     else # 網路 URL
         is_local=false
         media_url="$input"
-        log_message "INFO" "處理網路媒體：$media_url" # Bash 函數調用
+        log_message "INFO" "處理網路媒體：$media_url"
         echo -e "${YELLOW}處理 YouTube 媒體...${RESET}"
 
-        # --- 分析媒體資訊 ---
         echo -e "${YELLOW}分析媒體資訊...${RESET}"
         local metadata_json=$(yt-dlp --dump-json "$media_url" 2> "$temp_dir/yt-dlp-json.log")
         if [ -z "$metadata_json" ]; then
-            log_message "ERROR" "無法獲取媒體 JSON 資訊 (詳見 $temp_dir/yt-dlp-json.log)" # Bash 函數調用
-            echo -e "${RED}錯誤：無法分析媒體資訊。${RESET}"; cat "$temp_dir/yt-dlp-json.log"; rm -rf "$temp_dir"; return 1
+            log_message "ERROR" "無法獲取媒體 JSON 資訊"; echo -e "${RED}錯誤：無法分析媒體資訊。${RESET}"; cat "$temp_dir/yt-dlp-json.log"; rm -rf "$temp_dir"; return 1
         fi
         video_title=$(echo "$metadata_json" | jq -r '.title // "Untitled"')
-        local possible_artist=$(echo "$metadata_json" | jq -r '.artist // empty'); local uploader=$(echo "$metadata_json" | jq -r '.uploader // "[不明]"'); local video_id=$(echo "$metadata_json" | jq -r '.id // "NO_ID"')
-        if [[ -n "$possible_artist" && "$possible_artist" != "null" ]]; then artist_name="$possible_artist"; else artist_name="$uploader"; fi; album_artist_name="$uploader"
-        log_message "INFO" "獲取到標題: $video_title, 基礎藝術家: $artist_name" # Bash 函數調用
+        local possible_artist=$(echo "$metadata_json" | jq -r '.artist // empty')
+        
+        # ★★★ 核心修改：同時提取 artist 和 uploader ★★★
+        uploader_name=$(echo "$metadata_json" | jq -r '.uploader // "[不明]"')
+        local video_id=$(echo "$metadata_json" | jq -r '.id // "NO_ID"')
+        
+        # 決定基礎 artist_name 的邏輯保持不變
+        if [[ -n "$possible_artist" && "$possible_artist" != "null" ]]; then artist_name="$possible_artist"; else artist_name="$uploader_name"; fi;
+        
+        log_message "INFO" "獲取到標題: '$video_title', 基礎藝術家: '$artist_name', 上傳者: '$uploader_name'"
 
         # --- 下載音頻 ---
         echo -e "${YELLOW}開始下載音頻：$video_title${RESET}"
         local safe_title=$(echo "$video_title" | sed 's@[/\\:*?"<>|]@_@g'); local output_template="$DOWNLOAD_PATH/${safe_title} [${video_id}].%(ext)s"
-        # 注意：原腳本的 THREADS 變數未在此函數中使用，如果需要多線程下載，應加入 --concurrent-fragments "$THREADS"
         local yt_dlp_dl_args=(yt-dlp -f bestaudio -o "$output_template" "$media_url" --newline --progress)
         if ! "${yt_dlp_dl_args[@]}" 2> "$temp_dir/yt-dlp-dl.log"; then
-            log_message "ERROR" "音訊下載失敗 (詳見 $temp_dir/yt-dlp-dl.log)"; echo -e "${RED}錯誤：音訊下載失敗${RESET}"; cat "$temp_dir/yt-dlp-dl.log"; rm -rf "$temp_dir"; return 1 # Bash 函數調用
+            log_message "ERROR" "音訊下載失敗"; echo -e "${RED}錯誤：音訊下載失敗${RESET}"; cat "$temp_dir/yt-dlp-dl.log"; rm -rf "$temp_dir"; return 1
         fi
         local yt_dlp_fn_args=(yt-dlp --get-filename -f bestaudio -o "$output_template" "$media_url"); audio_file=$("${yt_dlp_fn_args[@]}" 2>/dev/null)
         if [ ! -f "$audio_file" ]; then
-             log_message "ERROR" "找不到下載的音頻檔案 '$audio_file'"; echo -e "${RED}錯誤：找不到下載的音頻檔案${RESET}"; rm -rf "$temp_dir"; return 1 # Bash 函數調用
+             log_message "ERROR" "找不到下載的音頻檔案 '$audio_file'"; echo -e "${RED}錯誤：找不到下載的音頻檔案${RESET}"; rm -rf "$temp_dir"; return 1
         fi
-        log_message "INFO" "音頻下載完成: $audio_file" # Bash 函數調用
+        log_message "INFO" "音頻下載完成: $audio_file"
         base_name="$(basename "$audio_file" | sed 's/\.[^.]*$//')"
         wav_audio="$temp_dir/${base_name}.wav"
 
-        # --- 下載 YouTube 封面 (始終執行) ---
+        # --- 下載 YouTube 封面 ---
         echo -e "${YELLOW}下載 YouTube 封面 (備份)...${RESET}"
         cover_image="$temp_dir/${base_name}_youtube_cover.png"
-        if ! download_high_res_thumbnail "$media_url" "$cover_image"; then # Bash 函數調用
-             cover_image=""; log_message "WARNING" "基礎封面圖片下載失敗。" # Bash 函數調用
+        if ! download_high_res_thumbnail "$media_url" "$cover_image"; then
+             cover_image=""; log_message "WARNING" "基礎封面圖片下載失敗。"
         else
-             log_message "INFO" "YouTube 備份封面已下載到: $cover_image" # Bash 函數調用
+             log_message "INFO" "YouTube 備份封面已下載到: $cover_image"
         fi
     fi
 
     # --- 2. 轉換為 WAV ---
     echo -e "${YELLOW}轉換音訊為 WAV 格式進行處理...${RESET}"
-    log_message "INFO" "轉換 '$audio_file' 為 WAV: $wav_audio" # Bash 函數調用
+    log_message "INFO" "轉換 '$audio_file' 為 WAV: $wav_audio"
     if ! ffmpeg -y -i "$audio_file" -vn -acodec pcm_s16le -ar 44100 -ac 2 "$wav_audio" > "$temp_dir/ffmpeg_wav.log" 2>&1; then
-        log_message "ERROR" "轉換為 WAV 失敗！詳見 $temp_dir/ffmpeg_wav.log"; echo -e "${RED}錯誤：無法轉換為 WAV 格式${RESET}"; cat "$temp_dir/ffmpeg_wav.log"; # Bash 函數調用
-        [ "$is_local" = false ] && safe_remove "$audio_file"; rm -rf "$temp_dir"; return 1 # Bash 函數調用
+        log_message "ERROR" "轉換為 WAV 失敗！"; echo -e "${RED}錯誤：無法轉換為 WAV 格式${RESET}"; cat "$temp_dir/ffmpeg_wav.log";
+        [ "$is_local" = false ] && safe_remove "$audio_file"; rm -rf "$temp_dir"; return 1
     fi
-    log_message "INFO" "轉換為 WAV 成功。" # Bash 函數調用
-    [ "$is_local" = false ] && safe_remove "$audio_file" # Bash 函數調用
+    log_message "INFO" "轉換為 WAV 成功。"
+    [ "$is_local" = false ] && safe_remove "$audio_file"
 
-    # --- 3. 調用 normalize_audio 函數 (輸出初步 MP3) ---
+    # --- 3. 調用 normalize_audio 函數 ---
     echo -e "${YELLOW}開始音量標準化並轉換為 MP3...${RESET}"
-    # 假設 normalize_audio 函數已正確添加到此腳本中
-    if normalize_audio "$wav_audio" "$normalized_mp3" "$temp_dir" false; then # Bash 函數調用
-        log_message "INFO" "音量標準化並轉換為初步 MP3 成功: $normalized_mp3" # Bash 函數調用
-        safe_remove "$wav_audio" # 清理 WAV # Bash 函數調用
+    if normalize_audio "$wav_audio" "$normalized_mp3" "$temp_dir" false; then
+        log_message "INFO" "音量標準化並轉換為初步 MP3 成功: $normalized_mp3"
+        safe_remove "$wav_audio"
 
         # --- 4. 嘗試調用 Python 元數據豐富器 ---
         local python_cmd=""; if command -v python3 &> /dev/null; then python_cmd="python3"; elif command -v python &> /dev/null; then python_cmd="python"; fi
         local enricher_script="$METADATA_ENRICHER_SCRIPT_PATH"
-        local python_exit_code=1 # 預設為失敗
+        local python_exit_code=1
 
         if [[ -n "$python_cmd" && -f "$enricher_script" ]]; then
-            # 預覽將要執行的命令
-            local python_call_cmd=("$python_cmd" "$enricher_script" "$normalized_mp3" "$video_title" "$artist_name" --youtube-cover "$cover_image" -v)
-
-            # --- 暫停點 (保持不變) ---
-            # --- 結束暫停點 ---
-
-            # --- 正式調用 Python 並捕獲退出碼 ---
+            # ★★★ 核心修改：在命令中加入 --uploader 參數 ★★★
+            local python_call_cmd=(
+                "$python_cmd" "$enricher_script"
+                "$normalized_mp3"
+                "$video_title"
+                "$artist_name"
+                --uploader "$uploader_name" # 新增的參數
+                --youtube-cover "$cover_image"
+                -v
+            )
+            
             echo -e "\n${YELLOW}繼續執行，正在調用 Python 元數據豐富器...${RESET}"
-            log_message "INFO" "調用元數據豐富器: ${python_call_cmd[*]}" # Bash 函數調用
+            log_message "INFO" "調用元數據豐富器: ${python_call_cmd[*]}"
 
-            "${python_call_cmd[@]}" # 執行 Python
-            python_exit_code=$?     # 捕獲退出碼
+            "${python_call_cmd[@]}"
+            python_exit_code=$?
 
-            # --- 根據退出碼判斷結果 ---
             if [ $python_exit_code -eq 0 ]; then
-                log_message "INFO" "Python 腳本成功完成並應用了元數據。" # Bash 函數調用
-                echo -e "${GREEN}元數據豐富化成功。${RESET}"
-                python_enricher_success=true
+                log_message "INFO" "Python 腳本成功完成並應用了元數據。"; echo -e "${GREEN}元數據豐富化成功。${RESET}"; python_enricher_success=true
             elif [ $python_exit_code -eq 2 ]; then
-                log_message "WARN" "Python 腳本正常結束，但未找到可接受的匹配。" # Bash 函數調用
-                echo -e "${YELLOW}未找到匹配的元數據，將使用基礎信息。${RESET}"
-                python_enricher_success=false
-            else # 其他非零退出碼
-                log_message "ERROR" "Python 腳本執行時發生錯誤 (退出碼 $python_exit_code)。" # Bash 函數調用
-                echo -e "${RED}錯誤：元數據豐富化過程中發生錯誤。將回退。${RESET}"
-                python_enricher_success=false
+                log_message "WARN" "Python 腳本正常結束，但未找到可接受的匹配。"; echo -e "${YELLOW}未找到匹配的元數據，將使用基礎信息。${RESET}"; python_enricher_success=false
+            else
+                log_message "ERROR" "Python 腳本執行時發生錯誤 (退出碼 $python_exit_code)。"; echo -e "${RED}錯誤：元數據豐富化過程中發生錯誤。將回退。${RESET}"; python_enricher_success=false
             fi
-        else # Python 或腳本未找到
-             if [ ! -f "$enricher_script" ]; then log_message "WARNING" "未找到元數據豐富器腳本: $enricher_script"; echo -e "${YELLOW}警告：未找到元數據豐富器腳本。${RESET}"; # Bash 函數調用
-             else log_message "WARNING" "未找到 Python 環境。"; echo -e "${YELLOW}警告：未找到 Python 環境。${RESET}"; fi # Bash 函數調用
-             echo -e "${YELLOW}無法執行元數據豐富化，將使用基礎元數據。${RESET}"
+        else
+             if [ ! -f "$enricher_script" ]; then log_message "WARNING" "未找到元數據豐富器腳本"; echo -e "${YELLOW}警告：未找到元數據豐富器腳本。${RESET}";
+             else log_message "WARNING" "未找到 Python 環境。"; echo -e "${YELLOW}警告：未找到 Python 環境。${RESET}"; fi
              python_enricher_success=false
         fi
 
@@ -340,74 +331,56 @@ process_media() {
         echo -e "${YELLOW}正在生成最終 MP3 檔案...${RESET}"
 
         if $python_enricher_success; then
-            # Python 成功，直接移動
-            log_message "INFO" "移動已處理的檔案到最終位置: $normalized_mp3 -> $output_audio" # Bash 函數調用
+            log_message "INFO" "移動已處理的檔案到最終位置: $normalized_mp3 -> $output_audio"
             if mv "$normalized_mp3" "$output_audio"; then
-                 log_message "SUCCESS" "最終檔案生成成功。"; result=0 # Bash 函數調用
+                 log_message "SUCCESS" "最終檔案生成成功。"; result=0
             else
-                 log_message "ERROR" "無法移動 '$normalized_mp3' 到 '$output_audio'！"; echo -e "${RED}錯誤：無法生成最終檔案！${RESET}"; result=1 # Bash 函數調用
+                 log_message "ERROR" "無法移動 '$normalized_mp3' 到 '$output_audio'！"; echo -e "${RED}錯誤：無法生成最終檔案！${RESET}"; result=1
             fi
         else
-            # Python 未處理或失敗，執行回退
-            log_message "INFO" "回退：使用基礎元數據和封面處理 MP3: $normalized_mp3 -> $output_audio" # Bash 函數調用
-            # 檢查臨時 MP3 是否存在
+            # 回退邏輯 (uploader_name 不影響回退，所以這裡無需修改)
+            log_message "INFO" "回退：使用基礎元數據和封面處理 MP3: $normalized_mp3 -> $output_audio"
             if [ ! -f "$normalized_mp3" ]; then
-                 log_message "ERROR" "回退失敗：找不到用於回退處理的臨時 MP3 檔案 '$normalized_mp3'!" # Bash 函數調用
-                 echo -e "${RED}錯誤：回退處理失敗，臨時檔案丟失！${RESET}"
-                 result=1
+                 log_message "ERROR" "回退失敗：找不到臨時 MP3 檔案！"; echo -e "${RED}錯誤：回退處理失敗，臨時檔案丟失！${RESET}"; result=1
             else
-                # 執行 ffmpeg 嵌入
+                # ★★★ 為了回退邏輯更準確，album_artist 也使用 uploader ★★★
+                local album_artist_name_fallback="$uploader_name"
                 local ffmpeg_embed_args=(ffmpeg -y -i "$normalized_mp3")
-                log_message "DEBUG" "回退處理使用的信息：Cover='$cover_image', Artist='$artist_name', AlbumArtist='$album_artist_name', Title='$video_title'" # Bash 函數調用
                 if [[ "$is_local" = false && -n "$cover_image" && -f "$cover_image" ]]; then
-                    log_message "INFO" "嵌入基礎元數據和 YouTube 備份封面..." # Bash 函數調用
-                    ffmpeg_embed_args+=(-i "$cover_image" -map 0:a -map 1:v -c copy -id3v2_version 3 -metadata title="$video_title" -metadata artist="$artist_name" -metadata album_artist="$album_artist_name" -metadata:s:v title="Album cover" -metadata:s:v comment="Cover (front)" -disposition:v attached_pic)
+                    ffmpeg_embed_args+=(-i "$cover_image" -map 0:a -map 1:v -c copy -id3v2_version 3 -metadata title="$video_title" -metadata artist="$artist_name" -metadata album_artist="$album_artist_name_fallback" -metadata:s:v title="Album cover" -metadata:s:v comment="Cover (front)" -disposition:v attached_pic)
                 else
-                     log_message "INFO" "僅嵌入基礎元數據..." # Bash 函數調用
-                     ffmpeg_embed_args+=(-c copy -id3v2_version 3 -metadata title="$video_title" -metadata artist="$artist_name" -metadata album_artist="$album_artist_name")
+                     ffmpeg_embed_args+=(-c copy -id3v2_version 3 -metadata title="$video_title" -metadata artist="$artist_name" -metadata album_artist="$album_artist_name_fallback")
                 fi
                 ffmpeg_embed_args+=("$output_audio")
 
-                log_message "INFO" "執行 FFmpeg 回退處理命令: ${ffmpeg_embed_args[*]}" # Bash 函數調用
                 if ! "${ffmpeg_embed_args[@]}" > "$temp_dir/ffmpeg_fallback.log" 2>&1; then
-                    log_message "ERROR" "回退處理失敗！詳見 $temp_dir/ffmpeg_fallback.log"; echo -e "${RED}錯誤：基礎元數據處理失敗！${RESET}"; cat "$temp_dir/ffmpeg_fallback.log"; result=1 # Bash 函數調用
+                    log_message "ERROR" "回退處理失敗！"; echo -e "${RED}錯誤：基礎元數據處理失敗！${RESET}"; cat "$temp_dir/ffmpeg_fallback.log"; result=1
                 else
-                     log_message "INFO" "基礎元數據處理完成。"; echo -e "${GREEN}基礎元數據處理完成。${RESET}"; result=0 # Bash 函數調用
+                     log_message "INFO" "基礎元數據處理完成。"; echo -e "${GREEN}基礎元數據處理完成。${RESET}"; result=0
                 fi
-                safe_remove "$normalized_mp3" # 回退處理完畢，刪除臨時 MP3 # Bash 函數調用
-            fi # 結束 if [ ! -f "$normalized_mp3" ]
-        fi # 結束 if $python_enricher_success
-
-    else # normalize_audio 函數失敗
-        log_message "ERROR" "音量標準化或初步 MP3 轉換失敗！" # Bash 函數調用
-        safe_remove "$wav_audio"; result=1 # Bash 函數調用
-    fi # 結束 normalize_audio 的 if
+                safe_remove "$normalized_mp3"
+            fi
+        fi
+    else
+        log_message "ERROR" "音量標準化或初步 MP3 轉換失敗！"
+        safe_remove "$wav_audio"; result=1
+    fi
 
     # --- 6. 清理 ---
-    log_message "INFO" "執行最終清理..." # Bash 函數調用
-    [ -n "$cover_image" ] && [ -f "$cover_image" ] && safe_remove "$cover_image" # Bash 函數調用
-    # 清理主要日誌
-    safe_remove "$temp_dir/yt-dlp-json.log" "$temp_dir/yt-dlp-dl.log" \
-                "$temp_dir/ffmpeg_wav.log" "$temp_dir/ffmpeg_fallback.log" # Bash 函數調用
-    # normalize_audio 函數會清理它自己的臨時檔案
-    # 清理 Python 日誌（如果之前有重定向的話）
-    # safe_remove "$temp_dir/python_enricher.log"
-
-    if [ -d "$temp_dir" ]; then
-         if rmdir "$temp_dir" 2>/dev/null; then log_message "INFO" "臨時目錄已移除: $temp_dir"; # Bash 函數調用
-         else log_message "WARN" "無法移除臨時目錄: $temp_dir"; fi # Bash 函數調用
-    fi
+    log_message "INFO" "執行最終清理..."
+    [ -n "$cover_image" ] && [ -f "$cover_image" ] && safe_remove "$cover_image"
+    rm -rf "$temp_dir"
 
     # --- 7. 最終結果 ---
     if [ $result -eq 0 ]; then
         echo -e "${GREEN}處理完成！最終檔案已儲存至：$output_audio${RESET}"
-        log_message "SUCCESS" "處理完成！最終檔案：$output_audio" # Bash 函數調用
+        log_message "SUCCESS" "處理完成！最終檔案：$output_audio"
     else
         echo -e "${RED}處理失敗！請檢查日誌獲取更多資訊。${RESET}"
-        log_message "ERROR" "處理失敗：$input" # Bash 函數調用
+        log_message "ERROR" "處理失敗：$input"
     fi
     return $result
-} # <<< 確保這個 } 是函數的結尾
+}
 
 # --- 主執行邏輯 ---
 main() {
