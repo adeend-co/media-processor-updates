@@ -242,8 +242,6 @@ process_media() {
         # 準備新的 yt-dlp 參數，請求影音合一的 MP4
         local yt_dlp_dl_args=(
             yt-dlp
-            # --- 新增的參數 ---
-            --sleep-requests 7      # 在每次 HTTP 請求前，固定等待 7 秒
             
             -f 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best' # 請求一個 MP4 格式，優先選擇高品質音訊
             --merge-output-format mp4  # 確保最終容器是 MP4
