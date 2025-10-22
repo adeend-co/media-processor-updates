@@ -180,91 +180,106 @@ normalize_audio() {
     return 0 # 返回成功
 }
 
-############################################
-# 核心處理函數 (v2.0 - 增加 uploader 參數傳遞)
-############################################
+####################################################################
+# 核心處理函數 (v2.1 - 終極繞過策略：先下載 MP4 再提取音訊)
+####################################################################
 process_media() {
     local input="$1"
     local is_local=false
-    local audio_file=""         # 原始下載/本地檔案
-    local video_title=""        # 基礎標題
+    local audio_file=""         # 此變數現在將指向臨時的 MP4 檔案
+    local video_title=""
     local artist_name="[不明]"
-    # ★★★ 新增：專門儲存上傳者資訊的變數 ★★★
     local uploader_name="[不明]"
     local base_name=""
-    local media_url=""          # 僅用於網路資源
+    local media_url=""
     local result=0
     local python_enricher_success=false 
-    local cover_image=""        # YouTube 封面路徑
+    local cover_image=""
 
-    # --- 初始化 ---
+    # --- 初始化 (邏輯不變) ---
     log_message "INFO" "開始處理輸入: $input"
     echo -e "${YELLOW}初始化處理...${RESET}"
-    local temp_dir=$(mktemp -d)
-    if [ -z "$temp_dir" ] || [ ! -d "$temp_dir" ]; then
-        log_message "ERROR" "無法創建臨時目錄！"; echo -e "${RED}錯誤：無法創建臨時目錄！${RESET}"; return 1
-    fi
-    log_message "DEBUG" "臨時目錄已創建: $temp_dir"
-    local wav_audio=""
-    local normalized_mp3="$temp_dir/normalized_audio.mp3"
+    local temp_dir=$(mktemp -d); if [ -z "$temp_dir" ]; then log_message "ERROR" "無法創建臨時目錄！"; return 1; fi
+    local wav_audio=""; local normalized_mp3="$temp_dir/normalized_audio.mp3"
 
-    # --- 檢查下載目錄 ---
-    mkdir -p "$DOWNLOAD_PATH"
-    if [ ! -w "$DOWNLOAD_PATH" ]; then
-        log_message "ERROR" "無法寫入下載目錄：$DOWNLOAD_PATH"; echo -e "${RED}錯誤：無法寫入下載目錄${RESET}"; rm -rf "$temp_dir"; return 1
-    fi
+    # --- 檢查下載目錄 (邏輯不變) ---
+    mkdir -p "$DOWNLOAD_PATH"; if [ ! -w "$DOWNLOAD_PATH" ]; then log_message "ERROR" "無法寫入下載目錄"; rm -rf "$temp_dir"; return 1; fi
 
     # --- 1. 處理輸入 ---
     if [ -f "$input" ]; then
         is_local=true
-        audio_file="$input"
+        audio_file="$input" # 本地檔案直接使用
         base_name="$(basename "$audio_file" | sed 's/\.[^.]*$//')"
         wav_audio="$temp_dir/${base_name}.wav"
         log_message "INFO" "處理本機音訊檔案：$audio_file"
-        echo -e "${YELLOW}處理本機音訊檔案: $base_name ${RESET}"
-        video_title="$base_name"
-        # 本地檔案沒有藝術家和上傳者資訊
-        artist_name="[不明]"
-        uploader_name="[不明]"
+        video_title="$base_name"; artist_name="[不明]"; uploader_name="[不明]"
     else # 網路 URL
         is_local=false
         media_url="$input"
         log_message "INFO" "處理網路媒體：$media_url"
-        echo -e "${YELLOW}處理 YouTube 媒體...${RESET}"
 
+        # --- 分析媒體資訊 (邏輯不變) ---
         echo -e "${YELLOW}分析媒體資訊...${RESET}"
         local metadata_json=$(yt-dlp --dump-json "$media_url" 2> "$temp_dir/yt-dlp-json.log")
-        if [ -z "$metadata_json" ]; then
-            log_message "ERROR" "無法獲取媒體 JSON 資訊"; echo -e "${RED}錯誤：無法分析媒體資訊。${RESET}"; cat "$temp_dir/yt-dlp-json.log"; rm -rf "$temp_dir"; return 1
-        fi
+        if [ -z "$metadata_json" ]; then log_message "ERROR" "無法獲取媒體 JSON 資訊"; rm -rf "$temp_dir"; return 1; fi
         video_title=$(echo "$metadata_json" | jq -r '.title // "Untitled"')
         local possible_artist=$(echo "$metadata_json" | jq -r '.artist // empty')
-        
-        # ★★★ 核心修改：同時提取 artist 和 uploader ★★★
         uploader_name=$(echo "$metadata_json" | jq -r '.uploader // "[不明]"')
         local video_id=$(echo "$metadata_json" | jq -r '.id // "NO_ID"')
-        
-        # 決定基礎 artist_name 的邏輯保持不變
         if [[ -n "$possible_artist" && "$possible_artist" != "null" ]]; then artist_name="$possible_artist"; else artist_name="$uploader_name"; fi;
-        
         log_message "INFO" "獲取到標題: '$video_title', 基礎藝術家: '$artist_name', 上傳者: '$uploader_name'"
 
-        # --- 下載音頻 ---
-        echo -e "${YELLOW}開始下載音頻：$video_title${RESET}"
-        local safe_title=$(echo "$video_title" | sed 's@[/\\:*?"<>|]@_@g'); local output_template="$DOWNLOAD_PATH/${safe_title} [${video_id}].%(ext)s"
-        local yt_dlp_dl_args=(yt-dlp -f bestaudio -o "$output_template" "$media_url" --newline --progress)
-        if ! "${yt_dlp_dl_args[@]}" 2> "$temp_dir/yt-dlp-dl.log"; then
-            log_message "ERROR" "音訊下載失敗"; echo -e "${RED}錯誤：音訊下載失敗${RESET}"; cat "$temp_dir/yt-dlp-dl.log"; rm -rf "$temp_dir"; return 1
-        fi
-        local yt_dlp_fn_args=(yt-dlp --get-filename -f bestaudio -o "$output_template" "$media_url"); audio_file=$("${yt_dlp_fn_args[@]}" 2>/dev/null)
-        if [ ! -f "$audio_file" ]; then
-             log_message "ERROR" "找不到下載的音頻檔案 '$audio_file'"; echo -e "${RED}錯誤：找不到下載的音頻檔案${RESET}"; rm -rf "$temp_dir"; return 1
-        fi
-        log_message "INFO" "音頻下載完成: $audio_file"
-        base_name="$(basename "$audio_file" | sed 's/\.[^.]*$//')"
-        wav_audio="$temp_dir/${base_name}.wav"
+        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+        # ★★★            核 心 改 造 區 塊              ★★★
+        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 
-        # --- 下載 YouTube 封面 ---
+        echo -e "${YELLOW}開始下載媒體 (策略：先取 MP4)...${RESET}"
+        log_message "INFO" "策略變更：將下載 MP4 檔案以便後續提取音訊，以繞過純音訊流封鎖。"
+        
+        # 定義臨時 MP4 檔案的路徑
+        local temp_video_file="$temp_dir/downloaded_video.mp4"
+        
+        # 準備新的 yt-dlp 參數，請求影音合一的 MP4
+        local yt_dlp_dl_args=(
+            yt-dlp
+            -f 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best' # 請求一個 MP4 格式，優先選擇高品質音訊
+            --merge-output-format mp4  # 確保最終容器是 MP4
+            -o "$temp_video_file"      # 下載到我們指定的臨時檔案
+            "$media_url"
+            --newline --progress
+        )
+
+        # 執行下載
+        if ! "${yt_dlp_dl_args[@]}" 2> "$temp_dir/yt-dlp-dl.log"; then
+            log_message "ERROR" "下載臨時 MP4 檔案失敗！詳見 $temp_dir/yt-dlp-dl.log"
+            echo -e "${RED}錯誤：下載臨時 MP4 失敗！${RESET}"
+            cat "$temp_dir/yt-dlp-dl.log" # 顯示詳細錯誤
+            rm -rf "$temp_dir"
+            return 1
+        fi
+
+        # 檢查臨時 MP4 檔案是否真的被創建
+        if [ ! -f "$temp_video_file" ]; then
+             log_message "ERROR" "yt-dlp 執行完畢，但未找到下載的臨時 MP4 檔案！"
+             echo -e "${RED}錯誤：找不到下載的臨時 MP4 檔案！${RESET}"
+             rm -rf "$temp_dir"
+             return 1
+        fi
+        
+        log_message "INFO" "臨時 MP4 下載完成: $temp_video_file"
+        
+        # 將 audio_file 變數指向我們下載好的臨時 MP4，以便後續步驟使用
+        audio_file="$temp_video_file"
+
+        # ★★★          改  造  結  束                ★★★
+        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+
+        # base_name 現在從影片標題生成，用於最終檔案
+        local safe_title=$(echo "$video_title" | sed 's@[/\\:*?"<>|]@_@g')
+        base_name="${safe_title} [${video_id}]"
+        wav_audio="$temp_dir/${safe_title}.wav" # WAV 檔名也使用清理後的標題
+
+        # --- 下載 YouTube 封面 (邏輯不變) ---
         echo -e "${YELLOW}下載 YouTube 封面 (備份)...${RESET}"
         cover_image="$temp_dir/${base_name}_youtube_cover.png"
         if ! download_high_res_thumbnail "$media_url" "$cover_image"; then
@@ -274,14 +289,17 @@ process_media() {
         fi
     fi
 
-    # --- 2. 轉換為 WAV ---
-    echo -e "${YELLOW}轉換音訊為 WAV 格式進行處理...${RESET}"
-    log_message "INFO" "轉換 '$audio_file' 為 WAV: $wav_audio"
+    # --- 2. 轉換為 WAV (此步驟現在會從 MP4 提取音訊) ---
+    echo -e "${YELLOW}正在從媒體檔案中提取音訊並轉換為 WAV...${RESET}"
+    log_message "INFO" "從 '$audio_file' 提取音訊為 WAV: $wav_audio"
+    # -vn 參數會自動忽略 MP4 中的影片部分，只處理音訊
     if ! ffmpeg -y -i "$audio_file" -vn -acodec pcm_s16le -ar 44100 -ac 2 "$wav_audio" > "$temp_dir/ffmpeg_wav.log" 2>&1; then
-        log_message "ERROR" "轉換為 WAV 失敗！"; echo -e "${RED}錯誤：無法轉換為 WAV 格式${RESET}"; cat "$temp_dir/ffmpeg_wav.log";
+        log_message "ERROR" "提取/轉換為 WAV 失敗！"; echo -e "${RED}錯誤：無法轉換為 WAV 格式${RESET}"; cat "$temp_dir/ffmpeg_wav.log";
+        # 即使失敗也要清理臨時 MP4
         [ "$is_local" = false ] && safe_remove "$audio_file"; rm -rf "$temp_dir"; return 1
     fi
     log_message "INFO" "轉換為 WAV 成功。"
+    # 轉換成功後，即可安全刪除臨時的 MP4 檔案
     [ "$is_local" = false ] && safe_remove "$audio_file"
 
     # --- 3. 調用 normalize_audio 函數 ---
