@@ -41,56 +41,77 @@ def log_message(level, message):
     print(f"[{level}] {message}", file=sys.stderr if level in ["ERROR", "WARN", "CRITICAL"] else sys.stdout)
 
 ####################################################################
-# clean_title 函數 (v2.0 - 增強分隔符處理)
+# clean_title 函數 (v2.1 - 針對日文格式與貪婪匹配的修正)
 ####################################################################
 def clean_title(title):
     log_message("DEBUG", f"開始清理標題: '{title}'")
+    
+    # --- 步驟 1: 預先移除括號內的通用無關資訊 (非貪婪) ---
+    # 使用 '*?' 進行非貪婪匹配，只移除成對括號內的內容
     cleaned = title
-    # --- 移除括號內的無關資訊 (邏輯不變) ---
     patterns_in_brackets = [
         r'official\s*(music\s*)?video', r'mv', r'pv', r'lyrics?\s*(video)?',
         r'audio', r'hd', r'hq', r'4k', r'8k', r'\d{3,4}p',
         r'visuali[sz]er', r'sub(title)?s?', r'cc', r'explicit', r'full\s*album',
         r'feat\.?.*', r'ft\.?.*',
         r'off\s*vocal', r'instrumental', r'主題歌', r'アニメ', r'映画',
-        r'original', r'ver\.?', r'edit', r'remix', r'live',
+        r'original', r'ver\.?', r'edit', 'remix', 'live', 'special',
     ]
     for pattern in patterns_in_brackets:
+        # 使用非貪婪匹配 *? 確保只刪除最近的配對括號內容
         cleaned = re.sub(r'[\(\（\[【][^)\）\]】]*?' + pattern + r'[^)\）\]】]*?[\)\）\]】]', '', cleaned, flags=re.IGNORECASE)
-    
-    # 移除清理後留下的空括號
+
+    # 移除清理後可能留下的空括號
     cleaned = re.sub(r'[\(\（\[【]\s*[\)\）\]】]', '', cleaned).strip()
-    
+
+    # --- 步驟 2: ★★★ 全新的藝術家/歌名分離邏輯 ★★★ ---
     artist_part = None
     title_part = cleaned
-    
-    # ★★★ 核心修改：增強分隔符處理 ★★★
-    # 分隔符列表，優先處理 ' - '，然後是 ' / '
-    separators = [r'\s+-\s+', r'\s+–\s+', r'\s+/\s+']
-    
-    for sep in separators:
-        # 使用正則表達式分割，maxsplit=1 確保只分割一次
-        parts = re.split(sep, cleaned, maxsplit=1)
-        if len(parts) == 2:
-            # 根據分隔符類型決定哪個是藝術家
-            if '/' in sep:
-                # 對於 'A / B' 格式，通常是 '歌名 / 歌手'
-                title_part = parts[0].strip()
-                artist_part = parts[1].strip()
-                log_message("DEBUG", f"  檢測到分隔符 '{sep.strip()}'，分離出標題: '{title_part}', 藝術家: '{artist_part}'")
-            else:
-                # 對於 'A - B' 格式，通常是 '歌手 - 歌名'
-                artist_part = parts[0].strip()
-                title_part = parts[1].strip()
-                log_message("DEBUG", f"  檢測到分隔符 '{sep.strip()}'，分離出藝術家: '{artist_part}', 標題: '{title_part}'")
-            break # 找到第一個匹配的分隔符後就停止
 
-    # --- 後續清理 (邏輯不變) ---
-    final_cleaned_title = title_part.strip()
-    # 移除所有類型的括號和引號
-    final_cleaned_title = re.sub(r'[\[【「『\(（].*?[\]】」』\)）]', '', final_cleaned_title).strip()
-    # 移除結尾的'-' 或 '_'
+    # 模式 1: 處理 A『B』 或 A「B」格式 (e.g., 月詠み『ヨダカ』)
+    # 捕獲引號外的部分作為藝術家，引號內的部分作為歌名
+    match = re.match(r'^(.*?)[「『](.+?)[」』]', cleaned)
+    if match:
+        artist_part = match.group(1).strip()
+        title_part = match.group(2).strip()
+        log_message("DEBUG", f"  檢測到 A『B』格式，分離出藝術家: '{artist_part}', 標題: '{title_part}'")
+    else:
+        # 模式 2: 處理 A - B 或 A / B 格式 (如果模式 1 未匹配)
+        separators = [r'\s+-\s+', r'\s+–\s+', r'\s+/\s+']
+        for sep in separators:
+            parts = re.split(sep, cleaned, maxsplit=1)
+            if len(parts) == 2:
+                if '/' in sep:
+                    # 'B / A' -> 歌名 / 歌手
+                    title_part = parts[0].strip()
+                    artist_part = parts[1].strip()
+                    log_message("DEBUG", f"  檢測到 B / A 分隔符，分離出標題: '{title_part}', 藝術家: '{artist_part}'")
+                else: # '-' or '–'
+                    # 'A - B' -> 歌手 - 歌名
+                    artist_part = parts[0].strip()
+                    title_part = parts[1].strip()
+                    log_message("DEBUG", f"  檢測到 A - B 分隔符，分離出藝術家: '{artist_part}', 標題: '{title_part}'")
+                break # 找到分隔符就停止
+
+    # --- 步驟 3: 後處理與最終清理 ---
+    
+    # 如果分離出了藝術家，但標題部分仍然混有藝術家名字，則清理
+    if artist_part and artist_part in title_part:
+        title_part = title_part.replace(artist_part, '').strip()
+        # 清理可能留下的分隔符
+        title_part = re.sub(r'^[\s-–/]+|[\s-–/]+$', '', title_part).strip()
+
+    final_cleaned_title = title_part
+    
+    # 移除所有剩餘的、未被識別為分離符的括號和引號
+    final_cleaned_title = re.sub(r'[\[【「『\]】」』]', '', final_cleaned_title).strip()
+    
+    # 移除結尾的通用詞彙，以防它們不在括號內
+    final_cleaned_title = re.sub(r'\s*(music\s*video|mv|pv)$', '', final_cleaned_title, flags=re.IGNORECASE).strip()
+    
+    # 移除結尾的無用符號
     final_cleaned_title = re.sub(r'[\s_-]+$', '', final_cleaned_title).strip()
+    
     # 再次清理多餘空格
     final_cleaned_title = re.sub(r'\s{2,}', ' ', final_cleaned_title).strip()
 
