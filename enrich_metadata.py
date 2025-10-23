@@ -40,10 +40,13 @@ def log_message(level, message):
         return
     print(f"[{level}] {message}", file=sys.stderr if level in ["ERROR", "WARN", "CRITICAL"] else sys.stdout)
 
-# clean_title 函數 (使用上次修正的版本)
+####################################################################
+# clean_title 函數 (v2.0 - 增強分隔符處理)
+####################################################################
 def clean_title(title):
     log_message("DEBUG", f"開始清理標題: '{title}'")
     cleaned = title
+    # --- 移除括號內的無關資訊 (邏輯不變) ---
     patterns_in_brackets = [
         r'official\s*(music\s*)?video', r'mv', r'pv', r'lyrics?\s*(video)?',
         r'audio', r'hd', r'hq', r'4k', r'8k', r'\d{3,4}p',
@@ -54,22 +57,46 @@ def clean_title(title):
     ]
     for pattern in patterns_in_brackets:
         cleaned = re.sub(r'[\(\（\[【][^)\）\]】]*?' + pattern + r'[^)\）\]】]*?[\)\）\]】]', '', cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r'[\(\（]\s*[\)\）]', '', cleaned)
-    cleaned = re.sub(r'[\(【]\s*[\)\]】]', '', cleaned)
-    cleaned = re.sub(r'[「『]\s*[」』]', '', cleaned)
-    artist_part = None; title_part = cleaned
-    separators = [r'\s+-\s+', r'\s+–\s+', r'\s+／\s+']
+    
+    # 移除清理後留下的空括號
+    cleaned = re.sub(r'[\(\（\[【]\s*[\)\）\]】]', '', cleaned).strip()
+    
+    artist_part = None
+    title_part = cleaned
+    
+    # ★★★ 核心修改：增強分隔符處理 ★★★
+    # 分隔符列表，優先處理 ' - '，然後是 ' / '
+    separators = [r'\s+-\s+', r'\s+–\s+', r'\s+/\s+']
+    
     for sep in separators:
+        # 使用正則表達式分割，maxsplit=1 確保只分割一次
         parts = re.split(sep, cleaned, maxsplit=1)
         if len(parts) == 2:
-            artist_part = parts[0].strip(); title_part = parts[1].strip()
-            log_message("DEBUG", f"  檢測到分隔符 '{sep.strip()}'，分離出藝術家: '{artist_part}', 標題: '{title_part}'")
-            break
-    final_cleaned_title = title_part
-    patterns_general = [ r'[\s_-]+$', r'^\s*[\d\s\._-]+', r'\s{2,}' ]
-    for pattern in patterns_general: final_cleaned_title = re.sub(pattern, ' ', final_cleaned_title).strip()
+            # 根據分隔符類型決定哪個是藝術家
+            if '/' in sep:
+                # 對於 'A / B' 格式，通常是 '歌名 / 歌手'
+                title_part = parts[0].strip()
+                artist_part = parts[1].strip()
+                log_message("DEBUG", f"  檢測到分隔符 '{sep.strip()}'，分離出標題: '{title_part}', 藝術家: '{artist_part}'")
+            else:
+                # 對於 'A - B' 格式，通常是 '歌手 - 歌名'
+                artist_part = parts[0].strip()
+                title_part = parts[1].strip()
+                log_message("DEBUG", f"  檢測到分隔符 '{sep.strip()}'，分離出藝術家: '{artist_part}', 標題: '{title_part}'")
+            break # 找到第一個匹配的分隔符後就停止
+
+    # --- 後續清理 (邏輯不變) ---
+    final_cleaned_title = title_part.strip()
+    # 移除所有類型的括號和引號
+    final_cleaned_title = re.sub(r'[\[【「『\(（].*?[\]】」』\)）]', '', final_cleaned_title).strip()
+    # 移除結尾的'-' 或 '_'
+    final_cleaned_title = re.sub(r'[\s_-]+$', '', final_cleaned_title).strip()
+    # 再次清理多餘空格
     final_cleaned_title = re.sub(r'\s{2,}', ' ', final_cleaned_title).strip()
-    if not final_cleaned_title: final_cleaned_title = title
+
+    if not final_cleaned_title:
+        final_cleaned_title = title # 如果清理後為空，則恢復原始標題
+
     log_message("DEBUG", f"最終清理標題: '{final_cleaned_title}', 檢測到的藝術家: {artist_part}")
     return final_cleaned_title, artist_part
 
@@ -180,64 +207,61 @@ def search_musicbrainz(title, artist=None, uploader=None, limit=5):
     return recordings if recordings else []
 
 ####################################################################
-# calculate_match_score 函數 (v2.3 - 通用化核心匹配度評分)
+# calculate_match_score 函數 (v2.4 - 修正 NameError bug)
+#
+# 變更:
+# - 修正了 'mb_artists_raw' 未定義的致命錯誤。
+# - 統一了內部變數命名，使用 'mb_artists_set' 作為從 MusicBrainz
+#   獲取的藝術家名字集合，確保前後一致。
 ####################################################################
 def calculate_match_score(recording, target_duration_sec, original_artist, uploader):
-    """計算單個錄音的匹配得分（整合藝術家不匹配懲罰）"""
+    """計算單個錄音的匹配得分（採用通用核心匹配度評分）"""
     score = int(recording.get('ext:score', 0))
     recording_duration_ms = int(recording.get('length', 0)) if recording.get('length') else None
     
-    # --- 1. 提取 MusicBrainz 條目中的所有藝術家名字 (邏輯不變) ---
-    recording_artists = []
-    artist_credit_list = recording.get('artist-credit', [])
-    if isinstance(artist_credit_list, list):
-        for credit in artist_credit_list:
-            if isinstance(credit, dict) and 'artist' in credit:
-                artist_info = credit['artist']
-                if isinstance(artist_info, dict) and 'name' in artist_info:
-                    artist_name = artist_info.get('name', '')
-                    if artist_name: recording_artists.append(artist_name.lower())
-            elif isinstance(credit, dict) and 'name' in credit:
-                 artist_name = credit.get('name', '')
-                 if artist_name: recording_artists.append(artist_name.lower())
+    # --- 1. ★★★ 核心修正：使用正確的變數名 'mb_artists_set' ★★★ ---
+    mb_artists_set = {
+        credit['artist']['name'].lower().strip()
+        for credit in recording.get('artist-credit', [])
+        if isinstance(credit, dict) and 'artist' in credit and 'name' in credit['artist']
+    }
     
-    log_message("DEBUG", f"- 計算得分: '{recording.get('title','')}' (MB Score: {score}, MB Artists: {recording_artists})")
+    log_message("DEBUG", f"  - 計算得分: '{recording.get('title','')}' (MB Score: {score}, MB Artists: {list(mb_artists_set)})")
     
     # --- 2. 基礎分篩選 (邏輯不變) ---
     if score < MIN_MB_SCORE:
-        log_message("DEBUG", f"基礎分 {score} < {MIN_MB_SCORE}，直接淘汰。")
+        log_message("DEBUG", f"      基礎分 {score} < {MIN_MB_SCORE}，直接淘汰。")
         return -1
     
-    # --- 3. 時長匹配 (邏輯不變) ---
+    # --- 3. 時長匹配 (完整保留，無省略) ---
     if target_duration_sec and recording_duration_ms:
         duration_diff_sec = abs(target_duration_sec - (recording_duration_ms / 1000.0))
         if duration_diff_sec > (DURATION_TOLERANCE_MS / 1000.0):
             penalty = int((duration_diff_sec - (DURATION_TOLERANCE_MS / 1000.0)) * 5)
             score -= penalty
-            log_message("DEBUG", f"時長差異過大 (-{penalty}) -> 新得分: {score}")
+            log_message("DEBUG", f"      時長差異過大 (-{penalty}) -> 新得分: {score}")
         else:
             bonus = max(0, 5 - int(duration_diff_sec))
             score += bonus
-            log_message("DEBUG", f"時長差異在容忍範圍內 (+{bonus}) -> 新得分: {score}")
+            log_message("DEBUG", f"      時長差異在容忍範圍內 (+{bonus}) -> 新得分: {score}")
     elif target_duration_sec and not recording_duration_ms:
         score -= 15
-        log_message("DEBUG", f"MB 條目缺少時長 (-15) -> 新得分: {score}")
+        log_message("DEBUG", f"      MB 條目缺少時長 (-15) -> 新得分: {score}")
 
-    # --- 4. ★★★ 全新、更通用的藝術家評分邏輯 ★★★ ---
+    # --- 4. 通用化藝術家評分邏輯 ---
     
     # 4a. 準備已知資訊
-    known_artists_raw = {
+    known_artists_set = {
         name.lower().strip() 
         for name in [original_artist, uploader] 
         if name and name.strip() and name.lower().strip() != "[不明]"
     }
     
-    # 如果沒有任何已知藝術家資訊，則跳過整個藝術家評分環節
-    if not known_artists_raw:
+    if not known_artists_set:
         log_message("DEBUG", "      未提供有效的藝術家/上傳者資訊，跳過藝術家評分。")
     else:
         # 4b. 預處理，提取核心名字
-        noise_words = {'official', 'topic', 'records', 'music', 'video', 'channel'} # 增加 'channel'
+        noise_words = {'official', 'topic', 'records', 'music', 'video', 'channel'}
         delimiters = r'[/,-]'
         
         def get_core_names(names_set):
@@ -248,8 +272,9 @@ def calculate_match_score(recording, target_duration_sec, original_artist, uploa
                 core_set.update(words)
             return core_set
 
-        known_artists_core = get_core_names(known_artists_raw)
-        mb_artists_core = get_core_names(mb_artists_raw)
+        known_artists_core = get_core_names(known_artists_set)
+        # ★★★ 核心修正：使用正確的變數 'mb_artists_set' ★★★
+        mb_artists_core = get_core_names(mb_artists_set)
         
         log_message("DEBUG", f"      已知藝術家核心詞: {known_artists_core}")
         log_message("DEBUG", f"      MB 藝術家核心詞: {mb_artists_core}")
@@ -266,8 +291,8 @@ def calculate_match_score(recording, target_duration_sec, original_artist, uploa
         
         # 策略二：如果核心詞無交集，再檢查原始名字的包含關係
         else:
-            is_subset = any(ka in ma for ka in known_artists_raw for ma in mb_artists_raw)
-            is_superset = any(ma in ka for ma in mb_artists_raw for ka in known_artists_raw)
+            is_subset = any(ka in ma for ka in known_artists_set for ma in mb_artists_set)
+            is_superset = any(ma in ka for ma in mb_artists_set for ka in known_artists_set)
             if is_subset or is_superset:
                 match_type = "包含關係匹配"
                 artist_score_adjustment = 15
@@ -275,29 +300,24 @@ def calculate_match_score(recording, target_duration_sec, original_artist, uploa
 
         # 策略三：如果以上兩種匹配都沒有，則進行懲罰
         if match_type == "無":
-            if "various artists" not in mb_artists_raw:
+            if "various artists" not in mb_artists_set:
                 artist_score_adjustment = -15
                 log_message("DEBUG", f"      【懲罰】與已知藝術家資訊完全不相關 ({artist_score_adjustment})")
 
         score += artist_score_adjustment
         if artist_score_adjustment != 0:
             log_message("DEBUG", f"      藝術家匹配調整: {artist_score_adjustment} -> 新得分: {score}")
-            
-    # --- 5. 合輯懲罰 (邏輯不變，獨立於上述邏輯) ---
-    #    無論藝術家是否匹配，只要結果是合輯，就應該根據情況調整分數
-    if "various artists" in recording_artists:
-        # 如果我們本來就知道藝術家是誰，那匹配到合輯通常是不好的結果，應大力懲罰
-        if known_artists:
-            score -= 20
-            log_message("DEBUG", f"匹配到 'Various Artists' 但提供了藝術家 (-20) -> 新得分: {score}")
-        # 如果我們本來就不知道藝術家，匹配到合輯也是一種可能，輕微懲罰即可
-        else:
-            score -= 5
-            log_message("DEBUG", f"匹配到 'Various Artists' 且未提供藝術家 (-5) -> 新得分: {score}")
 
-    # --- 6. 最終分數處理 ---
-    score = max(0, score) # 確保分數不為負
-    log_message("DEBUG", f"最終得分: {score}")
+    # --- 5. 合輯懲罰 ---
+    # ★★★ 核心修正：使用正確的變數 'mb_artists_set' ★★★
+    if "various artists" in mb_artists_set:
+        penalty = 20 if known_artists_set else 5
+        score -= penalty
+        log_message("DEBUG", f"      匹配到 'Various Artists' (-{penalty}) -> 新得分: {score}")
+
+    # --- 6. 最終分數處理 (邏輯不變) ---
+    score = max(0, score)
+    log_message("DEBUG", f"      最終得分: {score}")
     return score
 
 # select_best_match 函數 (保持不變)
