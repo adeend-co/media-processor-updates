@@ -130,51 +130,34 @@ def get_audio_duration(file_path):
     except mutagen.MutagenError as e: log_message("WARN", f"無法讀取檔案時長 '{file_path}': {e}")
     return None
 
-
 ####################################################################
-# search_musicbrainz 函數 (v2.2 - 通用化藝術家列表生成)
+# search_musicbrainz 函數 (v2.3 - 引入別名搜尋)
 #
 # 新邏輯:
-# 1. 收集所有可能的藝術家名字來源 (detected, uploader, artist)。
-# 2. 對每個名字進行標準化清理 (轉小寫、去首尾空格)。
-# 3. 使用集合 (set) 進行簡單、高效的去重。
-# 4. 最終列表按長度倒序排列，優先嘗試資訊最完整的名字進行搜索。
-#    - 這不再是篩選，而僅僅是定義搜索的【優先順序】。
+# - 在策略 1 和 3 的 AND 查詢中，除了搜索 artistname，
+#   還會加入 OR alias:"..."，擴大藝術家的匹配範圍。
 ####################################################################
 def search_musicbrainz(title, artist=None, uploader=None, limit=5):
-    """在 MusicBrainz 上搜索錄音 - 採用更通用的藝術家列表生成策略"""
+    """在 MusicBrainz 上搜索錄音 - 引入別名(alias)搜索以處理跨語言問題"""
     recordings = None
     cleaned_title, detected_artist = clean_title(title)
 
-    # --- 1. 收集所有可能的藝術家名字來源 ---
-    potential_artists = []
-    if detected_artist: potential_artists.append(detected_artist)
-    if uploader: potential_artists.append(uploader)
-    if artist: potential_artists.append(artist)
-
-    # --- 2. 標準化清理與高效去重 ---
-    # 對每個名字轉為小寫並去除首尾空格，然後放入集合中自動去重
-    unique_artists_set = {
-        name.lower().strip() 
-        for name in potential_artists 
-        if name and name.strip() and name.lower().strip() != "[不明]"
-    }
-
-    # --- 3. 確定最終搜索順序 ---
-    # 將去重後的藝術家列表按長度倒序排列。
-    # 這確保了像 "ヨルシカ / n-buna official" 這樣更具體的長名字會被優先嘗試，
-    # 提高了首次搜索的命中率，同時也保留了 "ヨルシカ" 作為後備選項。
+    # --- 藝術家列表生成邏輯不變 ---
+    potential_artists = [name for name in [detected_artist, uploader, artist] if name and name.strip() and name.lower().strip() != "[不明]"]
+    unique_artists_set = {name.lower().strip() for name in potential_artists}
     artists_to_try = sorted(list(unique_artists_set), key=len, reverse=True)
 
     log_message("DEBUG", f"將用於搜索的標題: '{cleaned_title}'")
     log_message("DEBUG", f"最終嘗試的藝術家列表 (按長度優先): {artists_to_try}")
 
-    # --- 策略 1: 嘗試清理後的標題 + 藝術家列表中的每個名字 ---
+    # --- 策略 1: ★★★ 核心修改：加入別名(alias)搜索 ★★★ ---
     if artists_to_try:
         for i, artist_try in enumerate(artists_to_try):
-            query_parts = [f'recording:"{cleaned_title}"', f'artistname:"{artist_try}"']
-            query = " AND ".join(query_parts)
-            log_message("INFO", f"策略 1.{i+1}: 正在搜索 (清理標題+'{artist_try}'): {query}")
+            # 構建一個更複雜的藝術家查詢，同時匹配名字和別名
+            artist_query = f'(artistname:"{artist_try}" OR alias:"{artist_try}")'
+            query = f'recording:"{cleaned_title}" AND {artist_query}'
+            
+            log_message("INFO", f"策略 1.{i+1}: 正在搜索 (含別名): {query}")
             try:
                 time.sleep(API_DELAY)
                 result = musicbrainzngs.search_recordings(query=query, limit=limit)
@@ -185,31 +168,29 @@ def search_musicbrainz(title, artist=None, uploader=None, limit=5):
             except Exception as e:
                 log_message("ERROR", f"策略 1.{i+1} 搜索出錯: {e}")
 
-    # --- 策略 2: 如果策略 1 所有嘗試都失敗，僅用清理後的標題 ---
+    # --- 後續策略基本不變，但策略3也應加入別名搜索 ---
     if not recordings:
+        # 策略 2: 僅標題
         query = f'recording:"{cleaned_title}"'
         log_message("INFO", f"策略 2: 正在搜索 (僅清理標題): {query}")
         try:
             time.sleep(API_DELAY)
             result = musicbrainzngs.search_recordings(query=query, limit=limit)
             recordings = result.get('recording-list', [])
-            log_message("INFO", f"策略 2 返回 {len(recordings)} 個結果。")
         except Exception as e: log_message("ERROR", f"策略 2 搜索出錯: {e}")
 
-    # --- 策略 3: 如果還失敗，使用原始標題和藝術家列表 (備份) ---
     if not recordings and artists_to_try:
+        # 策略 3: 原始標題 + (藝術家名 OR 別名)
         for i, artist_try in enumerate(artists_to_try):
-             query_parts = [f'recording:"{title}"', f'artistname:"{artist_try}"'] # 使用原始標題
-             query = " AND ".join(query_parts)
-             log_message("INFO", f"策略 3.{i+1}: 正在搜索 (原始標題+'{artist_try}'): {query}")
+             artist_query = f'(artistname:"{artist_try}" OR alias:"{artist_try}")'
+             query = f'recording:"{title}" AND {artist_query}' # 使用原始標題
+             log_message("INFO", f"策略 3.{i+1}: 正在搜索 (原始標題 + 含別名): {query}")
              try:
                  time.sleep(API_DELAY)
                  result = musicbrainzngs.search_recordings(query=query, limit=limit)
                  recordings = result.get('recording-list', [])
-                 log_message("INFO", f"策略 3.{i+1} 返回 {len(recordings)} 個結果。")
-                 if recordings: break # 找到即停止
+                 if recordings: break
              except Exception as e: log_message("ERROR", f"策略 3.{i+1} 搜索出錯: {e}")
-
 
     # --- 策略 4: 最後嘗試通用模糊搜索 (使用清理後的標題和檢測到的/傳入的藝術家) ---
     if not recordings:
@@ -228,63 +209,61 @@ def search_musicbrainz(title, artist=None, uploader=None, limit=5):
     return recordings if recordings else []
 
 ####################################################################
-# calculate_match_score 函數 (v2.4 - 修正 NameError bug)
+# calculate_match_score 函數 (v2.5.1 - 完整版，排版修正)
 #
 # 變更:
-# - 修正了 'mb_artists_raw' 未定義的致命錯誤。
-# - 統一了內部變數命名，使用 'mb_artists_set' 作為從 MusicBrainz
-#   獲取的藝術家名字集合，確保前後一致。
+# - 移除 log_message 函數調用中 f-string 內部的多餘前導空格。
+# - 確保函數所有邏輯完整，無任何省略。
 ####################################################################
 def calculate_match_score(recording, target_duration_sec, original_artist, uploader):
-    """計算單個錄音的匹配得分（採用通用核心匹配度評分）"""
+    """計算單個錄音的匹配得分（引入別名(alias)評分）"""
     score = int(recording.get('ext:score', 0))
     recording_duration_ms = int(recording.get('length', 0)) if recording.get('length') else None
     
-    # --- 1. ★★★ 核心修正：使用正確的變數名 'mb_artists_set' ★★★ ---
-    mb_artists_set = {
-        credit['artist']['name'].lower().strip()
-        for credit in recording.get('artist-credit', [])
-        if isinstance(credit, dict) and 'artist' in credit and 'name' in credit['artist']
-    }
+    # --- 1. 提取 MB 藝術家名字及其所有別名 ---
+    mb_artists_set = set()
+    mb_aliases_set = set()
+    for credit in recording.get('artist-credit', []):
+        if isinstance(credit, dict) and 'artist' in credit:
+            artist_info = credit['artist']
+            if 'name' in artist_info:
+                mb_artists_set.add(artist_info['name'].lower().strip())
+            if 'alias-list' in artist_info:
+                for alias in artist_info['alias-list']:
+                    if 'alias' in alias:
+                        mb_aliases_set.add(alias['alias'].lower().strip())
+
+    log_message("DEBUG", f"- 計算得分: '{recording.get('title','')}' (MB Score: {score}, MB Artists: {list(mb_artists_set)}, Aliases: {list(mb_aliases_set)})")
     
-    log_message("DEBUG", f"  - 計算得分: '{recording.get('title','')}' (MB Score: {score}, MB Artists: {list(mb_artists_set)})")
-    
-    # --- 2. 基礎分篩選 (邏輯不變) ---
+    # --- 2. 基礎分篩選 ---
     if score < MIN_MB_SCORE:
-        log_message("DEBUG", f"      基礎分 {score} < {MIN_MB_SCORE}，直接淘汰。")
+        log_message("DEBUG", f"基礎分 {score} < {MIN_MB_SCORE}，直接淘汰。")
         return -1
     
-    # --- 3. 時長匹配 (完整保留，無省略) ---
+    # --- 3. 時長匹配 ---
     if target_duration_sec and recording_duration_ms:
         duration_diff_sec = abs(target_duration_sec - (recording_duration_ms / 1000.0))
         if duration_diff_sec > (DURATION_TOLERANCE_MS / 1000.0):
             penalty = int((duration_diff_sec - (DURATION_TOLERANCE_MS / 1000.0)) * 5)
             score -= penalty
-            log_message("DEBUG", f"      時長差異過大 (-{penalty}) -> 新得分: {score}")
+            log_message("DEBUG", f"時長差異過大 (-{penalty}) -> 新得分: {score}")
         else:
             bonus = max(0, 5 - int(duration_diff_sec))
             score += bonus
-            log_message("DEBUG", f"      時長差異在容忍範圍內 (+{bonus}) -> 新得分: {score}")
+            log_message("DEBUG", f"時長差異在容忍範圍內 (+{bonus}) -> 新得分: {score}")
     elif target_duration_sec and not recording_duration_ms:
         score -= 15
-        log_message("DEBUG", f"      MB 條目缺少時長 (-15) -> 新得分: {score}")
+        log_message("DEBUG", f"MB 條目缺少時長 (-15) -> 新得分: {score}")
 
-    # --- 4. 通用化藝術家評分邏輯 ---
-    
-    # 4a. 準備已知資訊
-    known_artists_set = {
-        name.lower().strip() 
-        for name in [original_artist, uploader] 
-        if name and name.strip() and name.lower().strip() != "[不明]"
-    }
+    # --- 4. 藝術家評分邏輯 ---
+    known_artists_set = {name.lower().strip() for name in [original_artist, uploader] if name and name.strip() and name.lower().strip() != "[不明]"}
     
     if not known_artists_set:
-        log_message("DEBUG", "      未提供有效的藝術家/上傳者資訊，跳過藝術家評分。")
+        log_message("DEBUG", "未提供有效的藝術家/上傳者資訊，跳過藝術家評分。")
     else:
         # 4b. 預處理，提取核心名字
         noise_words = {'official', 'topic', 'records', 'music', 'video', 'channel'}
         delimiters = r'[/,-]'
-        
         def get_core_names(names_set):
             core_set = set()
             for name in names_set:
@@ -294,51 +273,46 @@ def calculate_match_score(recording, target_duration_sec, original_artist, uploa
             return core_set
 
         known_artists_core = get_core_names(known_artists_set)
-        # ★★★ 核心修正：使用正確的變數 'mb_artists_set' ★★★
-        mb_artists_core = get_core_names(mb_artists_set)
+        all_mb_names = mb_artists_set.union(mb_aliases_set)
+        mb_artists_core = get_core_names(all_mb_names)
         
-        log_message("DEBUG", f"      已知藝術家核心詞: {known_artists_core}")
-        log_message("DEBUG", f"      MB 藝術家核心詞: {mb_artists_core}")
+        log_message("DEBUG", f"已知藝術家核心詞: {known_artists_core}")
+        log_message("DEBUG", f"MB 藝術家+別名核心詞: {mb_artists_core}")
 
         # 4c. 評分與懲罰
         artist_score_adjustment = 0
         match_type = "無"
-
-        # 策略一：檢查核心詞彙是否有交集
+        
         if known_artists_core.intersection(mb_artists_core):
             match_type = "核心詞匹配"
             artist_score_adjustment = 25
-            log_message("DEBUG", f"      【強匹配】核心詞彙有交集: {known_artists_core.intersection(mb_artists_core)} (+{artist_score_adjustment})")
-        
-        # 策略二：如果核心詞無交集，再檢查原始名字的包含關係
+            log_message("DEBUG", f"【強匹配】核心詞彙有交集: {known_artists_core.intersection(mb_artists_core)} (+{artist_score_adjustment})")
         else:
-            is_subset = any(ka in ma for ka in known_artists_set for ma in mb_artists_set)
-            is_superset = any(ma in ka for ma in mb_artists_set for ka in known_artists_set)
+            is_subset = any(ka in ma for ka in known_artists_set for ma in all_mb_names)
+            is_superset = any(ma in ka for ma in all_mb_names for ka in known_artists_set)
             if is_subset or is_superset:
                 match_type = "包含關係匹配"
                 artist_score_adjustment = 15
-                log_message("DEBUG", f"      【普通匹配】原始名字存在包含關係 (子集: {is_subset}, 超集: {is_superset}) (+{artist_score_adjustment})")
-
-        # 策略三：如果以上兩種匹配都沒有，則進行懲罰
+                log_message("DEBUG", f"【普通匹配】原始名字存在包含關係 (+{artist_score_adjustment})")
+        
         if match_type == "無":
             if "various artists" not in mb_artists_set:
                 artist_score_adjustment = -15
-                log_message("DEBUG", f"      【懲罰】與已知藝術家資訊完全不相關 ({artist_score_adjustment})")
-
+            log_message("DEBUG", f"【懲罰】與已知藝術家資訊完全不相關 ({artist_score_adjustment})")
+        
         score += artist_score_adjustment
         if artist_score_adjustment != 0:
-            log_message("DEBUG", f"      藝術家匹配調整: {artist_score_adjustment} -> 新得分: {score}")
+            log_message("DEBUG", f"藝術家匹配調整: {artist_score_adjustment} -> 新得分: {score}")
 
     # --- 5. 合輯懲罰 ---
-    # ★★★ 核心修正：使用正確的變數 'mb_artists_set' ★★★
     if "various artists" in mb_artists_set:
         penalty = 20 if known_artists_set else 5
         score -= penalty
-        log_message("DEBUG", f"      匹配到 'Various Artists' (-{penalty}) -> 新得分: {score}")
+        log_message("DEBUG", f"匹配到 'Various Artists' (-{penalty}) -> 新得分: {score}")
 
-    # --- 6. 最終分數處理 (邏輯不變) ---
+    # --- 6. 最終分數處理 ---
     score = max(0, score)
-    log_message("DEBUG", f"      最終得分: {score}")
+    log_message("DEBUG", f"最終得分: {score}")
     return score
 
 # select_best_match 函數 (保持不變)
