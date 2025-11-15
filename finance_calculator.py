@@ -16,7 +16,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v3.3.4"  # Feat: Implement Auto-Corrective Residual Refinement (ACRR)
+SCRIPT_VERSION = "v3.3.5"  # Feat: Implement Auto-Corrective Residual Refinement (ACRR)
 SCRIPT_UPDATE_DATE = "2025-11-15"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -2344,10 +2344,8 @@ def run_autocorrective_residual_refinement(historical_pred, y_true, steps_ahead)
     """
     分析主模型的歷史殘差，並預測未來的殘差以進行最終校正。
     """
-    initial_residuals = y_true - historical_pred
-    
     # 【修正】強制轉換為 NumPy Array 以確保後續操作的兼容性
-    initial_residuals = np.asarray(initial_residuals)
+    initial_residuals = np.asarray(y_true - historical_pred)
     
     if len(initial_residuals) < 3:
         return np.zeros(steps_ahead), np.zeros_like(historical_pred), False
@@ -2472,6 +2470,10 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         num_months = len(analysis_data)
         data, x = analysis_data, np.arange(1, num_months + 1)
         
+        # ---【v3.3.0 錯誤修正】---
+        # 無論何種路徑，都先初始化信賴區間變數，以防 UnboundLocalError
+        lower_seq, upper_seq = None, None
+
         if num_months >= 36:
             method_used = " (基於動態策略集成法)"
             
