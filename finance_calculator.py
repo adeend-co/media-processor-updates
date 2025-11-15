@@ -16,7 +16,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v3.3.3"  # Feat: Implement Auto-Corrective Residual Refinement (ACRR)
+SCRIPT_VERSION = "v3.3.4"  # Feat: Implement Auto-Corrective Residual Refinement (ACRR)
 SCRIPT_UPDATE_DATE = "2025-11-15"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -2339,19 +2339,21 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
 
     return future_pred_final_seq, historical_pred_final, effective_base_weights, meta_model_weights_for_report, lower_seq, upper_seq, historical_base_preds_df
 
-# ---【v3.3.0 新增與修正】殘差自動校正引擎 (ACRR) ---
+# ---【v3.3.0 核心修正】殘差自動校正引擎 (ACRR) ---
 def run_autocorrective_residual_refinement(historical_pred, y_true, steps_ahead):
     """
     分析主模型的歷史殘差，並預測未來的殘差以進行最終校正。
     """
     initial_residuals = y_true - historical_pred
     
+    # 【修正】強制轉換為 NumPy Array 以確保後續操作的兼容性
+    initial_residuals = np.asarray(initial_residuals)
+    
     if len(initial_residuals) < 3:
         return np.zeros(steps_ahead), np.zeros_like(historical_pred), False
 
-    # 【修正】確保轉換為 NumPy Array
-    X = np.asarray(initial_residuals[:-1]).reshape(-1, 1)
-    y = np.asarray(initial_residuals[1:])
+    X = initial_residuals[:-1].reshape(-1, 1)
+    y = initial_residuals[1:]
 
     try:
         slope, intercept, _, _, _ = linregress(X.flatten(), y)
@@ -2362,7 +2364,6 @@ def run_autocorrective_residual_refinement(historical_pred, y_true, steps_ahead)
         return np.zeros(steps_ahead), np.zeros_like(historical_pred), False
         
     # --- 計算對歷史預測的修正 ---
-    # 預測 t 時刻的誤差，基於 t-1 時刻的真實誤差
     historical_correction = intercept + slope * initial_residuals[:-1]
     
     # --- 迭代預測未來的誤差 ---
@@ -2374,8 +2375,7 @@ def run_autocorrective_residual_refinement(historical_pred, y_true, steps_ahead)
         residual_forecast.append(next_residual)
         last_known_residual = next_residual
 
-    # 構造完整的歷史修正陣列（第一個值無修正，為0）
-    full_historical_correction = np.zeros_like(historical_pred)
+    full_historical_correction = np.zeros_like(historical_pred, dtype=float)
     full_historical_correction[1:] = historical_correction
 
     return np.array(residual_forecast), full_historical_correction, True
