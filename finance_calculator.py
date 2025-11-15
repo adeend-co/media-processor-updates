@@ -16,7 +16,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v3.3.2"  # Feat: Implement Auto-Corrective Residual Refinement (ACRR)
+SCRIPT_VERSION = "v3.3.3"  # Feat: Implement Auto-Corrective Residual Refinement (ACRR)
 SCRIPT_UPDATE_DATE = "2025-11-15"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -2339,43 +2339,47 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
 
     return future_pred_final_seq, historical_pred_final, effective_base_weights, meta_model_weights_for_report, lower_seq, upper_seq, historical_base_preds_df
 
-# ---【v3.3.0 新增】殘差自動校正引擎 (ACRR) ---
+# ---【v3.3.0 新增與修正】殘差自動校正引擎 (ACRR) ---
 def run_autocorrective_residual_refinement(historical_pred, y_true, steps_ahead):
     """
     分析主模型的歷史殘差，並預測未來的殘差以進行最終校正。
     """
     initial_residuals = y_true - historical_pred
     
-    # 至少需要3個數據點才能建立 lag-1 的關係
     if len(initial_residuals) < 3:
-        return np.zeros(steps_ahead), False
+        return np.zeros(steps_ahead), np.zeros_like(historical_pred), False
 
-    # 建立一個簡單的 AR(1) 模型來預測殘差
-    # X 是前一期的殘差, y 是當期的殘差
-    X = initial_residuals[:-1].reshape(-1, 1)
-    y = initial_residuals[1:]
+    # 【修正】確保轉換為 NumPy Array
+    X = np.asarray(initial_residuals[:-1]).reshape(-1, 1)
+    y = np.asarray(initial_residuals[1:])
 
     try:
-        # 使用線性迴歸來找到 slope 和 intercept
         slope, intercept, _, _, _ = linregress(X.flatten(), y)
     except ValueError:
-        return np.zeros(steps_ahead), False
+        return np.zeros(steps_ahead), np.zeros_like(historical_pred), False
 
-    # 檢查自相關性是否足夠顯著，避免對隨機雜訊過擬合
-    # 如果 slope 的絕對值小於顯著性邊界，則不進行校正
     if abs(slope) < (2 / np.sqrt(len(y))):
-        return np.zeros(steps_ahead), False
+        return np.zeros(steps_ahead), np.zeros_like(historical_pred), False
         
-    # 從最後一個已知的殘差開始，迭代預測未來的殘差
+    # --- 計算對歷史預測的修正 ---
+    # 預測 t 時刻的誤差，基於 t-1 時刻的真實誤差
+    historical_correction = intercept + slope * initial_residuals[:-1]
+    
+    # --- 迭代預測未來的誤差 ---
     residual_forecast = []
     last_known_residual = initial_residuals[-1]
     
     for _ in range(steps_ahead):
         next_residual = intercept + slope * last_known_residual
         residual_forecast.append(next_residual)
-        last_known_residual = next_residual # 更新為剛預測出的值，用於下一次預測
+        last_known_residual = next_residual
 
-    return np.array(residual_forecast), True
+    # 構造完整的歷史修正陣列（第一個值無修正，為0）
+    full_historical_correction = np.zeros_like(historical_pred)
+    full_historical_correction[1:] = historical_correction
+
+    return np.array(residual_forecast), full_historical_correction, True
+
 
 # --- 主要分析與預測函數 ---
 def analyze_and_predict(file_paths_str: str, no_color: bool):
@@ -2552,11 +2556,10 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         
         # ---【v3.3.0 核心升級】殘差自動校正 ---
         if historical_pred is not None and len(historical_pred) == len(data):
-            residual_forecast, acrr_activated = run_autocorrective_residual_refinement(historical_pred, data, steps_ahead)
+            residual_forecast, historical_correction, acrr_activated = run_autocorrective_residual_refinement(historical_pred, data, steps_ahead)
             if acrr_activated:
                 future_pred_seq += residual_forecast
-                # 校正歷史預測以獲得更精確的最終殘差
-                historical_pred[1:] += (slope * (data[:-1] - historical_pred[:-1])) + intercept
+                historical_pred += historical_correction
                 method_used += " + ACRR"
         
         if future_pred_seq is not None:
@@ -2592,10 +2595,8 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 if len(data_clean) > 0 and sum_abs_clean > 1e-9:
                     historical_wape_robust = (np.sum(np.abs(residuals_clean)) / sum_abs_clean) * 100
         
-        # MPI 評估 (僅在 >= 36個月時進行，因 CV 依賴此條件)
         if num_months >= 36 and mpi_results is None:
-            fss_results = calculate_fss(prequential_results, mean_expense_for_report)
-            fss_score = fss_results.get('fss_score', 0)
+            fss_score = calculate_fss(prequential_results, mean_expense_for_report).get('fss_score', 0)
             erai_results = perform_internal_benchmarking(data, historical_pred, is_shock_flags)
             temp_mpi_score = calculate_mpi_3_0_and_rate(data, historical_pred, historical_wape, erai_results['erai_score'], 100, fss_score)['mpi_score']
             mpi_percentile_rank = percentileofscore(cv_mpi_scores, temp_mpi_score, kind='rank') if cv_mpi_scores else 0
