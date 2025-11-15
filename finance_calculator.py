@@ -9,14 +9,14 @@
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新 v3.3.2：引入殘差自動校正引擎 (ACRR)，使模型能動態學習並修正自身             #
-#             的系統性預測誤差，進一步提升預測準確性與適應性。                          #
+# 更新 v3.3.6：為殘差自動校正引擎 (ACRR) 設置36個月的啟用閾值，以確保              #
+#             只在數據最充足時進行微調，並在儀表板中明確標註其狀態。                    #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v3.3.5"  # Feat: Implement Auto-Corrective Residual Refinement (ACRR)
+SCRIPT_VERSION = "v3.3.6"  # Feat: Add activation threshold for ACRR
 SCRIPT_UPDATE_DATE = "2025-11-15"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -2470,7 +2470,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         num_months = len(analysis_data)
         data, x = analysis_data, np.arange(1, num_months + 1)
         
-        # ---【v3.3.0 錯誤修正】---
+        # ---【v3.3.1 錯誤修正】---
         # 無論何種路徑，都先初始化信賴區間變數，以防 UnboundLocalError
         lower_seq, upper_seq = None, None
 
@@ -2556,8 +2556,8 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 future_pred_seq = np.array([ema.iloc[-1]])
                 historical_pred = ema.values
         
-        # ---【v3.3.0 核心升級】殘差自動校正 ---
-        if historical_pred is not None and len(historical_pred) == len(data):
+        # ---【v3.3.1 核心升級】殘差自動校正 (ACRR) ---
+        if num_months >= 36 and historical_pred is not None and len(historical_pred) == len(data):
             residual_forecast, historical_correction, acrr_activated = run_autocorrective_residual_refinement(historical_pred, data, steps_ahead)
             if acrr_activated:
                 future_pred_seq += residual_forecast
@@ -2708,8 +2708,14 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     print(f"  - {seasonal_note}")
     print(f"  - {mc_note}")
     print(f"  - 預測目標月份: {target_month_str} (距離資料 {steps_ahead} 個月)")
-    if acrr_activated:
-        print(f"  - {colors.GREEN}殘差自動校正 (ACRR): 已啟用{colors.RESET}")
+    if num_months >= 36:
+        if acrr_activated:
+            print(f"  - {colors.GREEN}殘差自動校正 (ACRR): 已啟用{colors.RESET}")
+        else:
+            print(f"  - {colors.WHITE}殘差自動校正 (ACRR): 未啟用 (殘差無顯著規律){colors.RESET}")
+    else:
+        print(f"  - {colors.WHITE}殘差自動校正 (ACRR): 未啟用 (資料需 ≥ 36 個月){colors.RESET}")
+        
     if base_model_weights_report: print(base_model_weights_report)
     if meta_model_weights_report: print(meta_model_weights_report)
     if step_warning: print(step_warning)
