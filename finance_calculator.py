@@ -2,15 +2,14 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.2                 #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.3                 #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新 v3.2.2：恢復並優化了針對中期數據（6-23個月）的詳細風險因子分析報告，     #
-#             以提供更具解釋性的風險評估。                                          #
+#                                                                               #
 #                                                                              #
 ################################################################################
 
@@ -1073,7 +1072,7 @@ def residual_normality_report(residuals, colors):
 
 # --- MPI 3.0 評估套件 ---
 
-def calculate_erai(y_true, y_pred_model, quantile_preds_model, wape_robust_model):
+def calculate_erai(y_true, y_pred_model, quantile_preds_model):
     """計算 ERAI (Ensemble Robust-Accuracy Index) 的核心組件分數。"""
     if y_true is None or len(y_true) < 2: return None
     
@@ -1096,6 +1095,7 @@ def calculate_erai(y_true, y_pred_model, quantile_preds_model, wape_robust_model
     aql_naive = np.mean(naive_losses) if naive_losses else np.inf
     
     score_rel = max(0, 1 - umbrae)
+    wape_robust_model = (np.sum(model_errors) / np.sum(np.abs(y_true))) * 100 if np.sum(np.abs(y_true)) > 1e-9 else 100.0
     score_prec = 1 - (wape_robust_model / 100.0) if wape_robust_model is not None else 0
     score_risk = max(0, 1 - (aql_model / aql_naive)) if aql_naive > 1e-9 else 0
     
@@ -1221,11 +1221,9 @@ def perform_internal_benchmarking(y_true, historical_ensemble_pred, is_shock_fla
     """
     ensemble_residuals = y_true - historical_ensemble_pred
     clean_residuals = ensemble_residuals[~is_shock_flags]
-    clean_y_true = y_true[~is_shock_flags]
     
-    ensemble_wape_robust = (np.sum(np.abs(clean_residuals)) / np.sum(np.abs(clean_y_true))) * 100 if np.sum(np.abs(clean_y_true)) > 1e-9 else 100.0
     ensemble_quantile_preds = {q: historical_ensemble_pred + np.percentile(ensemble_residuals, q*100) for q in [0.1, 0.25, 0.75, 0.9]}
-    ensemble_erai_score = calculate_erai(y_true, historical_ensemble_pred, ensemble_quantile_preds, ensemble_wape_robust)
+    ensemble_erai_score = calculate_erai(y_true, historical_ensemble_pred, ensemble_quantile_preds)
     
     return {'erai_score': ensemble_erai_score}
 
@@ -1243,92 +1241,146 @@ def print_progress_bar(iteration, total, prefix='', suffix='', decimals=1, lengt
         sys.stdout.write('\n')
         sys.stdout.flush()
 
-# --- 【v3.2.6 核心升級】雙軌式混合飄移偵測框架 ---
-def run_prequential_evaluation(full_df, colors, min_train_size=18, drift_window_size=12):
+# --- 【v3.2.6 核心升級】【重構取代】動態策略集成 - 前向測試 ---
+def run_dynamic_strategy_ensemble_prequential(full_df, colors, min_train_size=18, drift_window_size=12, dynamic_lookback_window=12):
     """
-    執行增強型前向測試，採用雙軌式混合飄移偵測。
-    【v3.2.6 升級】: 引入「快速通道」捕捉劇烈變化，並保留「統計通道」處理漸進變化。
+    (新) 動態策略集成 - 前向測試 (Prequential)
+    此函式 *取代* 原有的 run_prequential_evaluation。
     """
     total_len = len(full_df)
-    errors, predictions, true_values = [], [], []
+    errors_A, errors_B = deque(), deque()
+    fused_errors, fused_predictions, true_values = [], [], []
     drift_points = []
     
     color_cyan = colors.CYAN if colors else ''
     color_reset = colors.RESET if colors else ''
     
     training_start_index = 0
-    error_window = deque(maxlen=drift_window_size)
+    fused_error_window = deque(maxlen=drift_window_size)
     
     num_tests = total_len - min_train_size
-    print(f"\n{color_cyan}正在執行增強型前向測試 (含雙軌式混合飄移偵測)，共 {num_tests} 次滾動預測...{color_reset}")
+    print(f"\n{color_cyan}正在執行「動態策略集成」前向測試 (Prequential)，共 {num_tests} 次滾動預測...{color_reset}")
     print_progress_bar(0, num_tests, prefix='進度:', suffix='完成', length=40)
     
     for t_step in range(min_train_size, total_len):
         train_df = full_df.iloc[training_start_index:t_step]
         true_value = full_df.iloc[t_step]['Real_Amount']
         
-        pred_seq, _, _, _, _, _, _ = run_full_ensemble_pipeline(
-            train_df, steps_ahead=1, colors=colors, verbose=False
-        )
+        # 1. 執行策略 A (P100)
+        try:
+            pred_A_seq, _, _, _, _, _, _ = run_full_ensemble_pipeline(
+                train_df, steps_ahead=1, colors=colors, verbose=False
+            )
+            pred_A = pred_A_seq[0]
+            errors_A.append(true_value - pred_A)
+        except Exception:
+            pred_A = np.mean(train_df['Real_Amount']) # Fallback
+            errors_A.append(true_value - pred_A)
+
+        # 2. 執行策略 B (穩健分解)
+        try:
+            pred_B_seq, _, _, _, _, _, _ = run_robust_decomp_forecaster(
+                train_df, steps_ahead=1, colors=colors, verbose=False
+            )
+            pred_B = pred_B_seq[0]
+            errors_B.append(true_value - pred_B)
+        except Exception:
+            pred_B = np.mean(train_df['Real_Amount']) # Fallback
+            errors_B.append(true_value - pred_B)
+            
+        # 3. (核心) 計算動態權重
+        # 僅在有足夠歷史錯誤時才計算權重
+        weight_A, weight_B = 0.5, 0.5
+        if t_step > min_train_size:
+            recent_errors_A = np.array(list(errors_A)[-dynamic_lookback_window:])
+            recent_errors_B = np.array(list(errors_B)[-dynamic_lookback_window:])
+            
+            rmse_A = np.sqrt(np.mean(recent_errors_A**2))
+            rmse_B = np.sqrt(np.mean(recent_errors_B**2))
+            
+            # 倒數加權 (Performance Weighted Average)
+            inv_A = 1.0 / (rmse_A + 1e-9)
+            inv_B = 1.0 / (rmse_B + 1e-9)
+            total_inv = inv_A + inv_B
+            
+            if total_inv > 1e-9:
+                weight_A = inv_A / total_inv
+                weight_B = inv_B / total_inv
         
-        if pred_seq is not None and len(pred_seq) > 0:
-            pred = pred_seq[0]
-            error = true_value - pred
-            predictions.append(pred)
-            true_values.append(true_value)
-            errors.append(error)
-            error_window.append(error)
+        # 4. 融合預測並儲存
+        fused_pred = (pred_A * weight_A) + (pred_B * weight_B)
+        fused_error = true_value - fused_pred
+        
+        fused_predictions.append(fused_pred)
+        true_values.append(true_value)
+        fused_errors.append(fused_error)
+        fused_error_window.append(fused_error)
 
-            # 【v3.2.6 核心改造】雙軌式混合飄移偵測
-            if len(error_window) == drift_window_size:
-                half_window = drift_window_size // 2
-                reference_errors = np.array(list(error_window)[:half_window])
-                detection_errors = np.array(list(error_window)[half_window:])
-                
-                if len(reference_errors) < 3 or len(detection_errors) < 3:
-                    continue
+        # 5. (核心) 飄移偵測 (基於 "融合後" 的錯誤)
+        if len(fused_error_window) == drift_window_size:
+            half_window = drift_window_size // 2
+            reference_errors = np.array(list(fused_error_window)[:half_window])
+            detection_errors = np.array(list(fused_error_window)[half_window:])
+            
+            if len(reference_errors) < 3 or len(detection_errors) < 3:
+                continue
 
-                drift_detected = False
-                
-                # --- 快速通道：偵測劇烈衝擊 ---
-                median_ref = np.median(reference_errors)
-                median_det = np.median(detection_errors)
-                q1_ref, q3_ref = np.percentile(reference_errors, [25, 75])
-                iqr_ref = q3_ref - q1_ref
-                
-                # 如果近期誤差中位數偏離歷史中位數超過 1.5 倍的歷史波動範圍，視為衝擊
-                if iqr_ref > 1e-6 and abs(median_det - median_ref) > 1.5 * iqr_ref:
-                    drift_detected = True
-                
-                # --- 常規通道：偵測統計轉變 (僅在快速通道未觸發時執行) ---
-                if not drift_detected:
-                    try:
-                        _, p_ttest = stats.ttest_ind(reference_errors, detection_errors, equal_var=False)
-                        _, p_mannwhitney = stats.mannwhitneyu(reference_errors, detection_errors, alternative='two-sided')
-                        
-                        if p_ttest < 0.05 or p_mannwhitney < 0.05:
-                            drift_detected = True
-                    except ValueError:
-                        pass # 數據完全相同，忽略
+            drift_detected = False
+            
+            # --- 快速通道：偵測劇烈衝擊 ---
+            median_ref = np.median(reference_errors)
+            median_det = np.median(detection_errors)
+            q1_ref, q3_ref = np.percentile(reference_errors, [25, 75])
+            iqr_ref = q3_ref - q1_ref
+            
+            if iqr_ref > 1e-6 and abs(median_det - median_ref) > 1.5 * iqr_ref:
+                drift_detected = True
+            
+            # --- 常規通道：偵測統計轉變 (僅在快速通道未觸發時執行) ---
+            if not drift_detected:
+                try:
+                    _, p_ttest = stats.ttest_ind(reference_errors, detection_errors, equal_var=False)
+                    _, p_mannwhitney = stats.mannwhitneyu(reference_errors, detection_errors, alternative='two-sided')
+                    
+                    if p_ttest < 0.05 or p_mannwhitney < 0.05:
+                        drift_detected = True
+                except ValueError:
+                    pass
 
-                # --- 觸發飄移後的處理 ---
-                if drift_detected:
-                    drift_points.append(t_step)
-                    training_start_index = max(0, t_step - min_train_size)
-                    error_window.clear()
+            if drift_detected:
+                drift_points.append(t_step)
+                training_start_index = max(0, t_step - min_train_size)
+                fused_error_window.clear()
+                errors_A.clear() # 重置策略的錯誤歷史
+                errors_B.clear()
 
         print_progress_bar(t_step - min_train_size + 1, num_tests, prefix='進度:', suffix='完成', length=40)
 
-    print("增強型前向測試完成。")
-    if not errors:
-        return None
+    print("動態策略集成 - 前向測試完成。")
+    if not fused_errors:
+        return None, (0.5, 0.5) # 返回 None 和預設權重
     
-    return {
-        "errors": np.array(errors),
-        "predictions": np.array(predictions),
+    # (核心) 返回最終權重，供 analyze_and_predict 使用
+    # 這是基於 "完整歷史" 的 Prequential 錯誤所計算的
+    recent_errors_A = np.array(list(errors_A)[-dynamic_lookback_window:])
+    recent_errors_B = np.array(list(errors_B)[-dynamic_lookback_window:])
+    rmse_A = np.sqrt(np.mean(recent_errors_A**2))
+    rmse_B = np.sqrt(np.mean(recent_errors_B**2))
+    inv_A = 1.0 / (rmse_A + 1e-9)
+    inv_B = 1.0 / (rmse_B + 1e-9)
+    total_inv = inv_A + inv_B
+    final_weight_A = inv_A / total_inv if total_inv > 1e-9 else 0.5
+    final_weight_B = inv_B / total_inv if total_inv > 1e-9 else 0.5
+    final_weights = (final_weight_A, final_weight_B)
+    
+    prequential_results = {
+        "errors": np.array(fused_errors),
+        "predictions": np.array(fused_predictions),
         "true_values": np.array(true_values),
         "drift_points": drift_points
     }
+    
+    return prequential_results, final_weights
 
 
 # --- 【升級】將前向測試報告拆分為兩個獨立函數 ---
@@ -1466,12 +1518,14 @@ def format_detailed_risk_analysis_report(dynamic_risk_coefficient, error_coeffic
     
     return "\n".join(report)
 
-# --- 【★★★ 此處為核心修正 ★★★】 ---
-def run_monte_carlo_cv(full_df, base_models, n_iterations=100, colors=None):
-    """執行蒙地卡羅交叉驗證以生成動態MPI評級基準。"""
+# --- 【★★★ 此處為核心修正 ★★★】【重構取代】動態策略集成 - 蒙地卡羅交叉驗證 ---
+def run_dynamic_strategy_ensemble_cv(full_df, base_models, n_iterations=100, colors=None, min_train_size=18, dynamic_lookback_window=12):
+    """
+    (新) 動態策略集成 - 蒙地卡羅交叉驗證 (MPI P-Rank)
+    此函式 *取代* 原有的 run_monte_carlo_cv。
+    """
     mpi_scores = []
     total_len = len(full_df)
-    min_train_size = 18
     val_ratio = 0.25
     min_val_size = max(1, int(total_len * val_ratio))
 
@@ -1481,7 +1535,7 @@ def run_monte_carlo_cv(full_df, base_models, n_iterations=100, colors=None):
     color_cyan = colors.CYAN if colors else ''
     color_reset = colors.RESET if colors else ''
     
-    print(f"\n{color_cyan}正在執行蒙地卡羅交叉驗證以建立動態評級基準 (共 {n_iterations} 次迭代)...{color_reset}")
+    print(f"\n{color_cyan}正在執行「動態策略集成」蒙地卡羅交叉驗證 (MPI 評級基準)，共 {n_iterations} 次迭代...{color_reset}")
     print_progress_bar(0, n_iterations, prefix='進度:', suffix='完成', length=40)
 
     for i in range(n_iterations):
@@ -1494,44 +1548,68 @@ def run_monte_carlo_cv(full_df, base_models, n_iterations=100, colors=None):
 
         if len(train_df) < min_train_size or len(val_df) == 0: continue
         
-        y_train_true = train_df['Real_Amount'].values
         y_val_true = val_df['Real_Amount'].values
         
-        # 1. 在訓練集上運行完整的集成流程（但禁用內部打印）來獲取預測
-        val_pred_seq, _, _, _, _, _, _ = \
-            run_full_ensemble_pipeline(train_df, steps_ahead=len(val_df), colors=colors, verbose=False)
+        # 1. (核心) 在 "訓練集" 上運行 "時光機" 以獲取 "最終權重"
+        # 這是為了模擬 Prequential 在訓練集上運行的過程
+        errors_A_hist, errors_B_hist = deque(), deque()
+        for t_step in range(min_train_size, len(train_df)):
+            hist_train_df = train_df.iloc[0:t_step]
+            hist_true_val = train_df.iloc[t_step]['Real_Amount']
+            try:
+                pred_A_seq, _, _, _, _, _, _ = run_full_ensemble_pipeline(hist_train_df, 1, colors, False)
+                errors_A_hist.append(hist_true_val - pred_A_seq[0])
+            except Exception: pass
+            try:
+                pred_B_seq, _, _, _, _, _, _ = run_robust_decomp_forecaster(hist_train_df, 1, colors, False)
+                errors_B_hist.append(hist_true_val - pred_B_seq[0])
+            except Exception: pass
+
+        # 2. 獲取 CV 內部的動態權重
+        recent_errors_A = np.array(list(errors_A_hist)[-dynamic_lookback_window:])
+        recent_errors_B = np.array(list(errors_B_hist)[-dynamic_lookback_window:])
+        rmse_A = np.sqrt(np.mean(recent_errors_A**2)) if len(recent_errors_A) > 0 else 1e9
+        rmse_B = np.sqrt(np.mean(recent_errors_B**2)) if len(recent_errors_B) > 0 else 1e9
+        inv_A = 1.0 / (rmse_A + 1e-9)
+        inv_B = 1.0 / (rmse_B + 1e-9)
+        total_inv = inv_A + inv_B
+        weight_A = inv_A / total_inv if total_inv > 1e-9 else 0.5
+        weight_B = inv_B / total_inv if total_inv > 1e-9 else 0.5
+
+        # 3. 在 "完整訓練集" 上訓練，並在 "驗證集" 上預測
+        val_pred_A_seq, _, _, _, _, _, _ = run_full_ensemble_pipeline(train_df, len(val_df), colors, False)
+        val_pred_B_seq, _, _, _, _, _, _ = run_robust_decomp_forecaster(train_df, len(val_df), colors, False)
         
-        if val_pred_seq is None or len(val_pred_seq) != len(y_val_true):
+        # 4. 融合驗證集預測
+        fused_val_pred = (val_pred_A_seq * weight_A) + (val_pred_B_seq * weight_B)
+        
+        # 5. (核心) 在 "融合後" 的預測上計算 MPI
+        if fused_val_pred is None or len(fused_val_pred) != len(y_val_true):
             continue
             
-        # 2. 【核心修正】計算此次迭代「真實」的MPI分數
-        val_pred = np.array(val_pred_seq)
-        val_residuals = y_val_true - val_pred
+        fused_val_residuals = y_val_true - fused_val_pred
         sum_abs_val_true = np.sum(np.abs(y_val_true))
-        val_wape = (np.sum(np.abs(val_residuals)) / sum_abs_val_true * 100) if sum_abs_val_true > 1e-9 else 100.0
+        val_wape = (np.sum(np.abs(fused_val_residuals)) / sum_abs_val_true * 100) if sum_abs_val_true > 1e-9 else 100.0
+        val_quantile_preds = {q: fused_val_pred + np.percentile(fused_val_residuals, q*100) for q in [0.10, 0.25, 0.75, 0.90]}
 
-        val_wape_robust = val_wape 
-        val_quantile_preds = {q: val_pred + np.percentile(val_residuals, q*100) for q in [0.10, 0.25, 0.75, 0.90]}
-
-        rss_val = calculate_erai(y_val_true, val_pred, val_quantile_preds, val_wape_robust)
+        rss_val = calculate_erai(y_val_true, fused_val_pred, val_quantile_preds)
         if rss_val is None: rss_val = 0
 
         val_wape_score = 1 - (val_wape / 100.0)
-        ss_res_val = np.sum(val_residuals**2)
+        ss_res_val = np.sum(fused_val_residuals**2)
         ss_tot_val = np.sum((y_val_true - np.mean(y_val_true))**2)
         r2_val = 1 - (ss_res_val / ss_tot_val) if ss_tot_val > 1e-9 else 0
         r2_score_val = max(0, r2_val)
         aas_val = 0.7 * val_wape_score + 0.3 * r2_score_val
         
-        # 在CV中，我們無法執行前向測試，因此FSS設為中性值0.5進行近似
-        fss_val_approx = 0.5
+        fss_val_approx = 0.5 # Prequential in CV is too slow, use neutral value
         mpi_score_val = (0.25 * aas_val) + (0.25 * rss_val) + (0.50 * fss_val_approx)
         
         if np.isfinite(mpi_score_val): mpi_scores.append(mpi_score_val)
         
         print_progress_bar(i + 1, n_iterations, prefix='進度:', suffix='完成', length=40)
     
-    print("動態基準計算完成。")
+    print("動態策略集成 - MPI 基準計算完成。")
     if not mpi_scores: 
         return None, None
         
@@ -2064,6 +2142,86 @@ def train_meta_model_with_bootstrap_gfs(X_level2_hist, y_true, n_bootstrap=100, 
     
     return final_weights
 
+# --- 第 1 階段：插入「策略 B」函式 ---
+def run_robust_decomp_forecaster(monthly_expenses_df, steps_ahead, colors=None, verbose=False):
+    """
+    策略 B：穩健分解預測器 (STL-like + Huber Trend)
+    """
+    data = monthly_expenses_df['Real_Amount'].values
+    n_total = len(data)
+    
+    # 1. 穩健平滑 (移除極端衝擊)
+    # 使用 medfilt 移除極端值，kernel_size 應為奇數且小於 N
+    kernel_size = 5
+    if kernel_size >= n_total:
+        kernel_size = 3 if n_total >= 3 else 1
+    
+    robust_series = data
+    if n_total > kernel_size:
+        try:
+            robust_series = signal.medfilt(data, kernel_size=kernel_size)
+        except Exception:
+            robust_series = data # Fallback
+
+    # 2. 偵測季節性 (在 "乾淨" 數據上)
+    robust_df = monthly_expenses_df.copy()
+    robust_df['Real_Amount'] = robust_series
+    
+    # 重用現有的 seasonal_decomposition
+    _, seasonal_indices = seasonal_decomposition(robust_df)
+    
+    # 3. 偵測趨勢 (在 "原始" 數據上)
+    # 3a. 反季節性化 (使用剛才的乾淨 seasonal_indices)
+    deseasonalized_data = data / monthly_expenses_df['Month'].map(seasonal_indices)
+    
+    # 3b. 使用 Huber 穩健迴歸 (重用現有函式)
+    x = np.arange(1, n_total + 1)
+    
+    # 使用 huber_robust_regression 預測 deseasonalized_data
+    # 確保傳遞 steps_ahead
+    try:
+        trend_forecast_seq, historical_trend, trend_residuals, trend_lower_seq, trend_upper_seq = \
+            huber_robust_regression(x, deseasonalized_data, steps_ahead)
+    except Exception:
+        # Fallback to simple linear regression if Huber fails
+        slope, intercept, _, _, _ = linregress(x, deseasonalized_data)
+        historical_trend = intercept + slope * x
+        future_x = np.arange(n_total + 1, n_total + steps_ahead + 1)
+        trend_forecast_seq = intercept + slope * future_x
+        trend_residuals = deseasonalized_data - historical_trend
+        trend_lower_seq, trend_upper_seq = trend_forecast_seq, trend_forecast_seq # No CI on fallback
+        
+    # 4. 組合預測
+    # 4a. 獲取未來的季節性因子
+    last_observed_month = monthly_expenses_df['Parsed_Date'].iloc[-1].month
+    future_seasonal_factors = []
+    for i in range(1, steps_ahead + 1):
+        future_month = (last_observed_month + i - 1) % 12 + 1
+        future_seasonal_factors.append(seasonal_indices.get(future_month, 1.0))
+    future_seasonal_factors = np.array(future_seasonal_factors)
+
+    # 4b. 最終組合
+    final_prediction_seq = trend_forecast_seq * future_seasonal_factors
+    historical_pred = historical_trend * monthly_expenses_df['Month'].map(seasonal_indices)
+    
+    # 4c. 組合信賴區間
+    # 簡化：將趨勢的 CI 乘以季節性因子
+    lower_seq = trend_lower_seq * future_seasonal_factors if trend_lower_seq is not None else None
+    upper_seq = trend_upper_seq * future_seasonal_factors if trend_upper_seq is not None else None
+
+    # 5. 返回標準化輸出
+    # 必須返回 7 個值，以匹配 run_full_ensemble_pipeline 的簽名
+    # 我們沒有 base/meta weights，所以返回 None
+    return (
+        final_prediction_seq, 
+        historical_pred, 
+        None, # effective_base_weights
+        None, # meta_model_weights_for_report
+        lower_seq, 
+        upper_seq, 
+        None # historical_base_preds_df
+    )
+
 def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose=True):
     """
     【已重構並集成 ERB】執行完整的三層式集成模型流程。
@@ -2385,7 +2543,91 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             'ses': train_predict_ses, 'theta': train_predict_theta,
         }
         
-        if num_months >= 24:
+        if num_months >= 36:
+            # (新) 啟動動態策略集成
+            method_used = " (基於動態策略集成法 - P100 vs 穩健分解)"
+            
+            # 1. 運行 Prequential (時光機) 以獲取 FUSED 錯誤 和 FINAL 權重
+            prequential_results, final_weights = run_dynamic_strategy_ensemble_prequential(df_for_seasonal_model, colors)
+            final_weight_A, final_weight_B = final_weights
+
+            # 2. 運行 CV (MPI P-Rank)
+            # 確保 'base_models' 字典已在此範圍內定義
+            _, cv_mpi_scores = run_dynamic_strategy_ensemble_cv(df_for_seasonal_model, base_models, n_iterations=100, colors=colors)
+
+            # 3. 獲取最終的 FUSED 預測
+            # 3a. 在完整數據上訓練 A 和 B
+            final_pred_A_seq, hist_pred_A, effective_base_weights, meta_weights_A, lower_A, upper_A, base_preds_A_df = \
+                run_full_ensemble_pipeline(df_for_seasonal_model, steps_ahead, colors, verbose=True)
+                
+            final_pred_B_seq, hist_pred_B, _, _, lower_B, upper_B, _ = \
+                run_robust_decomp_forecaster(df_for_seasonal_model, steps_ahead, colors, verbose=False) # B不需詳細輸出
+            
+            # 3b. 融合
+            predicted_value = ((final_pred_A_seq[-1] * final_weight_A) + (final_pred_B_seq[-1] * final_weight_B))
+            historical_pred = ((hist_pred_A * final_weight_A) + (hist_pred_B * final_weight_B))
+            
+            lower = ((lower_A[-1] * final_weight_A) + (lower_B[-1] * final_weight_B)) if lower_A is not None and lower_B is not None else None
+            upper = ((upper_A[-1] * final_weight_A) + (upper_B[-1] * final_weight_B)) if upper_A is not None and upper_B is not None else None
+
+            # 3c. (核心) 格式化報告
+            model_names_base = ["多項式", "穩健趨勢", "指數平滑(Auto)", "漂移", "季節分解", "季節模仿", "單純", "移動平均", "滾動中位", "全局中位", "簡易平滑(Auto)", "Theta趨勢"]
+            if effective_base_weights is not None:
+                sorted_parts = sorted(zip(effective_base_weights, model_names_base), reverse=True)
+                report_parts_base_sorted = [f"{name}({weight:.1%})" for weight, name in sorted_parts if weight > 0.001]
+                chunk_size = 3
+                chunks = [report_parts_base_sorted[i:i + chunk_size] for i in range(0, len(report_parts_base_sorted), chunk_size)]
+                lines = [", ".join(chunk) for chunk in chunks]
+                indentation = "\n" + " " * 25
+                base_model_weights_report = f"  - 基礎模型權重 (策略A): {indentation.join(lines)}"
+            
+            if meta_weights_A:
+                 report_parts_meta = [f"{name}({weight:.1%})" for name, weight in meta_weights_A.items() if weight > 0.001]
+                 meta_model_weights_report = f"  - 元模型融合策略 (策略A): {', '.join(report_parts_meta)}"
+            
+            meta_model_weights_report += f"\n  - {colors.BOLD}動態策略權重{colors.RESET}: P100({final_weight_A:.1%}), 穩健分解({final_weight_B:.1%})"
+            
+            # 4. (核心) 將 FUSED 結果 傳遞給診斷系統
+            mean_expense_for_report = monthly_expenses['Real_Amount'].mean() if not monthly_expenses.empty else 0
+            prequential_metrics_report = format_prequential_metrics_report(prequential_results, mean_expense_for_report, colors)
+            adaptive_dynamics_report = format_adaptive_dynamics_report(prequential_results, df_for_seasonal_model, colors)
+            
+            min_len_for_res = min(len(data), len(historical_pred))
+            residuals = data[:min_len_for_res] - historical_pred[:min_len_for_res]
+            sum_abs_actual = np.sum(np.abs(data[:min_len_for_res]))
+            historical_wape = (np.sum(np.abs(residuals)) / sum_abs_actual * 100) if sum_abs_actual > 1e-9 else 100.0
+            
+            anomaly_info = calculate_anomaly_scores(data)
+            is_shock_flags = anomaly_info['Is_Shock'].values[:min_len_for_res]
+            residuals_clean = residuals[~is_shock_flags]
+            data_clean = data[:min_len_for_res][~is_shock_flags]
+            if len(residuals_clean) > 0:
+                historical_rmse_robust = np.sqrt(np.mean(residuals_clean**2))
+            
+            sum_abs_clean = np.sum(np.abs(data_clean))
+            if len(data_clean) > 0 and sum_abs_clean > 1e-9:
+                historical_wape_robust = (np.sum(np.abs(residuals_clean)) / sum_abs_clean) * 100
+
+            fss_results = calculate_fss(prequential_results, mean_expense_for_report)
+            fss_score = fss_results.get('fss_score', 0)
+            
+            erai_results = perform_internal_benchmarking(data, historical_pred, is_shock_flags)
+            temp_mpi_score = calculate_mpi_3_0_and_rate(data, historical_pred, historical_wape, erai_results['erai_score'], 100, fss_score)['mpi_score']
+
+            mpi_percentile_rank = None
+            if cv_mpi_scores and len(cv_mpi_scores) > 0:
+                mpi_percentile_rank = percentileofscore(cv_mpi_scores, temp_mpi_score, kind='rank')
+
+            mpi_results = calculate_mpi_3_0_and_rate(
+                y_true=data,
+                historical_pred=historical_pred,
+                global_wape=historical_wape,
+                erai_score=erai_results['erai_score'],
+                mpi_percentile_rank=mpi_percentile_rank,
+                fss_score=fss_score
+            )
+        
+        elif 24 <= num_months < 36:
             method_used = " (基於三層式混合集成法 - 集成殘差提升)"
             
             future_pred_final_seq, historical_pred, effective_base_weights, weights_level2_report, lower_seq, upper_seq, _ = \
@@ -2407,10 +2649,28 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             indentation = "\n" + " " * 16
             base_model_weights_report = f"  - 基礎模型權重: {indentation.join(lines)}"
 
-            prequential_results = run_prequential_evaluation(df_for_seasonal_model, colors)
+            # 保持舊的 Prequential
+            from collections import deque
+            prequential_results = run_prequential_evaluation(df_for_seasonal_model, colors) if 'run_prequential_evaluation' in globals() else None
             mean_expense_for_report = monthly_expenses['Real_Amount'].mean() if not monthly_expenses.empty else 0
             prequential_metrics_report = format_prequential_metrics_report(prequential_results, mean_expense_for_report, colors)
             adaptive_dynamics_report = format_adaptive_dynamics_report(prequential_results, df_for_seasonal_model, colors)
+            
+            # 保持舊的 CV
+            _, cv_mpi_scores = run_monte_carlo_cv(df_for_seasonal_model, base_models, n_iterations=100, colors=colors) if 'run_monte_carlo_cv' in globals() else (None, None)
+
+            # 保持舊的 MPI 評估
+            min_len_for_res = min(len(data), len(historical_pred))
+            residuals = data[:min_len_for_res] - historical_pred[:min_len_for_res]
+            historical_wape = (np.sum(np.abs(residuals)) / np.sum(np.abs(data[:min_len_for_res]))) * 100
+            anomaly_info = calculate_anomaly_scores(data)
+            is_shock_flags = anomaly_info['Is_Shock'].values[:min_len_for_res]
+            erai_results = perform_internal_benchmarking(data, historical_pred, is_shock_flags)
+            fss_results = calculate_fss(prequential_results, mean_expense_for_report)
+            fss_score = fss_results.get('fss_score', 0)
+            temp_mpi_score = calculate_mpi_3_0_and_rate(data, historical_pred, historical_wape, erai_results['erai_score'], 100, fss_score)['mpi_score']
+            mpi_percentile_rank = percentileofscore(cv_mpi_scores, temp_mpi_score, kind='rank') if cv_mpi_scores else None
+            mpi_results = calculate_mpi_3_0_and_rate(y_true=data, historical_pred=historical_pred, global_wape=historical_wape, erai_score=erai_results['erai_score'], mpi_percentile_rank=mpi_percentile_rank, fss_score=fss_score)
 
         elif 18 <= num_months < 24:
             method_used = " (基於穩健迴歸IRLS-Huber)"
@@ -2442,16 +2702,20 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 ema = pd.Series(data).ewm(span=num_months, adjust=False).mean()
                 predicted_value, historical_pred = ema.iloc[-1], ema.values
             
-        if historical_pred is not None:
+        if historical_pred is not None and not (num_months >= 36):
             min_len_for_res = min(len(data), len(historical_pred))
             residuals = data[:min_len_for_res] - historical_pred[:min_len_for_res]
-            
+        
+        if predicted_value is not None:
             ci_str = f" [下限：{lower:,.2f}，上限：{upper:,.2f}] (95% 信心)" if lower is not None and upper is not None else ""
             predicted_expense_str = f"{predicted_value:,.2f}"
+        
+        if residuals is not None:
             historical_mae, historical_rmse = np.mean(np.abs(residuals)), np.sqrt(np.mean(residuals**2))
             
             sum_abs_actual = np.sum(np.abs(data[:min_len_for_res]))
-            historical_wape = (np.sum(np.abs(residuals)) / sum_abs_actual * 100) if sum_abs_actual > 1e-9 else 100.0
+            if not (num_months >= 36):
+                 historical_wape = (np.sum(np.abs(residuals)) / sum_abs_actual * 100) if sum_abs_actual > 1e-9 else 100.0
             
             if len(data) > 1:
                 mae_naive = np.mean(np.abs(data[1:] - data[:-1]))
@@ -2463,7 +2727,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             for i, q in enumerate(quantiles):
                 quantile_preds[q] = historical_pred + res_quantiles[i]
                 
-            if num_months >= 12: 
+            if num_months >= 12 and not (num_months >= 36): 
                 anomaly_info = calculate_anomaly_scores(data)
                 is_shock_flags = anomaly_info['Is_Shock'].values[:min_len_for_res]
                 residuals_clean = residuals[~is_shock_flags]
@@ -2474,29 +2738,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 sum_abs_clean = np.sum(np.abs(data_clean))
                 if len(data_clean) > 0 and sum_abs_clean > 1e-9:
                     historical_wape_robust = (np.sum(np.abs(residuals_clean)) / sum_abs_clean) * 100
-            
-            if num_months >= 24:
-                _, cv_mpi_scores = run_monte_carlo_cv(df_for_seasonal_model, base_models, n_iterations=100, colors=colors)
-
-                erai_results = perform_internal_benchmarking(data, historical_pred, is_shock_flags)
-                
-                fss_results = calculate_fss(prequential_results, mean_expense_for_report)
-                fss_score = fss_results.get('fss_score', 0)
-
-                temp_mpi_score = calculate_mpi_3_0_and_rate(data, historical_pred, historical_wape, erai_results['erai_score'], 100, fss_score)['mpi_score']
-
-                mpi_percentile_rank = None
-                if cv_mpi_scores and len(cv_mpi_scores) > 0:
-                    mpi_percentile_rank = percentileofscore(cv_mpi_scores, temp_mpi_score, kind='rank')
-
-                mpi_results = calculate_mpi_3_0_and_rate(
-                    y_true=data,
-                    historical_pred=historical_pred,
-                    global_wape=historical_wape,
-                    erai_score=erai_results['erai_score'],
-                    mpi_percentile_rank=mpi_percentile_rank,
-                    fss_score=fss_score
-                )
 
     expense_std_dev, volatility_report, color = None, "", colors.WHITE
     if not monthly_expenses.empty and len(monthly_expenses)>=2:
@@ -2523,7 +2764,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     if residuals is not None and len(residuals)>=2:
         min_len_diag = len(residuals)
         data_diag = data[:min_len_diag]
-        quantile_preds_diag = {q: p[:min_len_diag] for q, p in quantile_preds.items()}
+        quantile_preds_diag = {q: p[:min_len_diag] for q, p in quantile_preds.items() if p is not None}
         
         calibration_results = compute_calibration_results(data_diag, quantile_preds_diag, quantiles)
         acf_results = compute_acf_results(residuals, num_months)
@@ -2567,7 +2808,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         if historical_wape is not None: 
             print(f"  - WAPE (全局): {historical_wape:.2f}% (含極端值，評估總體誤差比例)")
         if historical_wape_robust is not None:
-            print(f"  - WAPE (排除衝擊後): {colors.GREEN}{historical_wape_robust:,.2f}% (反映日常預測誤差比例){colors.RESET}")
+            print(f"  - WAPE (排除衝擊後): {colors.GREEN}{historical_wape_robust:.2f}% (反映日常預測誤差比例){colors.RESET}")
         if historical_mase is not None: 
             print(f"  - MASE (平均絕對標度誤差): {historical_mase:.2f} (小於1優於天真預測)")
 
