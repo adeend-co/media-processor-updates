@@ -9,15 +9,16 @@
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新 v3.2.2：恢復並優化了針對中期數據（6-23個月）的詳細風險因子分析報告，     #
-#             以提供更具解釋性的風險評估。                                          #
+# 更新 v3.3.0：此版本引入了動態策略集成系統，該系統會根據近期歷史表現，動態調整並融合兩種預測策略的結果。   #
+#             此外，核心分析引擎已進行重構，透過優化計算流程，降低了在處理長期數據時進行複雜診斷的執行時間。  #
+#                                                                             #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v3.2.8"  # Feat: Implement dual-track hybrid drift detection for sensitivity and robustness
-SCRIPT_UPDATE_DATE = "2025-08-24"
+SCRIPT_VERSION = "v3.3.0"  # Feat: Implement dual-track hybrid drift detection for sensitivity and robustness
+SCRIPT_UPDATE_DATE = "2025-11-15"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
 # 說明：您可以直接修改這裡的數字，來調整報告中各表格欄位的寬度，以適應您的終端機字體。
