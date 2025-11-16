@@ -2,21 +2,20 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.3.9               #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.3.10               #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新 v3.3.9：升級 RSSC 引擎為「綜合加權校正」模式，使其能夠同時識別並            #
-#             修正殘差中所有顯著的季節性規律，徹底解決季節性誤差殘留問題。            #
+# 更新 v3.3.10：升級衝擊偵測為自適應閾值；增強RSSC報告透明度，顯示多週期校正權重。      #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v3.3.9"  # Feat: Multi-Lag Weighted Correction for RSSC
+SCRIPT_VERSION = "v3.3.10"  # Feat: Adaptive Shock Thresholding & Enhanced RSSC Reporting
 SCRIPT_UPDATE_DATE = "2025-11-16"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -488,61 +487,80 @@ def monte_carlo_dashboard(monthly_expense_data, num_simulations=10000):
 
     return p25, p75, p95
 
-# --- 【新增】穩健的移動標準差計算函數 (基於MAD) ---
-def robust_moving_std(series, window):
-    """
-    計算對異常值不敏感的移動標準差。
-    使用中位數絕對偏差 (MAD) 並將其縮放，使其與標準差具有可比性。
-    """
-    # 0.6745 是正態分佈中 Q3 的值，1/0.6745 ≈ 1.4826
-    mad_series = series.rolling(window).apply(median_abs_deviation, raw=True)
-    robust_std = mad_series / 0.6745
-    return robust_std
+# ---【v3.3.2 新增】手動季節性分解 ---
+def manual_seasonal_decompose(series, period=12):
+    if len(series) < period * 2:
+        return series - series.mean()
+    trend = series.rolling(window=period, center=True).mean().rolling(window=2, center=True).mean().shift(-1)
+    trend = trend.fillna(method='bfill').fillna(method='ffill')
+    detrended = series - trend
+    seasonal_avg = detrended.groupby(detrended.index.month).mean()
+    seasonal_adjustment = seasonal_avg.mean()
+    seasonal_avg -= seasonal_adjustment
+    seasonal = pd.Series(seasonal_avg[series.index.month].values, index=series.index)
+    return series - trend - seasonal
 
-# --- 動態加權混合演算法核心函數 (【已升級】) ---
+# ---【v3.3.2 核心升級】自適應衝擊偵測引擎 ---
 def calculate_anomaly_scores(data, window_size=6, k_ma=2.5, k_sigmoid=0.5):
     """
     根據動態加權混合演算法計算異常分數。
-    【升級】：使用穩健的移動標準差 (基於MAD) 來避免被極端值影響。
+    【v3.3.2 升級】: 引入基於數據分佈的自適應閾值。
     """
     n_total = len(data)
-    if n_total < window_size:
-        return pd.DataFrame({
-            'Amount': data, 'SIQR': np.zeros(n_total), 'SMA': np.zeros(n_total),
-            'W_Local': np.zeros(n_total), 'Final_Score': np.zeros(n_total),
-            'Is_Shock': np.zeros(n_total, dtype=bool)
-        })
+    series = pd.Series(data)
 
-    # 1. 全局衝擊分數 (IQR Score, SIQR) - 未變更
+    # 1. 剝離確定性成分以獲得殘差
+    if n_total >= 24:
+        residuals = manual_seasonal_decompose(series, period=12)
+    else:
+        slope, intercept, _, _, _ = linregress(np.arange(n_total), data)
+        trend = intercept + slope * np.arange(n_total)
+        residuals = data - trend
+    
+    clean_residuals = residuals.dropna()
+    
+    # 2. 診斷殘差分佈以計算動態閾值乘數
+    base_c, min_c = 3.5, 1.8
+    if len(clean_residuals) >= 12:
+        skewness = stats.skew(clean_residuals)
+        kurtosis_val = stats.kurtosis(clean_residuals, fisher=True)
+        skew_factor = 1 / (1 + 0.5 * abs(skewness))
+        kurt_factor = 1 / (1 + 0.2 * max(0, kurtosis_val))
+        dynamic_c = base_c * skew_factor * kurt_factor
+        final_c = max(min_c, dynamic_c)
+    else:
+        final_c = 3.0 # 若數據不足則使用安全預設值
+
+    # 3. 全局衝擊分數 (SIQR)，使用動態閾值
     q1, q3 = np.percentile(data, [25, 75])
     iqr = q3 - q1
-    upper_bound_iqr = q3 + 1.5 * iqr
+    # 使用 final_c (而非固定的 1.5) 來定義離群點邊界
+    upper_bound_iqr = q3 + final_c * iqr
     siqr_denominator = upper_bound_iqr if upper_bound_iqr > 0 else 1
     siqr = np.maximum(0, (data - upper_bound_iqr) / siqr_denominator)
 
-    # 2. 局部行為分數 (Moving Average Score, SMA) - 【核心升級】
-    series = pd.Series(data)
-    ma = series.rolling(window=window_size).mean()
-    # 【替換】使用新的穩健波動性計算，取代原本的 .std()
-    robust_std = robust_moving_std(series, window=window_size)
-    
-    channel_top = ma + (k_ma * robust_std)
-    sma_denominator = channel_top.where(channel_top > 0, 1)
-    sma = np.maximum(0, (series - channel_top) / sma_denominator).fillna(0).values
+    # 4. 局部行為分數 (SMA)
+    if n_total < window_size:
+        sma = np.zeros(n_total)
+    else:
+        ma = series.rolling(window=window_size).mean()
+        mad_series = series.rolling(window).apply(median_abs_deviation, raw=True)
+        robust_std = mad_series / 0.6745
+        channel_top = ma + (k_ma * robust_std)
+        sma_denominator = channel_top.where(channel_top > 0, 1)
+        sma = np.maximum(0, (series - channel_top) / sma_denominator).fillna(0).values
 
-    # 3. 動態權重計算 (Local Weight, W_Local) - 未變更
+    # 5. 動態權重與最終分數
     n_series = np.arange(1, n_total + 1)
     w_local = 1 / (1 + np.exp(-k_sigmoid * (n_series - window_size)))
     w_local[:window_size] = 0.0
     w_global = 1.0
-
-    # 4. 最終綜合異常分數 (Final Anomaly Score) - 未變更
     numerator = (siqr * w_global) + (sma * w_local)
     denominator = w_global + w_local
     final_score = np.nan_to_num((numerator / denominator), nan=0.0)
     
-    # 5. 識別全局性衝擊 (用於攤提金計算) - 未變更
-    is_shock = (siqr > 0.01) & (sma > 0.01)
+    # 6. 識別全局性衝擊
+    is_shock = (siqr > 0.01)
 
     return pd.DataFrame({
         'Amount': data, 'SIQR': siqr, 'SMA': sma, 'W_Local': w_local,
@@ -2339,7 +2357,7 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
 
     return future_pred_final_seq, historical_pred_final, effective_base_weights, meta_model_weights_for_report, lower_seq, upper_seq, historical_base_preds_df
 
-# ---【v3.3.1 新增】二次季節性校正引擎 (RSSC) ---
+# ---【v3.3.2 升級】二次季節性校正引擎 (RSSC) ---
 def run_secondary_seasonal_correction(historical_pred, y_true, steps_ahead, acf_results):
     """
     分析主模型的殘差中是否含有季節性規律，並進行綜合加權校正。
@@ -2360,12 +2378,15 @@ def run_secondary_seasonal_correction(historical_pred, y_true, steps_ahead, acf_
     
     final_correction_forecast = np.zeros(steps_ahead)
     final_historical_correction = np.zeros_like(historical_pred)
+    
+    weights_for_report = {}
 
     for lag, acf_value in significant_seasonal_lags.items():
         if len(initial_residuals) < lag:
             continue
 
         weight = abs(acf_value) / total_acf_weight
+        weights_for_report[lag] = weight
         
         # 對未來的校正
         past_residuals_for_future = initial_residuals[-lag:]
@@ -2377,15 +2398,18 @@ def run_secondary_seasonal_correction(historical_pred, y_true, steps_ahead, acf_
         historical_correction[lag:] = initial_residuals[:-lag] * acf_value
         final_historical_correction += historical_correction * weight
 
-    used_lags_str = ", ".join(map(str, sorted(significant_seasonal_lags.keys())))
-    return final_correction_forecast, final_historical_correction, True, used_lags_str
-
+    # 格式化報告字串
+    sorted_weights = sorted(weights_for_report.items(), key=lambda item: item[1], reverse=True)
+    report_str = ", ".join([f"{lag}個月 {weight:.1%}" for lag, weight in sorted_weights])
+    
+    return final_correction_forecast, final_historical_correction, True, report_str
 
 # ---【v3.3.0 核心修正】殘差自動校正引擎 (ACRR) ---
 def run_autocorrective_residual_refinement(historical_pred, y_true, steps_ahead, acf_results):
     """
     分析主模型的殘差中是否含有短期慣性，並進行校正。
     """
+    # 檢查 lag-1 是否顯著
     if not acf_results.get(1, {}).get('is_significant', False):
         return np.zeros(steps_ahead), np.zeros_like(historical_pred), False
 
@@ -2594,7 +2618,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 future_pred_seq = np.array([ema.iloc[-1]])
                 historical_pred = ema.values
         
-        # ---【v3.3.1 核心升級】雙通道殘差校正 ---
+        # ---【v3.3.2 核心升級】雙通道殘差校正 ---
         if num_months >= 36 and historical_pred is not None and len(historical_pred) == len(data):
             # 預先計算一次ACF結果
             temp_residuals = data - historical_pred
@@ -2609,7 +2633,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 method_used += " + RSSC"
 
             # 通道二：ACRR (在RSSC校正後的基礎上再次校正)
-            # 重新計算ACF以決定是否啟用
             final_temp_residuals = data - historical_pred
             final_temp_acf_results = compute_acf_results(final_temp_residuals, num_months)
             
@@ -2766,7 +2789,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     print(f"  - 預測目標月份: {target_month_str} (距離資料 {steps_ahead} 個月)")
     if num_months >= 36:
         if rssc_activated:
-            print(f"  - {colors.GREEN}二次季節性校正 (RSSC): 已啟用 (基於 {rssc_lag_str} 個月延遲){colors.RESET}")
+            print(f"  - {colors.GREEN}二次季節性校正 (RSSC): 已啟用 (權重: {rssc_lag_str}){colors.RESET}")
         else:
             print(f"  - {colors.WHITE}二次季節性校正 (RSSC): 未啟用 (無顯著季節性規律){colors.RESET}")
         if acrr_activated:
