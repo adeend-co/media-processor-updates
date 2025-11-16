@@ -2,21 +2,21 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.4.4               #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.4.5               #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新 v3.4.4：重構前向測試流程，將數據清洗、守門人及專家模型完整整合             #
-#             至模擬的每一步，使 P-WAPE 能夠真實反映整個系統的實戰表現。             #
+# 更新 v3.4.5：修復了因函式呼叫參數不匹配導致的 TypeError，並將輸出日誌            #
+#             調整為客觀中立的語氣，提升了程式的穩定性與專業性。                      #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v3.4.4"  # Feat: Integrate full prediction pipeline into prequential evaluation
+SCRIPT_VERSION = "v3.4.5"  # Fix: TypeError on unexpected keyword; Refine logging language
 SCRIPT_UPDATE_DATE = "2025-11-16"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -500,18 +500,46 @@ def robust_moving_std(series, window):
     return robust_std
 
 # ---【v3.3.2 核心升級】動態閾值與衝擊偵測引擎 ---
-def manual_seasonal_decompose(series, period=12):
+def manual_seasonal_decompose(series, period=12, model='additive'):
+    if not isinstance(series, pd.Series) or not isinstance(series.index, pd.DatetimeIndex):
+        raise TypeError("輸入必須是帶有 DatetimeIndex 的 pandas Series")
     if len(series) < period * 2:
-        return pd.Series(series, index=series.index)
-    trend = series.rolling(window=period, center=True).mean()
-    trend = trend.rolling(window=2, center=True).mean().shift(-1) if period % 2 == 0 else trend.rolling(window=period, center=True).mean()
+        # 如果數據太短，返回一個合理的預設分解
+        return pd.Series(0, index=series.index)
+
+    # 1. 估計趨勢 (Trend): 使用週期為 period 的中心化移動平均
+    if period % 2 == 0: # 偶數週期
+        trend = series.rolling(window=period, center=True, min_periods=1).mean()
+        trend = trend.rolling(window=2, center=True, min_periods=1).mean().shift(-1)
+    else: # 奇數週期
+        trend = series.rolling(window=period, center=True, min_periods=1).mean()
+    
+    # 填充頭尾的 NaN 值
     trend = trend.fillna(method='bfill').fillna(method='ffill')
-    detrended = series - trend
+
+    # 2. 計算去趨勢序列 (Detrended)
+    if model == 'additive':
+        detrended = series - trend
+    else: # multiplicative
+        trend[trend == 0] = 1e-6
+        detrended = series / trend
+    
+    # 3. 估計季節性成分 (Seasonal)
     seasonal_avg = detrended.groupby(detrended.index.month).mean()
-    seasonal_adjustment = seasonal_avg.mean()
-    seasonal_avg -= seasonal_adjustment
+    
+    if model == 'additive':
+        seasonal_avg -= seasonal_avg.mean() # 確保總和為 0
+    else:
+        seasonal_avg /= seasonal_avg.mean() # 確保均值為 1
+
     seasonal = pd.Series(seasonal_avg[series.index.month].values, index=series.index)
-    resid = series - trend - seasonal
+
+    # 4. 計算殘差 (Residual)
+    if model == 'additive':
+        resid = series - trend - seasonal
+    else:
+        resid = series / (trend * seasonal)
+
     return resid.dropna()
 
 def calculate_dynamic_anomaly_multiplier(residual_series):
@@ -1276,7 +1304,7 @@ def run_dynamic_strategy_ensemble_prequential(
     dynamic_lookback_window=12
 ):
     """
-    (v3.4.3 升級版) 執行包含完整作戰流程的前向測試。
+    (v3.4.3 升級版) 執行包含完整預測流程的前向測試。
     """
     total_len = len(full_df)
     errors, predictions, true_values = [], [], []
@@ -1292,24 +1320,20 @@ def run_dynamic_strategy_ensemble_prequential(
     if num_tests <= 0:
         return None
         
-    print(f"\n{color_cyan}正在執行「系統級」前向測試 (Prequential)，共 {num_tests} 次滾動預測...{color_reset}")
+    print(f"\n{color_cyan}正在執行前向測試 (Prequential)，共 {num_tests} 次滾動預測...{color_reset}")
     print_progress_bar(0, num_tests, prefix='進度:', suffix='完成', length=40)
     
     GATING_MULTIPLIER_K = 1.5
 
     for t_step in range(min_train_size, total_len):
-        # 1. 準備當前的歷史數據
         history_df_orig = full_df.iloc[training_start_index:t_step].copy()
         true_value = full_df.iloc[t_step]['Real_Amount']
         
-        # --- 實戰SOP開始 ---
-        # 2. 情境分析：衝擊偵測與數據清洗
         is_shock_info = calculate_anomaly_scores(history_df_orig)
         clean_history_df = history_df_orig.copy()
         clean_history_df['Real_Amount'] = np.where(is_shock_info['Is_Shock'], np.nan, history_df_orig['Real_Amount'])
         clean_history_df['Real_Amount'] = clean_history_df['Real_Amount'].interpolate(method='linear')
         
-        # 3. 主力模型（動態集成）初步預測
         _, hist_pred_A, _, _, _, _, _ = run_full_ensemble_pipeline(clean_history_df, 1, colors, False)
         _, hist_pred_B, _, _, _, _, _ = run_robust_decomp_forecaster(clean_history_df, 1, colors, False)
         
@@ -1322,36 +1346,36 @@ def run_dynamic_strategy_ensemble_prequential(
         weight_B = 1.0 - weight_A
 
         main_hist_pred = (hist_pred_A * weight_A) + (hist_pred_B * weight_B)
-        
-        # 4. 雙通道殘差校正
+        main_pred_seq_A, _, _, _, _, _, _ = run_full_ensemble_pipeline(clean_history_df, 1, colors, False)
+        main_pred_seq_B, _, _, _, _, _, _ = run_robust_decomp_forecaster(clean_history_df, 1, colors, False)
+        main_pred = (main_pred_seq_A[0] * weight_A) + (main_pred_seq_B[0] * weight_B)
+
         main_residuals = clean_history_df['Real_Amount'].values - main_hist_pred
         main_acf_results = compute_acf_results(main_residuals, len(main_residuals))
         
-        _, _, rssc_activated, _ = run_secondary_seasonal_correction(main_hist_pred, clean_history_df['Real_Amount'].values, 1, main_acf_results)
+        rssc_forecast, _, rssc_activated, _ = run_secondary_seasonal_correction(main_hist_pred, clean_history_df['Real_Amount'].values, 1, main_acf_results)
+        if rssc_activated: main_pred += rssc_forecast[0]
         
-        # 5. 守門人決策
+        final_residuals_after_rssc = clean_history_df['Real_Amount'].values - (main_hist_pred + (seasonal_hist_corr if rssc_activated else 0))
+        final_acf_after_rssc = compute_acf_results(final_residuals_after_rssc, len(final_residuals_after_rssc))
+
+        acrr_forecast, _, acrr_activated = run_autocorrective_residual_refinement(main_hist_pred + (seasonal_hist_corr if rssc_activated else 0), clean_history_df['Real_Amount'].values, 1, final_acf_after_rssc)
+        if acrr_activated: main_pred += acrr_forecast[0]
+
         use_expert_model = False
-        if rssc_activated: # 只有在RSSC啟動後才考慮守門人，簡化邏輯
-            boundary = 2 / np.sqrt(len(main_residuals))
-            threshold = GATING_MULTIPLIER_K * boundary
-            for lag, res in main_acf_results.items():
-                if lag >= 3 and abs(res['acf']) > threshold:
-                    use_expert_model = True
-                    break
+        boundary = 2 / np.sqrt(len(main_residuals))
+        threshold = GATING_MULTIPLIER_K * boundary
+        for lag, res in final_acf_after_rssc.items():
+            if lag >= 3 and abs(res['acf']) > threshold:
+                use_expert_model = True
+                break
         
-        # 6. 獲取最終預測
         if use_expert_model:
-            # DRF在原始數據上訓練
             final_pred_seq, _, _, _ = run_drf_prediction(history_df_orig, forecast_steps=1)
             final_pred = final_pred_seq[0]
         else:
-            # 獲取主力模型的未來預測值
-            pred_A_seq, _, _, _, _, _, _ = run_full_ensemble_pipeline(clean_history_df, 1, colors, False)
-            pred_B_seq, _, _, _, _, _, _ = run_robust_decomp_forecaster(clean_history_df, 1, colors, False)
-            final_pred = (pred_A_seq[0] * weight_A) + (pred_B_seq[0] * weight_B)
-
-        # --- SOP結束 ---
-
+            final_pred = main_pred
+        
         error = true_value - final_pred
         predictions.append(final_pred)
         true_values.append(true_value)
@@ -1359,12 +1383,12 @@ def run_dynamic_strategy_ensemble_prequential(
         error_window.append(error)
 
         if len(error_window) == drift_window_size:
-            # ... (飄移偵測邏輯保持不變) ...
+            # (飄移偵測邏輯)
             pass
         
         print_progress_bar(t_step - min_train_size + 1, num_tests, prefix='進度:', suffix='完成', length=40)
 
-    print("「系統級」前向測試完成。")
+    print("前向測試 (Prequential) 完成。")
     if not errors:
         return None
         
@@ -1374,7 +1398,6 @@ def run_dynamic_strategy_ensemble_prequential(
         "true_values": np.array(true_values),
         "drift_points": drift_points
     }
-
 
 # --- 【升級】將前向測試報告拆分為兩個獨立函數 ---
 def format_prequential_metrics_report(results, mean_expense, colors):
@@ -1537,7 +1560,7 @@ def run_dynamic_strategy_ensemble_cv(
     color_cyan = colors.CYAN if colors else ''
     color_reset = colors.RESET if colors else ''
     
-    print(f"\n{color_cyan}正在執行「動態策略集成」蒙地卡羅交叉驗證 (MPI 評級基準)，共 {n_iterations} 次迭代...{color_reset}")
+    print(f"\n{color_cyan}正在執行蒙地卡羅交叉驗證 (MPI 評級基準)，共 {n_iterations} 次迭代...{color_reset}")
     print_progress_bar(0, n_iterations, prefix='進度:', suffix='完成', length=40)
 
     for i in range(n_iterations):
@@ -1593,7 +1616,7 @@ def run_dynamic_strategy_ensemble_cv(
         
         print_progress_bar(i + 1, n_iterations, prefix='進度:', suffix='完成', length=40)
     
-    print("動態策略集成 - MPI 基準計算完成。")
+    print("蒙地卡羅交叉驗證 (MPI 基準) 完成。")
     if not mpi_scores: 
         return None, None
         
@@ -2440,7 +2463,7 @@ def run_drf_prediction(monthly_expenses_df, forecast_steps=1, trend_window=12, m
     series = pd.Series(monthly_expenses_df['Real_Amount'].values, index=pd.to_datetime(monthly_expenses_df['Parsed_Date']))
     
     if len(series) < period:
-        return np.full(forecast_steps, series.mean())
+        return np.full(forecast_steps, series.mean()), series.mean(), None, None
 
     decomposed = manual_seasonal_decompose(series, period=period, model=model)
     
@@ -2579,23 +2602,23 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             # --- 主力模型初步預測 ---
             method_used = " (基於動態策略集成法)"
             
-            # 【v3.4.3 修正】prequential 流程現在是獨立的，不再依賴外部預計算
             prequential_results = run_dynamic_strategy_ensemble_prequential(df_for_seasonal_model, colors)
 
-            # CV 流程保持不變，因為它需要預計算以保證性能
             print(f"\n{colors.CYAN}正在為所有策略預先計算歷史表現 (用於MPI基準)...{colors.RESET}")
             _, hist_pred_A_for_cv, _, _, _, _, _ = run_full_ensemble_pipeline(df_for_seasonal_model, 1, colors, False)
             _, hist_pred_B_for_cv, _, _, _, _, _ = run_robust_decomp_forecaster(df_for_seasonal_model, 1, colors, False)
             _, cv_mpi_scores = run_dynamic_strategy_ensemble_cv(df_for_seasonal_model, hist_pred_A_for_cv, hist_pred_B_for_cv, colors=colors)
 
-            # 獲取最終預測
             final_pred_A_seq, hist_pred_A, effective_base_weights, meta_weights_A, lower_A, upper_A, _ = \
                 run_full_ensemble_pipeline(df_for_seasonal_model, steps_ahead, colors, True)
             final_pred_B_seq, hist_pred_B, _, _, lower_B, upper_B, _ = \
                 run_robust_decomp_forecaster(df_for_seasonal_model, steps_ahead, colors, False)
             
             # 使用來自 Prequential 的最終權重
-            _, final_weights = run_dynamic_strategy_ensemble_prequential(df_for_seasonal_model, hist_pred_A, hist_pred_B, colors)
+            if prequential_results:
+                _, final_weights = run_dynamic_strategy_ensemble_prequential(df_for_seasonal_model, hist_pred_A, hist_pred_B, colors)
+            else: # Fallback if prequential failed
+                final_weights = (0.5, 0.5)
             final_weight_A, final_weight_B = final_weights
 
             future_pred_seq = (final_pred_A_seq * final_weight_A) + (final_pred_B_seq * final_weight_B)
@@ -2659,7 +2682,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             meta_model_weights_report += f"\n  - {colors.BOLD}動態策略權重{colors.RESET}: P100({final_weight_A:.1%}), 穩健分解({final_weight_B:.1%})"
 
             mean_expense_for_report = monthly_expenses['Real_Amount'].mean()
-            # 【v3.4.3 修正】傳遞 colors 參數
+            prequential_metrics_report = format_prequential_metrics_report(prequential_results, mean_expense_for_report, colors)
             adaptive_dynamics_report = format_adaptive_dynamics_report(prequential_results, monthly_expenses, colors)
         
         elif 24 <= num_months < 36:
