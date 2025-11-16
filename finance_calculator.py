@@ -9,18 +9,18 @@
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新 v3.4：實現自適應衝擊偵測閾值，並增強RSSC校正報告的透明度，                      #
+# 更新 v3.4.1：實現自適應衝擊偵測閾值，並增強RSSC校正報告的透明度，               #
 #             使其能動態應對不同數據分佈並清晰展示季節性校正權重。                    #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v3.4"  # Feat: Adaptive Anomaly Threshold & Transparent RSSC Weights
+SCRIPT_VERSION = "v3.4.1"  # Feat: Adaptive Anomaly Threshold & Transparent RSSC Weights
 SCRIPT_UPDATE_DATE = "2025-11-16"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
-# 說明：您可以直接修改這裡的數字，來調整報告中各表格欄位的寬度，以適應您的終-端機字體。
+# 說明：您可以直接修改這裡的數字，來調整報告中各表格欄位的寬度，以適應您的終端機字體。
 # 'q' 代表分位數, 'loss' 代表損失值, 'interp' 代表解釋, etc.
 TABLE_CONFIG = {
     'quantile_loss': {
@@ -526,12 +526,13 @@ def calculate_dynamic_anomaly_multiplier(residual_series):
     dynamic_c = base_c * skew_factor * kurt_factor
     return max(min_c, dynamic_c)
 
-def calculate_anomaly_scores(data, window_size=6, k_ma=2.5, k_sigmoid=0.5):
+def calculate_anomaly_scores(monthly_expenses_df, window_size=6, k_ma=2.5, k_sigmoid=0.5):
     """
     【v3.3.2 升級】根據動態加權混合演算法計算異常分數，並引入自適應衝擊偵測閾值。
     """
+    data = monthly_expenses_df['Real_Amount'].values
+    series_pd = pd.Series(data, index=monthly_expenses_df['Parsed_Date'])
     n_total = len(data)
-    series_pd = pd.Series(data)
 
     # --- 1. 自適應全局衝擊偵測 (Adaptive SIQR) ---
     residuals_for_dist = manual_seasonal_decompose(series_pd)
@@ -624,7 +625,7 @@ def assess_risk_and_budget_advanced(monthly_expenses, model_error_coefficient, h
     data = monthly_expenses['Real_Amount'].values
     n_total = len(data)
     
-    anomaly_df = calculate_anomaly_scores(data)
+    anomaly_df = calculate_anomaly_scores(monthly_expenses) # 修正: 傳遞整個DataFrame
     
     # --- 模式偵測 (使用重構後的函數) ---
     change_point = detect_structural_change_point(monthly_expenses)
@@ -2361,7 +2362,7 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
 
     return future_pred_final_seq, historical_pred_final, effective_base_weights, meta_model_weights_for_report, lower_seq, upper_seq, historical_base_preds_df
 
-# ---【v3.3.2 核心升級】二次季節性校正引擎 (RSSC) ---
+# ---【v3.3.1 新增】二次季節性校正引擎 (RSSC) ---
 def run_secondary_seasonal_correction(historical_pred, y_true, steps_ahead, acf_results):
     """
     分析主模型的殘差中是否含有季節性規律，並進行綜合加權校正。
@@ -2406,6 +2407,7 @@ def run_secondary_seasonal_correction(historical_pred, y_true, steps_ahead, acf_
     lag_weights_str = ", ".join(f"{lag}個月: {weight:.1%}" for lag, weight in sorted(lag_weights.items()))
     
     return final_correction_forecast, final_historical_correction, True, lag_weights_str
+
 
 # ---【v3.3.0 核心修正】殘差自動校正引擎 (ACRR) ---
 def run_autocorrective_residual_refinement(historical_pred, y_true, steps_ahead, acf_results):
@@ -2471,7 +2473,8 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     if not monthly_expenses.empty:
         if num_unique_months >= 24:
             analysis_data = monthly_expenses['Real_Amount'].values
-            df_for_seasonal_model = monthly_expenses.copy() 
+            df_for_seasonal_model = monthly_expenses.copy()
+            df_for_seasonal_model.set_index('Parsed_Date', inplace=True) 
             seasonal_note = "集成模型已內建季節性分析。"
         else:
             analysis_data = monthly_expenses['Real_Amount'].values
@@ -2666,7 +2669,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 quantile_preds[q] = historical_pred + res_quantiles[i]
             
             if num_months >= 12: 
-                anomaly_info = calculate_anomaly_scores(data)
+                anomaly_info = calculate_anomaly_scores(df_for_seasonal_model if df_for_seasonal_model is not None else monthly_expenses)
                 is_shock_flags = anomaly_info['Is_Shock'].values[:min_len_for_res]
                 residuals_clean = residuals[~is_shock_flags]
                 data_clean = data[:min_len_for_res][~is_shock_flags]
