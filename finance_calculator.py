@@ -9,14 +9,14 @@
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新 v3.4.2：實現自適應衝擊偵測閾值，並增強RSSC校正報告的透明度，               #
-#             使其能動態應對不同數據分佈並清晰展示季節性校正權重。                    #
+# 更新 v3.4.2：修復了因數據索引變動導致的 KeyError，確保在所有數據長度             #
+#             下的季節性分解與異常偵測流程的穩定性與一致性。                          #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v3.4.2"  # Feat: Adaptive Anomaly Threshold & Transparent RSSC Weights
+SCRIPT_VERSION = "v3.4.2"  # Fix: KeyError on 'Parsed_Date' by standardizing DataFrame structure
 SCRIPT_UPDATE_DATE = "2025-11-16"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -531,7 +531,8 @@ def calculate_anomaly_scores(monthly_expenses_df, window_size=6, k_ma=2.5, k_sig
     【v3.3.2 升級】根據動態加權混合演算法計算異常分數，並引入自適應衝擊偵測閾值。
     """
     data = monthly_expenses_df['Real_Amount'].values
-    series_pd = pd.Series(data, index=monthly_expenses_df['Parsed_Date'])
+    # 【修正】創建帶有DatetimeIndex的Series，以供季節性分解使用
+    series_pd = pd.Series(data, index=pd.to_datetime(monthly_expenses_df['Parsed_Date']))
     n_total = len(data)
 
     # --- 1. 自適應全局衝擊偵測 (Adaptive SIQR) ---
@@ -2474,7 +2475,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         if num_unique_months >= 24:
             analysis_data = monthly_expenses['Real_Amount'].values
             df_for_seasonal_model = monthly_expenses.copy()
-            df_for_seasonal_model.set_index('Parsed_Date', inplace=True) 
+            # 【v3.4.2 修正】移除全局性的 set_index 操作
             seasonal_note = "集成模型已內建季節性分析。"
         else:
             analysis_data = monthly_expenses['Real_Amount'].values
@@ -2579,7 +2580,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
 
             mean_expense_for_report = monthly_expenses['Real_Amount'].mean()
             prequential_metrics_report = format_prequential_metrics_report(prequential_results, mean_expense_for_report, colors)
-            adaptive_dynamics_report = format_adaptive_dynamics_report(prequential_results, df_for_seasonal_model, colors)
+            adaptive_dynamics_report = format_adaptive_dynamics_report(prequential_results, df_for_seasonal_model)
         
         elif 24 <= num_months < 36:
             method_used = " (基於三層式混合集成法)"
@@ -2669,7 +2670,9 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 quantile_preds[q] = historical_pred + res_quantiles[i]
             
             if num_months >= 12: 
-                anomaly_info = calculate_anomaly_scores(df_for_seasonal_model if df_for_seasonal_model is not None else monthly_expenses)
+                # 【v3.4.2 修正】確保傳遞正確的 DataFrame 給 anomaly_scores
+                df_for_anomalies = df_for_seasonal_model if df_for_seasonal_model is not None else monthly_expenses
+                anomaly_info = calculate_anomaly_scores(df_for_anomalies)
                 is_shock_flags = anomaly_info['Is_Shock'].values[:min_len_for_res]
                 residuals_clean = residuals[~is_shock_flags]
                 data_clean = data[:min_len_for_res][~is_shock_flags]
