@@ -2,21 +2,21 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.4.2               #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.4.3               #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新 v3.4.2：修復了因數據索引變動導致的 KeyError，確保在所有數據長度             #
-#             下的季節性分解與異常偵測流程的穩定性與一致性。                          #
+# 更新 v3.4.3：引入專家門控機制。當主模型無法處理強烈季節性時，系統會              #
+#             自動切換至專門的DRF專家模型，大幅提升預測的適應性與準確性。             #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v3.4.2"  # Fix: KeyError on 'Parsed_Date' by standardizing DataFrame structure
+SCRIPT_VERSION = "v3.4.3"  # Feat: Gating mechanism with DRF expert model for strong seasonality
 SCRIPT_UPDATE_DATE = "2025-11-16"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -2447,6 +2447,51 @@ def run_autocorrective_residual_refinement(historical_pred, y_true, steps_ahead,
     return np.array(residual_forecast), full_historical_correction, True
 
 
+# ---【v3.4.3 新增】專家門控與DRF模型 ---
+def run_drf_prediction(monthly_expenses_df, forecast_steps=1, trend_window=12, model='additive', period=12):
+    """
+    執行分解與重構預測模型 (DRF)。
+    """
+    series = pd.Series(monthly_expenses_df['Real_Amount'].values, index=pd.to_datetime(monthly_expenses_df['Parsed_Date']))
+    
+    if len(series) < period:
+        return np.full(forecast_steps, series.mean())
+
+    decomposed = manual_seasonal_decompose(series, period=period, model=model)
+    
+    valid_trend = decomposed['trend'].dropna()
+    last_n_trend_points = valid_trend.tail(min(len(valid_trend), trend_window))
+    
+    trend_forecasts = []
+    if len(last_n_trend_points) < 2:
+        trend_forecast = last_n_trend_points.mean() if not last_n_trend_points.empty else series.mean()
+        trend_forecasts = np.full(forecast_steps, trend_forecast)
+    else:
+        x = np.arange(len(last_n_trend_points))
+        y = last_n_trend_points.values
+        slope, intercept, _, _, _ = stats.linregress(x, y)
+        for i in range(1, forecast_steps + 1):
+            future_x = len(last_n_trend_points) + i - 1
+            trend_forecasts.append(slope * future_x + intercept)
+            
+    seasonal_forecasts = []
+    last_date = series.index[-1]
+    unique_seasonal_components = decomposed['seasonal'].groupby(decomposed['seasonal'].index.month).mean()
+    for i in range(1, forecast_steps + 1):
+        target_date = last_date + pd.DateOffset(months=i)
+        target_month = target_date.month
+        seasonal_forecasts.append(unique_seasonal_components.get(target_month, 0.0))
+
+    if model == 'additive':
+        drf_predictions = np.array(trend_forecasts) + np.array(seasonal_forecasts)
+    else:
+        drf_predictions = np.array(trend_forecasts) * np.array(seasonal_forecasts)
+
+    # 模擬與主模型一致的輸出格式
+    hist_pred_drf = decomposed['trend'] + decomposed['seasonal']
+    
+    return drf_predictions, hist_pred_drf.values, None, None # 沒有信賴區間
+
 # --- 主要分析與預測函數 ---
 def analyze_and_predict(file_paths_str: str, no_color: bool):
     colors = Colors(enabled=not no_color)
@@ -2475,7 +2520,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         if num_unique_months >= 24:
             analysis_data = monthly_expenses['Real_Amount'].values
             df_for_seasonal_model = monthly_expenses.copy()
-            # 【v3.4.2 修正】移除全局性的 set_index 操作
             seasonal_note = "集成模型已內建季節性分析。"
         else:
             analysis_data = monthly_expenses['Real_Amount'].values
@@ -2535,6 +2579,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     risk_factors_report = ""
     acrr_activated, rssc_activated = False, False
     rssc_lag_str = None
+    gating_reason = ""
 
     if analysis_data is not None and len(analysis_data) >= 2:
         num_months = len(analysis_data)
@@ -2543,6 +2588,9 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         lower_seq, upper_seq = None, None
 
         if num_months >= 36:
+            GATING_MULTIPLIER_K = 1.5
+            
+            # --- 主力模型初步預測 ---
             method_used = " (基於動態策略集成法)"
             
             print(f"\n{colors.CYAN}正在為所有策略預先計算歷史表現...{colors.RESET}")
@@ -2566,6 +2614,49 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             lower_seq = (lower_A * final_weight_A) + (lower_B * final_weight_B) if lower_A is not None and lower_B is not None else None
             upper_seq = (upper_A * final_weight_A) + (upper_B * final_weight_B) if upper_A is not None and upper_B is not None else None
             
+            # --- 雙通道殘差校正 ---
+            temp_residuals = data - historical_pred
+            temp_acf_results = compute_acf_results(temp_residuals, num_months)
+            
+            seasonal_forecast, seasonal_hist_corr, rssc_activated, rssc_lag_str = \
+                run_secondary_seasonal_correction(historical_pred, data, steps_ahead, temp_acf_results)
+            if rssc_activated:
+                future_pred_seq += seasonal_forecast
+                historical_pred += seasonal_hist_corr
+                method_used += " + RSSC"
+
+            final_temp_residuals = data - historical_pred
+            final_temp_acf_results = compute_acf_results(final_temp_residuals, num_months)
+            
+            acrr_forecast, acrr_hist_corr, acrr_activated = \
+                run_autocorrective_residual_refinement(historical_pred, data, steps_ahead, final_temp_acf_results)
+            if acrr_activated:
+                future_pred_seq += acrr_forecast
+                historical_pred += acrr_hist_corr
+                method_used += " + ACRR"
+            
+            # --- 守門人決策 ---
+            final_residuals = data - historical_pred
+            final_acf_results = compute_acf_results(final_residuals, num_months)
+            
+            use_expert_model = False
+            gating_reason = f"{colors.WHITE}守門人機制：未激活 (主模型表現穩定){colors.RESET}"
+            significance_boundary = 2 / np.sqrt(num_months)
+            dynamic_acf_threshold = GATING_MULTIPLIER_K * significance_boundary
+            
+            for lag, result in final_acf_results.items():
+                if lag >= 3 and abs(result['acf']) > dynamic_acf_threshold:
+                    use_expert_model = True
+                    gating_reason = (f"{colors.YELLOW}守門人機制：已激活 (偵測到殘差在延遲 {lag} 個月時規律過強, "
+                                     f"ACF={result['acf']:.2f} > 閾值={dynamic_acf_threshold:.2f})，切換至 DRF 專家模型。{colors.RESET}")
+                    break
+
+            if use_expert_model:
+                method_used = " (基於專家門控 - DRF 模型)"
+                future_pred_seq, historical_pred, lower_seq, upper_seq = \
+                    run_drf_prediction(monthly_expenses, steps_ahead=steps_ahead)
+
+            # --- 報告格式化 ---
             model_names_base = ["多項式", "穩健趨勢", "指數平滑(Auto)", "漂移", "季節分解", "季節模仿", "單純", "移動平均", "滾動中位", "全局中位", "簡易平滑(Auto)", "Theta趨勢"]
             if effective_base_weights is not None:
                 sorted_parts = sorted(zip(effective_base_weights, model_names_base), reverse=True)
@@ -2580,7 +2671,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
 
             mean_expense_for_report = monthly_expenses['Real_Amount'].mean()
             prequential_metrics_report = format_prequential_metrics_report(prequential_results, mean_expense_for_report, colors)
-            adaptive_dynamics_report = format_adaptive_dynamics_report(prequential_results, df_for_seasonal_model, colors)
+            adaptive_dynamics_report = format_adaptive_dynamics_report(prequential_results, monthly_expenses, colors)
         
         elif 24 <= num_months < 36:
             method_used = " (基於三層式混合集成法)"
@@ -2624,28 +2715,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 future_pred_seq = np.array([ema.iloc[-1]])
                 historical_pred = ema.values
         
-        # ---【v3.3.1 核心升級】雙通道殘差校正 ---
-        if num_months >= 36 and historical_pred is not None and len(historical_pred) == len(data):
-            temp_residuals = data - historical_pred
-            temp_acf_results = compute_acf_results(temp_residuals, num_months)
-
-            seasonal_forecast, seasonal_hist_corr, rssc_activated, rssc_lag_str = \
-                run_secondary_seasonal_correction(historical_pred, data, steps_ahead, temp_acf_results)
-            if rssc_activated:
-                future_pred_seq += seasonal_forecast
-                historical_pred += seasonal_hist_corr
-                method_used += " + RSSC"
-
-            final_temp_residuals = data - historical_pred
-            final_temp_acf_results = compute_acf_results(final_temp_residuals, num_months)
-            
-            acrr_forecast, acrr_hist_corr, acrr_activated = \
-                run_autocorrective_residual_refinement(historical_pred, data, steps_ahead, final_temp_acf_results)
-            if acrr_activated:
-                future_pred_seq += acrr_forecast
-                historical_pred += acrr_hist_corr
-                method_used += " + ACRR"
-        
         if future_pred_seq is not None:
             predicted_value = future_pred_seq[-1]
             lower = lower_seq[-1] if lower_seq is not None else None
@@ -2670,7 +2739,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 quantile_preds[q] = historical_pred + res_quantiles[i]
             
             if num_months >= 12: 
-                # 【v3.4.2 修正】確保傳遞正確的 DataFrame 給 anomaly_scores
                 df_for_anomalies = df_for_seasonal_model if df_for_seasonal_model is not None else monthly_expenses
                 anomaly_info = calculate_anomaly_scores(df_for_anomalies)
                 is_shock_flags = anomaly_info['Is_Shock'].values[:min_len_for_res]
@@ -2747,6 +2815,9 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         print(f"{colors.BOLD}淨餘額（名目）: {balance_color}{colors.BOLD}{net_balance:,.2f}{colors.RESET}")
 
     print(f"\n{colors.PURPLE}{colors.BOLD}>>> {target_month_str} 趨勢預測{method_used}: {predicted_expense_str}{ci_str}{colors.RESET}")
+    
+    if gating_reason:
+        print(f"  - {gating_reason}")
     
     if historical_mae is not None:
         print(f"\n{colors.WHITE}>>> 模型表現評估 (基於歷史回測){colors.RESET}")
