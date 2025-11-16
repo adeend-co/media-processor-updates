@@ -2,21 +2,21 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.3                 #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.3.               #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新 v3.3.7：引入混合殘差校正引擎，使其能同時學習並修正短期慣性與長期             #
-#             季節性誤差，大幅提升對複雜數據模式的適應性。                            #
+# 更新 v3.3.7：實現雙通道殘差校正系統，引入 RSSC 專門處理季節性誤差，              #
+#             並讓 ACRR 專注於短期慣性誤差，大幅提升模型自我修正能力。                  #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v3.3.7"  # Feat: Implement Hybrid Residual Correction Engine
+SCRIPT_VERSION = "v3.3.7"  # Feat: Dual-Channel Residual Correction (RSSC + ACRR)
 SCRIPT_UPDATE_DATE = "2025-11-16"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -2339,77 +2339,77 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
 
     return future_pred_final_seq, historical_pred_final, effective_base_weights, meta_model_weights_for_report, lower_seq, upper_seq, historical_base_preds_df
 
-# ---【v3.3.1 核心升級】混合殘差校正引擎 ---
-def run_hybrid_residual_correction(historical_pred, y_true, steps_ahead, acf_results, colors):
+# ---【v3.3.1 新增】二次季節性校正引擎 (RSSC) ---
+def run_secondary_seasonal_correction(historical_pred, y_true, steps_ahead, acf_results):
     """
-    分析主模型的歷史殘差，並根據ACF結果，混合應用短期與季節性校正。
+    分析主模型的殘差中是否含有季節性規律，並進行校正。
     """
     initial_residuals = np.asarray(y_true - historical_pred)
-    corrections = {}
-    weights = {}
     
-    # 模組1: ACRR (短期慣性校正)
-    lag1_info = acf_results.get(1, {})
-    if lag1_info.get('is_significant'):
-        X = initial_residuals[:-1].reshape(-1, 1)
-        y = initial_residuals[1:]
-        try:
-            slope, intercept, _, _, _ = linregress(X.flatten(), y)
-            last_known_residual = initial_residuals[-1]
-            correction = intercept + slope * last_known_residual
-            corrections['acrr'] = {'value': correction, 'label': '短期慣性'}
-            weights['acrr'] = abs(lag1_info.get('acf', 0))
-        except ValueError:
-            pass
-
-    # 模組2: RSSC (季節性規律校正)
-    seasonal_lags = {'rssc_6': 6, 'rssc_12': 12}
-    strongest_seasonal_lag = None
-    max_seasonal_acf = 0.0
-
-    for key, lag in seasonal_lags.items():
-        lag_info = acf_results.get(lag, {})
-        if lag_info.get('is_significant') and len(initial_residuals) > lag:
-            acf_val = abs(lag_info.get('acf', 0))
-            if acf_val > max_seasonal_acf:
-                max_seasonal_acf = acf_val
-                strongest_seasonal_lag = {
-                    'key': key,
-                    'lag': lag,
-                    'acf': lag_info.get('acf'),
-                    'label': '半年期規律' if lag == 6 else '年度性規律'
-                }
-
-    if strongest_seasonal_lag:
-        lag = strongest_seasonal_lag['lag']
-        acf_val = strongest_seasonal_lag['acf']
-        past_residual = initial_residuals[-lag]
-        correction = acf_val * past_residual
-        corrections[strongest_seasonal_lag['key']] = {'value': correction, 'label': strongest_seasonal_lag['label']}
-        weights[strongest_seasonal_lag['key']] = max_seasonal_acf
-
-    if not corrections:
-        return np.zeros(steps_ahead), np.zeros_like(historical_pred), False, ""
-
-    # 智慧加權融合
-    total_weight = sum(weights.values())
-    final_correction = 0
-    report_parts = []
-    for key, weight in weights.items():
-        weighted_corr = (corrections[key]['value'] * weight) / total_weight
-        final_correction += weighted_corr
-        report_parts.append(f"{corrections[key]['label']}({weight/total_weight:.0%})")
+    # 1. 從ACF診斷結果中尋找最強的季節性信號
+    strongest_seasonal_lag = 0
+    max_acf = 0.0
+    for lag, result in acf_results.items():
+        if lag >= 3 and result['is_significant']:
+            if abs(result['acf']) > max_acf:
+                max_acf = abs(result['acf'])
+                strongest_seasonal_lag = lag
     
-    # 目前僅校正第一步，未來可擴展
-    future_correction = np.zeros(steps_ahead)
-    future_correction[0] = final_correction
+    if strongest_seasonal_lag == 0:
+        return np.zeros(steps_ahead), np.zeros_like(historical_pred), False, None
+
+    # 2. 獲取對應的歷史殘差
+    if len(initial_residuals) < strongest_seasonal_lag:
+        return np.zeros(steps_ahead), np.zeros_like(historical_pred), False, None
+
+    # 3. 計算校正項
+    # 對未來的校正：使用 L 個月前的殘差來預測
+    past_residuals_for_future = initial_residuals[-strongest_seasonal_lag:]
+    correction_forecast = np.tile(past_residuals_for_future, steps_ahead // strongest_seasonal_lag + 1)[:steps_ahead] * max_acf
+
+    # 對歷史的校正：將歷史殘差向前平移 L 個單位
+    historical_correction = np.zeros_like(initial_residuals)
+    historical_correction[strongest_seasonal_lag:] = initial_residuals[:-strongest_seasonal_lag] * max_acf
+
+    return correction_forecast, historical_correction, True, strongest_seasonal_lag
+
+# ---【v3.3.0 核心修正】殘差自動校正引擎 (ACRR) ---
+def run_autocorrective_residual_refinement(historical_pred, y_true, steps_ahead, acf_results):
+    """
+    分析主模型的殘差中是否含有短期慣性，並進行校正。
+    """
+    # 檢查 lag-1 是否顯著
+    if not acf_results.get(1, {}).get('is_significant', False):
+        return np.zeros(steps_ahead), np.zeros_like(historical_pred), False
+
+    initial_residuals = np.asarray(y_true - historical_pred)
     
-    # 對歷史數據的校正僅為近似，主要用於更新最終殘差以進行診斷
-    historical_correction = np.zeros_like(historical_pred)
+    if len(initial_residuals) < 3:
+        return np.zeros(steps_ahead), np.zeros_like(historical_pred), False
+
+    X = initial_residuals[:-1].reshape(-1, 1)
+    y = initial_residuals[1:]
+
+    try:
+        slope, intercept, _, _, _ = linregress(X.flatten(), y)
+    except ValueError:
+        return np.zeros(steps_ahead), np.zeros_like(historical_pred), False
+        
+    historical_correction = intercept + slope * initial_residuals[:-1]
     
-    correction_report = f" ({colors.BOLD}ACRR{colors.RESET}+{colors.BOLD}RSSC{colors.RESET}) | 校正依據: {', '.join(report_parts)}"
+    residual_forecast = []
+    last_known_residual = initial_residuals[-1]
     
-    return future_correction, historical_correction, True, correction_report
+    for _ in range(steps_ahead):
+        next_residual = intercept + slope * last_known_residual
+        residual_forecast.append(next_residual)
+        last_known_residual = next_residual
+
+    full_historical_correction = np.zeros_like(historical_pred, dtype=float)
+    full_historical_correction[1:] = historical_correction
+
+    return np.array(residual_forecast), full_historical_correction, True
+
 
 # --- 主要分析與預測函數 ---
 def analyze_and_predict(file_paths_str: str, no_color: bool):
@@ -2496,8 +2496,9 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     prequential_metrics_report = "" 
     adaptive_dynamics_report = ""
     risk_factors_report = ""
-    acrr_activated_str = ""
-    
+    acrr_activated, rssc_activated = False, False
+    rssc_lag = None
+
     if analysis_data is not None and len(analysis_data) >= 2:
         num_months = len(analysis_data)
         data, x = analysis_data, np.arange(1, num_months + 1)
@@ -2586,25 +2587,29 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 future_pred_seq = np.array([ema.iloc[-1]])
                 historical_pred = ema.values
 
-        # --- 預先計算第一次殘差和ACF ---
-        temp_residuals = data - historical_pred
-        temp_acf_results = compute_acf_results(temp_residuals, num_months)
+        # ---【v3.3.1 核心升級】雙通道殘差校正 ---
+        if num_months >= 36 and historical_pred is not None and len(historical_pred) == len(data):
+            # 預先計算一次ACF結果
+            temp_residuals = data - historical_pred
+            temp_acf_results = compute_acf_results(temp_residuals, num_months)
 
-        # ---【v3.3.1 核心升級】混合殘差校正 ---
-        if num_months >= 36:
-            residual_forecast, historical_correction, correction_activated, correction_report = \
-                run_hybrid_residual_correction(historical_pred, data, steps_ahead, temp_acf_results, colors)
-            
-            if correction_activated:
-                future_pred_seq += residual_forecast
-                historical_pred += historical_correction
-                method_used += correction_report
-                acrr_activated_str = f"  - {colors.GREEN}混合殘差校正: 已啟用{correction_report}{colors.RESET}"
+            # 通道一：RSSC
+            seasonal_forecast, seasonal_hist_corr, rssc_activated, rssc_lag = \
+                run_secondary_seasonal_correction(historical_pred, data, steps_ahead, temp_acf_results)
+            if rssc_activated:
+                future_pred_seq += seasonal_forecast
+                historical_pred += seasonal_hist_corr
+                method_used += " + RSSC"
+
+            # 通道二：ACRR
+            # 在可能已被RSSC校正過的基礎上再次校正
+            acrr_forecast, acrr_hist_corr, acrr_activated = \
+                run_autocorrective_residual_refinement(historical_pred, data, steps_ahead, temp_acf_results)
+            if acrr_activated:
+                future_pred_seq += acrr_forecast
+                historical_pred += acrr_hist_corr
+                method_used += " + ACRR"
         
-        if not acrr_activated_str:
-            acrr_activated_str = f"  - {colors.WHITE}混合殘差校正: 未啟用 (資料需 ≥ 36 個月或殘差無顯著規律){colors.RESET}"
-
-
         if future_pred_seq is not None:
             predicted_value = future_pred_seq[-1]
             lower = lower_seq[-1] if lower_seq is not None else None
@@ -2749,8 +2754,19 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     print(f"  - {seasonal_note}")
     print(f"  - {mc_note}")
     print(f"  - 預測目標月份: {target_month_str} (距離資料 {steps_ahead} 個月)")
-    if acrr_activated_str: print(acrr_activated_str)
-        
+    if num_months >= 36:
+        if rssc_activated:
+            print(f"  - {colors.GREEN}二次季節性校正 (RSSC): 已啟用 (基於 {rssc_lag} 個月延遲){colors.RESET}")
+        else:
+            print(f"  - {colors.WHITE}二次季節性校正 (RSSC): 未啟用 (無顯著季節性規律){colors.RESET}")
+        if acrr_activated:
+            print(f"  - {colors.GREEN}殘差自動校正 (ACRR): 已啟用 (基於 1 個月延遲){colors.RESET}")
+        else:
+            print(f"  - {colors.WHITE}殘差自動校正 (ACRR): 未啟用 (無顯著短期慣性){colors.RESET}")
+    else:
+        print(f"  - {colors.WHITE}二次季節性校正 (RSSC): 未啟用 (資料需 ≥ 36 個月){colors.RESET}")
+        print(f"  - {colors.WHITE}殘差自動校正 (ACRR): 未啟用 (資料需 ≥ 36 個月){colors.RESET}")
+
     if base_model_weights_report: print(base_model_weights_report)
     if meta_model_weights_report: print(meta_model_weights_report)
     if step_warning: print(step_warning)
