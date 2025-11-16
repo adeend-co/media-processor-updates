@@ -2,21 +2,21 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.4               #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.4.2               #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新 v3.4.1：實現自適應衝擊偵測閾值，並增強RSSC校正報告的透明度，               #
+# 更新 v3.4.2：實現自適應衝擊偵測閾值，並增強RSSC校正報告的透明度，               #
 #             使其能動態應對不同數據分佈並清晰展示季節性校正權重。                    #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v3.4.1"  # Feat: Adaptive Anomaly Threshold & Transparent RSSC Weights
+SCRIPT_VERSION = "v3.4.2"  # Feat: Adaptive Anomaly Threshold & Transparent RSSC Weights
 SCRIPT_UPDATE_DATE = "2025-11-16"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
