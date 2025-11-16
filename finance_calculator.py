@@ -2580,7 +2580,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
 
             mean_expense_for_report = monthly_expenses['Real_Amount'].mean()
             prequential_metrics_report = format_prequential_metrics_report(prequential_results, mean_expense_for_report, colors)
-            adaptive_dynamics_report = format_adaptive_dynamics_report(prequential_results, df_for_seasonal_model)
+            adaptive_dynamics_report = format_adaptive_dynamics_report(prequential_results, df_for_seasonal_model, colors)
         
         elif 24 <= num_months < 36:
             method_used = " (基於三層式混合集成法)"
