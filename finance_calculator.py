@@ -1295,7 +1295,8 @@ def print_progress_bar(iteration, total, prefix='', suffix='', decimals=1, lengt
         sys.stdout.write('\n')
         sys.stdout.flush()
 
-# --- 【v3.4.3 核心升級】將完整作戰流程注入前向測試 ---
+
+# ---【v3.4.3 核心修正】前向測試流程修正 ---
 def run_dynamic_strategy_ensemble_prequential(
     full_df, 
     colors, 
@@ -1304,7 +1305,7 @@ def run_dynamic_strategy_ensemble_prequential(
     dynamic_lookback_window=12
 ):
     """
-    (v3.4.3 升級版) 執行包含完整預測流程的前向測試。
+    (v3.4.3 修正版) 執行包含完整預測流程的前向測試。
     """
     total_len = len(full_df)
     errors, predictions, true_values = [], [], []
@@ -1346,24 +1347,33 @@ def run_dynamic_strategy_ensemble_prequential(
         weight_B = 1.0 - weight_A
 
         main_hist_pred = (hist_pred_A * weight_A) + (hist_pred_B * weight_B)
-        main_pred_seq_A, _, _, _, _, _, _ = run_full_ensemble_pipeline(clean_history_df, 1, colors, False)
-        main_pred_seq_B, _, _, _, _, _, _ = run_robust_decomp_forecaster(clean_history_df, 1, colors, False)
-        main_pred = (main_pred_seq_A[0] * weight_A) + (main_pred_seq_B[0] * weight_B)
+        
+        pred_A_seq, _, _, _, _, _, _ = run_full_ensemble_pipeline(clean_history_df, 1, colors, False)
+        pred_B_seq, _, _, _, _, _, _ = run_robust_decomp_forecaster(clean_history_df, 1, colors, False)
+        main_pred = (pred_A_seq[0] * weight_A) + (pred_B_seq[0] * weight_B)
 
         main_residuals = clean_history_df['Real_Amount'].values - main_hist_pred
         main_acf_results = compute_acf_results(main_residuals, len(main_residuals))
         
-        rssc_forecast, _, rssc_activated, _ = run_secondary_seasonal_correction(main_hist_pred, clean_history_df['Real_Amount'].values, 1, main_acf_results)
-        if rssc_activated: main_pred += rssc_forecast[0]
+        # ---【v3.4.3 修正】---
+        # 錯誤點：原先這裡使用 `_, _, rssc_activated, _` 丟棄了 `seasonal_hist_corr`
+        # 修正後：完整接收所有回傳值
+        seasonal_forecast, seasonal_hist_corr, rssc_activated, _ = \
+            run_secondary_seasonal_correction(main_hist_pred, clean_history_df['Real_Amount'].values, 1, main_acf_results)
         
+        if rssc_activated:
+            main_pred += seasonal_forecast[0]
+
         final_residuals_after_rssc = clean_history_df['Real_Amount'].values - (main_hist_pred + (seasonal_hist_corr if rssc_activated else 0))
         final_acf_after_rssc = compute_acf_results(final_residuals_after_rssc, len(final_residuals_after_rssc))
 
-        acrr_forecast, _, acrr_activated = run_autocorrective_residual_refinement(main_hist_pred + (seasonal_hist_corr if rssc_activated else 0), clean_history_df['Real_Amount'].values, 1, final_acf_after_rssc)
-        if acrr_activated: main_pred += acrr_forecast[0]
+        acrr_forecast, _, acrr_activated = \
+            run_autocorrective_residual_refinement(main_hist_pred + (seasonal_hist_corr if rssc_activated else 0), clean_history_df['Real_Amount'].values, 1, final_acf_after_rssc)
+        if acrr_activated:
+            main_pred += acrr_forecast[0]
 
         use_expert_model = False
-        boundary = 2 / np.sqrt(len(main_residuals))
+        boundary = 2 / np.sqrt(len(main_residuals)) if len(main_residuals) > 0 else 0.5
         threshold = GATING_MULTIPLIER_K * boundary
         for lag, res in final_acf_after_rssc.items():
             if lag >= 3 and abs(res['acf']) > threshold:
@@ -1398,6 +1408,7 @@ def run_dynamic_strategy_ensemble_prequential(
         "true_values": np.array(true_values),
         "drift_points": drift_points
     }
+
 
 # --- 【升級】將前向測試報告拆分為兩個獨立函數 ---
 def format_prequential_metrics_report(results, mean_expense, colors):
