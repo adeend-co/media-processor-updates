@@ -499,13 +499,23 @@ def robust_moving_std(series, window):
     robust_std = mad_series / 0.6745
     return robust_std
 
-# ---【v3.3.2 核心升級】動態閾值與衝擊偵測引擎 ---
+# ---【v3.4.3 核心修正】修正季節性分解函式的返回值 ---
 def manual_seasonal_decompose(series, period=12, model='additive'):
+    """
+    使用 numpy 和 pandas 手動實現古典季節性分解。
+    【v3.4.3 修正】: 確保無論數據長度如何，返回值始終是包含 'trend', 'seasonal', 'resid' 的 DataFrame。
+    """
     if not isinstance(series, pd.Series) or not isinstance(series.index, pd.DatetimeIndex):
         raise TypeError("輸入必須是帶有 DatetimeIndex 的 pandas Series")
+    
+    # 【核心修正點】
+    # 當數據量不足時，不再返回單一 Series，而是返回一個結構一致的 DataFrame
     if len(series) < period * 2:
-        # 如果數據太短，返回一個合理的預設分解
-        return pd.Series(0, index=series.index)
+        return pd.DataFrame({
+            'trend': series, 
+            'seasonal': 0.0, 
+            'resid': 0.0
+        }, index=series.index)
 
     # 1. 估計趨勢 (Trend): 使用週期為 period 的中心化移動平均
     if period % 2 == 0: # 偶數週期
@@ -520,10 +530,13 @@ def manual_seasonal_decompose(series, period=12, model='additive'):
     # 2. 計算去趨勢序列 (Detrended)
     if model == 'additive':
         detrended = series - trend
-    else: # multiplicative
-        trend[trend == 0] = 1e-6
-        detrended = series / trend
-    
+    elif model == 'multiplicative':
+        # 避免除以零
+        trend_safe = trend.replace(0, 1e-6)
+        detrended = series / trend_safe
+    else:
+        raise ValueError("模型類型必須是 'additive' 或 'multiplicative'")
+
     # 3. 估計季節性成分 (Seasonal)
     seasonal_avg = detrended.groupby(detrended.index.month).mean()
     
@@ -540,7 +553,7 @@ def manual_seasonal_decompose(series, period=12, model='additive'):
     else:
         resid = series / (trend * seasonal)
 
-    return resid.dropna()
+    return pd.DataFrame({'trend': trend, 'seasonal': seasonal, 'resid': resid})
 
 def calculate_dynamic_anomaly_multiplier(residual_series):
     if len(residual_series) < 12:
