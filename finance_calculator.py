@@ -554,23 +554,21 @@ def manual_seasonal_decompose(series, period=12, model='additive'):
         resid = series / (trend * seasonal)
 
     return pd.DataFrame({'trend': trend, 'seasonal': seasonal, 'resid': resid})
-
 # ---【v3.4.3 核心修正】修正峰度計算的返回值類型 ---
 def calculate_dynamic_anomaly_multiplier(residual_series):
     """
     根據殘差序列的分佈特徵（偏態和峰度）動態計算異常偵測的閾值乘數。
     """
-    if len(residual_series) < 12: # 如果有效殘差太少，則返回一個安全的預設值
+    # 【v3.4.3 修正點】確保輸入是一個 flattened numpy array
+    clean_residuals = np.asarray(residual_series).flatten()
+    clean_residuals = clean_residuals[~np.isnan(clean_residuals)]
+
+    if len(clean_residuals) < 12: # 如果有效殘差太少，則返回一個安全的預設值
         return 1.5
 
     # 1. 計算偏態和超額峰度
-    skewness = stats.skew(residual_series)
-    kurt = stats.kurtosis(residual_series, fisher=True)
-    
-    # 【v3.4.3 修正點】
-    # 確保 kurt 是一個純數值，而不是一個單元素的陣列
-    if isinstance(kurt, np.ndarray):
-        kurt = kurt.item()
+    skewness = stats.skew(clean_residuals)
+    kurt = stats.kurtosis(clean_residuals, fisher=True)
     
     # 2. 設計映射函數
     base_c = 1.75  # 基礎乘數，可以稍微調高一點
@@ -578,7 +576,7 @@ def calculate_dynamic_anomaly_multiplier(residual_series):
     
     # 調整因子：偏態越大、峰度越高，因子越小
     skew_factor = 1 / (1 + 0.5 * abs(skewness))
-    kurt_factor = 1 / (1 + 0.2 * max(0, kurt)) # 現在 max() 函式可以正常工作
+    kurt_factor = 1 / (1 + 0.2 * max(0, kurt))
     
     # 3. 計算並返回最終的動態 c 值
     dynamic_c = base_c * skew_factor * kurt_factor
