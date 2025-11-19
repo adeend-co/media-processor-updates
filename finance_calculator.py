@@ -2,22 +2,22 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.4.3               #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.5.0               #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新 v3.4.3：引入專家門控機制。當主模型無法處理強烈季節性時，系統會              #
-#             自動切換至專門的DRF專家模型，大幅提升預測的適應性與準確性。             #
+# 更新 v3.5.0：整合穩健 Theta-Hurdle 混合模型。引入 IRLS-Huber 迭代迴歸                #
+#             與 Hurdle 機率層，針對間歇性支出與極端異常值提供高抗噪預測。               #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v3.4.3"  # Feat: Gating mechanism with DRF expert model for strong seasonality
-SCRIPT_UPDATE_DATE = "2025-11-16"
+SCRIPT_VERSION = "v3.5.0"  # Feat: Robust Theta-Hurdle Model Integration & Objective Dashboard
+SCRIPT_UPDATE_DATE = "2025-11-19"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
 # 說明：您可以直接修改這裡的數字，來調整報告中各表格欄位的寬度，以適應您的終端機字體。
@@ -500,19 +500,27 @@ def robust_moving_std(series, window):
     return robust_std
 
 # ---【v3.3.2 核心升級】動態閾值與衝擊偵測引擎 ---
-def manual_seasonal_decompose(series, period=12):
+def manual_seasonal_decompose(series, period=12, model='additive'):
     if len(series) < period * 2:
-        return pd.Series(series, index=series.index)
+        return pd.DataFrame({'trend': series, 'seasonal': 0, 'resid': 0}) # Fallback
     trend = series.rolling(window=period, center=True).mean()
     trend = trend.rolling(window=2, center=True).mean().shift(-1) if period % 2 == 0 else trend.rolling(window=period, center=True).mean()
     trend = trend.fillna(method='bfill').fillna(method='ffill')
-    detrended = series - trend
+    detrended = series - trend if model == 'additive' else series / trend
     seasonal_avg = detrended.groupby(detrended.index.month).mean()
-    seasonal_adjustment = seasonal_avg.mean()
-    seasonal_avg -= seasonal_adjustment
-    seasonal = pd.Series(seasonal_avg[series.index.month].values, index=series.index)
-    resid = series - trend - seasonal
-    return resid.dropna()
+    
+    if model == 'additive':
+        seasonal_adjustment = seasonal_avg.mean()
+        seasonal_avg -= seasonal_adjustment
+        seasonal = pd.Series(seasonal_avg[series.index.month].values, index=series.index)
+        resid = series - trend - seasonal
+    else:
+        seasonal_adjustment = seasonal_avg.mean()
+        seasonal_avg /= seasonal_adjustment
+        seasonal = pd.Series(seasonal_avg[series.index.month].values, index=series.index)
+        resid = series / (trend * seasonal)
+        
+    return pd.DataFrame({'trend': trend, 'seasonal': seasonal, 'resid': resid})
 
 def calculate_dynamic_anomaly_multiplier(residual_series):
     if len(residual_series) < 12:
@@ -536,7 +544,8 @@ def calculate_anomaly_scores(monthly_expenses_df, window_size=6, k_ma=2.5, k_sig
     n_total = len(data)
 
     # --- 1. 自適應全局衝擊偵測 (Adaptive SIQR) ---
-    residuals_for_dist = manual_seasonal_decompose(series_pd)
+    decomposed = manual_seasonal_decompose(series_pd)
+    residuals_for_dist = decomposed['resid'].dropna()
     dynamic_multiplier = calculate_dynamic_anomaly_multiplier(residuals_for_dist)
     
     q1, q3 = np.percentile(data, [25, 75])
@@ -1958,6 +1967,138 @@ def train_predict_theta(x_train, y_train, x_predict, theta=2.0):
     final_forecast = (1/theta) * forecast_ses + (1 - 1/theta) * forecast_trend
     return final_forecast
 
+# ==========================================
+#   新增：完整版穩健 Theta-Hurdle 混合模型
+#   (Full Robust Theta-Hurdle Implementation)
+# ==========================================
+
+def _full_robust_theta_core(x_train, y_train, x_predict, tol=1e-6, max_iter=100):
+    """
+    【核心引擎】完整迭代的穩健 Theta 分解 (IRLS Huber + SES)
+    """
+    steps_ahead = len(x_predict)
+    
+    # 1. 執行完整的 IRLS (迭代重加權最小平方法) 尋找 Huber 趨勢線
+    # 建構設計矩陣 [1, x] 以包含截距項
+    X_mat = np.c_[np.ones(len(x_train)), x_train]
+    
+    # 初始估計：使用普通最小平方法 (OLS)
+    try:
+        beta = np.linalg.lstsq(X_mat, y_train, rcond=None)[0]
+    except np.linalg.LinAlgError:
+        beta = np.array([np.mean(y_train), 0.0])
+    
+    # 開始迭代
+    for i in range(max_iter):
+        beta_old = beta.copy()
+        y_est = X_mat @ beta
+        resid = y_train - y_est
+        
+        # 計算尺度 (Scale) - 使用 MAD (中位數絕對偏差)
+        median_resid = np.median(resid)
+        mad = np.median(np.abs(resid - median_resid))
+        scale = mad / 0.6745 # 轉換為標準差估計
+        
+        if scale < 1e-9: # 避免除以零 (完美擬合的情況)
+            scale = 1e-9
+            
+        # 計算標準化殘差 z
+        z = (resid - median_resid) / scale
+        
+        # 計算 Huber 權重
+        # 閾值 k=1.345 是統計學標準，對應 95% 的常態分佈效率
+        k = 1.345 
+        weights = np.ones_like(z)
+        outliers = np.abs(z) > k
+        weights[outliers] = k / np.abs(z[outliers])
+        
+        # 執行加權最小平方法 (WLS)
+        W_sqrt = np.sqrt(weights)
+        X_w = X_mat * W_sqrt[:, np.newaxis]
+        y_w = y_train * W_sqrt
+        
+        try:
+            beta = np.linalg.lstsq(X_w, y_w, rcond=None)[0]
+        except np.linalg.LinAlgError:
+            beta = beta_old # 若矩陣奇異，退回上一步並停止
+            break
+            
+        # 檢查收斂：如果係數變化極小，則提早結束
+        if np.sum(np.abs(beta - beta_old)) < tol:
+            break
+            
+    slope, intercept = beta[1], beta[0]
+    
+    # 計算穩健趨勢線 (Robust Trend Line)
+    trend_train = intercept + slope * x_train
+    trend_future = intercept + slope * x_predict
+    
+    # 2. 構建 Theta=2 線 (Curvature Line)
+    # 公式：L(2) = 2 * y - Trend
+    # 這條線放大了數據相對於趨勢的波動，用於捕捉短期動態
+    theta_line_2 = 2 * y_train - trend_train
+    
+    # 3. 對 Theta=2 線進行 SES 預測
+    # 這裡使用腳本既有的 train_predict_ses (會自動優化 alpha)
+    theta_2_forecast = train_predict_ses(theta_line_2, predict_steps=steps_ahead)
+    
+    # 4. 最終 Theta 組合 (Standard Theta Combination)
+    # 預測值 = 0.5 * 趨勢預測 + 0.5 * 短期動態預測
+    final_forecast = 0.5 * trend_future + 0.5 * theta_2_forecast
+    
+    return final_forecast
+
+def train_predict_robust_hurdle_theta(x_train, y_train, x_predict, zero_threshold=0.3, tol=1e-6, max_iter=100):
+    """
+    【完整版】穩健 Theta-Hurdle 混合模型
+    
+    參數說明:
+    - zero_threshold: 啟動 Hurdle 機制的零值比例門檻 (預設 0.3)
+    - tol: IRLS 收斂容忍值 (預設 1e-6，極高精度)
+    - max_iter: IRLS 最大迭代次數 (預設 100，確保收斂)
+    """
+    n = len(y_train)
+    steps_ahead = len(x_predict)
+    
+    # --- 第一層：Hurdle 判斷 (是否為間歇性數據?) ---
+    zero_count = np.sum(y_train == 0)
+    zero_ratio = zero_count / n
+    
+    # 若零值比例低於門檻 (例如您的總支出數據)，直接視為連續數據
+    # 跳過機率計算，全速執行穩健預測核心
+    if zero_ratio < zero_threshold:
+        return _full_robust_theta_core(x_train, y_train, x_predict, tol, max_iter)
+        
+    # --- 第二層：Hurdle 機率預測 (Probability) ---
+    # 建立二元序列 (1=有花錢, 0=沒花錢)
+    binary_series = (y_train > 0).astype(float)
+    
+    # 使用 SES (簡易指數平滑) 預測下個月"會發生"的機率
+    # 這裡復用腳本中已有的 train_predict_ses，它會自動優化 alpha
+    prob_forecast_val = train_predict_ses(binary_series, predict_steps=1)[0]
+    
+    # 限制機率在 [0.01, 1.0] 之間，避免機率為 0 導致預測死鎖
+    prob_forecast = np.clip(prob_forecast_val, 0.01, 1.0)
+    
+    # --- 第三層：Hurdle 強度預測 (Magnitude) ---
+    non_zero_indices = np.where(y_train > 0)[0]
+    non_zero_y = y_train[non_zero_indices]
+    
+    if len(non_zero_y) < 3:
+        # 數據極少時的退路：使用簡單平均
+        magnitude_forecast = np.full(steps_ahead, np.mean(non_zero_y) if len(non_zero_y)>0 else 0)
+    else:
+        # 針對非零數據，建立新的連續時間軸 (壓縮時間)
+        # 這是為了讓回歸模型能捕捉"次數"上的趨勢
+        x_seq_train = np.arange(len(non_zero_y))
+        x_seq_pred = np.arange(len(non_zero_y), len(non_zero_y) + steps_ahead)
+        
+        # 呼叫核心引擎進行預測
+        magnitude_forecast = _full_robust_theta_core(x_seq_train, non_zero_y, x_seq_pred, tol, max_iter)
+
+    # --- 最終合成：期望值 = 機率 * 金額 ---
+    return prob_forecast * magnitude_forecast
+
 # --- 【★★★ 此處為已修正的函數 ★★★】 ---
 def train_greedy_forward_ensemble(X_meta, y_true, model_keys, n_iterations=20, colors=None, verbose=True):
     """
@@ -2018,6 +2159,7 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, ense
         'seasonal': train_predict_seasonal, 'seasonal_naive': train_predict_seasonal_naive, 'naive': train_predict_naive,
         'moving_average': train_predict_moving_average, 'rolling_median': train_predict_rolling_median, 'global_median': train_predict_global_median,
         'ses': train_predict_ses, 'theta': train_predict_theta,
+        'robust_hurdle': train_predict_robust_hurdle_theta, # <--- 新增這一行
     }
     
     model_keys = list(base_models.keys())
@@ -2038,7 +2180,7 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, ense
             model_func = base_models[key]
             if key in ['seasonal']:
                  meta_features[val_idx, j] = model_func(df_train, len(x_val))
-            elif key in ['poly', 'huber', 'theta']: # 【錯誤修正】確保 theta 使用正確的呼叫方式
+            elif key in ['poly', 'huber', 'theta', 'robust_hurdle']: # 【修正】確保 robust_hurdle 使用正確的呼叫方式
                  meta_features[val_idx, j] = model_func(x_train, y_train, x_val)
             else:
                  meta_features[val_idx, j] = model_func(y_train, len(x_val))
@@ -2061,7 +2203,7 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, ense
         model_func = base_models[key]
         if key in ['seasonal']:
             final_base_predictions[:, j] = model_func(monthly_expenses_df, steps_ahead)
-        elif key in ['poly', 'huber', 'theta']: # 【錯誤修正】確保 theta 使用正確的呼叫方式
+        elif key in ['poly', 'huber', 'theta', 'robust_hurdle']: # 【修正】確保 robust_hurdle 使用正確的呼叫方式
             final_base_predictions[:, j] = model_func(x, data, x_future)
         else:
             final_base_predictions[:, j] = model_func(data, steps_ahead)
@@ -2230,6 +2372,7 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
         'seasonal': train_predict_seasonal, 'seasonal_naive': train_predict_seasonal_naive, 'naive': train_predict_naive,
         'moving_average': train_predict_moving_average, 'rolling_median': train_predict_rolling_median, 'global_median': train_predict_global_median,
         'ses': train_predict_ses, 'theta': train_predict_theta,
+        'robust_hurdle': train_predict_robust_hurdle_theta, # <--- 新增
     }
     model_keys = list(base_models.keys())
     
@@ -2291,7 +2434,7 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
         model_func = base_models[key]
         if key in ['seasonal']:
             future_base_predictions[:, j] = model_func(monthly_expenses_df, steps_ahead)
-        elif key in ['poly', 'huber', 'theta']:
+        elif key in ['poly', 'huber', 'theta', 'robust_hurdle']:
             future_base_predictions[:, j] = model_func(x, data, x_future)
         else:
             future_base_predictions[:, j] = model_func(data, steps_ahead)
@@ -2580,6 +2723,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     acrr_activated, rssc_activated = False, False
     rssc_lag_str = None
     gating_reason = ""
+    effective_base_weights = None
 
     if analysis_data is not None and len(analysis_data) >= 2:
         num_months = len(analysis_data)
@@ -2657,7 +2801,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                     run_drf_prediction(monthly_expenses, steps_ahead=steps_ahead)
 
             # --- 報告格式化 ---
-            model_names_base = ["多項式", "穩健趨勢", "指數平滑(Auto)", "漂移", "季節分解", "季節模仿", "單純", "移動平均", "滾動中位", "全局中位", "簡易平滑(Auto)", "Theta趨勢"]
+            model_names_base = ["多項式", "穩健趨勢", "指數平滑(Auto)", "漂移", "季節分解", "季節模仿", "單純", "移動平均", "滾動中位", "全局中位", "簡易平滑(Auto)", "Theta趨勢", "穩健混合(Theta-Hurdle)"]
             if effective_base_weights is not None:
                 sorted_parts = sorted(zip(effective_base_weights, model_names_base), reverse=True)
                 report_parts_base_sorted = [f"{name}({weight:.1%})" for weight, name in sorted_parts if weight > 0.001]
@@ -2681,7 +2825,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             report_parts_meta = [f"{name}({weight:.1%})" for name, weight in weights_level2_report.items() if weight > 0.001]
             meta_model_weights_report = f"  - 元模型融合策略: {', '.join(report_parts_meta)}"
             
-            model_names_base = ["多項式", "穩健趨勢", "指數平滑(Auto)", "漂移", "季節分解", "季節模仿", "單純", "移動平均", "滾動中位", "全局中位", "簡易平滑(Auto)", "Theta趨勢"]
+            model_names_base = ["多項式", "穩健趨勢", "指數平滑(Auto)", "漂移", "季節分解", "季節模仿", "單純", "移動平均", "滾動中位", "全局中位", "簡易平滑(Auto)", "Theta趨勢", "穩健混合(Theta-Hurdle)"]
             sorted_parts = sorted(zip(effective_base_weights, model_names_base), reverse=True)
             report_parts_base_sorted = [f"{name}({weight:.1%})" for weight, name in sorted_parts if weight > 0.001]
             chunks = [report_parts_base_sorted[i:i + 3] for i in range(0, len(report_parts_base_sorted), 3)]
@@ -2879,6 +3023,20 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     if base_model_weights_report: print(base_model_weights_report)
     if meta_model_weights_report: print(meta_model_weights_report)
     if step_warning: print(step_warning)
+    
+    # --- 新增：演算法運作機制透視儀表板 ---
+    if effective_base_weights is not None and len(effective_base_weights) == len(model_names_base):
+        # 找到 robust_hurdle (穩健混合) 的索引 (最後一個)
+        rh_idx = -1 # 'robust_hurdle' is the last one added to the list
+        rh_weight = effective_base_weights[rh_idx]
+        
+        if rh_weight > 0.01: # 如果權重超過 1%
+            print(f"\n{colors.YELLOW}{colors.BOLD}>>> 演算法運作機制透視 (Robust Theta-Hurdle){colors.RESET}")
+            print(f"  {colors.WHITE}由於檢測到數據特徵符合條件，系統啟用了穩健混合模型 (權重 {rh_weight:.1%})：{colors.RESET}")
+            print(f"  1. {colors.BOLD}Hurdle 機率層{colors.RESET}: 計算支出發生的可能性，排除零值對趨勢線的拉扯。")
+            print(f"  2. {colors.BOLD}IRLS-Huber 收斂{colors.RESET}: 透過迭代重加權算法，自動降低異常極端值(Outliers)的影響權重。")
+            print(f"  3. {colors.BOLD}Theta 分解{colors.RESET}: 結合長期穩健趨勢與短期非線性動態 (Theta=2)，提升對波動的適應性。")
+    # -------------------------------------
 
     if p25 is not None:
         print(f"\n{colors.CYAN}{colors.BOLD}>>> 個人財務風險儀表板 (基於 10,000 次模擬，實質金額){colors.RESET}")
