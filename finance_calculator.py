@@ -2,21 +2,21 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.5.0               #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.5.1               #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新 v3.5.0：整合穩健 Theta-Hurdle 混合模型。引入 IRLS-Huber 迭代迴歸                #
-#             與 Hurdle 機率層，針對間歇性支出與極端異常值提供高抗噪預測。               #
+# 更新 v3.5.1：修正變數作用域錯誤。針對資料量不足的情況，增加預設變數初始化，                #
+#             防止在產生摘要報告時因 num_months 未定義而崩潰。                        #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v3.5.0"  # Feat: Robust Theta-Hurdle Model Integration & Objective Dashboard
+SCRIPT_VERSION = "v3.5.1"  # Fix: UnboundLocalError for num_months
 SCRIPT_UPDATE_DATE = "2025-11-19"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -1226,13 +1226,13 @@ def calculate_mpi_3_0_and_rate(y_true, historical_pred, global_wape, erai_score,
             
     # 評級解釋字典
     suggestions = {
-        "A+": "頂級信賴。模型的綜合能力與穩定性均達到最高標準。其預算建議可作為「關鍵長期財務規劃」的核心依據。",
-        "A": "高度可靠。模型表現出色且穩定，預測結果值得信賴。非常適合用於設定「常規的月度儲蓄目標與預算」。",
-        "A-": "穩健可靠。模型表現良好，且穩定性高。其預算建議是「設定日常開銷管理」的堅實基礎。",
-        "B+": "良好且穩定。模型的綜合表現不錯，且穩定性值得肯定。其預算建議具有「很高的參考價值」。",
-        "B": "表現良好，但穩定性中等。模型具備不錯的預測能力，但其表現在不同數據週期下可能存在波動。可作為「趨勢判斷的參考」。",
-        "B-": "表現尚可，穩定性中等。模型具備基礎預測能力，建議在採納其預算時，結合自身判斷，並「保留一定的彈性」。",
-        "C+": "基礎可用。模型的預測結果可作為一個「大致的趨勢方向」，但不建議完全依賴其精確數值。",
+        "A+": "頂級信賴。模型的綜合能力與穩定性均達到最高標準。其預算建議可作為**關鍵長期財務規劃**的核心依據。",
+        "A": "高度可靠。模型表現出色且穩定，預測結果值得信賴。非常適合用於設定**常規的月度儲蓄目標與預算**。",
+        "A-": "穩健可靠。模型表現良好，且穩定性高。其預算建議是**設定日常開銷管理**的堅實基礎。",
+        "B+": "良好且穩定。模型的綜合表現不錯，且穩定性值得肯定。其預算建議具有**很高的參考價值**。",
+        "B": "表現良好，但穩定性中等。模型具備不錯的預測能力，但其表現在不同數據週期下可能存在波動。可作為**趨勢判斷的參考**。",
+        "B-": "表現尚可，穩定性中等。模型具備基礎預測能力，建議在採納其預算時，結合自身判斷，並**保留一定的彈性**。",
+        "C+": "基礎可用。模型的預測結果可作為一個**大致的趨勢方向**，但不建議完全依賴其精確數值。",
         "C": "僅供參考。模型在綜合能力或穩定性上存在短板，其預測可能存在較大誤差或不確定性。",
         "C-": "需謹慎對待。模型的預測能力較弱，建議在採納前，詳細檢視報告中的「前向測試儀表板」，了解其主要缺陷。",
         "D": "存在明顯問題。模型在綜合能力和穩定性上均表現不佳，其預測結果參考價值很低。",
@@ -2659,6 +2659,10 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     seasonal_note = "未使用季節性分解（資料月份不足 24 個月）。"
     analysis_data = None
     df_for_seasonal_model = None
+    
+    # 修正：初始化 num_months 為 0，避免資料不足時引發 UnboundLocalError
+    num_months = 0 
+    
     if not monthly_expenses.empty:
         if num_unique_months >= 24:
             analysis_data = monthly_expenses['Real_Amount'].values
@@ -2784,14 +2788,14 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             final_acf_results = compute_acf_results(final_residuals, num_months)
             
             use_expert_model = False
-            gating_reason = f"{colors.WHITE}守門人機制：未啟用 (主模型表現穩定){colors.RESET}"
+            gating_reason = f"{colors.WHITE}守門人機制：未激活 (主模型表現穩定){colors.RESET}"
             significance_boundary = 2 / np.sqrt(num_months)
             dynamic_acf_threshold = GATING_MULTIPLIER_K * significance_boundary
             
             for lag, result in final_acf_results.items():
                 if lag >= 3 and abs(result['acf']) > dynamic_acf_threshold:
                     use_expert_model = True
-                    gating_reason = (f"{colors.YELLOW}守門人機制：已啟用 (偵測到殘差在延遲 {lag} 個月時規律過強, "
+                    gating_reason = (f"{colors.YELLOW}守門人機制：已激活 (偵測到殘差在延遲 {lag} 個月時規律過強, "
                                      f"ACF={result['acf']:.2f} > 閾值={dynamic_acf_threshold:.2f})，切換至 DRF 專家模型。{colors.RESET}")
                     break
 
@@ -3007,6 +3011,8 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     print(f"  - {seasonal_note}")
     print(f"  - {mc_note}")
     print(f"  - 預測目標月份: {target_month_str} (距離資料 {steps_ahead} 個月)")
+    
+    # --- 安全檢查 num_months，避免 UnboundLocalError ---
     if num_months >= 36:
         if rssc_activated:
             print(f"  - {colors.GREEN}二次季節性校正 (RSSC): 已啟用 (權重: {rssc_lag_str}){colors.RESET}")
@@ -3019,6 +3025,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     else:
         print(f"  - {colors.WHITE}二次季節性校正 (RSSC): 未啟用 (資料需 ≥ 36 個月){colors.RESET}")
         print(f"  - {colors.WHITE}殘差自動校正 (ACRR): 未啟用 (資料需 ≥ 36 個月){colors.RESET}")
+    # ----------------------------------------------------
 
     if base_model_weights_report: print(base_model_weights_report)
     if meta_model_weights_report: print(meta_model_weights_report)
