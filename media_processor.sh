@@ -1574,7 +1574,7 @@ process_local_mp4() {
 }
 
 ######################################################################
-# 處理單一 YouTube 音訊（MP3）下載與處理 (v6.5 - 修正 bc 依賴與詳細報錯)
+# 處理單一 YouTube 音訊（MP3）下載與處理 (v6.6 - 修正檔名路徑問題)
 ######################################################################
 process_single_mp3() {
     local media_url="$1"
@@ -1609,7 +1609,7 @@ process_single_mp3() {
         album_artist_name=$(echo "$media_json" | jq -r '.uploader // "[不明]"')
         duration_secs=$(echo "$media_json" | jq -r '.duration // 0')
         
-        # 修正：使用純 Bash 整數運算代替 bc，避免 command not found
+        # 修正 1: 使用純 Bash 整數運算代替 bc
         if [[ "$mode" != "playlist_mode" ]]; then
             local duration_int=${duration_secs%.*} # 去除小數點
             if [[ "$duration_int" -gt "$duration_threshold_secs" ]]; then
@@ -1619,16 +1619,26 @@ process_single_mp3() {
         fi
 
         local sanitized_title
+        # 原始清理邏輯 (保留大部分語言字元)
         local safe_chars_regex='[^a-zA-Z0-9\u4e00-\u9fff\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uffef _.\[\]()-]'
         if command -v iconv &> /dev/null; then
             sanitized_title=$(echo "${video_title}" | iconv -f UTF-8 -t UTF-8 -c | sed -E "s/${safe_chars_regex}/_/g")
         else
             sanitized_title=$(echo "${video_title}" | sed -E "s/${safe_chars_regex}/_/g")
         fi
+        
+        # 修正 2: 強制過濾檔案系統保留字元 (/ \ : * ? " < > |)，防止路徑錯誤
+        # 使用 @ 作為 sed 分隔符，避免與斜線衝突
+        sanitized_title=$(echo "$sanitized_title" | sed 's@[/\\:*?"<>|]@_@g')
+        
+        # 去除多餘的底線並截斷長度
         sanitized_title=$(echo "$sanitized_title" | sed -E 's/[_ ]+/_/g' | cut -c 1-80)
+        
         local final_base_name="${sanitized_title} [${video_id}]"
         
         log_message "INFO" "(MP3) 將下載音訊到臨時目錄: ${temp_dir}"
+        log_message "INFO" "(MP3) 最終檔名預覽: ${final_base_name}_normalized.mp3"
+        
         local temp_output_template="${temp_dir}/%(id)s.%(ext)s"
         local format_option="bestaudio[ext=m4a]/bestaudio"
         
@@ -1665,14 +1675,14 @@ process_single_mp3() {
             else
                 ffmpeg_embed_args+=(-c copy -id3v2_version 3)
             fi
-            # 這裡嘗試加入元數據，如果標題有特殊字元可能會失敗
+            
             ffmpeg_embed_args+=(-metadata "title=${video_title}" -metadata "artist=${artist_name}" -metadata "album_artist=${album_artist_name}" "$output_audio")
             
-            # ★★★ 修正：發生錯誤時，直接在螢幕上顯示日誌 ★★★
+            # 修正 3: 發生錯誤時顯示詳細日誌，並增加備用儲存機制
             if ! "${ffmpeg_embed_args[@]}" > "$temp_dir/ffmpeg_embed.log" 2>&1; then
                 log_message "ERROR" "E_FFMPEG_MUX: (MP3) 加入封面和元數據失敗！";
                 echo -e "${RED}嚴重錯誤：FFmpeg 封裝失敗 (加入封面/元數據時)。${RESET}"
-                echo -e "${YELLOW}以下是詳細錯誤日誌 (請檢查是否有封面格式錯誤或參數問題)：${RESET}"
+                echo -e "${YELLOW}以下是詳細錯誤日誌：${RESET}"
                 echo -e "${PURPLE}---------------------------------------------------${RESET}"
                 cat "$temp_dir/ffmpeg_embed.log"
                 echo -e "${PURPLE}---------------------------------------------------${RESET}"
@@ -1681,10 +1691,17 @@ process_single_mp3() {
                 final_result_string="FAIL|${video_title}|E_FFMPEG_MUX|${raw_err_b64}"
                 result=1
                 
-                # 嘗試保留標準化後的音訊作為備案 (不含封面)
+                # 救援機制：嘗試儲存無元數據版本，避免使用者白忙一場
                 echo -e "${YELLOW}嘗試救援：儲存無封面/無元數據的標準化音訊...${RESET}"
+                # 再次確保救援檔名也沒有特殊字元
                 local rescue_file="${DOWNLOAD_PATH}/${final_base_name}_no_meta.mp3"
-                cp "$normalized_temp" "$rescue_file" && echo -e "${GREEN}救援成功，已儲存為: ${rescue_file}${RESET}"
+                if cp "$normalized_temp" "$rescue_file"; then
+                    echo -e "${GREEN}救援成功，已儲存為: ${rescue_file}${RESET}"
+                else
+                    echo -e "${RED}救援失敗 (可能檔名仍有問題)，嘗試使用純 ID 存檔...${RESET}"
+                    rescue_file="${DOWNLOAD_PATH}/${video_id}_no_meta.mp3"
+                    cp "$normalized_temp" "$rescue_file" && echo -e "${GREEN}已使用 ID 存檔: ${rescue_file}${RESET}"
+                fi
             else
                 final_result_string="SUCCESS|${video_title}|MP3-320kbps"
                 result=0
@@ -1708,9 +1725,7 @@ process_single_mp3() {
         fi
     else
         echo -e "${RED}處理失敗 (MP3 標準化)。${RESET}"
-        # 自動調用錯誤詳情解析
         if [[ "$mode" != "playlist_mode" ]]; then 
-             # 從 final_result_string 解析錯誤碼
              local err_code=$(echo "$final_result_string" | cut -d'|' -f3)
              _get_error_details "$err_code"
         fi
