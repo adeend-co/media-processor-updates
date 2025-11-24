@@ -50,7 +50,7 @@
 ############################################
 # 腳本設定
 ############################################
-SCRIPT_VERSION="v2.7.0" # <<< 版本號更新
+SCRIPT_VERSION="v2.7.1" # <<< 版本號更新
 
 ############################################
 # ★★★ 新增：使用者同意書版本號 ★★★
@@ -61,7 +61,7 @@ AGREEMENT_VERSION="1.6"
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
-SCRIPT_UPDATE_DATE="2025-10-21" # 請根據實際情況修改此日期
+SCRIPT_UPDATE_DATE="2025-11-24" # 請根據實際情況修改此日期
 
 # ... 其他設定 ...
 TARGET_DATE="2026-01-11" # <<< 新增：設定您的目標日期
@@ -699,7 +699,7 @@ spinner() {
 }
 
 ###########################################################
-# 全新輔助函數：解析錯誤碼並提供詳細資訊 (v1.3 - 新增格式錯誤)
+# 全新輔助函數：解析錯誤碼並提供詳細資訊 (v1.4 - 強化錯誤指引)
 ###########################################################
 _get_error_details() {
     local error_code="$1"
@@ -708,29 +708,29 @@ _get_error_details() {
         "E_YTDLP_JSON")
             error_message="${RED}原因: yt-dlp 無法獲取影片的元數據 (JSON)。\n      ${YELLOW}建議: 請檢查 URL 是否正確、影片是否為私有或已被刪除。${RESET}"
             ;;
-        "E_YTDLP_FORMAT") # ★★★ 新增的錯誤碼解釋 ★★★
-            error_message="${RED}原因: yt-dlp 報告 YouTube 未提供腳本請求的特定影片格式。\n      ${YELLOW}建議: 這是 YouTube 伺服器的動態行為，通常是暫時的。請直接重試，腳本的彈性備案機制通常能解決此問題。${RESET}"
+        "E_YTDLP_FORMAT")
+            error_message="${RED}原因: yt-dlp 報告 YouTube 未提供腳本請求的特定影片格式。\n      ${YELLOW}建議: 這是 YouTube 伺服器的動態行為，通常是暫時的。請直接重試。${RESET}"
             ;;
         "E_YTDLP_DL_403")
-            error_message="${RED}原因: YouTube 伺服器拒絕存取 (HTTP 403 Forbidden)。\n      ${YELLOW}建議: 這是 YouTube 的臨時性阻擋，請稍後重試或更換網路環境。${RESET}"
+            error_message="${RED}原因: YouTube 伺服器拒絕存取 (HTTP 403 Forbidden)。\n      ${YELLOW}建議: 這是 YouTube 的臨時性阻擋，請稍後重試或更換網路環境 (例如切換 Wi-Fi/行動數據)。${RESET}"
             ;;
         "E_YTDLP_DL_GENERIC")
-            error_message="${RED}原因: yt-dlp 下載時發生通用錯誤。\n      ${YELLOW}建議: 請檢查下方提供的原始錯誤日誌以了解詳情。${RESET}"
+            error_message="${RED}原因: yt-dlp 下載時發生通用錯誤。\n      ${YELLOW}建議: 請查看上方顯示的詳細錯誤日誌。${RESET}"
             ;;
         "E_FS_PERM")
-            error_message="${RED}原因: 檔案系統權限錯誤 (Operation not permitted)。\n      ${YELLOW}建議: 1. 檢查 Termux 儲存權限。 2. 可能是影片標題含有非法字元導致檔名無效，即使經過清理也無法創建。${RESET}"
+            error_message="${RED}原因: 檔案系統權限錯誤 (Operation not permitted)。\n      ${YELLOW}建議: 1. 檢查 Termux 儲存權限。 2. 可能是影片標題含有非法字元導致檔名無效。${RESET}"
             ;;
         "E_FFPROBE_RES")
-            error_message="${RED}原因: 下載後，ffprobe 無法讀取影片的解析度。\n      ${YELLOW}建議: 下載的檔案可能已損壞或格式異常。請檢查原始錯誤日誌。${RESET}"
+            error_message="${RED}原因: 下載後，ffprobe 無法讀取影片的解析度。\n      ${YELLOW}建議: 下載的檔案可能已損壞或格式異常。${RESET}"
             ;;
         "E_NORMALIZE_FAIL")
-            error_message="${RED}原因: FFmpeg 音量標準化過程失敗。\n      ${YELLOW}建議: 影片的音訊編碼可能不受支援。請檢查原始錯誤日誌。${RESET}"
+            error_message="${RED}原因: FFmpeg 音量標準化過程失敗。\n      ${YELLOW}建議: 影片的音訊編碼可能不受支援，或原始音訊已損壞。${RESET}"
             ;;
         "E_FFMPEG_MUX")
-            error_message="${RED}原因: FFmpeg 最終混流 (合併影像、音訊、字幕) 失敗。\n      ${YELLOW}建議: 請檢查下方提供的原始錯誤日誌以了解詳情。${RESET}"
+            error_message="${RED}原因: FFmpeg 最終封裝失敗 (合併影像/音訊/字幕/封面時出錯)。\n      ${YELLOW}建議: \n      1. 請查看上方紅色的 FFmpeg 錯誤輸出。\n      2. 常見原因包含：封面圖片格式不支援、標題含有特殊符號導致元數據寫入失敗。\n      3. 您可以嘗試「選項 2 (無標準化)」下載看是否成功。${RESET}"
             ;;
         "E_FILE_NOT_FOUND")
-            error_message="${RED}原因: yt-dlp 執行完畢，但找不到預期的影片檔案。\n      ${YELLOW}建議: 可能是因為下載被意外中斷或發生了未知錯誤。${RESET}"
+            error_message="${RED}原因: 流程顯示成功，但找不到最終產出的檔案。\n      ${YELLOW}建議: 可能是因為下載被意外中斷或被防毒軟體/系統清理機制刪除。${RESET}"
             ;;
         *)
             error_message="${RED}原因: 未知的錯誤碼 ($error_code)。${RESET}"
@@ -1020,7 +1020,7 @@ safe_remove() {
 update_dependencies() {
     # --- 工具列表定義 (保持不變) ---
     # 包含需要用包管理器安裝的 *包名*
-    local pkg_tools=("ffmpeg" "jq" "curl" "python")
+    local pkg_tools=("ffmpeg" "jq" "curl" "python" "bc")
     # 包含需要用 pip 安裝的 *包名*
     local pip_tools=("yt-dlp")
     # --- 結束工具列表定義 ---
@@ -1574,7 +1574,7 @@ process_local_mp4() {
 }
 
 ######################################################################
-# 處理單一 YouTube 音訊（MP3）下載與處理 (v6.4 - 修正終端回饋)
+# 處理單一 YouTube 音訊（MP3）下載與處理 (v6.5 - 修正 bc 依賴與詳細報錯)
 ######################################################################
 process_single_mp3() {
     local media_url="$1"
@@ -1609,8 +1609,10 @@ process_single_mp3() {
         album_artist_name=$(echo "$media_json" | jq -r '.uploader // "[不明]"')
         duration_secs=$(echo "$media_json" | jq -r '.duration // 0')
         
+        # 修正：使用純 Bash 整數運算代替 bc，避免 command not found
         if [[ "$mode" != "playlist_mode" ]]; then
-            if (( $(echo "$duration_secs > $duration_threshold_secs" | bc -l) )); then
+            local duration_int=${duration_secs%.*} # 去除小數點
+            if [[ "$duration_int" -gt "$duration_threshold_secs" ]]; then
                 should_notify=true
                 log_message "INFO" "MP3 標準化：時長 ($duration_secs s) 超過閥值 ($duration_threshold_secs s)，啟用通知。"
             fi
@@ -1641,6 +1643,8 @@ process_single_mp3() {
         if [ -z "$temp_audio_file" ]; then
             local error_code_to_return="E_YTDLP_DL_GENERIC"
             log_message "ERROR" "$error_code_to_return: (MP3) 下載失敗。"
+            echo -e "${RED}下載失敗！以下是 yt-dlp 錯誤日誌：${RESET}"
+            cat "$temp_dir/yt-dlp-audio-std.log"
             local raw_err_b64=$(cat "$temp_dir/yt-dlp-audio-std.log" | base64 -w 0)
             final_result_string="FAIL|${video_title}|${error_code_to_return}|${raw_err_b64}"
             goto_cleanup=true
@@ -1661,13 +1665,26 @@ process_single_mp3() {
             else
                 ffmpeg_embed_args+=(-c copy -id3v2_version 3)
             fi
+            # 這裡嘗試加入元數據，如果標題有特殊字元可能會失敗
             ffmpeg_embed_args+=(-metadata "title=${video_title}" -metadata "artist=${artist_name}" -metadata "album_artist=${album_artist_name}" "$output_audio")
             
+            # ★★★ 修正：發生錯誤時，直接在螢幕上顯示日誌 ★★★
             if ! "${ffmpeg_embed_args[@]}" > "$temp_dir/ffmpeg_embed.log" 2>&1; then
                 log_message "ERROR" "E_FFMPEG_MUX: (MP3) 加入封面和元數據失敗！";
+                echo -e "${RED}嚴重錯誤：FFmpeg 封裝失敗 (加入封面/元數據時)。${RESET}"
+                echo -e "${YELLOW}以下是詳細錯誤日誌 (請檢查是否有封面格式錯誤或參數問題)：${RESET}"
+                echo -e "${PURPLE}---------------------------------------------------${RESET}"
+                cat "$temp_dir/ffmpeg_embed.log"
+                echo -e "${PURPLE}---------------------------------------------------${RESET}"
+                
                 local raw_err_b64=$(cat "$temp_dir/ffmpeg_embed.log" | base64 -w 0)
                 final_result_string="FAIL|${video_title}|E_FFMPEG_MUX|${raw_err_b64}"
                 result=1
+                
+                # 嘗試保留標準化後的音訊作為備案 (不含封面)
+                echo -e "${YELLOW}嘗試救援：儲存無封面/無元數據的標準化音訊...${RESET}"
+                local rescue_file="${DOWNLOAD_PATH}/${final_base_name}_no_meta.mp3"
+                cp "$normalized_temp" "$rescue_file" && echo -e "${GREEN}救援成功，已儲存為: ${rescue_file}${RESET}"
             else
                 final_result_string="SUCCESS|${video_title}|MP3-320kbps"
                 result=0
@@ -1680,7 +1697,7 @@ process_single_mp3() {
         fi
     fi
 
-    ### --- ★★★ 核心修正：補回控制台最終報告 ★★★ --- ###
+    ### --- 控制台最終報告 --- ###
     if [ $result -eq 0 ]; then
         if [ -f "$output_audio" ]; then
             echo -e "${GREEN}處理完成！音訊已儲存至：$output_audio${RESET}"
@@ -1690,7 +1707,13 @@ process_single_mp3() {
             result=1
         fi
     else
-        echo -e "${RED}處理失敗 (MP3 標準化)！請檢查日誌。${RESET}"
+        echo -e "${RED}處理失敗 (MP3 標準化)。${RESET}"
+        # 自動調用錯誤詳情解析
+        if [[ "$mode" != "playlist_mode" ]]; then 
+             # 從 final_result_string 解析錯誤碼
+             local err_code=$(echo "$final_result_string" | cut -d'|' -f3)
+             _get_error_details "$err_code"
+        fi
     fi
 
     rm -rf "$temp_dir"
