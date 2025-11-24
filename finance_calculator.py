@@ -2,26 +2,24 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.5.2               #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.5.3               #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新 v3.5.2：升級校準分析引擎。引入「智慧型雙模式校準」，根據資料量自動切換                  #
-#             「滾動驗證」與「留一法」，杜絕樣本內測試的統計偏差。                        #
+# 更新 v3.5.3：修復專家門控 DRF 模型呼叫參數錯誤 (steps_ahead mismatch)。               #
+#             保留 v3.5.2 的智慧型雙模式校準與所有進階分析功能。                        #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v3.5.2"
-SCRIPT_UPDATE_DATE = "2025-11-24"
+SCRIPT_VERSION = "v3.5.3"
+SCRIPT_UPDATE_DATE = "2025-11-25"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
-# 說明：您可以直接修改這裡的數字，來調整報告中各表格欄位的寬度，以適應您的終端機字體。
-# 'q' 代表分位數, 'loss' 代表損失值, 'interp' 代表解釋, etc.
 TABLE_CONFIG = {
     'quantile_loss': {
         'q': 8,         # 「分位數」欄位寬度
@@ -76,33 +74,31 @@ INFLATION_RATES = {
     2025: 1.88,
 }
 
-# --- 計算 CPI 指數的輔助函數 (強化版，修正 2019 年問題) ---
+# --- 計算 CPI 指數的輔助函數 ---
 def calculate_cpi_values(input_years, inflation_rates):
     if not input_years:
         return {}
-    base_year = min(input_years)  # 以輸入數據最早年份作為基準
+    base_year = min(input_years)
     years = sorted(set(input_years) | set(inflation_rates.keys()))
     cpi_values = {}
     cpi_values[base_year] = 100.0
-    # 向後計算
     for y in range(base_year + 1, max(years) + 1):
         prev_cpi = cpi_values.get(y - 1, 100.0)
         rate = inflation_rates.get(y, 0.0) / 100
         cpi_values[y] = prev_cpi * (1 + rate)
-    # 向前計算（如果有更早年份）
     for y in range(base_year - 1, min(years) - 1, -1):
         next_cpi = cpi_values.get(y + 1, 100.0)
         rate = inflation_rates.get(y + 1, 0.0) / 100
-        if rate != -1:  # 避免除零
+        if rate != -1:
             cpi_values[y] = next_cpi / (1 + rate)
         else:
             cpi_values[y] = next_cpi
     return cpi_values, base_year
 
-# --- 計算實質金額的輔助函數 (強化版) ---
+# --- 計算實質金額的輔助函數 ---
 def adjust_to_real_amount(amount, data_year, target_year, cpi_values):
     if data_year not in cpi_values or target_year not in cpi_values:
-        return amount  # 無數據時返回原始金額
+        return amount
     return amount * (cpi_values[target_year] / cpi_values[data_year])
 
 # --- 環境檢查函數 ---
@@ -151,17 +147,14 @@ def normalize_date(date_str):
     s = str(date_str).strip().replace('月', '').replace('年', '-').replace(' ', '')
     current_year = datetime.now().year
     
-    # 處理純數字月份
     if s.replace('.', '', 1).isdigit():
         try:
-            # 安全處理浮點數格式
             numeric_val = int(float(s))
             if 1 <= numeric_val <= 12:
                 return f"{current_year}-{numeric_val:02d}-01"
         except ValueError:
             pass
     
-    # 處理帶連字符的日期
     if '-' in s:
         parts = s.split('-')
         try:
@@ -171,16 +164,14 @@ def normalize_date(date_str):
         except (ValueError, IndexError):
             pass
     
-    # 處理YYYYMM格式
     if len(s) >= 5 and s[:4].isdigit():
         try:
             year = int(s[:4])
-            month = int(float(s[4:]))  # 使用float處理可能的小數
+            month = int(float(s[4:]))
             return f"{year}-{month:02d}-01"
         except ValueError:
             pass
     
-    # 處理YYYYMMDD格式
     if s.isdigit() and len(s) == 8:
         try:
             dt = datetime.strptime(s, '%Y%m%d')
@@ -478,13 +469,8 @@ def monte_carlo_dashboard(monthly_expense_data, num_simulations=10000):
 
     return p25, p75, p95
 
-# --- 【新增】穩健的移動標準差計算函數 (基於MAD) ---
+# --- 穩健的移動標準差計算函數 (基於MAD) ---
 def robust_moving_std(series, window):
-    """
-    計算對異常值不敏感的移動標準差。
-    使用中位數絕對偏差 (MAD) 並將其縮放，使其與標準差具有可比性。
-    """
-    # 0.6745 是正態分佈中 Q3 的值，1/0.6745 ≈ 1.4826
     mad_series = series.rolling(window).apply(median_abs_deviation, raw=True)
     robust_std = mad_series / 0.6745
     return robust_std
@@ -492,7 +478,7 @@ def robust_moving_std(series, window):
 # --- 動態閾值與衝擊偵測引擎 ---
 def manual_seasonal_decompose(series, period=12, model='additive'):
     if len(series) < period * 2:
-        return pd.DataFrame({'trend': series, 'seasonal': 0, 'resid': 0}) # Fallback
+        return pd.DataFrame({'trend': series, 'seasonal': 0, 'resid': 0})
     trend = series.rolling(window=period, center=True).mean()
     trend = trend.rolling(window=2, center=True).mean().shift(-1) if period % 2 == 0 else trend.rolling(window=period, center=True).mean()
     trend = trend.fillna(method='bfill').fillna(method='ffill')
@@ -525,14 +511,10 @@ def calculate_dynamic_anomaly_multiplier(residual_series):
     return max(min_c, dynamic_c)
 
 def calculate_anomaly_scores(monthly_expenses_df, window_size=6, k_ma=2.5, k_sigmoid=0.5):
-    """
-    根據動態加權混合演算法計算異常分數，並引入自適應衝擊偵測閾值。
-    """
     data = monthly_expenses_df['Real_Amount'].values
     series_pd = pd.Series(data, index=pd.to_datetime(monthly_expenses_df['Parsed_Date']))
     n_total = len(data)
 
-    # --- 1. 自適應全局衝擊偵測 (Adaptive SIQR) ---
     decomposed = manual_seasonal_decompose(series_pd)
     residuals_for_dist = decomposed['resid'].dropna()
     dynamic_multiplier = calculate_dynamic_anomaly_multiplier(residuals_for_dist)
@@ -543,7 +525,6 @@ def calculate_anomaly_scores(monthly_expenses_df, window_size=6, k_ma=2.5, k_sig
     siqr_denominator = upper_bound_iqr if upper_bound_iqr > 0 else 1
     siqr = np.maximum(0, (data - upper_bound_iqr) / siqr_denominator)
 
-    # --- 2. 局部行為分數 (SMA) ---
     if n_total < window_size:
         sma = np.zeros(n_total)
     else:
@@ -553,7 +534,6 @@ def calculate_anomaly_scores(monthly_expenses_df, window_size=6, k_ma=2.5, k_sig
         sma_denominator = channel_top.where(channel_top > 0, 1)
         sma = np.maximum(0, (series_pd - channel_top) / sma_denominator).fillna(0).values
 
-    # --- 3. 動態權重與最終分數 ---
     w_local = np.zeros(n_total)
     if n_total > window_size:
         n_series = np.arange(1, n_total + 1)
@@ -574,9 +554,6 @@ def calculate_anomaly_scores(monthly_expenses_df, window_size=6, k_ma=2.5, k_sig
 
 # --- 結構性轉變偵測函數 ---
 def detect_structural_change_point(monthly_expenses_df, history_window=12, recent_window=6, c_factor=1.0):
-    """
-    偵測最後一個「結構性轉變」時期。
-    """
     data = monthly_expenses_df['Real_Amount'].values
     n = len(data)
     
@@ -609,15 +586,11 @@ def detect_structural_change_point(monthly_expenses_df, history_window=12, recen
 
 # --- 三層式預算建議核心函數 ---
 def assess_risk_and_budget_advanced(monthly_expenses, model_error_coefficient, historical_rmse):
-    """
-    針對超過12個月數據的進階三層式預算計算模型。
-    """
     data = monthly_expenses['Real_Amount'].values
     n_total = len(data)
     
     anomaly_df = calculate_anomaly_scores(monthly_expenses) 
     
-    # --- 模式偵測 ---
     change_point = detect_structural_change_point(monthly_expenses)
     change_date_str = None
     if change_point > 0:
@@ -626,7 +599,6 @@ def assess_risk_and_budget_advanced(monthly_expenses, model_error_coefficient, h
     
     num_shocks = int(anomaly_df['Is_Shock'].sum())
 
-    # --- 第一層：基礎日常預算 (Base Living Budget) ---
     new_normal_df = anomaly_df.iloc[change_point:].copy()
     clean_new_normal_data = new_normal_df[~new_normal_df['Is_Shock']]['Amount'].values
     
@@ -639,7 +611,6 @@ def assess_risk_and_budget_advanced(monthly_expenses, model_error_coefficient, h
     if base_budget_p75 is None:
         base_budget_p75 = np.mean(clean_new_normal_data) * 1.1
 
-    # --- 第二層：巨額衝擊攤提金 (Amortized Shock Fund) ---
     shock_rows = anomaly_df[anomaly_df['Is_Shock']]
     shock_amounts = shock_rows['Amount'].values
     amortized_shock_fund = 0.0
@@ -649,10 +620,8 @@ def assess_risk_and_budget_advanced(monthly_expenses, model_error_coefficient, h
         prob_shock = len(shock_amounts) / n_total
         amortized_shock_fund = avg_shock * prob_shock
     
-    # --- 第三層：模型誤差緩衝 (Model Error Buffer) ---
     model_error_buffer = model_error_coefficient * (historical_rmse if historical_rmse is not None else 0)
     
-    # --- 消費高峰週期分析 ---
     peak_analysis_results = None
     if n_total >= 12: 
         try:
@@ -674,14 +643,12 @@ def assess_risk_and_budget_advanced(monthly_expenses, model_error_coefficient, h
         except Exception:
             peak_analysis_results = None 
 
-    # --- 最終預算 ---
     suggested_budget = base_budget_p75 + amortized_shock_fund + model_error_buffer
     
     status = "進階預算模式 (三層式)"
     description = f"偵測到數據模式複雜，已啟用三層式預算模型以提高準確性。"
     data_reliability = "高度可靠 (進階模型)"
 
-    # --- 打包所有結果 ---
     components = {
         'is_advanced': True,
         'base': base_budget_p75,
@@ -828,9 +795,6 @@ def calculate_historical_factors(data, min_months=12):
     return historical_results
 
 def calculate_dynamic_error_coefficient(calibration_results, acf_results, quantile_spread):
-    """
-    根據三大診斷維度，動態計算模型誤差係數。
-    """
     calibration_errors = [abs(res['observed_freq'] - res['quantile']) for res in calibration_results.values()]
     calibration_penalty = np.mean(calibration_errors) / 100.0 if calibration_errors else 0.0
     autocorrelation_penalty = abs(acf_results.get(1, {}).get('acf', 0))
@@ -844,9 +808,6 @@ def calculate_dynamic_error_coefficient(calibration_results, acf_results, quanti
     return final_coefficient
 
 def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly_expenses, p25, p75, historical_wape, historical_rmse, calibration_results, acf_results, quantile_spread):
-    """
-    風險與預算評估調度中心。
-    """
     if monthly_expenses is None or len(monthly_expenses) < 2:
         return ("無法判讀 (資料不足)", "資料過少，無法進行風險評估。", None, None, None, None, None, "極低可靠性", None, None, None, None, None, None, None)
 
@@ -868,7 +829,6 @@ def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly
                 components, 
                 None, None, None, None) 
 
-    # --- 以下為 num_months <= 12 的原始邏輯 ---
     data = monthly_expenses['Real_Amount'].values
     x = np.arange(num_months)
 
@@ -969,7 +929,6 @@ def quantile_loss(y_true, y_pred, quantile):
     return np.mean(np.maximum(quantile * errors, (quantile - 1) * errors))
 
 def quantile_loss_report(y_true, quantile_preds, quantiles, colors):
-    """產生「分位數損失分析」報告。"""
     cfg = TABLE_CONFIG['quantile_loss']
     report = [f"{colors.WHITE}>>> 分位數損失分析 (風險情境誤差評估){colors.RESET}"]
     
@@ -995,21 +954,14 @@ def quantile_loss_report(y_true, quantile_preds, quantiles, colors):
     report.append(header_line)
     return "\n".join(report)
 
-# --- 【修正】更新後的模型校準報告函數 (支援多模式) ---
 def model_calibration_analysis(calibration_data, quantiles, colors):
-    """
-    產生「模型校準分析」報告，根據不同數據量顯示不同驗證模式。
-    """
-    # 解包：取得結果字典與使用的方法
     results, method = calibration_data 
     
     if not results or method == "insufficient_data":
-        # 如果資料少於 6 個月，直接不顯示此表格
         return ""
 
     cfg = TABLE_CONFIG['calibration']
     
-    # 根據方法動態調整標題
     if method == "strict_rolling":
         title = "模型校準分析 (嚴格滾動驗證)"
         desc = "(說明：使用『過去經驗』驗證『未來預測』，Out-of-Sample 嚴格測試)"
@@ -1035,12 +987,11 @@ def model_calibration_analysis(calibration_data, quantiles, colors):
         target_freq = q * 100
         diff = observed_freq - target_freq
         
-        # 根據差異給出專業評語
         if abs(diff) < 5: assessment = f"{colors.GREEN}完美校準{colors.RESET}"
         elif abs(diff) < 10: assessment = "良好"
-        elif diff < -20: assessment = f"{colors.RED}嚴重高估{colors.RESET}" # 實際覆蓋率太低
+        elif diff < -20: assessment = f"{colors.RED}嚴重高估{colors.RESET}"
         elif diff < 0: assessment = f"{colors.YELLOW}高估信心{colors.RESET}"
-        elif diff > 20: assessment = f"{colors.RED}極度保守{colors.RESET}" # 實際覆蓋率太高
+        elif diff > 20: assessment = f"{colors.RED}極度保守{colors.RESET}"
         else: assessment = "略為保守"
             
         label = f"{target_freq:.0f}%"
@@ -1053,7 +1004,6 @@ def model_calibration_analysis(calibration_data, quantiles, colors):
     return "\n".join(report)
 
 def residual_autocorrelation_diagnosis(residuals, n, colors):
-    """產生「殘差自相關性診斷」報告。"""
     cfg = TABLE_CONFIG['autocorrelation']
     sig_boundary = 2 / np.sqrt(n)
     report = [f"{colors.WHITE}>>> 殘差診斷 (規律性檢測){colors.RESET}", f"(樣本數 N = {n}, 顯著性邊界 ≈ {sig_boundary:.2f})"]
@@ -1079,7 +1029,6 @@ def residual_autocorrelation_diagnosis(residuals, n, colors):
     return "\n".join(report)
 
 def residual_normality_report(residuals, colors):
-    """使用 Shapiro-Wilk 檢定，產生殘差常態性診斷報告。"""
     if len(residuals) < 3:
         return "" 
     try:
@@ -1100,7 +1049,6 @@ def residual_normality_report(residuals, colors):
         return "" 
 
 # --- MPI 3.0 評估套件 ---
-
 def calculate_erai(y_true, y_pred_model, quantile_preds_model, wape_robust_model):
     if y_true is None or len(y_true) < 2: return None
     
@@ -1138,20 +1086,16 @@ def calculate_fss(prequential_results, mean_expense):
     errors = prequential_results["errors"]
     true_values = prequential_results["true_values"]
     
-    # 1. 偏誤懲罰 (Bias Penalty, BP)
     cfe = np.sum(errors)
     sum_abs_true = np.sum(np.abs(true_values))
     bias_penalty = min(1, abs(cfe / sum_abs_true) * 5) if sum_abs_true > 0 else 1
 
-    # 2. 一致性分數 (Consistency Score, CS)
     rmse_e = np.std(errors, ddof=1) if len(errors) > 1 else 0
     consistency_score = max(0, 1 - (rmse_e / mean_expense)) if mean_expense > 0 else 0
     
-    # 3. 預期準確率 (Expected Accuracy, EA)
     p_wape = 100 * np.sum(np.abs(errors)) / sum_abs_true if sum_abs_true > 0 else 100
     expected_accuracy = max(0, 1 - (p_wape / 100.0))
     
-    # 組合 FSS
     fss_score = (0.4 * (1 - bias_penalty)) + (0.3 * consistency_score) + (0.3 * expected_accuracy)
 
     return {
@@ -1162,7 +1106,6 @@ def calculate_fss(prequential_results, mean_expense):
     }
     
 def calculate_mpi_3_0_and_rate(y_true, historical_pred, global_wape, erai_score, mpi_percentile_rank, fss_score):
-    # 1. 計算 AAS (絕對準確度分數)
     wape_score = 1 - (global_wape / 100.0) if global_wape is not None else 0
     ss_res = np.sum((y_true - historical_pred)**2)
     ss_tot = np.sum((y_true - np.mean(y_true))**2)
@@ -1170,10 +1113,7 @@ def calculate_mpi_3_0_and_rate(y_true, historical_pred, global_wape, erai_score,
     r2_score = max(0, r_squared)
     aas = 0.7 * wape_score + 0.3 * r2_score
     
-    # 2. 計算 RSS (相對優越性分數)
     rss = erai_score if erai_score is not None else 0
-    
-    # 3. 組合 MPI 3.0 總分
     mpi_3_0_score = (0.25 * aas) + (0.25 * rss) + (0.50 * fss_score)
     
     rating = "F" 
@@ -1564,7 +1504,7 @@ def run_dynamic_strategy_ensemble_cv(
     p25, p50, p85 = np.percentile(mpi_scores, [25, 50, 85])
     return {'p25': p25, 'p50': p50, 'p85': p85}, mpi_scores
 
-# --- 【修正與新增】智慧型雙模式校準計算函數 ---
+# --- 智慧型雙模式校準計算函數 ---
 def compute_smart_calibration_results(residuals, prequential_results, quantiles, window_size=12):
     """
     智慧型校準計算：
@@ -2317,11 +2257,11 @@ def run_autocorrective_residual_refinement(historical_pred, y_true, steps_ahead,
 
     return np.array(residual_forecast), full_historical_correction, True
 
-def run_drf_prediction(monthly_expenses_df, forecast_steps=1, trend_window=12, model='additive', period=12):
+def run_drf_prediction(monthly_expenses_df, steps_ahead=1, trend_window=12, model='additive', period=12):
     series = pd.Series(monthly_expenses_df['Real_Amount'].values, index=pd.to_datetime(monthly_expenses_df['Parsed_Date']))
     
     if len(series) < period:
-        return np.full(forecast_steps, series.mean())
+        return np.full(steps_ahead, series.mean())
 
     decomposed = manual_seasonal_decompose(series, period=period, model=model)
     valid_trend = decomposed['trend'].dropna()
@@ -2330,19 +2270,19 @@ def run_drf_prediction(monthly_expenses_df, forecast_steps=1, trend_window=12, m
     trend_forecasts = []
     if len(last_n_trend_points) < 2:
         trend_forecast = last_n_trend_points.mean() if not last_n_trend_points.empty else series.mean()
-        trend_forecasts = np.full(forecast_steps, trend_forecast)
+        trend_forecasts = np.full(steps_ahead, trend_forecast)
     else:
         x = np.arange(len(last_n_trend_points))
         y = last_n_trend_points.values
         slope, intercept, _, _, _ = stats.linregress(x, y)
-        for i in range(1, forecast_steps + 1):
+        for i in range(1, steps_ahead + 1):
             future_x = len(last_n_trend_points) + i - 1
             trend_forecasts.append(slope * future_x + intercept)
             
     seasonal_forecasts = []
     last_date = series.index[-1]
     unique_seasonal_components = decomposed['seasonal'].groupby(decomposed['seasonal'].index.month).mean()
-    for i in range(1, forecast_steps + 1):
+    for i in range(1, steps_ahead + 1):
         target_date = last_date + pd.DateOffset(months=i)
         target_month = target_date.month
         seasonal_forecasts.append(unique_seasonal_components.get(target_month, 0.0))
