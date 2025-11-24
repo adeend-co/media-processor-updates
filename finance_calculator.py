@@ -2,22 +2,22 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.5.1               #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.5.2               #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                        #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                           #
-# 更新 v3.5.1：修正變數作用域錯誤。針對資料量不足的情況，增加預設變數初始化，                #
-#             防止在產生摘要報告時因 num_months 未定義而崩潰。                        #
+# 更新 v3.5.2：升級校準分析引擎。引入「智慧型雙模式校準」，根據資料量自動切換                  #
+#             「滾動驗證」與「留一法」，杜絕樣本內測試的統計偏差。                        #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v3.5.1"  # Fix: UnboundLocalError for num_months
-SCRIPT_UPDATE_DATE = "2025-11-19"
+SCRIPT_VERSION = "v3.5.2"
+SCRIPT_UPDATE_DATE = "2025-11-25"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
 # 說明：您可以直接修改這裡的數字，來調整報告中各表格欄位的寬度，以適應您的終端機字體。
@@ -190,27 +190,23 @@ def normalize_date(date_str):
     
     return None
 
-# --- 單檔處理函數 (【已修正】) ---
+# --- 單檔處理函數 ---
 def process_finance_data_individual(file_path, colors):
     encodings_to_try = ['utf-8', 'utf-8-sig', 'cp950', 'big5', 'gb18030']
     df = None
     
     for enc in encodings_to_try:
         try:
-            # 【修正點】移除路徑前後可能存在的空格
             clean_path = file_path.strip()
             if not os.path.exists(clean_path):
-                continue # 如果檔案不存在，直接嘗試下一個
+                continue
             df = pd.read_csv(clean_path, encoding=enc, on_bad_lines='skip')
             print(f"{colors.GREEN}成功讀取檔案 '{clean_path}' (編碼: {enc}){colors.RESET}")
             break
         except (UnicodeDecodeError, FileNotFoundError):
             continue
     
-    # 【*** 核心修正點 1 ***】
     if df is None:
-        # 原始碼: return None, f"無法讀取檔案 '{file_path.strip()}'" (回傳 2 個值)
-        # 修正後，補上第三個回傳值 None
         return None, f"無法讀取或找到檔案 '{file_path.strip()}'", None
     
     df.columns = df.columns.str.strip()
@@ -228,7 +224,6 @@ def process_finance_data_individual(file_path, colors):
         file_format_type = "income_expense_separate"
         for _, row in df.iterrows():
             date_val = row[date_col]
-            # 處理收入
             income_val = pd.to_numeric(row[income_col], errors='coerce')
             if pd.notna(income_val) and income_val > 0:
                 extracted_data.append({
@@ -236,7 +231,6 @@ def process_finance_data_individual(file_path, colors):
                     'Amount': income_val,
                     'Type': 'income'
                 })
-            # 處理支出
             expense_val = pd.to_numeric(row[expense_col], errors='coerce')
             if pd.notna(expense_val) and expense_val > 0:
                 extracted_data.append({
@@ -288,15 +282,11 @@ def process_finance_data_individual(file_path, colors):
                     })
     
     else:
-        # 【*** 核心修正點 2 ***】
-        # 原始碼: return None, f"檔案 '{file_path}' 格式無法辨識" (回傳 2 個值)
-        # 修正後，補上第三個回傳值 "unknown"
         return None, f"檔案 '{file_path}' 格式無法辨識", "unknown"
     
-    # 這是成功的路徑，本身就是回傳 3 個值，不需修改
     return extracted_data, None, file_format_type
 
-# --- 多檔處理函數 (未變更) ---
+# --- 多檔處理函數 ---
 def process_finance_data_multiple(file_paths, colors):
     all_extracted_data = []
     warnings_report = []
@@ -425,7 +415,7 @@ def process_finance_data_multiple(file_paths, colors):
     
     return combined_df, monthly_expenses, "\n".join(warnings_report)
 
-# --- 季節性分解函數 (未變更) ---
+# --- 季節性分解函數 ---
 def seasonal_decomposition(monthly_expenses):
     monthly_expenses['Month'] = monthly_expenses['Parsed_Date'].dt.month
     monthly_avg = monthly_expenses.groupby('Month')['Real_Amount'].mean()
@@ -437,7 +427,7 @@ def seasonal_decomposition(monthly_expenses):
     
     return deseasonalized, seasonal_indices
 
-# --- 優化蒙地卡羅模擬 (未變更) ---
+# --- 優化蒙地卡羅模擬 ---
 def optimized_monte_carlo(monthly_expenses, predicted_value, num_simulations=10000):
     x = np.arange(len(monthly_expenses))
     slope, intercept, _, _, _ = linregress(x, monthly_expenses['Real_Amount'])
@@ -453,7 +443,7 @@ def optimized_monte_carlo(monthly_expenses, predicted_value, num_simulations=100
     p25, p75, p95 = np.percentile(simulated, [25, 75, 95])
     return p25, p75, p95
 
-# --- 多項式迴歸與信賴區間計算函數 (未變更) ---
+# --- 多項式迴歸與信賴區間計算函數 ---
 def polynomial_regression_with_ci(x, y, degree, predict_x, confidence=0.95):
     coeffs = np.polyfit(x, y, degree)
     p = np.poly1d(coeffs)
@@ -471,7 +461,7 @@ def polynomial_regression_with_ci(x, y, degree, predict_x, confidence=0.95):
     upper = y_pred_p + t_val * se
     return y_pred_p, lower, upper
 
-# --- 蒙地卡羅儀表板函式 (未變更) ---
+# --- 蒙地卡羅儀表板函式 ---
 def monte_carlo_dashboard(monthly_expense_data, num_simulations=10000):
     if len(monthly_expense_data) < 2:
         return None, None, None
@@ -499,7 +489,7 @@ def robust_moving_std(series, window):
     robust_std = mad_series / 0.6745
     return robust_std
 
-# ---【v3.3.2 核心升級】動態閾值與衝擊偵測引擎 ---
+# --- 動態閾值與衝擊偵測引擎 ---
 def manual_seasonal_decompose(series, period=12, model='additive'):
     if len(series) < period * 2:
         return pd.DataFrame({'trend': series, 'seasonal': 0, 'resid': 0}) # Fallback
@@ -536,10 +526,9 @@ def calculate_dynamic_anomaly_multiplier(residual_series):
 
 def calculate_anomaly_scores(monthly_expenses_df, window_size=6, k_ma=2.5, k_sigmoid=0.5):
     """
-    【v3.3.2 升級】根據動態加權混合演算法計算異常分數，並引入自適應衝擊偵測閾值。
+    根據動態加權混合演算法計算異常分數，並引入自適應衝擊偵測閾值。
     """
     data = monthly_expenses_df['Real_Amount'].values
-    # 【修正】創建帶有DatetimeIndex的Series，以供季節性分解使用
     series_pd = pd.Series(data, index=pd.to_datetime(monthly_expenses_df['Parsed_Date']))
     n_total = len(data)
 
@@ -583,61 +572,52 @@ def calculate_anomaly_scores(monthly_expenses_df, window_size=6, k_ma=2.5, k_sig
     })
 
 
-# --- 結構性轉變偵測函數 (【已重構】) ---
+# --- 結構性轉變偵測函數 ---
 def detect_structural_change_point(monthly_expenses_df, history_window=12, recent_window=6, c_factor=1.0):
     """
-    【重構】偵測最後一個「結構性轉變」時期。
-    邏輯：比較近期中位數是否顯著高於歷史中位數+歷史波動。
+    偵測最後一個「結構性轉變」時期。
     """
     data = monthly_expenses_df['Real_Amount'].values
     n = len(data)
     
-    # 需要足夠的數據來進行比較
     if n < history_window + recent_window:
         return 0
         
     last_change_point = 0
-    # 從後往前掃描，尋找最後一個轉變點
-    # 迭代的起點確保歷史數據至少有 history_window 那麼長
     for i in range(n - recent_window, history_window -1, -1):
         history_data = data[:i]
         recent_data = data[i : i + recent_window]
         
-        # 計算歷史數據的穩健統計量
         median_history = np.median(history_data)
         q1_history, q3_history = np.percentile(history_data, [25, 75])
         iqr_history = q3_history - q1_history
         
-        # 如果歷史波動為零，給一個很小的基礎值避免判斷失效
         if iqr_history == 0 and median_history > 0:
             iqr_history = median_history * 0.05 
         elif iqr_history == 0 and median_history == 0:
-            iqr_history = 1 # 避免完全為零的情況
+            iqr_history = 1 
         
-        # 計算近期數據的中位數
         median_recent = np.median(recent_data)
         
-        # 核心判斷條件：近期中位數是否已突破歷史常態區間
         threshold = median_history + (c_factor * iqr_history)
         if median_recent > threshold:
             last_change_point = i
-            break # 從後往前找，第一個找到的就是最後一個
+            break 
             
     return last_change_point
 
 
-# --- 三層式預算建議核心函數 (★★★ 已整合 SciPy find_peaks ★★★) ---
+# --- 三層式預算建議核心函數 ---
 def assess_risk_and_budget_advanced(monthly_expenses, model_error_coefficient, historical_rmse):
     """
     針對超過12個月數據的進階三層式預算計算模型。
-    【v3.2.4 升級】: 整合 scipy.signal.find_peaks 以提供新的消費週期分析維度。
     """
     data = monthly_expenses['Real_Amount'].values
     n_total = len(data)
     
-    anomaly_df = calculate_anomaly_scores(monthly_expenses) # 修正: 傳遞整個DataFrame
+    anomaly_df = calculate_anomaly_scores(monthly_expenses) 
     
-    # --- 模式偵測 (使用重構後的函數) ---
+    # --- 模式偵測 ---
     change_point = detect_structural_change_point(monthly_expenses)
     change_date_str = None
     if change_point > 0:
@@ -672,11 +652,10 @@ def assess_risk_and_budget_advanced(monthly_expenses, model_error_coefficient, h
     # --- 第三層：模型誤差緩衝 (Model Error Buffer) ---
     model_error_buffer = model_error_coefficient * (historical_rmse if historical_rmse is not None else 0)
     
-    # --- 【v3.2.4 新增】消費高峰週期分析 ---
+    # --- 消費高峰週期分析 ---
     peak_analysis_results = None
-    if n_total >= 12: # 至少需要一年數據才有分析意義
+    if n_total >= 12: 
         try:
-            # 尋找高於75百分位數的顯著波峰
             peaks, _ = signal.find_peaks(data, height=np.percentile(data, 75))
             if len(peaks) > 1:
                 intervals = np.diff(peaks)
@@ -693,7 +672,7 @@ def assess_risk_and_budget_advanced(monthly_expenses, model_error_coefficient, h
                     "periodicity_label": periodicity
                 }
         except Exception:
-            peak_analysis_results = None # 分析失敗則忽略
+            peak_analysis_results = None 
 
     # --- 最終預算 ---
     suggested_budget = base_budget_p75 + amortized_shock_fund + model_error_buffer
@@ -710,13 +689,13 @@ def assess_risk_and_budget_advanced(monthly_expenses, model_error_coefficient, h
         'error': model_error_buffer,
         'change_date': change_date_str,
         'num_shocks': num_shocks,
-        'peak_analysis': peak_analysis_results # 將高峰分析結果加入
+        'peak_analysis': peak_analysis_results 
     }
     
     return (status, description, suggested_budget, data_reliability, components)
 
 
-# --- 風險狀態判讀與預算建議函數 (未變更) ---
+# --- 風險狀態判讀與預算建議函數 ---
 def percentile_score(value, p25, p50, p75, p90):
     if value <= p25:
         return 1
@@ -867,15 +846,12 @@ def calculate_dynamic_error_coefficient(calibration_results, acf_results, quanti
 def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly_expenses, p25, p75, historical_wape, historical_rmse, calibration_results, acf_results, quantile_spread):
     """
     風險與預算評估調度中心。
-    - 數據 <= 12個月：使用原始風險評分模型。
-    - 數據 > 12個月：使用進階三層式預算模型。
     """
     if monthly_expenses is None or len(monthly_expenses) < 2:
         return ("無法判讀 (資料不足)", "資料過少，無法進行風險評估。", None, None, None, None, None, "極低可靠性", None, None, None, None, None, None, None)
 
     num_months = len(monthly_expenses)
     
-    # 【核心改造】根據數據量選擇不同模型
     if num_months > 12:
         error_coefficient = 0.5
         if calibration_results and acf_results and quantile_spread is not None:
@@ -886,12 +862,11 @@ def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly
         
         error_buffer = components.get('error')
 
-        # 為了保持與主函數的兼容性，將結果打包成原有的16元組格式
         return (status, description, suggested_budget,
-                None, None, None, None, # dynamic_risk_coefficient, trend_score, volatility_score, shock_score
+                None, None, None, None, 
                 data_reliability, error_coefficient, error_buffer, 
-                components, # trend_scores slot is used for breakdown dict
-                None, None, None, None) # volatility_scores, shock_scores, overall_score, risk_buffer
+                components, 
+                None, None, None, None) 
 
     # --- 以下為 num_months <= 12 的原始邏輯 ---
     data = monthly_expenses['Real_Amount'].values
@@ -907,7 +882,6 @@ def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly
         data_reliability = "低度可靠 - 替代公式"
         return (status, description, suggested_budget, None, None, None, None, data_reliability, None, None, None, None, None, None, risk_buffer)
     
-    # 適用於 6 <= num_months <= 12 的原始風險評估
     historical_factors = calculate_historical_factors(data)
     current_accel, current_crossover, current_autocorr, current_residuals = compute_trend_factors(data, x)
     current_vol_of_vol, current_downside_vol, current_kurt = compute_volatility_factors(data, current_residuals)
@@ -971,15 +945,11 @@ def assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly
             data_reliability, error_coefficient, error_buffer, 
             trend_scores, volatility_scores, shock_scores, overall_score, risk_buffer)
 
-# --- 診斷儀表板函數 (v1.9.2 - 整合可自訂寬度設定) ---
-# --- 新增：CJK 字元填充輔助函數 (用於表格對齊) ---
+# --- 診斷儀表板函數 ---
 def pad_cjk(text, total_width, align='left'):
-    """Pads a string to a specific display width, accounting for CJK characters."""
     try:
-        # 使用 gbk 編碼可以較準確地計算中文字元寬度
         text_width = len(text.encode('gbk'))
     except UnicodeEncodeError:
-        # 若 gbk 不支援某些字元，則使用備用方法
         text_width = sum(2 if '\u4e00' <= char <= '\u9fff' else 1 for char in text)
     
     padding = total_width - text_width
@@ -989,26 +959,23 @@ def pad_cjk(text, total_width, align='left'):
         return text + ' ' * padding
     elif align == 'right':
         return ' ' * padding + text
-    else: # center
+    else: 
         left_pad = padding // 2
         right_pad = padding - left_pad
         return ' ' * left_pad + text + ' ' * right_pad
 
 def quantile_loss(y_true, y_pred, quantile):
-    """計算分位數損失的核心數學邏輯。"""
     errors = y_true - y_pred
     return np.mean(np.maximum(quantile * errors, (quantile - 1) * errors))
 
 def quantile_loss_report(y_true, quantile_preds, quantiles, colors):
-    """產生「分位數損失分析」報告，使用 TABLE_CONFIG 控制排版。"""
+    """產生「分位數損失分析」報告。"""
     cfg = TABLE_CONFIG['quantile_loss']
     report = [f"{colors.WHITE}>>> 分位數損失分析 (風險情境誤差評估){colors.RESET}"]
     
-    # 動態產生分隔線
     header_line = f"|{'-'*cfg['q']}|{'-'*cfg['loss']}|{'-'*cfg['interp']}|"
     report.append(header_line)
     
-    # 表頭
     header = f"| {pad_cjk('分位數', cfg['q']-2)} | {pad_cjk('損失值', cfg['loss']-2, 'right')} | {pad_cjk('解釋', cfg['interp']-2)} |"
     report.append(header)
     report.append(header_line)
@@ -1017,7 +984,6 @@ def quantile_loss_report(y_true, quantile_preds, quantiles, colors):
         preds = quantile_preds.get(q)
         if preds is None: continue
         
-        # 確保 y_true 和 preds 的長度一致
         min_len = min(len(y_true), len(preds))
         loss = quantile_loss(y_true[:min_len], preds[:min_len], q)
         interp = "核心趨勢誤差" if q == 0.5 else ("常規波動誤差" if q in [0.25, 0.75] else "尾部風險誤差")
@@ -1029,26 +995,56 @@ def quantile_loss_report(y_true, quantile_preds, quantiles, colors):
     report.append(header_line)
     return "\n".join(report)
 
-def model_calibration_analysis(y_true, quantile_preds, quantiles, colors):
-    """產生「模型校準分析」報告，使用 TABLE_CONFIG 控制排版。"""
+# --- 【修正】更新後的模型校準報告函數 (支援多模式) ---
+def model_calibration_analysis(calibration_data, quantiles, colors):
+    """
+    產生「模型校準分析」報告，根據不同數據量顯示不同驗證模式。
+    """
+    # 解包：取得結果字典與使用的方法
+    results, method = calibration_data 
+    
+    if not results or method == "insufficient_data":
+        # 如果資料少於 6 個月，直接不顯示此表格
+        return ""
+
     cfg = TABLE_CONFIG['calibration']
-    report = [f"{colors.WHITE}>>> 模型校準分析 (誠實度檢驗){colors.RESET}"]
+    
+    # 根據方法動態調整標題
+    if method == "strict_rolling":
+        title = "模型校準分析 (嚴格滾動驗證)"
+        desc = "(說明：使用『過去經驗』驗證『未來預測』，Out-of-Sample 嚴格測試)"
+    elif method == "jackknife_loo":
+        title = "模型校準分析 (留一交叉驗證)"
+        desc = "(說明：資料量 < 24 個月，採用『排除自身』方式進行公平驗證)"
+    else:
+        return ""
+
+    report = [f"{colors.WHITE}>>> {title}{colors.RESET}", desc]
 
     header_line = f"|{'-'*cfg['label']}|{'-'*cfg['freq']}|{'-'*cfg['assess']}|"
     report.append(header_line)
-    header = f"| {pad_cjk('預測分位數 (信心)', cfg['label']-2)} | {pad_cjk('實際觀測頻率', cfg['freq']-2, 'right')} | {pad_cjk('評估結果', cfg['assess']-2)} |"
+    header = f"| {pad_cjk('預期信心', cfg['label']-2)} | {pad_cjk('實際覆蓋', cfg['freq']-2, 'right')} | {pad_cjk('評估結果', cfg['assess']-2)} |"
     report.append(header)
     report.append(header_line)
     
     for q in quantiles:
-        preds = quantile_preds.get(q)
-        if preds is None: continue
+        res = results.get(q)
+        if res is None: continue
         
-        min_len = min(len(y_true), len(preds))
-        observed_freq = np.mean(y_true[:min_len] <= preds[:min_len]) * 100
-        assessment = "非常準確" if abs(observed_freq - q*100) < 5 else "基本準確" if abs(observed_freq - q*100) < 10 else "略微高估風險" if observed_freq > q*100 else "明顯過於自信"
-        label = f"{q*100:.0f}% (P{q*100:.0f})"
-        freq_str = f"{observed_freq:.0f}%"
+        observed_freq = res['observed_freq'] * 100
+        target_freq = q * 100
+        diff = observed_freq - target_freq
+        
+        # 根據差異給出專業評語
+        if abs(diff) < 5: assessment = f"{colors.GREEN}完美校準{colors.RESET}"
+        elif abs(diff) < 10: assessment = "良好"
+        elif diff < -20: assessment = f"{colors.RED}嚴重高估{colors.RESET}" # 實際覆蓋率太低
+        elif diff < 0: assessment = f"{colors.YELLOW}高估信心{colors.RESET}"
+        elif diff > 20: assessment = f"{colors.RED}極度保守{colors.RESET}" # 實際覆蓋率太高
+        else: assessment = "略為保守"
+            
+        label = f"{target_freq:.0f}%"
+        freq_str = f"{observed_freq:.1f}%"
         
         row = f"| {pad_cjk(label, cfg['label']-2)} | {freq_str.rjust(cfg['freq']-2)} | {pad_cjk(assessment, cfg['assess']-2)} |"
         report.append(row)
@@ -1057,7 +1053,7 @@ def model_calibration_analysis(y_true, quantile_preds, quantiles, colors):
     return "\n".join(report)
 
 def residual_autocorrelation_diagnosis(residuals, n, colors):
-    """產生「殘差自相關性診斷」報告，使用 TABLE_CONFIG 控制排版。"""
+    """產生「殘差自相關性診斷」報告。"""
     cfg = TABLE_CONFIG['autocorrelation']
     sig_boundary = 2 / np.sqrt(n)
     report = [f"{colors.WHITE}>>> 殘差診斷 (規律性檢測){colors.RESET}", f"(樣本數 N = {n}, 顯著性邊界 ≈ {sig_boundary:.2f})"]
@@ -1082,11 +1078,10 @@ def residual_autocorrelation_diagnosis(residuals, n, colors):
     report.append(header_line)
     return "\n".join(report)
 
-# --- 【v3.2.4 新增】殘差常態性檢定報告 ---
 def residual_normality_report(residuals, colors):
     """使用 Shapiro-Wilk 檢定，產生殘差常態性診斷報告。"""
     if len(residuals) < 3:
-        return "" # Shapiro 檢定至少需要3個樣本
+        return "" 
     try:
         stat, p_value = stats.shapiro(residuals)
         report = [f"{colors.WHITE}>>> 殘差診斷 (常態性檢定){colors.RESET}"]
@@ -1102,12 +1097,11 @@ def residual_normality_report(residuals, colors):
         report.append(f"  - {colors.WHITE}解釋: {interpretation}{colors.RESET}")
         return "\n".join(report)
     except Exception:
-        return "" # 檢定失敗則忽略
+        return "" 
 
 # --- MPI 3.0 評估套件 ---
 
 def calculate_erai(y_true, y_pred_model, quantile_preds_model, wape_robust_model):
-    """計算 ERAI (Ensemble Robust-Accuracy Index) 的核心組件分數。"""
     if y_true is None or len(y_true) < 2: return None
     
     model_errors = np.abs(y_true - y_pred_model)
@@ -1137,12 +1131,7 @@ def calculate_erai(y_true, y_pred_model, quantile_preds_model, wape_robust_model
     
     return erai_score
 
-# 【新增】MPI 3.0 - 未來穩定性分數 (FSS) 計算
 def calculate_fss(prequential_results, mean_expense):
-    """
-    計算未來穩定性分數 (FSS)，這是 MPI 3.0 的核心支柱。
-    FSS 綜合評估模型在前向測試中的偏誤、一致性與預期準確率。
-    """
     if prequential_results is None:
         return {'fss_score': 0, 'bias_penalty': 1, 'consistency_score': 0, 'expected_accuracy': 0}
         
@@ -1172,12 +1161,7 @@ def calculate_fss(prequential_results, mean_expense):
         'expected_accuracy': expected_accuracy
     }
     
-# 【升級】MPI 3.0 雙維度評級系統
 def calculate_mpi_3_0_and_rate(y_true, historical_pred, global_wape, erai_score, mpi_percentile_rank, fss_score):
-    """
-    根據 MPI 3.0 雙維度矩陣計算最終評級。
-    此系統同時考量模型的「綜合預測能力 (MPI 3.0 Score)」與「預測穩定性 (P-Rank)」。
-    """
     # 1. 計算 AAS (絕對準確度分數)
     wape_score = 1 - (global_wape / 100.0) if global_wape is not None else 0
     ss_res = np.sum((y_true - historical_pred)**2)
@@ -1192,7 +1176,7 @@ def calculate_mpi_3_0_and_rate(y_true, historical_pred, global_wape, erai_score,
     # 3. 組合 MPI 3.0 總分
     mpi_3_0_score = (0.25 * aas) + (0.25 * rss) + (0.50 * fss_score)
     
-    rating = "F" # 預設最低評級
+    rating = "F" 
     if mpi_percentile_rank is None:
         rating = "N/A"
     else:
@@ -1224,7 +1208,6 @@ def calculate_mpi_3_0_and_rate(y_true, historical_pred, global_wape, erai_score,
             elif score >= 0.50: rating = "D-"
             else: rating = "F"
             
-    # 評級解釋字典
     suggestions = {
         "A+": "頂級信賴。模型的綜合能力與穩定性均達到最高標準。其預算建議可作為**關鍵長期財務規劃**的核心依據。",
         "A": "高度可靠。模型表現出色且穩定，預測結果值得信賴。非常適合用於設定**常規的月度儲蓄目標與預算**。",
@@ -1249,9 +1232,6 @@ def calculate_mpi_3_0_and_rate(y_true, historical_pred, global_wape, erai_score,
     }
 
 def perform_internal_benchmarking(y_true, historical_ensemble_pred, is_shock_flags):
-    """
-    執行內部基準化，評估集成模型並給予業界標準評級。
-    """
     ensemble_residuals = y_true - historical_ensemble_pred
     clean_residuals = ensemble_residuals[~is_shock_flags]
     clean_y_true = y_true[~is_shock_flags]
@@ -1262,11 +1242,8 @@ def perform_internal_benchmarking(y_true, historical_ensemble_pred, is_shock_fla
     
     return {'erai_score': ensemble_erai_score}
 
-# --- 【新增】進度條輔助函數 ---
+# --- 進度條輔助函數 ---
 def print_progress_bar(iteration, total, prefix='', suffix='', decimals=1, length=50, fill='█', print_end="\r"):
-    """
-    為長時間執行的迴圈打印一個文字進度條。
-    """
     percent = ("{0:." + str(decimals) + "f}").format(100 * (iteration / float(total)))
     filled_length = int(length * iteration // total)
     bar = fill * filled_length + '-' * (length - filled_length)
@@ -1276,20 +1253,16 @@ def print_progress_bar(iteration, total, prefix='', suffix='', decimals=1, lengt
         sys.stdout.write('\n')
         sys.stdout.flush()
 
-# --- 【v3.2.6 核心升級】【重構取代】動態策略集成 - 前向測試 ---
+# --- 動態策略集成 - 前向測試 ---
 def run_dynamic_strategy_ensemble_prequential(
     full_df, 
-    historical_preds_A, # <--- 新增
-    historical_preds_B, # <--- 新增
+    historical_preds_A,
+    historical_preds_B,
     colors, 
     min_train_size=18, 
     drift_window_size=12, 
     dynamic_lookback_window=12
 ):
-    """
-    (優化版) 動態策略集成 - 前向測試 (Prequential)。
-    此函式現在使用預先計算的歷史預測以提高效能。
-    """
     total_len = len(full_df)
     y_true_full = full_df['Real_Amount'].values
     
@@ -1307,20 +1280,16 @@ def run_dynamic_strategy_ensemble_prequential(
     print_progress_bar(0, num_tests, prefix='進度:', suffix='完成', length=40)
     
     for t_step in range(min_train_size, total_len):
-        # 輕量級訓練數據
         train_indices = np.arange(training_start_index, t_step)
         y_train = y_true_full[train_indices]
         
-        # 從預計算的結果中獲取當前步驟的預測
         pred_A = historical_preds_A[t_step]
         pred_B = historical_preds_B[t_step]
         true_value = y_true_full[t_step]
         
-        # 歷史誤差用於計算權重
         errors_A_hist = y_true_full[train_indices] - historical_preds_A[train_indices]
         errors_B_hist = y_true_full[train_indices] - historical_preds_B[train_indices]
         
-        # (核心) 計算動態權重
         weight_A, weight_B = 0.5, 0.5
         if len(errors_A_hist) > 0:
             recent_errors_A = errors_A_hist[-dynamic_lookback_window:]
@@ -1337,7 +1306,6 @@ def run_dynamic_strategy_ensemble_prequential(
                 weight_A = inv_A / total_inv
                 weight_B = inv_B / total_inv
         
-        # 融合預測並儲存
         fused_pred = (pred_A * weight_A) + (pred_B * weight_B)
         fused_error = true_value - fused_pred
         
@@ -1346,9 +1314,7 @@ def run_dynamic_strategy_ensemble_prequential(
         fused_errors.append(fused_error)
         fused_error_window.append(fused_error)
 
-        # 飄移偵測 (基於 "融合後" 的錯誤)
         if len(fused_error_window) == drift_window_size:
-            # ... (此處省略的雙軌偵測邏輯與前一版本完全相同)
             half_window = drift_window_size // 2
             reference_errors = np.array(list(fused_error_window)[:half_window])
             detection_errors = np.array(list(fused_error_window)[half_window:])
@@ -1378,7 +1344,6 @@ def run_dynamic_strategy_ensemble_prequential(
     if not fused_errors:
         return None, (0.5, 0.5)
     
-    # 計算最終權重
     final_errors_A = y_true_full - historical_preds_A
     final_errors_B = y_true_full - historical_preds_B
     rmse_A = np.sqrt(np.mean(final_errors_A[-dynamic_lookback_window:]**2))
@@ -1400,23 +1365,18 @@ def run_dynamic_strategy_ensemble_prequential(
     return prequential_results, final_weights
 
 
-# --- 【升級】將前向測試報告拆分為兩個獨立函數 ---
+# --- 前向測試報告函數 ---
 def format_prequential_metrics_report(results, mean_expense, colors):
-    """
-    格式化前向測試的量化指標部分。
-    """
     if results is None:
         return ""
 
     errors = results["errors"]
     true_values = results["true_values"]
     
-    # 1. 系統性偏誤 (Bias)
     cfe = np.sum(errors)
     sum_abs_true = np.sum(np.abs(true_values))
     
     bias_direction_text = ""
-    # 【錯誤修正】使用 cfe 而非未定義的 final_cfe
     if cfe > (mean_expense * 0.05):
         bias_direction_text = "，持續性地低估實際支出"
     elif cfe < -(mean_expense * 0.05):
@@ -1436,13 +1396,11 @@ def format_prequential_metrics_report(results, mean_expense, colors):
     else:
         cfe_assessment = f"高 (模型存在顯著的系統性偏誤{bias_direction_text})"
 
-    # 2. 預測一致性 (Consistency)
     rmse_e = np.std(errors, ddof=1) if len(errors) > 1 else 0
     rmse_e_ratio = (rmse_e / mean_expense) * 100 if mean_expense > 0 else 0
     
     rmse_e_assessment = "高度穩定" if rmse_e_ratio < 15 else "中度穩定" if rmse_e_ratio < 35 else "表現不穩"
 
-    # 3. 預期未來誤差 (P-WAPE)
     p_wape = 100 * np.sum(np.abs(errors)) / sum_abs_true if sum_abs_true > 0 else 0
     p_wape_assessment = "優秀" if p_wape < 15 else "良好" if p_wape < 30 else "待改進"
 
@@ -1455,9 +1413,6 @@ def format_prequential_metrics_report(results, mean_expense, colors):
     return "\n".join(report)
 
 def format_adaptive_dynamics_report(results, full_df, colors):
-    """
-    格式化動態適應性評估的質化分析部分。
-    """
     if results is None:
         return ""
     
@@ -1474,7 +1429,6 @@ def format_adaptive_dynamics_report(results, full_df, colors):
         last_drift_index = drift_points[-1]
         last_drift_date_str = full_df.iloc[last_drift_index]['Parsed_Date'].strftime('%Y-%m')
         
-        # 評估近期穩定性：如果最後一次飄移發生在超過6個測試步之前
         steps_since_last_drift = (len(full_df) - 1) - last_drift_index
         if steps_since_last_drift > 6:
             stability_comment = "(近期模式相對穩定)"
@@ -1494,14 +1448,10 @@ def format_adaptive_dynamics_report(results, full_df, colors):
         
     return "\n".join(report)
 
-# 【升級】格式化詳細風險因子報告的輔助函數
 def format_detailed_risk_analysis_report(dynamic_risk_coefficient, error_coefficient, overall_score, 
                                        trend_score, trend_scores_detail, 
                                        vol_score, vol_scores_detail, 
                                        shock_score, shock_scores_detail, colors):
-    """
-    將風險因子的詳細分數格式化為一個多區塊的詳細報告。
-    """
     report = []
     
     if dynamic_risk_coefficient is not None:
@@ -1513,21 +1463,18 @@ def format_detailed_risk_analysis_report(dynamic_risk_coefficient, error_coeffic
     report.append(f"{colors.BOLD}總體風險評分: {overall_score:.2f}/10{colors.RESET}")
     report.append(f"  └ 權重配置: 趨勢(40%) + 波動(35%) + 衝擊(25%)")
 
-    # 趨勢風險
     report.append(f"\n{colors.WHITE}趨勢風險因子:{colors.RESET}")
     report.append(f"  - 趨勢加速度: {trend_scores_detail['accel']:.1f}/10")
     report.append(f"  - 滾動平均交叉: {trend_scores_detail['crossover']:.1f}/10")
     report.append(f"  - 殘差自相關性: {trend_scores_detail['autocorr']:.1f}/10")
     report.append(f"  - {colors.BOLD}趨勢風險得分: {trend_score:.2f}/10{colors.RESET}")
 
-    # 波動風險
     report.append(f"\n{colors.WHITE}波動風險因子:{colors.RESET}")
     report.append(f"  - 波動的波動性: {vol_scores_detail['vol_of_vol']:.1f}/10")
     report.append(f"  - 下行波動率: {vol_scores_detail['downside_vol']:.1f}/10")
     report.append(f"  - 峰態: {vol_scores_detail['kurtosis']:.1f}/10")
     report.append(f"  - {colors.BOLD}波動風險得分: {vol_score:.2f}/10{colors.RESET}")
 
-    # 衝擊風險
     report.append(f"\n{colors.WHITE}衝擊風險因子:{colors.RESET}")
     report.append(f"  - 最大衝擊幅度: {shock_scores_detail['max_shock_magnitude']:.1f}/10")
     report.append(f"  - 連續正向衝擊: {shock_scores_detail['consecutive_shocks']:.1f}/10")
@@ -1535,20 +1482,16 @@ def format_detailed_risk_analysis_report(dynamic_risk_coefficient, error_coeffic
     
     return "\n".join(report)
 
-# --- 【★★★ 此處為核心修正 ★★★】【重構取代】動態策略集成 - 蒙地卡羅交叉驗證 ---
+# --- 動態策略集成 - 蒙地卡羅交叉驗證 ---
 def run_dynamic_strategy_ensemble_cv(
     full_df, 
-    historical_preds_A, # <--- 新增
-    historical_preds_B, # <--- 新增
+    historical_preds_A,
+    historical_preds_B,
     n_iterations=100, 
     colors=None, 
     min_train_size=18, 
     dynamic_lookback_window=12
 ):
-    """
-    (優化版) 動態策略集成 - 蒙地卡羅交叉驗證 (MPI P-Rank)。
-    此函式現在使用預先計算的歷史預測以提高效能。
-    """
     mpi_scores = []
     total_len = len(full_df)
     y_true_full = full_df['Real_Amount'].values
@@ -1578,7 +1521,6 @@ def run_dynamic_strategy_ensemble_cv(
         y_train_true = y_true_full[train_indices]
         y_val_true = y_true_full[val_indices]
 
-        # 1. 獲取CV內部的動態權重 (基於訓練集)
         errors_A_train = y_train_true - historical_preds_A[train_indices]
         errors_B_train = y_train_true - historical_preds_B[train_indices]
         
@@ -1591,10 +1533,8 @@ def run_dynamic_strategy_ensemble_cv(
         weight_A = inv_A / total_inv if total_inv > 1e-9 else 0.5
         weight_B = 1.0 - weight_A
 
-        # 2. 融合驗證集預測
         fused_val_pred = (historical_preds_A[val_indices] * weight_A) + (historical_preds_B[val_indices] * weight_B)
         
-        # 3. 在 "融合後" 的預測上計算 MPI
         fused_val_residuals = y_val_true - fused_val_pred
         sum_abs_val_true = np.sum(np.abs(y_val_true))
         val_wape = (np.sum(np.abs(fused_val_residuals)) / sum_abs_val_true * 100) if sum_abs_val_true > 1e-9 else 100.0
@@ -1610,7 +1550,7 @@ def run_dynamic_strategy_ensemble_cv(
         r2_score_val = max(0, r2_val)
         aas_val = 0.7 * val_wape_score + 0.3 * r2_score_val
         
-        fss_val_approx = 0.5 # Prequential in CV is too slow, use neutral value
+        fss_val_approx = 0.5 
         mpi_score_val = (0.25 * aas_val) + (0.25 * rss_val) + (0.50 * fss_val_approx)
         
         if np.isfinite(mpi_score_val): mpi_scores.append(mpi_score_val)
@@ -1624,20 +1564,61 @@ def run_dynamic_strategy_ensemble_cv(
     p25, p50, p85 = np.percentile(mpi_scores, [25, 50, 85])
     return {'p25': p25, 'p50': p50, 'p85': p85}, mpi_scores
 
-def compute_calibration_results(y_true, quantile_preds, quantiles):
-    """計算模型校準結果，返回字典形式。"""
-    calibration_results = {}
-    for q in quantiles:
-        preds = quantile_preds.get(q)
-        if preds is None:
-            continue
-        min_len = min(len(y_true), len(preds))
-        observed_freq = np.mean(y_true[:min_len] <= preds[:min_len])
-        calibration_results[q] = {'quantile': q, 'observed_freq': observed_freq}
-    return calibration_results
+# --- 【修正與新增】智慧型雙模式校準計算函數 ---
+def compute_smart_calibration_results(residuals, prequential_results, quantiles, window_size=12):
+    """
+    智慧型校準計算：
+    1. 資料 ≥ 24 個月且有前向測試：使用「滾動式驗證 (Rolling)」(業界黃金標準)。
+    2. 6 ≤ 資料 < 24 個月：退回「留一法 (Jackknife)」(小數據專用，比舊方法誠實)。
+    3. 資料 < 6 個月：不做校準，避免誤導。
+    """
+    method_used = "insufficient_data"
+    results = {}
+
+    # --- 模式 A：滾動式驗證 (Rolling) ---
+    if prequential_results is not None:
+        errors = prequential_results.get("errors")
+        if errors is not None and len(errors) > window_size:
+            hits = {q: 0 for q in quantiles}
+            total_evals = 0
+            
+            for t in range(window_size, len(errors)):
+                past_errors = np.abs(errors[t-window_size : t]) # 只看過去
+                current_error = np.abs(errors[t])               # 驗證現在
+                
+                for q in quantiles:
+                    threshold = np.percentile(past_errors, q * 100)
+                    if current_error <= threshold:
+                        hits[q] += 1
+                total_evals += 1
+            
+            if total_evals > 0:
+                for q in quantiles:
+                    results[q] = {'quantile': q, 'observed_freq': hits[q] / total_evals}
+                return results, "strict_rolling"
+
+    # --- 模式 B：留一法 (Jackknife) ---
+    if residuals is not None and len(residuals) >= 6:
+        hits = {q: 0 for q in quantiles}
+        n = len(residuals)
+        abs_residuals = np.abs(residuals)
+        
+        for i in range(n):
+            current_res = abs_residuals[i]
+            others = np.concatenate([abs_residuals[:i], abs_residuals[i+1:]])
+            
+            for q in quantiles:
+                threshold = np.percentile(others, q * 100)
+                if current_res <= threshold:
+                    hits[q] += 1
+        
+        for q in quantiles:
+            results[q] = {'quantile': q, 'observed_freq': hits[q] / n}
+        return results, "jackknife_loo"
+
+    return {}, "insufficient_data"
 
 def compute_acf_results(residuals, n):
-    """計算殘差自相關性結果，返回字典形式。"""
     sig_boundary = 2 / np.sqrt(n)
     acf_results = {}
     for lag in [1, 3, 6, 12]:
@@ -1649,60 +1630,39 @@ def compute_acf_results(residuals, n):
     return acf_results
 
 def compute_quantile_spread(p25, p75, predicted_value):
-    """計算標準化的分位數範圍（例如 (P75 - P25) / predicted_value）。"""
     if predicted_value is None or predicted_value == 0:
-        return 0.0  # 避免除零
+        return 0.0
     spread = (p75 - p25) / predicted_value if p75 is not None and p25 is not None else 0.0
     return spread
 
-# --- 【新增】IRLS 穩健迴歸引擎 ---
+# --- IRLS 穩健迴歸引擎 ---
 def huber_robust_regression(x, y, steps_ahead, t_const=1.345, max_iter=100, tol=1e-6):
-    """
-    使用迭代重加權最小平方法 (IRLS) 和 Huber 權重進行穩健迴歸。
-    """
     X = np.c_[np.ones(len(x)), x]
-    # Step 1: 初始擬合
     slope, intercept, _, _, _ = linregress(x, y)
     beta = np.array([intercept, slope])
 
     for _ in range(max_iter):
         beta_old = beta.copy()
-        
-        # 計算殘差
         y_pred = X @ beta
         residuals = y - y_pred
-        
-        # Step 2: 估計誤差尺度 (MAD)
         scale = median_abs_deviation(residuals, scale='normal')
-        if scale < 1e-6: scale = 1e-6  # 避免除零
-
-        # Step 3: 標準化殘差
+        if scale < 1e-6: scale = 1e-6
         z = residuals / scale
-        
-        # Step 4: 計算 Huber 權重
         weights = np.ones_like(z)
         outliers = np.abs(z) > t_const
         weights[outliers] = t_const / np.abs(z[outliers])
-        
-        # Step 5: 執行加權最小平方法 (WLS)
         W_sqrt = np.sqrt(weights)
         X_w = X * W_sqrt[:, np.newaxis]
         y_w = y * W_sqrt
         beta = np.linalg.lstsq(X_w, y_w, rcond=None)[0]
-        
-        # Step 6: 檢查收斂
         if np.sum(np.abs(beta - beta_old)) < tol:
             break
 
-    # 使用最終的穩健係數進行預測和計算
     historical_pred = X @ beta
     final_residuals = y - historical_pred
-    
-    # 預測未來值
     future_x = np.arange(len(x) + 1, len(x) + steps_ahead + 1)
     predicted_values = beta[0] + beta[1] * future_x
     
-    # 近似的信賴區間
     dof = len(x) - 2
     if dof <= 0: return predicted_values, historical_pred, final_residuals, None, None
     
@@ -1714,18 +1674,12 @@ def huber_robust_regression(x, y, steps_ahead, t_const=1.345, max_iter=100, tol=
 
     return predicted_values, historical_pred, final_residuals, lower_seq, upper_seq
 
-# --- 模型堆疊集成 (Stacking Ensemble) 總引擎 ---
-
-# Level 0 基礎模型 (Base Models)
+# --- 模型堆疊集成 ---
 def train_predict_huber(x_train, y_train, x_predict, t_const=1.345, max_iter=100, tol=1e-6):
-    """
-    Huber 穩健迴歸 (Huber Robust Regression)。
-    """
     if len(x_train) < 2:
         return np.full(len(x_predict), np.mean(y_train) if len(y_train) > 0 else 0)
 
     X_train_b = np.c_[np.ones(len(x_train)), x_train]
-    
     try:
         slope, intercept, _, _, _ = linregress(x_train, y_train)
         beta = np.array([intercept, slope])
@@ -1744,13 +1698,11 @@ def train_predict_huber(x_train, y_train, x_predict, t_const=1.345, max_iter=100
         W_sqrt = np.sqrt(weights)
         X_w = X_train_b * W_sqrt[:, np.newaxis]
         y_w = y_train * W_sqrt
-        
         try:
             beta = np.linalg.lstsq(X_w, y_w, rcond=None)[0]
         except np.linalg.LinAlgError:
             beta = beta_old
             break
-            
         if np.sum(np.abs(beta - beta_old)) < tol:
             break
             
@@ -1758,356 +1710,203 @@ def train_predict_huber(x_train, y_train, x_predict, t_const=1.345, max_iter=100
     return X_predict_b @ beta
 
 def train_predict_poly(x_train, y_train, x_predict, degree=2):
-    """多項式迴歸 (Polynomial Regression)。"""
     if len(x_train) < degree + 1: return np.full(len(x_predict), np.mean(y_train) if len(y_train) > 0 else 0)
     coeffs = np.polyfit(x_train, y_train, degree)
     p = np.poly1d(coeffs)
     return p(x_predict)
 
-# --- 【v3.2.4 升級】使用 SciPy 自動優化參數的霍爾特線性趨勢模型 ---
 def train_predict_des(y_train, predict_steps, alpha=None, beta=None):
-    """
-    霍爾特線性趨勢模型 (Holt's Linear Trend Method)。
-    【v3.2.4 升級】: 使用 scipy.optimize.minimize 自動尋找最佳 alpha 和 beta。
-    """
     if len(y_train) < 2:
         return np.full(predict_steps, y_train[0] if len(y_train) > 0 else 0)
 
-    # 如果未提供 alpha/beta，則自動優化
     if alpha is None or beta is None:
         def holt_rmse(params):
             alpha_opt, beta_opt = params
             if not (0 <= alpha_opt <= 1 and 0 <= beta_opt <= 1):
                 return np.inf
-            
             level, trend = y_train[0], y_train[1] - y_train[0]
             predictions = np.zeros(len(y_train))
             predictions[0], predictions[1] = level, level + trend
-            
             for i in range(1, len(y_train)):
                 level_old, trend_old = level, trend
                 level = alpha_opt * y_train[i] + (1 - alpha_opt) * (level_old + trend_old)
                 trend = beta_opt * (level - level_old) + (1 - beta_opt) * trend_old
                 if i + 1 < len(y_train):
                     predictions[i+1] = level + trend
-            
             return np.sqrt(np.mean((y_train - predictions)**2))
 
-        # 使用 L-BFGS-B 方法進行有界優化
-        opt_res = minimize(
-            holt_rmse, 
-            x0=[0.5, 0.5], 
-            method='L-BFGS-B', 
-            bounds=[(0, 1), (0, 1)]
-        )
+        opt_res = minimize(holt_rmse, x0=[0.5, 0.5], method='L-BFGS-B', bounds=[(0, 1), (0, 1)])
         alpha, beta = opt_res.x
 
-    # 使用找到的最佳參數或指定的參數進行預測
     level, trend = y_train[0], y_train[1] - y_train[0]
     for i in range(1, len(y_train)):
         level_old, trend_old = level, trend
         level = alpha * y_train[i] + (1 - alpha) * (level_old + trend_old)
         trend = beta * (level - level_old) + (1 - beta) * trend_old
-        
     return level + trend * np.arange(1, predict_steps + 1)
 
 def train_predict_seasonal(df_train, predict_steps, seasonal_period=12):
-    """時間序列分解法 (Classical Time Series Decomposition)。"""
     if len(df_train) < 2 * seasonal_period:
         return np.full(predict_steps, np.mean(df_train['Real_Amount']))
-
     deseasonalized_data, seasonal_indices = seasonal_decomposition(df_train)
     trend_component = deseasonalized_data['Deseasonalized'].values
-    
     x_trend = np.arange(len(trend_component))
     if len(x_trend) < 2: return np.full(predict_steps, np.mean(df_train['Real_Amount']))
-
     slope, intercept, _, _, _ = linregress(x_trend, trend_component)
     future_x = np.arange(len(x_trend), len(x_trend) + predict_steps)
     trend_forecast = intercept + slope * future_x
-    
     last_observed_month = df_train['Parsed_Date'].iloc[-1].month
     seasonal_forecast = []
     for i in range(1, predict_steps + 1):
         future_month = (last_observed_month + i -1) % 12 + 1
         seasonal_forecast.append(seasonal_indices.get(future_month, 1.0))
-
     return trend_forecast * np.array(seasonal_forecast)
 
 def train_predict_naive(y_train, predict_steps):
-    """單純預測法 (Naive Method)。"""
-    if len(y_train) == 0:
-        return np.zeros(predict_steps)
+    if len(y_train) == 0: return np.zeros(predict_steps)
     last_value = y_train[-1]
     return np.full(predict_steps, last_value)
 
 def train_predict_rolling_median(y_train, predict_steps, window_size=6):
-    """滾動中位數預測 (Rolling Median Forecast)。"""
-    if len(y_train) == 0:
-        return np.zeros(predict_steps)
+    if len(y_train) == 0: return np.zeros(predict_steps)
     actual_window = min(len(y_train), window_size)
-    if actual_window == 0:
-        return np.zeros(predict_steps)
+    if actual_window == 0: return np.zeros(predict_steps)
     median_value = np.median(y_train[-actual_window:])
     return np.full(predict_steps, median_value)
 
 def train_predict_global_median(y_train, predict_steps):
-    """全局中位數預測 (Global Median Forecast)。"""
-    if len(y_train) == 0:
-        return np.zeros(predict_steps)
+    if len(y_train) == 0: return np.zeros(predict_steps)
     median_value = np.median(y_train)
     return np.full(predict_steps, median_value)
 
 def train_predict_drift(y_train, predict_steps):
-    """漂移法 (Drift Method)。"""
-    if len(y_train) < 2:
-        return np.full(predict_steps, y_train[-1] if len(y_train) > 0 else 0)
-    
+    if len(y_train) < 2: return np.full(predict_steps, y_train[-1] if len(y_train) > 0 else 0)
     first_value = y_train[0]
     last_value = y_train[-1]
     drift = (last_value - first_value) / (len(y_train) - 1)
-    
     predictions = [last_value + (i * drift) for i in range(1, predict_steps + 1)]
     return np.array(predictions)
 
 def train_predict_seasonal_naive(y_train, predict_steps, seasonal_period=12):
-    """季節性單純預測法 (Seasonal Naive Method)。"""
-    if len(y_train) < seasonal_period:
-        return np.full(predict_steps, y_train[-1] if len(y_train) > 0 else 0)
-
+    if len(y_train) < seasonal_period: return np.full(predict_steps, y_train[-1] if len(y_train) > 0 else 0)
     predictions = []
     for i in range(1, predict_steps + 1):
         idx = len(y_train) - seasonal_period + ((i - 1) % seasonal_period)
         predictions.append(y_train[idx])
-    
     return np.array(predictions)
 
 def train_predict_moving_average(y_train, predict_steps, window_size=6):
-    """移動平均預測 (Moving Average Forecast)。"""
-    if len(y_train) == 0:
-        return np.zeros(predict_steps)
-    
+    if len(y_train) == 0: return np.zeros(predict_steps)
     actual_window = min(len(y_train), window_size)
-    if actual_window == 0:
-        return np.zeros(predict_steps)
-    
+    if actual_window == 0: return np.zeros(predict_steps)
     mean_value = np.mean(y_train[-actual_window:])
     return np.full(predict_steps, mean_value)
 
-# --- 【v3.2.4 升級】使用 SciPy 自動優化參數的簡易指數平滑法 ---
 def train_predict_ses(y_train, predict_steps, alpha=None):
-    """
-    簡易指數平滑法 (Simple Exponential Smoothing, SES)。
-    【v3.2.4 升級】: 使用 scipy.optimize.minimize 自動尋找最佳 alpha。
-    """
-    if len(y_train) == 0:
-        return np.zeros(predict_steps)
-    
-    if len(y_train) == 1:
-        return np.full(predict_steps, y_train[0])
+    if len(y_train) == 0: return np.zeros(predict_steps)
+    if len(y_train) == 1: return np.full(predict_steps, y_train[0])
 
     if alpha is None:
         def ses_rmse(param):
             alpha_opt = param[0]
-            if not (0 <= alpha_opt <= 1):
-                return np.inf
-
+            if not (0 <= alpha_opt <= 1): return np.inf
             smoothed = np.zeros_like(y_train, dtype=float)
             smoothed[0] = y_train[0]
             for i in range(1, len(y_train)):
                 smoothed[i] = alpha_opt * y_train[i] + (1 - alpha_opt) * smoothed[i-1]
-            
             return np.sqrt(np.mean((y_train[1:] - smoothed[:-1])**2))
 
-        opt_res = minimize(
-            ses_rmse, 
-            x0=[0.5], 
-            method='L-BFGS-B', 
-            bounds=[(0, 1)]
-        )
+        opt_res = minimize(ses_rmse, x0=[0.5], method='L-BFGS-B', bounds=[(0, 1)])
         alpha = opt_res.x[0]
 
-    # 使用最佳或指定 alpha 進行最終預測
     smoothed = np.zeros_like(y_train, dtype=float)
     smoothed[0] = y_train[0]
     for i in range(1, len(y_train)):
         smoothed[i] = alpha * y_train[i] + (1 - alpha) * smoothed[i-1]
-        
     return np.full(predict_steps, smoothed[-1])
 
-# 【方法一 新增模型與錯誤修正】
 def train_predict_theta(x_train, y_train, x_predict, theta=2.0):
-    """
-    Theta 趨勢法。
-    一種結合線性趨勢外推與指數平滑的穩健預測模型。
-    """
     n = len(y_train)
-    if n < 2:
-        return np.full(len(x_predict), y_train[-1] if n > 0 else 0)
-
-    # 1. 使用提供的 x_train 和 y_train 擬合長期趨勢線
+    if n < 2: return np.full(len(x_predict), y_train[-1] if n > 0 else 0)
     try:
         slope, intercept, _, _, _ = linregress(x_train, y_train)
     except ValueError:
         return np.full(len(x_predict), np.mean(y_train))
-    
-    # 計算歷史數據的趨勢線
     trend_line_hist = intercept + slope * x_train
-
-    # 2. 構建並平滑Theta線
     theta_line_train = theta * (y_train - trend_line_hist) + trend_line_hist
-    
-    # 3. 對Theta線進行簡易指數平滑 (SES) 預測 (調用已升級的自適應SES)
     forecast_ses = train_predict_ses(theta_line_train, predict_steps=len(x_predict))
-
-    # 4. 預測未來的趨勢線
     forecast_trend = intercept + slope * x_predict
-    
-    # 5. 組合預測結果
     final_forecast = (1/theta) * forecast_ses + (1 - 1/theta) * forecast_trend
     return final_forecast
 
-# ==========================================
-#   新增：完整版穩健 Theta-Hurdle 混合模型
-#   (Full Robust Theta-Hurdle Implementation)
-# ==========================================
-
 def _full_robust_theta_core(x_train, y_train, x_predict, tol=1e-6, max_iter=100):
-    """
-    【核心引擎】完整迭代的穩健 Theta 分解 (IRLS Huber + SES)
-    """
     steps_ahead = len(x_predict)
-    
-    # 1. 執行完整的 IRLS (迭代重加權最小平方法) 尋找 Huber 趨勢線
-    # 建構設計矩陣 [1, x] 以包含截距項
     X_mat = np.c_[np.ones(len(x_train)), x_train]
-    
-    # 初始估計：使用普通最小平方法 (OLS)
     try:
         beta = np.linalg.lstsq(X_mat, y_train, rcond=None)[0]
     except np.linalg.LinAlgError:
         beta = np.array([np.mean(y_train), 0.0])
     
-    # 開始迭代
     for i in range(max_iter):
         beta_old = beta.copy()
         y_est = X_mat @ beta
         resid = y_train - y_est
-        
-        # 計算尺度 (Scale) - 使用 MAD (中位數絕對偏差)
         median_resid = np.median(resid)
         mad = np.median(np.abs(resid - median_resid))
-        scale = mad / 0.6745 # 轉換為標準差估計
-        
-        if scale < 1e-9: # 避免除以零 (完美擬合的情況)
-            scale = 1e-9
-            
-        # 計算標準化殘差 z
+        scale = mad / 0.6745 
+        if scale < 1e-9: scale = 1e-9
         z = (resid - median_resid) / scale
-        
-        # 計算 Huber 權重
-        # 閾值 k=1.345 是統計學標準，對應 95% 的常態分佈效率
         k = 1.345 
         weights = np.ones_like(z)
         outliers = np.abs(z) > k
         weights[outliers] = k / np.abs(z[outliers])
-        
-        # 執行加權最小平方法 (WLS)
         W_sqrt = np.sqrt(weights)
         X_w = X_mat * W_sqrt[:, np.newaxis]
         y_w = y_train * W_sqrt
-        
         try:
             beta = np.linalg.lstsq(X_w, y_w, rcond=None)[0]
         except np.linalg.LinAlgError:
-            beta = beta_old # 若矩陣奇異，退回上一步並停止
+            beta = beta_old 
             break
-            
-        # 檢查收斂：如果係數變化極小，則提早結束
         if np.sum(np.abs(beta - beta_old)) < tol:
             break
             
     slope, intercept = beta[1], beta[0]
-    
-    # 計算穩健趨勢線 (Robust Trend Line)
     trend_train = intercept + slope * x_train
     trend_future = intercept + slope * x_predict
-    
-    # 2. 構建 Theta=2 線 (Curvature Line)
-    # 公式：L(2) = 2 * y - Trend
-    # 這條線放大了數據相對於趨勢的波動，用於捕捉短期動態
     theta_line_2 = 2 * y_train - trend_train
-    
-    # 3. 對 Theta=2 線進行 SES 預測
-    # 這裡使用腳本既有的 train_predict_ses (會自動優化 alpha)
     theta_2_forecast = train_predict_ses(theta_line_2, predict_steps=steps_ahead)
-    
-    # 4. 最終 Theta 組合 (Standard Theta Combination)
-    # 預測值 = 0.5 * 趨勢預測 + 0.5 * 短期動態預測
     final_forecast = 0.5 * trend_future + 0.5 * theta_2_forecast
-    
     return final_forecast
 
 def train_predict_robust_hurdle_theta(x_train, y_train, x_predict, zero_threshold=0.3, tol=1e-6, max_iter=100):
-    """
-    【完整版】穩健 Theta-Hurdle 混合模型
-    
-    參數說明:
-    - zero_threshold: 啟動 Hurdle 機制的零值比例門檻 (預設 0.3)
-    - tol: IRLS 收斂容忍值 (預設 1e-6，極高精度)
-    - max_iter: IRLS 最大迭代次數 (預設 100，確保收斂)
-    """
     n = len(y_train)
     steps_ahead = len(x_predict)
-    
-    # --- 第一層：Hurdle 判斷 (是否為間歇性數據?) ---
     zero_count = np.sum(y_train == 0)
     zero_ratio = zero_count / n
-    
-    # 若零值比例低於門檻 (例如您的總支出數據)，直接視為連續數據
-    # 跳過機率計算，全速執行穩健預測核心
     if zero_ratio < zero_threshold:
         return _full_robust_theta_core(x_train, y_train, x_predict, tol, max_iter)
         
-    # --- 第二層：Hurdle 機率預測 (Probability) ---
-    # 建立二元序列 (1=有花錢, 0=沒花錢)
     binary_series = (y_train > 0).astype(float)
-    
-    # 使用 SES (簡易指數平滑) 預測下個月"會發生"的機率
-    # 這裡復用腳本中已有的 train_predict_ses，它會自動優化 alpha
     prob_forecast_val = train_predict_ses(binary_series, predict_steps=1)[0]
-    
-    # 限制機率在 [0.01, 1.0] 之間，避免機率為 0 導致預測死鎖
     prob_forecast = np.clip(prob_forecast_val, 0.01, 1.0)
     
-    # --- 第三層：Hurdle 強度預測 (Magnitude) ---
     non_zero_indices = np.where(y_train > 0)[0]
     non_zero_y = y_train[non_zero_indices]
     
     if len(non_zero_y) < 3:
-        # 數據極少時的退路：使用簡單平均
         magnitude_forecast = np.full(steps_ahead, np.mean(non_zero_y) if len(non_zero_y)>0 else 0)
     else:
-        # 針對非零數據，建立新的連續時間軸 (壓縮時間)
-        # 這是為了讓回歸模型能捕捉"次數"上的趨勢
         x_seq_train = np.arange(len(non_zero_y))
         x_seq_pred = np.arange(len(non_zero_y), len(non_zero_y) + steps_ahead)
-        
-        # 呼叫核心引擎進行預測
         magnitude_forecast = _full_robust_theta_core(x_seq_train, non_zero_y, x_seq_pred, tol, max_iter)
 
-    # --- 最終合成：期望值 = 機率 * 金額 ---
     return prob_forecast * magnitude_forecast
 
-# --- 【★★★ 此處為已修正的函數 ★★★】 ---
 def train_greedy_forward_ensemble(X_meta, y_true, model_keys, n_iterations=20, colors=None, verbose=True):
-    """
-    使用 Caruana 的貪婪前向選擇法訓練元模型 (已修正為允許重複選擇的穩健版本)。
-    """
     n_samples, n_models = X_meta.shape
     ensemble_model_indices = []
     
-    # 確保 verbose 關閉時不打印
     if verbose:
         color_cyan = colors.CYAN if colors else ''
         color_reset = colors.RESET if colors else ''
@@ -2116,17 +1915,14 @@ def train_greedy_forward_ensemble(X_meta, y_true, model_keys, n_iterations=20, c
     def rmse(y_true, y_pred):
         return np.sqrt(np.mean((y_true - y_pred)**2))
 
-    # 初始化時，集成模型是空的，預測為0
     ensemble_predictions = np.zeros(n_samples)
     
     for i in range(n_iterations):
         best_model_idx_this_round = -1
-        # 初始最低誤差設為當前集成模型的誤差
         lowest_error = rmse(y_true, ensemble_predictions) if i > 0 else np.inf
         
         for model_idx in range(n_models):
             candidate_model_preds = X_meta[:, model_idx]
-            # 測試將下一個模型加入團隊後的效果
             temp_predictions = (ensemble_predictions * i + candidate_model_preds) / (i + 1)
             current_error = rmse(y_true, temp_predictions)
             
@@ -2134,13 +1930,11 @@ def train_greedy_forward_ensemble(X_meta, y_true, model_keys, n_iterations=20, c
                 lowest_error = current_error
                 best_model_idx_this_round = model_idx
         
-        # 如果找到了能改善模型的選擇，就將其加入團隊
         if best_model_idx_this_round != -1:
             ensemble_model_indices.append(best_model_idx_this_round)
             best_model_preds = X_meta[:, best_model_idx_this_round]
             ensemble_predictions = (ensemble_predictions * i + best_model_preds) / (i + 1)
         else:
-            # 如果遍歷所有模型都無法改善結果，就提前停止
             break
             
     if verbose:
@@ -2153,13 +1947,12 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, ense
     x = np.arange(1, len(data) + 1)
     n_samples = len(data)
     
-    # 【方法一整合點】將新模型加入基礎模型庫
     base_models = {
         'poly': train_predict_poly, 'huber': train_predict_huber, 'des': train_predict_des, 'drift': train_predict_drift,
         'seasonal': train_predict_seasonal, 'seasonal_naive': train_predict_seasonal_naive, 'naive': train_predict_naive,
         'moving_average': train_predict_moving_average, 'rolling_median': train_predict_rolling_median, 'global_median': train_predict_global_median,
         'ses': train_predict_ses, 'theta': train_predict_theta,
-        'robust_hurdle': train_predict_robust_hurdle_theta, # <--- 新增這一行
+        'robust_hurdle': train_predict_robust_hurdle_theta, 
     }
     
     model_keys = list(base_models.keys())
@@ -2170,17 +1963,14 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, ense
     for i in range(n_folds):
         train_idx = np.concatenate([fold_indices[j] for j in range(n_folds) if i != j])
         val_idx = fold_indices[i]
-        
         if len(train_idx) == 0: continue
-
         x_train, y_train, df_train = x[train_idx], data[train_idx], monthly_expenses_df.iloc[train_idx]
         x_val = x[val_idx]
-        
         for j, key in enumerate(model_keys):
             model_func = base_models[key]
             if key in ['seasonal']:
                  meta_features[val_idx, j] = model_func(df_train, len(x_val))
-            elif key in ['poly', 'huber', 'theta', 'robust_hurdle']: # 【修正】確保 robust_hurdle 使用正確的呼叫方式
+            elif key in ['poly', 'huber', 'theta', 'robust_hurdle']:
                  meta_features[val_idx, j] = model_func(x_train, y_train, x_val)
             else:
                  meta_features[val_idx, j] = model_func(y_train, len(x_val))
@@ -2203,7 +1993,7 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, ense
         model_func = base_models[key]
         if key in ['seasonal']:
             final_base_predictions[:, j] = model_func(monthly_expenses_df, steps_ahead)
-        elif key in ['poly', 'huber', 'theta', 'robust_hurdle']: # 【修正】確保 robust_hurdle 使用正確的呼叫方式
+        elif key in ['poly', 'huber', 'theta', 'robust_hurdle']:
             final_base_predictions[:, j] = model_func(x, data, x_future)
         else:
             final_base_predictions[:, j] = model_func(data, steps_ahead)
@@ -2227,9 +2017,6 @@ def run_stacked_ensemble_model(monthly_expenses_df, steps_ahead, n_folds=5, ense
     return final_prediction_sequence, historical_pred, residuals, lower_seq, upper_seq, model_weights, historical_base_preds_df
 
 def train_meta_model_with_bootstrap_gfs(X_level2_hist, y_true, n_bootstrap=100, colors=None, verbose=True):
-    """
-    【您的核心創新】使用自舉法模擬和GFS，為第一層的集成模型們計算公平的權重。
-    """
     color_cyan = colors.CYAN if colors else ''
     color_reset = colors.RESET if colors else ''
     n_samples, n_models = X_level2_hist.shape
@@ -2239,7 +2026,6 @@ def train_meta_model_with_bootstrap_gfs(X_level2_hist, y_true, n_bootstrap=100, 
     
     base_predictions = np.mean(X_level2_hist, axis=1)
     residuals = y_true - base_predictions
-    
     q1, q3 = np.percentile(residuals, [25, 75])
     iqr = q3 - q1
     lower_bound = q1 - 1.5 * iqr
@@ -2257,14 +2043,10 @@ def train_meta_model_with_bootstrap_gfs(X_level2_hist, y_true, n_bootstrap=100, 
     for i in range(n_bootstrap):
         bootstrap_res = np.random.choice(clean_residuals, size=n_samples, replace=True)
         y_bootstrap = base_predictions + bootstrap_res
-        
-        # 在此模擬數據上，尋找 L1 模型的最佳組合
         selected_indices_for_iter, _ = train_greedy_forward_ensemble(
             X_level2_hist, y_bootstrap, list(range(n_models)), n_iterations=n_models, colors=colors, verbose=False
         )
-        
         ensemble_selection_counts.update(selected_indices_for_iter)
-        
         if verbose:
             print_progress_bar(i + 1, n_bootstrap, prefix='進度:', suffix='完成', length=40)
 
@@ -2283,16 +2065,10 @@ def train_meta_model_with_bootstrap_gfs(X_level2_hist, y_true, n_bootstrap=100, 
     
     return final_weights
 
-# --- 第 1 階段：插入「策略 B」函式 ---
 def run_robust_decomp_forecaster(monthly_expenses_df, steps_ahead, colors=None, verbose=True):
-    """
-    策略 B：穩健分解預測器 (STL-like + Huber Trend)
-    """
     data = monthly_expenses_df['Real_Amount'].values
     n_total = len(data)
     
-    # 1. 穩健平滑 (移除極端衝擊)
-    # 使用 medfilt 移除極端值，kernel_size 應為奇數且小於 N
     kernel_size = 5
     if kernel_size >= n_total:
         kernel_size = 3 if n_total >= 3 else 1
@@ -2302,37 +2078,25 @@ def run_robust_decomp_forecaster(monthly_expenses_df, steps_ahead, colors=None, 
         try:
             robust_series = signal.medfilt(data, kernel_size=kernel_size)
         except Exception:
-            robust_series = data # Fallback
+            robust_series = data 
 
-    # 2. 偵測季節性 (在 "乾淨" 數據上)
     robust_df = monthly_expenses_df.copy()
     robust_df['Real_Amount'] = robust_series
     
-    # 重用現有的 seasonal_decomposition
     _, seasonal_indices = seasonal_decomposition(robust_df)
-    
-    # 3. 偵測趨勢 (在 "原始" 數據上)
-    # 3a. 反季節性化 (使用剛才的乾淨 seasonal_indices)
     deseasonalized_data = data / monthly_expenses_df['Month'].map(seasonal_indices)
-    
-    # 3b. 使用 Huber 穩健迴歸 (重用現有函式)
     x = np.arange(1, n_total + 1)
     
-    # 使用 huber_robust_regression 預測 deseasonalized_data
-    # 確保傳遞 steps_ahead
     try:
         trend_forecast_seq, historical_trend, _, trend_lower_seq, trend_upper_seq = \
             huber_robust_regression(x, deseasonalized_data, steps_ahead)
     except Exception:
-        # Fallback to simple linear regression if Huber fails
         slope, intercept, _, _, _ = linregress(x, deseasonalized_data)
         historical_trend = intercept + slope * x
         future_x = np.arange(n_total + 1, n_total + steps_ahead + 1)
         trend_forecast_seq = intercept + slope * future_x
-        trend_lower_seq, trend_upper_seq = trend_forecast_seq, trend_forecast_seq # No CI on fallback
+        trend_lower_seq, trend_upper_seq = trend_forecast_seq, trend_forecast_seq 
         
-    # 4. 組合預測
-    # 4a. 獲取未來的季節性因子
     last_observed_month = monthly_expenses_df['Parsed_Date'].iloc[-1].month
     future_seasonal_factors = []
     for i in range(1, steps_ahead + 1):
@@ -2340,29 +2104,22 @@ def run_robust_decomp_forecaster(monthly_expenses_df, steps_ahead, colors=None, 
         future_seasonal_factors.append(seasonal_indices.get(future_month, 1.0))
     future_seasonal_factors = np.array(future_seasonal_factors)
 
-    # 4b. 最終組合
     final_prediction_seq = trend_forecast_seq * future_seasonal_factors
     historical_pred = historical_trend * monthly_expenses_df['Month'].map(seasonal_indices)
-    
-    # 4c. 組合信賴區間
     lower_seq = trend_lower_seq * future_seasonal_factors if trend_lower_seq is not None else None
     upper_seq = trend_upper_seq * future_seasonal_factors if trend_upper_seq is not None else None
 
-    # 5. 返回標準化輸出
     return (
         final_prediction_seq, 
         historical_pred, 
-        None, # effective_base_weights
-        None, # meta_model_weights_for_report
+        None, 
+        None, 
         lower_seq, 
         upper_seq, 
-        None # historical_base_preds_df
+        None 
     )
 
 def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose=True):
-    """
-    【已重構並集成 ERB】執行完整的三層式集成模型流程。
-    """
     data = monthly_expenses_df['Real_Amount'].values
     x = np.arange(1, len(data) + 1)
     num_months = len(data)
@@ -2372,7 +2129,7 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
         'seasonal': train_predict_seasonal, 'seasonal_naive': train_predict_seasonal_naive, 'naive': train_predict_naive,
         'moving_average': train_predict_moving_average, 'rolling_median': train_predict_rolling_median, 'global_median': train_predict_global_median,
         'ses': train_predict_ses, 'theta': train_predict_theta,
-        'robust_hurdle': train_predict_robust_hurdle_theta, # <--- 新增
+        'robust_hurdle': train_predict_robust_hurdle_theta,
     }
     model_keys = list(base_models.keys())
     
@@ -2390,11 +2147,8 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
     for i in range(n_folds):
         train_idx = np.concatenate([fold_indices[j] for j in range(n_folds) if i != j])
         val_idx = fold_indices[i]
-        
         if len(train_idx) == 0: continue
-
         meta_features_train, y_train = meta_features[train_idx], data[train_idx]
-        
         selected_indices_fold, _ = train_greedy_forward_ensemble(meta_features_train, y_train, model_keys, n_iterations=20, verbose=False, colors=colors)
         gfs_counts_fold = Counter(selected_indices_fold)
         gfs_weights_fold = np.zeros(len(base_models))
@@ -2457,7 +2211,6 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
         learning_rate = 0.1
         patience = 3
         weak_model_func = base_models['huber']
-        
         min_len_for_rmse = min(len(data), len(historical_pred_final))
         initial_residuals = data[:min_len_for_rmse] - historical_pred_final[:min_len_for_rmse]
         best_rmse = np.sqrt(np.mean(initial_residuals**2))
@@ -2467,13 +2220,10 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
 
         for boost_iter in range(T):
             residuals_boost = data - historical_pred_final
-            
             res_pred_hist = weak_model_func(x, residuals_boost, x)
             res_pred_future_seq = weak_model_func(x, residuals_boost, x_future)
-            
             historical_pred_final += learning_rate * res_pred_hist
             future_pred_final_seq += learning_rate * res_pred_future_seq
-            
             current_rmse = np.sqrt(np.mean((data - historical_pred_final)**2))
             if current_rmse < best_rmse:
                 best_rmse = current_rmse
@@ -2506,18 +2256,12 @@ def run_full_ensemble_pipeline(monthly_expenses_df, steps_ahead, colors, verbose
 
     return future_pred_final_seq, historical_pred_final, effective_base_weights, meta_model_weights_for_report, lower_seq, upper_seq, historical_base_preds_df
 
-# ---【v3.3.1 新增】二次季節性校正引擎 (RSSC) ---
 def run_secondary_seasonal_correction(historical_pred, y_true, steps_ahead, acf_results):
-    """
-    分析主模型的殘差中是否含有季節性規律，並進行綜合加權校正。
-    """
     initial_residuals = np.asarray(y_true - historical_pred)
-    
     significant_seasonal_lags = {
         lag: result['acf'] for lag, result in acf_results.items()
         if lag >= 3 and result['is_significant']
     }
-
     if not significant_seasonal_lags:
         return np.zeros(steps_ahead), np.zeros_like(historical_pred), False, None
 
@@ -2527,55 +2271,39 @@ def run_secondary_seasonal_correction(historical_pred, y_true, steps_ahead, acf_
         
     final_correction_forecast = np.zeros(steps_ahead)
     final_historical_correction = np.zeros_like(historical_pred, dtype=float)
-    
     lag_weights = {}
 
     for lag, acf_value in significant_seasonal_lags.items():
         if len(initial_residuals) < lag:
             continue
-
         weight = abs(acf_value) / total_acf_weight
         lag_weights[lag] = weight
-        
-        # 對未來的校正
         past_residuals_for_future = initial_residuals[-lag:]
         correction_forecast = np.tile(past_residuals_for_future, steps_ahead // lag + 1)[:steps_ahead] * acf_value
         final_correction_forecast += correction_forecast * weight
-
-        # 對歷史的校正
         historical_correction = np.zeros_like(initial_residuals, dtype=float)
         historical_correction[lag:] = initial_residuals[:-lag] * acf_value
         final_historical_correction += historical_correction * weight
 
-    # 格式化權重報告字串
     lag_weights_str = ", ".join(f"{lag}個月: {weight:.1%}" for lag, weight in sorted(lag_weights.items()))
-    
     return final_correction_forecast, final_historical_correction, True, lag_weights_str
 
-
-# ---【v3.3.0 核心修正】殘差自動校正引擎 (ACRR) ---
 def run_autocorrective_residual_refinement(historical_pred, y_true, steps_ahead, acf_results):
-    """
-    分析主模型的殘差中是否含有短期慣性，並進行校正。
-    """
     if not acf_results.get(1, {}).get('is_significant', False):
         return np.zeros(steps_ahead), np.zeros_like(historical_pred), False
 
     initial_residuals = np.asarray(y_true - historical_pred)
-    
     if len(initial_residuals) < 3:
         return np.zeros(steps_ahead), np.zeros_like(historical_pred), False
 
     X = initial_residuals[:-1].reshape(-1, 1)
     y = initial_residuals[1:]
-
     try:
         slope, intercept, _, _, _ = linregress(X.flatten(), y)
     except ValueError:
         return np.zeros(steps_ahead), np.zeros_like(historical_pred), False
         
     historical_correction = intercept + slope * initial_residuals[:-1]
-    
     residual_forecast = []
     last_known_residual = initial_residuals[-1]
     
@@ -2589,19 +2317,13 @@ def run_autocorrective_residual_refinement(historical_pred, y_true, steps_ahead,
 
     return np.array(residual_forecast), full_historical_correction, True
 
-
-# ---【v3.4.3 新增】專家門控與DRF模型 ---
 def run_drf_prediction(monthly_expenses_df, forecast_steps=1, trend_window=12, model='additive', period=12):
-    """
-    執行分解與重構預測模型 (DRF)。
-    """
     series = pd.Series(monthly_expenses_df['Real_Amount'].values, index=pd.to_datetime(monthly_expenses_df['Parsed_Date']))
     
     if len(series) < period:
         return np.full(forecast_steps, series.mean())
 
     decomposed = manual_seasonal_decompose(series, period=period, model=model)
-    
     valid_trend = decomposed['trend'].dropna()
     last_n_trend_points = valid_trend.tail(min(len(valid_trend), trend_window))
     
@@ -2630,10 +2352,8 @@ def run_drf_prediction(monthly_expenses_df, forecast_steps=1, trend_window=12, m
     else:
         drf_predictions = np.array(trend_forecasts) * np.array(seasonal_forecasts)
 
-    # 模擬與主模型一致的輸出格式
     hist_pred_drf = decomposed['trend'] + decomposed['seasonal']
-    
-    return drf_predictions, hist_pred_drf.values, None, None # 沒有信賴區間
+    return drf_predictions, hist_pred_drf.values, None, None
 
 # --- 主要分析與預測函數 ---
 def analyze_and_predict(file_paths_str: str, no_color: bool):
@@ -2660,7 +2380,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     analysis_data = None
     df_for_seasonal_model = None
     
-    # 修正：初始化 num_months 為 0，避免資料不足時引發 UnboundLocalError
     num_months = 0 
     
     if not monthly_expenses.empty:
@@ -2699,14 +2418,11 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     if not monthly_expenses.empty:
         last_date = monthly_expenses['Parsed_Date'].max()
         last_period = last_date.to_period('M')
-        
         steps_ahead = (target_period.year - last_period.year) * 12 + (target_period.month - last_period.month)
-        
         if steps_ahead <= 0:
             if "數據包含未來月份" not in str(warnings_report):
                  warnings_report += f"\n{colors.YELLOW}警告：您的數據包含未來月份的記錄。預測仍將針對真實世界的下一個月份 ({target_month_str})。{colors.RESET}"
             steps_ahead = 1 
-        
         if steps_ahead > 12:
             step_warning = f"{colors.YELLOW}警告：預測步數超過12 ({steps_ahead})，遠期預測不確定性增加。{colors.RESET}"
 
@@ -2732,13 +2448,10 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     if analysis_data is not None and len(analysis_data) >= 2:
         num_months = len(analysis_data)
         data, x = analysis_data, np.arange(1, num_months + 1)
-        
         lower_seq, upper_seq = None, None
 
         if num_months >= 36:
             GATING_MULTIPLIER_K = 1.5
-            
-            # --- 主力模型初步預測 ---
             method_used = " (基於動態策略集成法)"
             
             print(f"\n{colors.CYAN}正在為所有策略預先計算歷史表現...{colors.RESET}")
@@ -2762,7 +2475,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             lower_seq = (lower_A * final_weight_A) + (lower_B * final_weight_B) if lower_A is not None and lower_B is not None else None
             upper_seq = (upper_A * final_weight_A) + (upper_B * final_weight_B) if upper_A is not None and upper_B is not None else None
             
-            # --- 雙通道殘差校正 ---
             temp_residuals = data - historical_pred
             temp_acf_results = compute_acf_results(temp_residuals, num_months)
             
@@ -2783,7 +2495,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 historical_pred += acrr_hist_corr
                 method_used += " + ACRR"
             
-            # --- 守門人決策 ---
             final_residuals = data - historical_pred
             final_acf_results = compute_acf_results(final_residuals, num_months)
             
@@ -2804,7 +2515,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 future_pred_seq, historical_pred, lower_seq, upper_seq = \
                     run_drf_prediction(monthly_expenses, steps_ahead=steps_ahead)
 
-            # --- 報告格式化 ---
             model_names_base = ["多項式", "穩健趨勢", "指數平滑(Auto)", "漂移", "季節分解", "季節模仿", "單純", "移動平均", "滾動中位", "全局中位", "簡易平滑(Auto)", "Theta趨勢", "穩健混合(Theta-Hurdle)"]
             if effective_base_weights is not None:
                 sorted_parts = sorted(zip(effective_base_weights, model_names_base), reverse=True)
@@ -2926,17 +2636,19 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         else:
             p25, p75, p95 = monte_carlo_dashboard(monthly_expenses['Real_Amount'].values)
 
-    calibration_results, acf_results, quantile_spread = {}, {}, 0.0
-    if residuals is not None and len(residuals)>=2:
-        min_len_diag = len(residuals)
-        data_diag = data[:min_len_diag]
-        quantile_preds_diag = {q: p[:min_len_diag] for q, p in quantile_preds.items() if p is not None and len(p) >= min_len_diag}
+    calibration_data = ({}, "insufficient_data") 
+    acf_results = {}
+    quantile_spread = 0.0
+
+    if residuals is not None and len(residuals) >= 2:
+        preq_res = prequential_results if 'prequential_results' in locals() else None
+        calibration_data = compute_smart_calibration_results(residuals, preq_res, quantiles)
         
-        calibration_results = compute_calibration_results(data_diag, quantile_preds_diag, quantiles)
         acf_results = compute_acf_results(residuals, num_months)
         quantile_spread = compute_quantile_spread(p25, p75, predicted_value)
 
-    risk_status, risk_description, suggested_budget, dynamic_risk_coefficient, trend_score, vol_score, shock_score, data_reliability, error_coefficient, error_buffer, trend_scores, vol_scores, shock_scores, overall_score, risk_buffer = assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly_expenses, p25, p75, historical_wape, historical_rmse, calibration_results=calibration_results, acf_results=acf_results, quantile_spread=quantile_spread)
+    calib_results_dict = calibration_data[0] 
+    risk_status, risk_description, suggested_budget, dynamic_risk_coefficient, trend_score, vol_score, shock_score, data_reliability, error_coefficient, error_buffer, trend_scores, vol_scores, shock_scores, overall_score, risk_buffer = assess_risk_and_budget(predicted_value, upper, p95, expense_std_dev, monthly_expenses, p25, p75, historical_wape, historical_rmse, calibration_results=calib_results_dict, acf_results=acf_results, quantile_spread=quantile_spread)
     
     if trend_scores is not None and isinstance(trend_scores, dict) and not trend_scores.get('is_advanced'):
         risk_factors_report = format_detailed_risk_analysis_report(dynamic_risk_coefficient, error_coefficient, overall_score, trend_score, trend_scores, vol_score, vol_scores, shock_score, shock_scores, colors)
@@ -2944,8 +2656,8 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     diagnostic_report = ""
     if residuals is not None and len(residuals)>=2:
         reports = [
-            quantile_loss_report(data_diag, quantile_preds_diag, quantiles, colors),
-            model_calibration_analysis(data_diag, quantile_preds_diag, quantiles, colors),
+            quantile_loss_report(data[:len(residuals)], quantile_preds, quantiles, colors),
+            model_calibration_analysis(calibration_data, quantiles, colors),
             residual_autocorrelation_diagnosis(residuals, num_months, colors),
             residual_normality_report(residuals, colors)
         ]
@@ -3012,7 +2724,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     print(f"  - {mc_note}")
     print(f"  - 預測目標月份: {target_month_str} (距離資料 {steps_ahead} 個月)")
     
-    # --- 安全檢查 num_months，避免 UnboundLocalError ---
     if num_months >= 36:
         if rssc_activated:
             print(f"  - {colors.GREEN}二次季節性校正 (RSSC): 已啟用 (權重: {rssc_lag_str}){colors.RESET}")
@@ -3025,25 +2736,20 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     else:
         print(f"  - {colors.WHITE}二次季節性校正 (RSSC): 未啟用 (資料需 ≥ 36 個月){colors.RESET}")
         print(f"  - {colors.WHITE}殘差自動校正 (ACRR): 未啟用 (資料需 ≥ 36 個月){colors.RESET}")
-    # ----------------------------------------------------
 
     if base_model_weights_report: print(base_model_weights_report)
     if meta_model_weights_report: print(meta_model_weights_report)
     if step_warning: print(step_warning)
     
-    # --- 新增：演算法運作機制透視儀表板 ---
     if effective_base_weights is not None and len(effective_base_weights) == len(model_names_base):
-        # 找到 robust_hurdle (穩健混合) 的索引 (最後一個)
-        rh_idx = -1 # 'robust_hurdle' is the last one added to the list
+        rh_idx = -1 
         rh_weight = effective_base_weights[rh_idx]
-        
-        if rh_weight > 0.01: # 如果權重超過 1%
+        if rh_weight > 0.01:
             print(f"\n{colors.YELLOW}{colors.BOLD}>>> 演算法運作機制透視 (Robust Theta-Hurdle){colors.RESET}")
             print(f"  {colors.WHITE}由於檢測到數據特徵符合條件，系統啟用了穩健混合模型 (權重 {rh_weight:.1%})：{colors.RESET}")
             print(f"  1. {colors.BOLD}Hurdle 機率層{colors.RESET}: 計算支出發生的可能性，排除零值對趨勢線的拉扯。")
             print(f"  2. {colors.BOLD}IRLS-Huber 收斂{colors.RESET}: 透過迭代重加權算法，自動降低異常極端值(Outliers)的影響權重。")
             print(f"  3. {colors.BOLD}Theta 分解{colors.RESET}: 結合長期穩健趨勢與短期非線性動態 (Theta=2)，提升對波動的適應性。")
-    # -------------------------------------
 
     if p25 is not None:
         print(f"\n{colors.CYAN}{colors.BOLD}>>> 個人財務風險儀表板 (基於 10,000 次模擬，實質金額){colors.RESET}")
@@ -3096,7 +2802,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     print(f"\n{colors.WHITE}【註】「實質金額」：為讓不同年份的支出能公平比較，本報告已將所有歷史數據，統一換算為當前基期年的貨幣價值。{colors.RESET}")
     print(f"{colors.CYAN}{colors.BOLD}========================================{colors.RESET}\n")
 
-# --- 腳本入口 (未變更) ---
 def main():
     warnings.simplefilter("ignore")
 
