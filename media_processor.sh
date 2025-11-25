@@ -822,6 +822,30 @@ _display_playlist_summary() {
     log_message "SUCCESS" "播放清單摘要顯示完畢。總共: $total_items, 成功: ${#success_items[@]}, 失敗: ${#failed_items[@]}"
 }
 
+###########################################################
+# UI 輔助函數：繪製自適應寬度的分隔線
+###########################################################
+draw_line() {
+    local char="${1:--}" # 預設字元為 -
+    local color="${2:-$CYAN}" # 預設顏色
+    local width
+    
+    # 嘗試獲取終端機寬度，如果失敗則預設 50
+    if command -v tput &> /dev/null; then
+        width=$(tput cols)
+    else
+        width=50
+    fi
+    
+    # 確保寬度合理
+    [[ "$width" -lt 10 ]] && width=50
+    
+    # 繪製線條
+    local line=""
+    for ((i=0; i<width; i++)); do line+="$char"; done
+    echo -e "${color}${line}${RESET}"
+}
+
 ######################################################################
 # 腳本自我更新函數 (v4.5 - 重構權限校驗，支援多個輔助腳本)
 ######################################################################
@@ -1572,7 +1596,7 @@ process_local_mp4() {
 }
 
 ######################################################################
-# 處理單一 YouTube 音訊（MP3）下載與處理 (v6.7 - 修復多位元組字元截斷錯誤)
+# 處理單一 YouTube 音訊（MP3）下載與處理 (v7.0 - Modern UI & Responsive)
 ######################################################################
 process_single_mp3() {
     local media_url="$1"
@@ -1583,14 +1607,32 @@ process_single_mp3() {
     local final_result_string=""
     local should_notify=false
 
-    ### --- 通知閥值設定 --- ###
-    local duration_threshold_secs=1800 # 30分鐘
+    # --- UI 變數與設置 ---
+    local term_width=$(tput cols 2>/dev/null || echo 60)
+    local step_current=0
+    local step_total=4
+    
+    # 定義進度顯示函數
+    print_step() {
+        step_current=$((step_current + 1))
+        echo -e "${BLUE}${BOLD}┌─ [Step ${step_current}/${step_total}] ${1} ${RESET}"
+    }
+    
+    # 定義子訊息顯示函數 (灰色/縮排)
+    print_sub() {
+        echo -e "${WHITE}│  ${CYAN}➥ ${WHITE}${1}${RESET}"
+    }
 
+    ### --- 階段 0: 獲取元數據 --- ###
+    # 不顯示進度條，這是前置作業
     local media_json
+    echo -e "${YELLOW}⏳ 正在解析媒體資訊...${RESET}"
+    
     media_json=$(yt-dlp --no-warnings --dump-json "$media_url" 2>"$temp_dir/yt-dlp-json-dump.log")
+    
     if [ -z "$media_json" ]; then
-        log_message "ERROR" "E_YTDLP_JSON: (MP3) 無法獲取媒體的 JSON 資訊。URL: $media_url"
-        local raw_err_b64=$(echo "無法獲取元數據，無特定日誌檔案。" | base64 -w 0)
+        log_message "ERROR" "E_YTDLP_JSON: 無法獲取元數據。"
+        local raw_err_b64=$(echo "無法獲取元數據" | base64 -w 0)
         final_result_string="FAIL|${media_url}|E_YTDLP_JSON|${raw_err_b64}"
         goto_cleanup=true
     else
@@ -1599,152 +1641,195 @@ process_single_mp3() {
 
     local video_title="" video_id="" artist_name="" album_artist_name="" duration_secs=0
     local final_audio_file="" output_audio="" temp_audio_file=""
+    local sanitized_title="" final_base_name=""
 
     if ! $goto_cleanup; then
+        # 解析 JSON
         video_title=$(echo "$media_json" | jq -r '.title // "audio_$(date +%s_default)"')
         video_id=$(echo "$media_json" | jq -r '.id // "id_$(date +%s_default)"')
         artist_name=$(echo "$media_json" | jq -r '.artist // .uploader // "[不明]"')
         album_artist_name=$(echo "$media_json" | jq -r '.uploader // "[不明]"')
         duration_secs=$(echo "$media_json" | jq -r '.duration // 0')
         
-        # 使用純 Bash 整數運算
+        # --- 顯示現代化資訊卡片 ---
+        clear
+        draw_line "=" "$CYAN"
+        echo -e "${CYAN}${BOLD} 🎵 MP3 音量標準化處理程序 ${RESET}"
+        draw_line "-" "$CYAN"
+        printf "${WHITE} 📌 標題 : ${GREEN}%s${RESET}\n" "$video_title"
+        printf "${WHITE} 🎤 演出 : ${YELLOW}%s${RESET}\n" "$artist_name"
+        printf "${WHITE} 🆔 ID   : ${PURPLE}%s${RESET}\n" "$video_id"
+        printf "${WHITE} ⏱ 時長 : ${BLUE}%s 秒${RESET}\n" "$duration_secs"
+        draw_line "=" "$CYAN"
+        echo ""
+
+        # 判斷是否通知 (無 bc)
         if [[ "$mode" != "playlist_mode" ]]; then
-            local duration_int=${duration_secs%.*} # 去除小數點
+            local duration_int=${duration_secs%.*}
+            local duration_threshold_secs=1800
             if [[ "$duration_int" -gt "$duration_threshold_secs" ]]; then
                 should_notify=true
-                log_message "INFO" "MP3 標準化：時長 ($duration_secs s) 超過閥值 ($duration_threshold_secs s)，啟用通知。"
+                log_message "INFO" "時長超過閾值，將啟用通知。"
             fi
         fi
 
-        local sanitized_title
-        # 步驟 1: 基礎過濾 (保留多語言)
+        # 檔名清理 (v6.7 邏輯)
         local safe_chars_regex='[^a-zA-Z0-9\u4e00-\u9fff\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uffef _.\[\]()-]'
         if command -v iconv &> /dev/null; then
             sanitized_title=$(echo "${video_title}" | iconv -f UTF-8 -t UTF-8 -c | sed -E "s/${safe_chars_regex}/_/g")
         else
             sanitized_title=$(echo "${video_title}" | sed -E "s/${safe_chars_regex}/_/g")
         fi
-        
-        # 步驟 2: 強制移除檔案系統保留字元
-        sanitized_title=$(echo "$sanitized_title" | sed 's@[/\\:*?"<>|]@_@g')
-        
-        # 步驟 3: 整理底線
+        sanitized_title=$(echo "$sanitized_title" | sed 's@[/\\:*?"<>|]@_@g') # 移除保留字元
         sanitized_title=$(echo "$sanitized_title" | sed -E 's/[_ ]+/_/g')
-
-        # ★★★ 核心修正：使用 Bash 原生截取，避免切斷中文字 (取代 cut 指令) ★★★
-        if [ ${#sanitized_title} -gt 80 ]; then
-            sanitized_title="${sanitized_title:0:80}"
-        fi
-
-        # 步驟 4: 去除頭尾的底線或點 (Android 不喜歡檔名以點結束)
+        if [ ${#sanitized_title} -gt 80 ]; then sanitized_title="${sanitized_title:0:80}"; fi
         sanitized_title=$(echo "$sanitized_title" | sed -E 's/^[_.]+|[_.]+$//g')
         
-        local final_base_name="${sanitized_title} [${video_id}]"
+        final_base_name="${sanitized_title} [${video_id}]"
+        output_audio="${DOWNLOAD_PATH}/${final_base_name}_normalized.mp3"
         
-        log_message "INFO" "(MP3) 將下載音訊到臨時目錄: ${temp_dir}"
-        log_message "INFO" "(MP3) 檔名檢查: ${final_base_name}_normalized.mp3"
+        ### --- 階段 1: 下載 --- ###
+        print_step "下載原始音訊"
+        print_sub "目標: 最佳 M4A/Audio"
         
         local temp_output_template="${temp_dir}/%(id)s.%(ext)s"
         local format_option="bestaudio[ext=m4a]/bestaudio"
         
-        local yt_dlp_audio_args=(yt-dlp -f "$format_option" -o "$temp_output_template" "$media_url" --concurrent-fragments "$THREADS")
+        # 使用 yt-dlp 原生進度條，但稍微縮排以符合 UI
+        echo -e "${WHITE}│${RESET}" 
+        local yt_dlp_audio_args=(yt-dlp -f "$format_option" -o "$temp_output_template" "$media_url" --concurrent-fragments "$THREADS" --newline --progress)
         
         if ! "${yt_dlp_audio_args[@]}" 2> "$temp_dir/yt-dlp-audio-std.log"; then
-            log_message "WARNING" "(MP3) yt-dlp 音訊下載時回報錯誤，將進行錯誤分析。"
-        fi
-
-        temp_audio_file=$(find "$temp_dir" -maxdepth 1 -type f \( -name "*.m4a" -o -name "*.opus" -o -name "*.webm" -o -name "*.mp3" \) -print -quit)
-
-        if [ -z "$temp_audio_file" ]; then
-            local error_code_to_return="E_YTDLP_DL_GENERIC"
-            log_message "ERROR" "$error_code_to_return: (MP3) 下載失敗。"
-            echo -e "${RED}下載失敗！以下是 yt-dlp 錯誤日誌：${RESET}"
+            # 下載失敗區塊
+            echo -e "${RED}└─ ❌ 下載失敗！${RESET}"
+            draw_line "-" "$RED"
+            echo -e "${RED}${BOLD} [錯誤日誌] yt-dlp output: ${RESET}"
             cat "$temp_dir/yt-dlp-audio-std.log"
+            draw_line "-" "$RED"
+            
+            local error_code_to_return="E_YTDLP_DL_GENERIC"
             local raw_err_b64=$(cat "$temp_dir/yt-dlp-audio-std.log" | base64 -w 0)
             final_result_string="FAIL|${video_title}|${error_code_to_return}|${raw_err_b64}"
             goto_cleanup=true
         else
-            output_audio="${DOWNLOAD_PATH}/${final_base_name}_normalized.mp3"
+            echo -e "${BLUE}└─ ✅ 下載完成${RESET}"
+            temp_audio_file=$(find "$temp_dir" -maxdepth 1 -type f \( -name "*.m4a" -o -name "*.opus" -o -name "*.webm" -o -name "*.mp3" \) -print -quit)
+            if [ -z "$temp_audio_file" ]; then
+                log_message "ERROR" "找不到下載後的檔案。"
+                goto_cleanup=true
+            fi
         fi
     fi
 
     if ! $goto_cleanup; then
+        ### --- 階段 2: 下載封面 --- ###
+        print_step "獲取高解析封面"
         local cover_image="$temp_dir/cover.jpg"
-        download_high_res_thumbnail "$video_id" "$cover_image" > /dev/null 2>&1
+        # 靜默執行，只更新狀態
+        if download_high_res_thumbnail "$video_id" "$cover_image" > /dev/null 2>&1; then
+            print_sub "封面下載成功"
+        else
+            print_sub "無法獲取封面 (將使用預設或略過)"
+        fi
+        echo -e "${BLUE}└─ ✅ 準備就緒${RESET}"
 
+        ### --- 階段 3: 音量標準化 --- ###
+        print_step "音量標準化 (Loudnorm)"
+        print_sub "分析響度並調整至 -12 LUFS..."
+        
         local normalized_temp="$temp_dir/temp_normalized.mp3"
+        
+        # 這裡我們需要捕獲 normalize_audio 的輸出，避免它破壞我們的 UI
+        # 但因為 normalize_audio 內部也有 echo，我們讓它顯示，這部分可以接受
         if normalize_audio "$temp_audio_file" "$normalized_temp" "$temp_dir" false; then
-            local ffmpeg_embed_args=(ffmpeg -y -i "$normalized_temp")
-            if [ -f "$cover_image" ]; then
-                ffmpeg_embed_args+=(-i "$cover_image" -map 0:a -map 1:v -c copy -id3v2_version 3 -disposition:v attached_pic)
-            else
-                ffmpeg_embed_args+=(-c copy -id3v2_version 3)
-            fi
-            
-            ffmpeg_embed_args+=(-metadata "title=${video_title}" -metadata "artist=${artist_name}" -metadata "album_artist=${album_artist_name}" "$output_audio")
-            
-            if ! "${ffmpeg_embed_args[@]}" > "$temp_dir/ffmpeg_embed.log" 2>&1; then
-                log_message "ERROR" "E_FFMPEG_MUX: (MP3) 加入封面和元數據失敗！";
-                echo -e "${RED}嚴重錯誤：FFmpeg 封裝失敗。${RESET}"
-                echo -e "${YELLOW}嘗試寫入檔案: $output_audio${RESET}"
-                echo -e "${YELLOW}詳細日誌：${RESET}"
-                echo -e "${PURPLE}---------------------------------------------------${RESET}"
-                cat "$temp_dir/ffmpeg_embed.log"
-                echo -e "${PURPLE}---------------------------------------------------${RESET}"
-                
-                local raw_err_b64=$(cat "$temp_dir/ffmpeg_embed.log" | base64 -w 0)
-                final_result_string="FAIL|${video_title}|E_FFMPEG_MUX|${raw_err_b64}"
-                result=1
-                
-                echo -e "${YELLOW}嘗試救援：儲存無封面/無元數據的標準化音訊...${RESET}"
-                # 救援 1: 使用清理過的標題 (不含元數據)
-                local rescue_file_1="${DOWNLOAD_PATH}/${final_base_name}_no_meta.mp3"
-                if cp "$normalized_temp" "$rescue_file_1"; then
-                    echo -e "${GREEN}救援成功，已儲存為: ${rescue_file_1}${RESET}"
-                else
-                    # 救援 2: 如果標題還是有問題，使用最安全的 Video ID
-                    echo -e "${RED}標題救援失敗，使用純 ID 存檔...${RESET}"
-                    local rescue_file_2="${DOWNLOAD_PATH}/${video_id}_safe_rescue.mp3"
-                    cp "$normalized_temp" "$rescue_file_2" && echo -e "${GREEN}已使用安全 ID 存檔: ${rescue_file_2}${RESET}"
-                fi
-            else
-                final_result_string="SUCCESS|${video_title}|MP3-320kbps"
-                result=0
-            fi
+             # normalize_audio 內部會印出綠色的成功訊息，我們補上結尾線
+             echo -e "${BLUE}└─ ✅ 標準化完成${RESET}"
         else
-            log_message "ERROR" "E_NORMALIZE_FAIL: (MP3) 音量標準化失敗！"
-            local raw_err_b64=$(echo "normalize_audio 函數執行失敗" | base64 -w 0)
-            final_result_string="FAIL|${video_title}|E_NORMALIZE_FAIL|${raw_err_b64}"
-            result=1
+             echo -e "${RED}└─ ❌ 標準化失敗！${RESET}"
+             log_message "ERROR" "E_NORMALIZE_FAIL"
+             local raw_err_b64=$(echo "normalize_audio 執行失敗" | base64 -w 0)
+             final_result_string="FAIL|${video_title}|E_NORMALIZE_FAIL|${raw_err_b64}"
+             result=1
+             goto_cleanup=true # 標記跳過後續
         fi
     fi
 
-    if [ $result -eq 0 ]; then
-        if [ -f "$output_audio" ]; then
-            echo -e "${GREEN}處理完成！音訊已儲存至：$output_audio${RESET}"
+    if ! $goto_cleanup && [ "$result" -eq 1 ]; then
+        ### --- 階段 4: 最終封裝 (Muxing) --- ###
+        print_step "封裝最終檔案"
+        print_sub "寫入 ID3 標籤、封面圖片..."
+        
+        local ffmpeg_embed_args=(ffmpeg -y -i "$normalized_temp")
+        if [ -f "$cover_image" ]; then
+            ffmpeg_embed_args+=(-i "$cover_image" -map 0:a -map 1:v -c copy -id3v2_version 3 -disposition:v attached_pic)
         else
-            echo -e "${RED}處理似乎已完成，但最終檔案 '$output_audio' 未找到！${RESET}"
-            log_message "ERROR" "(MP3 標準化) 處理完成但最終檔案未找到"
-            result=1
+            ffmpeg_embed_args+=(-c copy -id3v2_version 3)
         fi
-    else
-        echo -e "${RED}處理失敗 (MP3 標準化)。${RESET}"
-        if [[ "$mode" != "playlist_mode" ]]; then 
-             local err_code=$(echo "$final_result_string" | cut -d'|' -f3)
-             _get_error_details "$err_code"
+        
+        ffmpeg_embed_args+=(-metadata "title=${video_title}" -metadata "artist=${artist_name}" -metadata "album_artist=${album_artist_name}" "$output_audio")
+        
+        if ! "${ffmpeg_embed_args[@]}" > "$temp_dir/ffmpeg_embed.log" 2>&1; then
+            echo -e "${RED}└─ ❌ 封裝失敗！${RESET}"
+            
+            # --- 完整錯誤顯示區塊 ---
+            draw_line "!" "$RED"
+            echo -e "${RED}${BOLD} [嚴重錯誤] FFmpeg 封裝失敗 ${RESET}"
+            echo -e "${YELLOW} 這通常是因為封面格式(WebP)不支援或標題編碼問題。${RESET}"
+            draw_line "-" "$RED"
+            cat "$temp_dir/ffmpeg_embed.log"
+            draw_line "!" "$RED"
+            # -----------------------
+
+            local raw_err_b64=$(cat "$temp_dir/ffmpeg_embed.log" | base64 -w 0)
+            final_result_string="FAIL|${video_title}|E_FFMPEG_MUX|${raw_err_b64}"
+            result=1
+            
+            # 救援機制
+            echo -e "${YELLOW}🚑 啟動救援程序...${RESET}"
+            local rescue_file="${DOWNLOAD_PATH}/${final_base_name}_no_meta.mp3"
+            if cp "$normalized_temp" "$rescue_file"; then
+                echo -e "${GREEN}   ✅ 已救援純音訊檔 (無封面):${RESET}"
+                echo -e "${GREEN}   📂 $rescue_file${RESET}"
+            else
+                # 終極救援 (使用 ID)
+                rescue_file="${DOWNLOAD_PATH}/${video_id}_safe_rescue.mp3"
+                cp "$normalized_temp" "$rescue_file" && \
+                echo -e "${GREEN}   ✅ 已救援純音訊檔 (使用ID檔名): $rescue_file${RESET}"
+            fi
+        else
+            echo -e "${BLUE}└─ ✅ 封裝完成${RESET}"
+            final_result_string="SUCCESS|${video_title}|MP3-320kbps"
+            result=0
         fi
     fi
 
+    ### --- 最終結果摘要區塊 --- ###
+    if [ $result -eq 0 ] && [ -f "$output_audio" ]; then
+        echo ""
+        draw_line "=" "$GREEN"
+        echo -e "${GREEN}${BOLD} 🎉 處理成功！ ${RESET}"
+        echo -e "${WHITE} 📂 檔案: ${GREEN}$output_audio${RESET}"
+        draw_line "=" "$GREEN"
+        echo ""
+    elif [ "$goto_cleanup" = false ] && [ "$result" -ne 0 ]; then 
+        # 只有在非救援狀態下的失敗才顯示這個 (救援狀態上面已經顯示過了)
+        # 這裡主要捕捉未知錯誤
+        echo ""
+    fi
+
+    # 清理
     rm -rf "$temp_dir"
     
+    # 通知邏輯
     if [[ "$mode" != "playlist_mode" ]] && $should_notify; then
         if [ $result -eq 0 ]; then
-            _send_termux_notification 0 "媒體處理器：MP3 標準化" "處理音訊 '$sanitized_title'" "$output_audio"
+            _send_termux_notification 0 "MP3 完成" "處理音訊 '$sanitized_title'" "$output_audio"
         else
-            _send_termux_notification 1 "媒體處理器：MP3 標準化" "處理音訊 '$sanitized_title' 失敗" ""
+            _send_termux_notification 1 "MP3 失敗" "處理音訊 '$sanitized_title' 失敗" ""
         fi
     fi
 
+    # 播放清單模式返回值
     if [[ "$mode" == "playlist_mode" ]]; then
         echo "${final_result_string}"
     fi
