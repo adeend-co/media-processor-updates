@@ -1324,7 +1324,7 @@ perform_sync_to_old_phone() {
 }
 
 ############################################
-# 音量標準化共用函數 (v1.4)
+# 音量標準化共用函數 (v1.5)
 ############################################
 normalize_audio() {
     local input_file="$1"
@@ -1338,23 +1338,11 @@ normalize_audio() {
     local audio_wav="$temp_dir/audio.wav"
     local normalized_wav="$temp_dir/normalized.wav"
     local loudnorm_log="$temp_dir/loudnorm_log.txt"
-    
-    # === [自動偵測標題] (新功能) ===
-    # 策略 1: 優先檢查臨時目錄中是否有 yt-dlp 留下的 JSON 資訊 (這是最準確的)
-    # 你的腳本在下載前都會生成 yt-dlp-json-dump.log，我們直接利用它
-    local title_source="檔名"
-    local text_to_check=$(basename "$input_file")
-    
-    if [ -f "$temp_dir/yt-dlp-json-dump.log" ]; then
-        local json_title=$(jq -r '.title // empty' "$temp_dir/yt-dlp-json-dump.log")
-        if [ -n "$json_title" ]; then
-            text_to_check="$json_title"
-            title_source="JSON元數據"
-        fi
-    fi
 
     # === [Step 1] 準備音訊基底 ===
-    # echo -e "    ${YELLOW}>> [1/3] 正在準備音訊基底...${RESET}"
+    # 恢復顯示進度
+    echo -e "    ${YELLOW}>> [1/3] 正在準備音訊基底 (轉換 WAV)...${RESET}"
+    
     ffmpeg -y -i "$input_file" -vn -acodec pcm_s16le -ar 44100 -ac 2 "$audio_wav" > /dev/null 2>&1
     if [ $? -ne 0 ]; then
         log_message "ERROR" "無法將音訊轉換為 WAV 格式: $input_file"
@@ -1362,7 +1350,9 @@ normalize_audio() {
     fi
 
     # === [Step 2] 第一遍響度分析 ===
-    # echo -e "    ${YELLOW}>> [2/3] 執行響度分析...${RESET}"
+    # 恢復顯示進度
+    echo -e "    ${YELLOW}>> [2/3] 正在執行第一遍響度分析 (Pass 1: Analysis)...${RESET}"
+    
     ffmpeg -y -i "$audio_wav" -af "loudnorm=I=-12:TP=-1.5:LRA=11:print_format=json" -f null - 2> "$loudnorm_log"
 
     # 提取 JSON (穩健版)
@@ -1390,11 +1380,33 @@ normalize_audio() {
         return 1
     fi
 
-    # === [Step 3] 智慧模式判定 (使用自動偵測到的標題) ===
+    # === [Step 3] 智慧模式判定 (自動抓取上層標題) ===
     
+    # 預設使用檔名
+    local text_to_check=$(basename "$input_file")
+    local title_source="檔名"
+
+    # ★★★ 核心修改：自動讀取上層函數的變數 ★★★
+    # process_single_mp3/mp4/mkv 會定義 video_title
+    if [ -n "$video_title" ]; then
+        text_to_check="$video_title"
+        title_source="變數(video_title)"
+    # process_other_site 會定義 item_title
+    elif [ -n "$item_title" ]; then
+        text_to_check="$item_title"
+        title_source="變數(item_title)"
+    # 最後手段：如果 media_json 變數存在，嘗試解析
+    elif [ -n "$media_json" ]; then
+        local json_title=$(echo "$media_json" | jq -r '.title // empty')
+        if [ -n "$json_title" ]; then
+            text_to_check="$json_title"
+            title_source="變數(media_json)"
+        fi
+    fi
+
     local text_lower="${text_to_check,,}" # 轉小寫
-    # 關鍵字庫：英文、日文、中文、古典樂編號
-    local keyword_regex="(piano|nocturne|sonata|etude|recital|variations|ピアノ|鋼琴|演奏|弾き|奏)"
+    # 關鍵字庫
+    local keyword_regex="(piano|nocturne|sonata|etude|recital|ピアノ|鋼琴|演奏|弾き|奏)"
 
     local is_keyword_match=false
     if [[ "$text_lower" =~ $keyword_regex ]]; then
@@ -1443,15 +1455,18 @@ normalize_audio() {
         log_message "INFO" "模式:標準。Target_LRA=11, TP=-1.5"
     fi
 
-    # 顯示分析結果 (增加標題來源顯示)
+    # 顯示分析結果
     echo -e "        |-- 原始響度: I=${measured_I}, LRA=${measured_LRA}"
     echo -e "        |-- 採用策略: ${mode_color}${BOLD}${mode_name}${RESET}"
     echo -e "        |-- 觸發原因: ${trigger_reason}"
-    # 截斷過長的標題以便顯示
+    # 讓使用者確認我們抓到了正確的標題
     local display_title_cut="${text_to_check:0:40}..."
     echo -e "        |-- 標題偵測: [${title_source}] ${display_title_cut}"
 
     # === [Step 4] 第二遍應用 ===
+    # 恢復顯示進度
+    echo -e "    ${YELLOW}>> [3/3] 正在執行第二遍音量標準化 (Pass 2: Processing)...${RESET}"
+    
     ffmpeg -y -i "$audio_wav" \
         -af "loudnorm=I=${target_I}:TP=${target_TP}:LRA=${target_LRA}:measured_I=$measured_I:measured_TP=$measured_TP:measured_LRA=$measured_LRA:measured_thresh=$measured_thresh:offset=$offset:linear=true:print_format=summary" \
         -c:a pcm_s16le "$normalized_wav" > /dev/null 2>&1
@@ -1463,6 +1478,9 @@ normalize_audio() {
     fi
 
     # === [Step 5] 輸出最終檔案 ===
+    # 顯示這一步通常很快，可以不加 echo，或加在 log_message 前
+    log_message "INFO" "正在寫入最終檔案..."
+
     if [ "$is_video" = true ]; then
         ffmpeg -y -i "$normalized_wav" -c:a aac -b:a 256k -ar 44100 "$output_file" > /dev/null 2>&1
     else
