@@ -1324,7 +1324,7 @@ perform_sync_to_old_phone() {
 }
 
 ############################################
-# 音量標準化共用函數 (v1.5)
+# 音量標準化共用函數 (v1.6)
 ############################################
 normalize_audio() {
     local input_file="$1"
@@ -1340,7 +1340,6 @@ normalize_audio() {
     local loudnorm_log="$temp_dir/loudnorm_log.txt"
 
     # === [Step 1] 準備音訊基底 ===
-    # 恢復顯示進度
     echo -e "    ${YELLOW}>> [1/3] 正在準備音訊基底 (轉換 WAV)...${RESET}"
     
     ffmpeg -y -i "$input_file" -vn -acodec pcm_s16le -ar 44100 -ac 2 "$audio_wav" > /dev/null 2>&1
@@ -1350,7 +1349,6 @@ normalize_audio() {
     fi
 
     # === [Step 2] 第一遍響度分析 ===
-    # 恢復顯示進度
     echo -e "    ${YELLOW}>> [2/3] 正在執行第一遍響度分析 (Pass 1: Analysis)...${RESET}"
     
     ffmpeg -y -i "$audio_wav" -af "loudnorm=I=-12:TP=-1.5:LRA=11:print_format=json" -f null - 2> "$loudnorm_log"
@@ -1386,16 +1384,13 @@ normalize_audio() {
     local text_to_check=$(basename "$input_file")
     local title_source="檔名"
 
-    # ★★★ 核心修改：自動讀取上層函數的變數 ★★★
-    # process_single_mp3/mp4/mkv 會定義 video_title
+    # 自動讀取上層函數的變數
     if [ -n "$video_title" ]; then
         text_to_check="$video_title"
         title_source="變數(video_title)"
-    # process_other_site 會定義 item_title
     elif [ -n "$item_title" ]; then
         text_to_check="$item_title"
         title_source="變數(item_title)"
-    # 最後手段：如果 media_json 變數存在，嘗試解析
     elif [ -n "$media_json" ]; then
         local json_title=$(echo "$media_json" | jq -r '.title // empty')
         if [ -n "$json_title" ]; then
@@ -1404,8 +1399,7 @@ normalize_audio() {
         fi
     fi
 
-    local text_lower="${text_to_check,,}" # 轉小寫
-    # 關鍵字庫
+    local text_lower="${text_to_check,,}"
     local keyword_regex="(piano|nocturne|sonata|etude|recital|ピアノ|鋼琴|演奏|弾き|奏)"
 
     local is_keyword_match=false
@@ -1413,18 +1407,17 @@ normalize_audio() {
         is_keyword_match=true
     fi
 
-    # 設定參數
+    # 宣告變數
+    local filter_chain=""
+    local mode_name=""
+    local mode_color=""
+    local trigger_reason=""
     local target_I="-12"
-    local target_LRA
-    local target_TP
-    local mode_name
-    local mode_color
-    local trigger_reason
 
     # 判斷邏輯
     if (( $(echo "$measured_LRA > 11.5" | bc -l) )) || [ "$is_keyword_match" = true ]; then
-        # >>> 高動態保真模式 <<<
-        mode_name="高動態保真模式 (High Dynamic Preservation)"
+        # >>> 高動態保真模式 (使用 dynaudnorm 演算法) <<<
+        mode_name="高動態保真模式 (Dynamic Normalizer)"
         mode_color="${CYAN}"
 
         if [ "$is_keyword_match" = true ]; then
@@ -1433,43 +1426,41 @@ normalize_audio() {
             trigger_reason="偵測到高動態 (LRA > 11.5)"
         fi
 
-        # 鎖定動態範圍
-        if (( $(echo "$measured_LRA < 5.0" | bc -l) )); then
-             target_LRA="5.0"
-        elif (( $(echo "$measured_LRA > 20.0" | bc -l) )); then
-             target_LRA="20.0"
-        else
-             target_LRA="$measured_LRA"
-        fi
-        target_TP="-0.5" # 放寬峰值
-        log_message "INFO" "模式:保真 ($trigger_reason)。Target_LRA=$target_LRA, TP=$target_TP"
+        # [核心演算法升級]: 引入 dynaudnorm
+        # f=200: 分析視窗 200ms (適合鋼琴的反應速度)
+        # g=15: 允許的最大增益 (稍微保守一點，防止底噪太誇張)
+        # p=0.95: 峰值保護
+        # 串聯: 先跑 dynaudnorm 把動態整平，再跑 loudnorm 鎖定 -12 LUFS
+        filter_chain="dynaudnorm=f=200:g=15:p=0.95,loudnorm=I=-12:TP=-1.5:LRA=11:print_format=summary"
+        
+        target_I="-12 (雙層處理)" # 這裡我們可以大膽設回 -12，因為 dynaudnorm 已經幫忙鋪好路了
+
+        log_message "INFO" "模式:保真 ($trigger_reason)。啟用 dynaudnorm 演算法。"
 
     else
-        # >>> 標準廣播模式 <<<
+        # >>> 標準廣播模式 (維持原樣) <<<
         mode_name="標準廣播模式 (Standard)"
         mode_color="${GREEN}"
         trigger_reason="普通動態且無關鍵字"
 
-        target_LRA="11"
-        target_TP="-1.5"
-        log_message "INFO" "模式:標準。Target_LRA=11, TP=-1.5"
+        # 標準模式只用 loudnorm 進行線性處理 (最準確的數據還原)
+        filter_chain="loudnorm=I=-12:TP=-1.5:LRA=11:measured_I=$measured_I:measured_TP=$measured_TP:measured_LRA=$measured_LRA:measured_thresh=$measured_thresh:offset=$offset:linear=true:print_format=summary"
+        
+        log_message "INFO" "模式:標準。使用線性 Loudnorm。"
     fi
 
     # 顯示分析結果
     echo -e "        |-- 原始響度: I=${measured_I}, LRA=${measured_LRA}"
     echo -e "        |-- 採用策略: ${mode_color}${BOLD}${mode_name}${RESET}"
+    echo -e "        |-- 目標響度: Target_I=${target_I} LUFS"
     echo -e "        |-- 觸發原因: ${trigger_reason}"
-    # 讓使用者確認我們抓到了正確的標題
     local display_title_cut="${text_to_check:0:40}..."
     echo -e "        |-- 標題偵測: [${title_source}] ${display_title_cut}"
 
     # === [Step 4] 第二遍應用 ===
-    # 恢復顯示進度
     echo -e "    ${YELLOW}>> [3/3] 正在執行第二遍音量標準化 (Pass 2: Processing)...${RESET}"
     
-    ffmpeg -y -i "$audio_wav" \
-        -af "loudnorm=I=${target_I}:TP=${target_TP}:LRA=${target_LRA}:measured_I=$measured_I:measured_TP=$measured_TP:measured_LRA=$measured_LRA:measured_thresh=$measured_thresh:offset=$offset:linear=true:print_format=summary" \
-        -c:a pcm_s16le "$normalized_wav" > /dev/null 2>&1
+    ffmpeg -y -i "$audio_wav" -af "$filter_chain" -c:a pcm_s16le "$normalized_wav" > /dev/null 2>&1
 
     if [ $? -ne 0 ]; then
         log_message "ERROR" "音訊標準化處理失敗 (Pass 2)"
@@ -1478,7 +1469,6 @@ normalize_audio() {
     fi
 
     # === [Step 5] 輸出最終檔案 ===
-    # 顯示這一步通常很快，可以不加 echo，或加在 log_message 前
     log_message "INFO" "正在寫入最終檔案..."
 
     if [ "$is_video" = true ]; then
