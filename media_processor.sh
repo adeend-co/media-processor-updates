@@ -61,7 +61,7 @@ AGREEMENT_VERSION="1.6"
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
-SCRIPT_UPDATE_DATE="2025-11-25" # 請根據實際情況修改此日期
+SCRIPT_UPDATE_DATE="2026-01-04" # 請根據實際情況修改此日期
 
 # ... 其他設定 ...
 TARGET_DATE="2026-01-11" # <<< 新增：設定您的目標日期
@@ -1324,93 +1324,141 @@ perform_sync_to_old_phone() {
 }
 
 ############################################
-# 音量標準化共用函數 (無圖形進度條)
+# 音量標準化共用函數 (v1.1)
 ############################################
 normalize_audio() {
-    # --- 函數邏輯不變 ---
     local input_file="$1"
     local output_file="$2"
-    local temp_dir="$3"
-    local is_video="$4"
-    local audio_wav="$temp_dir/audio_temp.wav"
-    local normalized_wav="$temp_dir/normalized_audio.wav"
-    local loudnorm_log="$temp_dir/loudnorm.log"
-    local stats_json="$temp_dir/stats.json"
-    local ffmpeg_status=0
+    local is_video="$3" # true 或 false
 
-    echo -e "${YELLOW}正在提取音訊為 WAV 格式...${RESET}"
+    log_message "INFO" "開始音訊標準化處理: $input_file (影片模式: $is_video)"
+
+    # 建立暫存目錄
+    local tmp_dir
+    tmp_dir=$(mktemp -d -t audio_norm_XXXXXX) || {
+        log_message "ERROR" "無法建立暫存目錄"
+        return 1
+    }
+
+    # 定義暫存檔路徑
+    local audio_wav="$tmp_dir/audio.wav"
+    local normalized_wav="$tmp_dir/normalized.wav"
+    local loudnorm_log="$tmp_dir/loudnorm_log.txt"
+
+    # 步驟 1: 將輸入音訊轉換為 PCM WAV (確保分析準確度)
+    # 使用 -vn 忽略視訊流，確保只提取音訊
     ffmpeg -y -i "$input_file" -vn -acodec pcm_s16le -ar 44100 -ac 2 "$audio_wav" > /dev/null 2>&1
-    local ffmpeg_exit_code=$?
-    if [ $ffmpeg_exit_code -ne 0 ] || [ ! -f "$audio_wav" ]; then
-        log_message "ERROR" "轉換為 WAV 失敗！ (ffmpeg exit code: $ffmpeg_exit_code)"
-        echo -e "${RED}錯誤：無法轉換為 WAV 格式${RESET}"
-        return 1
-    fi
-    echo -e "${GREEN}轉換為 WAV 格式完成${RESET}"
-
-    echo -e "${YELLOW}正在執行第一遍音量分析...${RESET}"
-    ffmpeg -y -i "$audio_wav" -af loudnorm=I=-12:TP=-1.5:LRA=11:print_format=json -f null - 2> "$loudnorm_log"
     if [ $? -ne 0 ]; then
-        log_message "ERROR" "第一遍音量分析失敗！"
-        echo -e "${RED}錯誤：音量分析失敗${RESET}"
-        safe_remove "$audio_wav"
+        log_message "ERROR" "無法將音訊轉換為 WAV 格式: $input_file"
+        rm -rf "$tmp_dir"
         return 1
     fi
-    echo -e "${GREEN}第一遍音量分析完成${RESET}"
 
-    echo -e "${YELLOW}解析音量分析結果...${RESET}"
-    awk '/^\{/{flag=1}/^\}/{print;flag=0}flag' "$loudnorm_log" > "$stats_json"
-    local measured_I=$(jq -r '.input_i' "$stats_json")
-    local measured_TP=$(jq -r '.input_tp' "$stats_json")
-    local measured_LRA=$(jq -r '.input_lra' "$stats_json")
-    local measured_thresh=$(jq -r '.input_thresh' "$stats_json")
-    local offset=$(jq -r '.target_offset' "$stats_json")
+    # 步驟 2: 第一遍 (Pass 1) - 分析音訊響度數據
+    # 使用 loudnorm 進行測量，不輸出檔案，只將結果輸出到 stderr
+    # 預設參數用於測量基準
+    log_message "INFO" "執行響度分析 (Pass 1)..."
+    ffmpeg -y -i "$audio_wav" -af "loudnorm=I=-12:TP=-1.5:LRA=11:print_format=json" -f null - 2> "$loudnorm_log"
 
-    if [ -z "$measured_I" ] || [ -z "$measured_TP" ] || [ -z "$measured_LRA" ] || [ -z "$measured_thresh" ] || [ -z "$offset" ]; then
-        log_message "ERROR" "音量分析參數提取失敗"
-        echo -e "${RED}錯誤：音量分析參數提取失敗${RESET}"
-        safe_remove "$audio_wav" "$loudnorm_log" "$stats_json"
+    # 從日誌中提取 JSON 數據
+    # ffmpeg 的 JSON 輸出被夾在其他日誌中，需要用 awk 提取
+    local stats_json
+    stats_json=$(awk '/{/,/}/' "$loudnorm_log")
+
+    if [ -z "$stats_json" ]; then
+        log_message "ERROR" "無法從分析日誌中提取 JSON 數據"
+        rm -rf "$tmp_dir"
         return 1
     fi
-    echo -e "${YELLOW}正在執行第二遍音量標準化 (此步驟可能需要一些時間)...${RESET}"
+
+    # 使用 jq 解析 JSON 參數
+    local measured_I=$(echo "$stats_json" | jq -r '.input_i')
+    local measured_TP=$(echo "$stats_json" | jq -r '.input_tp')
+    local measured_LRA=$(echo "$stats_json" | jq -r '.input_lra')
+    local measured_thresh=$(echo "$stats_json" | jq -r '.input_thresh')
+    local offset=$(echo "$stats_json" | jq -r '.target_offset')
+
+    # 檢查是否成功提取所有變數
+    if [ "$measured_I" == "null" ] || [ -z "$measured_I" ]; then
+        log_message "ERROR" "JSON 數據解析失敗"
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+
+    # === ★★★ 智慧型模式切換邏輯 (Smart Mode Switching) ★★★ ===
+    # 定義標準參數
+    local target_I="-12"
+    local target_LRA="11"
+    local target_TP="-1.5"
+    local mode_name="標準廣播模式 (Standard Broadcast)"
+    local mode_color="${GREEN}" # 綠色代表標準
+
+    # 判斷邏輯：如果測量到的動態範圍 (LRA) 大於 11.5 (給予 0.5 的容錯空間)
+    # 則判定為高動態音樂（如鋼琴、古典、爵士），需要切換策略
+    if (( $(echo "$measured_LRA > 11.5" | bc -l) )); then
+        mode_name="高動態保真模式 (High Dynamic Preservation)"
+        mode_color="${CYAN}" # 青色代表特殊處理
+
+        # 策略調整：
+        # 1. Target LRA: 順從原曲的動態，而不是強行壓縮到 11。這能消除「忽大忽小」的呼吸效應。
+        #    設定上限為 20，避免極端異常值。
+        if (( $(echo "$measured_LRA > 20.0" | bc -l) )); then
+            target_LRA="20"
+        else
+            target_LRA="$measured_LRA"
+        fi
+
+        # 2. Target TP: 放寬真峰值 (True Peak) 限制。
+        #    從 -1.5 放寬到 -0.5，給予鋼琴敲擊聲更多的瞬態空間，避免被限制器削波。
+        target_TP="-0.5"
+
+        log_message "INFO" "偵測到高動態音訊 (LRA: $measured_LRA)。已切換至[$mode_name]。Target_LRA=$target_LRA, Target_TP=$target_TP"
+    else
+        log_message "INFO" "音訊動態正常 (LRA: $measured_LRA)。使用[$mode_name]。"
+    fi
+
+    # 在終端機顯示當前模式，讓使用者知道
+    echo -e "    -> 響度分析完畢 (LRA: ${measured_LRA})"
+    echo -e "    -> 採用策略: ${mode_color}${BOLD}${mode_name}${RESET}"
+
+    # =======================================================
+
+    # 步驟 3: 第二遍 (Pass 2) - 應用標準化
+    # 將變數填入 loudnorm 濾波器，進行精確的線性處理
+    log_message "INFO" "應用標準化處理 (Pass 2)..."
+    
     ffmpeg -y -i "$audio_wav" \
-        -af "loudnorm=I=-12:TP=-1.5:LRA=11:measured_I=$measured_I:measured_TP=$measured_TP:measured_LRA=$measured_LRA:measured_thresh=$measured_thresh:offset=$offset:linear=true:print_format=summary" \
+        -af "loudnorm=I=${target_I}:TP=${target_TP}:LRA=${target_LRA}:measured_I=$measured_I:measured_TP=$measured_TP:measured_LRA=$measured_LRA:measured_thresh=$measured_thresh:offset=$offset:linear=true:print_format=summary" \
         -c:a pcm_s16le "$normalized_wav" > /dev/null 2>&1
-    ffmpeg_status=$?
 
-    if [ "$ffmpeg_status" -ne 0 ] || [ ! -f "$normalized_wav" ]; then
-        log_message "ERROR" "第二遍音量標準化失敗！ (ffmpeg exit code: $ffmpeg_status, file exists: $([ -f "$normalized_wav" ] && echo true || echo false))"
-        echo -e "${RED}錯誤：音量標準化失敗${RESET}"
-        safe_remove "$audio_wav" "$normalized_wav" "$loudnorm_log" "$stats_json"
+    if [ $? -ne 0 ]; then
+        log_message "ERROR" "音訊標準化處理失敗 (ffmpeg Pass 2)"
+        rm -rf "$tmp_dir"
         return 1
     fi
-    echo -e "${GREEN}第二遍音量標準化完成${RESET}"
+
+    # 步驟 4: 最終編碼與輸出
+    log_message "INFO" "正在進行最終編碼與輸出..."
 
     if [ "$is_video" = true ]; then
-        echo -e "${YELLOW}正在轉換音訊為 AAC 格式...${RESET}"
-        local normalized_audio_aac="$temp_dir/audio_normalized.m4a"
-        ffmpeg -y -i "$normalized_wav" -c:a aac -b:a 256k -ar 44100 "$normalized_audio_aac" > /dev/null 2>&1
-        if [ $? -ne 0 ]; then
-            log_message "ERROR" "轉換為 AAC 失敗！"
-            echo -e "${RED}錯誤：轉換為 AAC 失敗${RESET}"
-            safe_remove "$audio_wav" "$normalized_wav" "$loudnorm_log" "$stats_json"
-            return 1
-        fi
-        echo -e "${GREEN}AAC 轉換完成${RESET}"
-        mv "$normalized_audio_aac" "$output_file"
+        # 如果是影片處理模式，輸出為 AAC (m4a)，用於之後與影像合併
+        # 使用 -c:a aac -b:a 256k 提供高品質音訊
+        ffmpeg -y -i "$normalized_wav" -c:a aac -b:a 256k -movflags +faststart "$output_file" > /dev/null 2>&1
     else
-        echo -e "${YELLOW}正在轉換為 MP3 格式...${RESET}"
-        ffmpeg -y -i "$normalized_wav" -c:a libmp3lame -b:a 320k "$output_file" > /dev/null 2>&1
-        if [ $? -ne 0 ] || [ ! -f "$output_file" ]; then
-             log_message "ERROR" "轉換為 MP3 失敗！"
-             echo -e "${RED}錯誤：MP3 轉換失敗${RESET}"
-             safe_remove "$audio_wav" "$normalized_wav" "$loudnorm_log" "$stats_json"
-             return 1
-        fi
-        echo -e "${GREEN}MP3 轉換完成${RESET}"
+        # 如果是純音訊模式，輸出為 MP3
+        # 使用 -c:a libmp3lame -b:a 320k 提供最高品質 MP3
+        ffmpeg -y -i "$normalized_wav" -c:a libmp3lame -b:a 320k -id3v2_version 3 -write_id3v1 1 "$output_file" > /dev/null 2>&1
     fi
 
-    safe_remove "$audio_wav" "$normalized_wav" "$loudnorm_log" "$stats_json"
+    if [ $? -ne 0 ]; then
+        log_message "ERROR" "最終音訊編碼失敗"
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+
+    # 清理暫存檔
+    rm -rf "$tmp_dir"
+    log_message "INFO" "音訊標準化完成: $output_file"
     return 0
 }
 
