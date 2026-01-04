@@ -1324,7 +1324,7 @@ perform_sync_to_old_phone() {
 }
 
 ############################################
-# 音量標準化共用函數 (v1.1)
+# 音量標準化共用函數 (v1.2)
 ############################################
 normalize_audio() {
     local input_file="$1"
@@ -1346,7 +1346,8 @@ normalize_audio() {
     local loudnorm_log="$tmp_dir/loudnorm_log.txt"
 
     # 步驟 1: 將輸入音訊轉換為 PCM WAV (確保分析準確度)
-    # 使用 -vn 忽略視訊流，確保只提取音訊
+    # -vn: 確保不處理影像
+    # -ac 2: 強制雙聲道 (避免單聲道分析誤差)
     ffmpeg -y -i "$input_file" -vn -acodec pcm_s16le -ar 44100 -ac 2 "$audio_wav" > /dev/null 2>&1
     if [ $? -ne 0 ]; then
         log_message "ERROR" "無法將音訊轉換為 WAV 格式: $input_file"
@@ -1355,98 +1356,128 @@ normalize_audio() {
     fi
 
     # 步驟 2: 第一遍 (Pass 1) - 分析音訊響度數據
-    # 使用 loudnorm 進行測量，不輸出檔案，只將結果輸出到 stderr
-    # 預設參數用於測量基準
     log_message "INFO" "執行響度分析 (Pass 1)..."
+    # 將 stderr 導向日誌檔
     ffmpeg -y -i "$audio_wav" -af "loudnorm=I=-12:TP=-1.5:LRA=11:print_format=json" -f null - 2> "$loudnorm_log"
 
-    # 從日誌中提取 JSON 數據
-    # ffmpeg 的 JSON 輸出被夾在其他日誌中，需要用 awk 提取
+    # 提取與解析 JSON
+    # 優化: 使用 awk 尋找包含 "input_i" 的 JSON 區塊，防止抓到 FFmpeg 的其他雜訊
     local stats_json
-    stats_json=$(awk '/{/,/}/' "$loudnorm_log")
+    stats_json=$(awk '
+        BEGIN { capture=0 }
+        /{/ { capture=1; buffer="" }
+        capture { buffer=buffer $0 "\n" }
+        /}/ { if(capture && buffer ~ /input_i/) { print buffer; capture=0 } }
+    ' "$loudnorm_log")
+
+    # 如果上述精確抓取失敗，嘗試備用方案 (抓取最後一組 JSON)
+    if [ -z "$stats_json" ]; then
+        stats_json=$(awk '/{/,/}/' "$loudnorm_log" | tail -n 12) 
+    fi
 
     if [ -z "$stats_json" ]; then
-        log_message "ERROR" "無法從分析日誌中提取 JSON 數據"
+        log_message "ERROR" "無法從分析日誌中提取 JSON 數據，可能檔案過短或格式錯誤"
         rm -rf "$tmp_dir"
         return 1
     fi
 
-    # 使用 jq 解析 JSON 參數
-    local measured_I=$(echo "$stats_json" | jq -r '.input_i')
-    local measured_TP=$(echo "$stats_json" | jq -r '.input_tp')
-    local measured_LRA=$(echo "$stats_json" | jq -r '.input_lra')
-    local measured_thresh=$(echo "$stats_json" | jq -r '.input_thresh')
-    local offset=$(echo "$stats_json" | jq -r '.target_offset')
+    # 使用 jq 解析數值
+    local measured_I=$(echo "$stats_json" | jq -r '.input_i // empty')
+    local measured_TP=$(echo "$stats_json" | jq -r '.input_tp // empty')
+    local measured_LRA=$(echo "$stats_json" | jq -r '.input_lra // empty')
+    local measured_thresh=$(echo "$stats_json" | jq -r '.input_thresh // empty')
+    local offset=$(echo "$stats_json" | jq -r '.target_offset // empty')
 
-    # 檢查是否成功提取所有變數
-    if [ "$measured_I" == "null" ] || [ -z "$measured_I" ]; then
-        log_message "ERROR" "JSON 數據解析失敗"
+    # 防呆檢查：如果解析出空值，終止處理
+    if [ -z "$measured_I" ] || [ -z "$measured_LRA" ]; then
+        log_message "ERROR" "JSON 數據解析不完整"
         rm -rf "$tmp_dir"
         return 1
     fi
 
-    # === ★★★ 智慧型模式切換邏輯 (Smart Mode Switching) ★★★ ===
-    # 定義標準參數
+    # === ★★★ 混合智慧偵測與策略選擇 ★★★ ===
+
+    # 1. 關鍵字檢查 (Case Insensitive)
+    # 涵蓋: 英文(Piano/Solo...), 日文(ピアノ...), 中文(鋼琴...)
+    local filename_check=$(basename "$input_file" | grep -iE "piano|nocturne|sonata|etude|recital|solo|variations|concerto|ピアノ|鋼琴|演奏|弾き語り")
+
+    # 定義變數容器
     local target_I="-12"
-    local target_LRA="11"
-    local target_TP="-1.5"
-    local mode_name="標準廣播模式 (Standard Broadcast)"
-    local mode_color="${GREEN}" # 綠色代表標準
+    local target_LRA
+    local target_TP
+    local mode_name
+    local mode_color
+    local trigger_reason
 
-    # 判斷邏輯：如果測量到的動態範圍 (LRA) 大於 11.5 (給予 0.5 的容錯空間)
-    # 則判定為高動態音樂（如鋼琴、古典、爵士），需要切換策略
-    if (( $(echo "$measured_LRA > 11.5" | bc -l) )); then
+    # 2. 判斷邏輯
+    # 條件: LRA > 11.5 (高動態) 或者 檔名包含關鍵字 (鋼琴/純音樂)
+    if (( $(echo "$measured_LRA > 11.5" | bc -l) )) || [ -n "$filename_check" ]; then
+        
+        # === 分支 A: 高動態保真模式 (High Dynamic Preservation) ===
         mode_name="高動態保真模式 (High Dynamic Preservation)"
-        mode_color="${CYAN}" # 青色代表特殊處理
+        mode_color="${CYAN}" # 青色
 
-        # 策略調整：
-        # 1. Target LRA: 順從原曲的動態，而不是強行壓縮到 11。這能消除「忽大忽小」的呼吸效應。
-        #    設定上限為 20，避免極端異常值。
-        if (( $(echo "$measured_LRA > 20.0" | bc -l) )); then
-            target_LRA="20"
+        # 記錄觸發原因
+        if [ -n "$filename_check" ]; then
+            trigger_reason="偵測到關鍵字 (Piano/Solo/ピアノ)"
         else
-            target_LRA="$measured_LRA"
+            trigger_reason="偵測到高動態 (LRA > 11.5)"
         fi
 
-        # 2. Target TP: 放寬真峰值 (True Peak) 限制。
-        #    從 -1.5 放寬到 -0.5，給予鋼琴敲擊聲更多的瞬態空間，避免被限制器削波。
+        # [核心修正]: 鎖定動態範圍
+        # 為了不讓 LRA 低的鋼琴曲 (如動漫翻奏) 被強行拉大動態導致忽大忽小，
+        # 我們將目標 LRA 設定為等於原曲的 LRA。
+        if (( $(echo "$measured_LRA < 5.0" | bc -l) )); then
+             target_LRA="5.0" # 設定下限保護
+        elif (( $(echo "$measured_LRA > 20.0" | bc -l) )); then
+             target_LRA="20.0" # 設定上限保護
+        else
+             target_LRA="$measured_LRA"
+        fi
+
+        # 放寬峰值限制 (True Peak)
         target_TP="-0.5"
 
-        log_message "INFO" "偵測到高動態音訊 (LRA: $measured_LRA)。已切換至[$mode_name]。Target_LRA=$target_LRA, Target_TP=$target_TP"
+        log_message "INFO" "啟動保真模式 ($trigger_reason)。鎖定 Target_LRA=$target_LRA, 放寬 TP=$target_TP"
+
     else
-        log_message "INFO" "音訊動態正常 (LRA: $measured_LRA)。使用[$mode_name]。"
+        # === 分支 B: 標準廣播模式 (Standard Broadcast) ===
+        mode_name="標準廣播模式 (Standard)"
+        mode_color="${GREEN}" # 綠色
+        trigger_reason="普通動態且無關鍵字"
+
+        # 標準參數
+        target_LRA="11"     # 統一拉至標準動態
+        target_TP="-1.5"    # 嚴格防止削波
+
+        log_message "INFO" "啟動標準模式。LRA: $measured_LRA"
     fi
 
-    # 在終端機顯示當前模式，讓使用者知道
-    echo -e "    -> 響度分析完畢 (LRA: ${measured_LRA})"
-    echo -e "    -> 採用策略: ${mode_color}${BOLD}${mode_name}${RESET}"
+    # 顯示狀態給使用者
+    echo -e "    -> 響度分析: I=${measured_I} LUFS, LRA=${measured_LRA} LU"
+    echo -e "    -> 判定結果: ${mode_color}${BOLD}${mode_name}${RESET}"
+    echo -e "    -> 觸發原因: ${trigger_reason}"
 
     # =======================================================
 
     # 步驟 3: 第二遍 (Pass 2) - 應用標準化
-    # 將變數填入 loudnorm 濾波器，進行精確的線性處理
-    log_message "INFO" "應用標準化處理 (Pass 2)..."
-    
+    # 這裡將計算好的參數帶入
     ffmpeg -y -i "$audio_wav" \
         -af "loudnorm=I=${target_I}:TP=${target_TP}:LRA=${target_LRA}:measured_I=$measured_I:measured_TP=$measured_TP:measured_LRA=$measured_LRA:measured_thresh=$measured_thresh:offset=$offset:linear=true:print_format=summary" \
         -c:a pcm_s16le "$normalized_wav" > /dev/null 2>&1
 
     if [ $? -ne 0 ]; then
-        log_message "ERROR" "音訊標準化處理失敗 (ffmpeg Pass 2)"
+        log_message "ERROR" "音訊標準化處理失敗 (Pass 2)"
         rm -rf "$tmp_dir"
         return 1
     fi
 
     # 步驟 4: 最終編碼與輸出
-    log_message "INFO" "正在進行最終編碼與輸出..."
-
     if [ "$is_video" = true ]; then
-        # 如果是影片處理模式，輸出為 AAC (m4a)，用於之後與影像合併
-        # 使用 -c:a aac -b:a 256k 提供高品質音訊
+        # 影片模式轉 AAC
         ffmpeg -y -i "$normalized_wav" -c:a aac -b:a 256k -movflags +faststart "$output_file" > /dev/null 2>&1
     else
-        # 如果是純音訊模式，輸出為 MP3
-        # 使用 -c:a libmp3lame -b:a 320k 提供最高品質 MP3
+        # 音訊模式轉 MP3
         ffmpeg -y -i "$normalized_wav" -c:a libmp3lame -b:a 320k -id3v2_version 3 -write_id3v1 1 "$output_file" > /dev/null 2>&1
     fi
 
@@ -1456,9 +1487,8 @@ normalize_audio() {
         return 1
     fi
 
-    # 清理暫存檔
+    # 清理
     rm -rf "$tmp_dir"
-    log_message "INFO" "音訊標準化完成: $output_file"
     return 0
 }
 
