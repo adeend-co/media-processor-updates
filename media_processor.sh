@@ -1324,44 +1324,48 @@ perform_sync_to_old_phone() {
 }
 
 ############################################
-# 音量標準化共用函數 (v1.3)
+# 音量標準化共用函數 (v1.4)
 ############################################
 normalize_audio() {
     local input_file="$1"
     local output_file="$2"
-    local is_video="$3" # true 或 false
+    local temp_dir="$3"
+    local is_video="$4" # true 或 false
 
-    log_message "INFO" "開始音訊標準化處理: $input_file (影片模式: $is_video)"
+    # 確保臨時目錄存在
+    if [ ! -d "$temp_dir" ]; then mkdir -p "$temp_dir"; fi
 
-    # 建立暫存目錄
-    local tmp_dir
-    tmp_dir=$(mktemp -d -t audio_norm_XXXXXX) || {
-        log_message "ERROR" "無法建立暫存目錄"
-        return 1
-    }
+    local audio_wav="$temp_dir/audio.wav"
+    local normalized_wav="$temp_dir/normalized.wav"
+    local loudnorm_log="$temp_dir/loudnorm_log.txt"
+    
+    # === [自動偵測標題] (新功能) ===
+    # 策略 1: 優先檢查臨時目錄中是否有 yt-dlp 留下的 JSON 資訊 (這是最準確的)
+    # 你的腳本在下載前都會生成 yt-dlp-json-dump.log，我們直接利用它
+    local title_source="檔名"
+    local text_to_check=$(basename "$input_file")
+    
+    if [ -f "$temp_dir/yt-dlp-json-dump.log" ]; then
+        local json_title=$(jq -r '.title // empty' "$temp_dir/yt-dlp-json-dump.log")
+        if [ -n "$json_title" ]; then
+            text_to_check="$json_title"
+            title_source="JSON元數據"
+        fi
+    fi
 
-    # 定義暫存檔路徑
-    local audio_wav="$tmp_dir/audio.wav"
-    local normalized_wav="$tmp_dir/normalized.wav"
-    local loudnorm_log="$tmp_dir/loudnorm_log.txt"
-
-    # === [前置作業] ===
-    echo -e "    ${YELLOW}>> [1/3] 正在準備音訊基底 (轉換 WAV)...${RESET}"
+    # === [Step 1] 準備音訊基底 ===
+    # echo -e "    ${YELLOW}>> [1/3] 正在準備音訊基底...${RESET}"
     ffmpeg -y -i "$input_file" -vn -acodec pcm_s16le -ar 44100 -ac 2 "$audio_wav" > /dev/null 2>&1
     if [ $? -ne 0 ]; then
         log_message "ERROR" "無法將音訊轉換為 WAV 格式: $input_file"
-        rm -rf "$tmp_dir"
         return 1
     fi
 
-    # === [第一遍：分析] ===
-    echo -e "    ${YELLOW}>> [2/3] 正在執行第一遍響度分析 (Pass 1: Analysis)...${RESET}"
-    log_message "INFO" "執行響度分析 (Pass 1)..."
-    
-    # 執行測量
+    # === [Step 2] 第一遍響度分析 ===
+    # echo -e "    ${YELLOW}>> [2/3] 執行響度分析...${RESET}"
     ffmpeg -y -i "$audio_wav" -af "loudnorm=I=-12:TP=-1.5:LRA=11:print_format=json" -f null - 2> "$loudnorm_log"
 
-    # 提取 JSON 數據 (使用穩健的 awk 邏輯)
+    # 提取 JSON (穩健版)
     local stats_json
     stats_json=$(awk '
         BEGIN { capture=0 }
@@ -1370,7 +1374,6 @@ normalize_audio() {
         /}/ { if(capture && buffer ~ /input_i/) { print buffer; capture=0 } }
     ' "$loudnorm_log")
 
-    # 備用提取邏輯
     if [ -z "$stats_json" ]; then
         stats_json=$(awk '/{/,/}/' "$loudnorm_log" | tail -n 12)
     fi
@@ -1383,24 +1386,22 @@ normalize_audio() {
 
     if [ -z "$measured_I" ] || [ -z "$measured_LRA" ]; then
         log_message "ERROR" "JSON 數據解析不完整"
-        rm -rf "$tmp_dir"
+        rm -f "$audio_wav" "$loudnorm_log"
         return 1
     fi
 
-    # === [決策邏輯：模式選擇] ===
+    # === [Step 3] 智慧模式判定 (使用自動偵測到的標題) ===
     
-    # 1. 關鍵字比對 (Bash 原生 regex，支援 Unicode)
-    local filename_base=$(basename "$input_file")
-    local filename_lower="${filename_base,,}"
-    # 關鍵字庫：包含鋼琴、古典、獨奏、彈奏變體 (Hiki/Sou)
-    local keyword_regex="(piano|nocturne|sonata|etude|recital|variations|concerto|pf|ピアノ|鋼琴|演奏|弾き|奏)"
+    local text_lower="${text_to_check,,}" # 轉小寫
+    # 關鍵字庫：英文、日文、中文、古典樂編號
+    local keyword_regex="(piano|nocturne|sonata|etude|recital|variations|ピアノ|鋼琴|演奏|弾き|奏)"
 
     local is_keyword_match=false
-    if [[ "$filename_lower" =~ $keyword_regex ]]; then
+    if [[ "$text_lower" =~ $keyword_regex ]]; then
         is_keyword_match=true
     fi
 
-    # 2. 宣告變數
+    # 設定參數
     local target_I="-12"
     local target_LRA
     local target_TP
@@ -1408,7 +1409,7 @@ normalize_audio() {
     local mode_color
     local trigger_reason
 
-    # 3. 判定分支
+    # 判斷邏輯
     if (( $(echo "$measured_LRA > 11.5" | bc -l) )) || [ "$is_keyword_match" = true ]; then
         # >>> 高動態保真模式 <<<
         mode_name="高動態保真模式 (High Dynamic Preservation)"
@@ -1420,7 +1421,7 @@ normalize_audio() {
             trigger_reason="偵測到高動態 (LRA > 11.5)"
         fi
 
-        # 鎖定動態範圍 (關鍵步驟：防止呼吸效應)
+        # 鎖定動態範圍
         if (( $(echo "$measured_LRA < 5.0" | bc -l) )); then
              target_LRA="5.0"
         elif (( $(echo "$measured_LRA > 20.0" | bc -l) )); then
@@ -1428,7 +1429,6 @@ normalize_audio() {
         else
              target_LRA="$measured_LRA"
         fi
-
         target_TP="-0.5" # 放寬峰值
         log_message "INFO" "模式:保真 ($trigger_reason)。Target_LRA=$target_LRA, TP=$target_TP"
 
@@ -1443,43 +1443,39 @@ normalize_audio() {
         log_message "INFO" "模式:標準。Target_LRA=11, TP=-1.5"
     fi
 
-    # === [顯示分析結果] ===
-    # 這裡讓使用者清楚看到剛剛發生的判斷
+    # 顯示分析結果 (增加標題來源顯示)
     echo -e "        |-- 原始響度: I=${measured_I}, LRA=${measured_LRA}"
     echo -e "        |-- 採用策略: ${mode_color}${BOLD}${mode_name}${RESET}"
     echo -e "        |-- 觸發原因: ${trigger_reason}"
+    # 截斷過長的標題以便顯示
+    local display_title_cut="${text_to_check:0:40}..."
+    echo -e "        |-- 標題偵測: [${title_source}] ${display_title_cut}"
 
-    # === [第二遍：應用] ===
-    # 明確告知使用者現在進入第二階段
-    echo -e "    ${YELLOW}>> [3/3] 正在執行第二遍音量標準化 (Pass 2: Processing)...${RESET}"
-    log_message "INFO" "執行標準化處理 (Pass 2)..."
-
+    # === [Step 4] 第二遍應用 ===
     ffmpeg -y -i "$audio_wav" \
         -af "loudnorm=I=${target_I}:TP=${target_TP}:LRA=${target_LRA}:measured_I=$measured_I:measured_TP=$measured_TP:measured_LRA=$measured_LRA:measured_thresh=$measured_thresh:offset=$offset:linear=true:print_format=summary" \
         -c:a pcm_s16le "$normalized_wav" > /dev/null 2>&1
 
     if [ $? -ne 0 ]; then
         log_message "ERROR" "音訊標準化處理失敗 (Pass 2)"
-        rm -rf "$tmp_dir"
+        rm -f "$audio_wav" "$loudnorm_log"
         return 1
     fi
 
-    # === [最終輸出] ===
-    log_message "INFO" "正在寫入最終檔案..."
-    
+    # === [Step 5] 輸出最終檔案 ===
     if [ "$is_video" = true ]; then
-        ffmpeg -y -i "$normalized_wav" -c:a aac -b:a 256k -movflags +faststart "$output_file" > /dev/null 2>&1
+        ffmpeg -y -i "$normalized_wav" -c:a aac -b:a 256k -ar 44100 "$output_file" > /dev/null 2>&1
     else
-        ffmpeg -y -i "$normalized_wav" -c:a libmp3lame -b:a 320k -id3v2_version 3 -write_id3v1 1 "$output_file" > /dev/null 2>&1
+        ffmpeg -y -i "$normalized_wav" -c:a libmp3lame -b:a 320k "$output_file" > /dev/null 2>&1
     fi
 
     if [ $? -ne 0 ]; then
         log_message "ERROR" "最終音訊編碼失敗"
-        rm -rf "$tmp_dir"
+        rm -f "$audio_wav" "$normalized_wav" "$loudnorm_log"
         return 1
     fi
 
-    rm -rf "$tmp_dir"
+    rm -f "$audio_wav" "$normalized_wav" "$loudnorm_log"
     return 0
 }
 
