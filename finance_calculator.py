@@ -2,7 +2,7 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.5.3               #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.5.4               #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
@@ -16,8 +16,8 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v3.5.3"
-SCRIPT_UPDATE_DATE = "2025-11-25"
+SCRIPT_VERSION = "v3.5.4"
+SCRIPT_UPDATE_DATE = "2025-01-04"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
 TABLE_CONFIG = {
@@ -2025,6 +2025,8 @@ def run_robust_decomp_forecaster(monthly_expenses_df, steps_ahead, colors=None, 
     robust_df['Real_Amount'] = robust_series
     
     _, seasonal_indices = seasonal_decomposition(robust_df)
+    
+    # 這裡計算去季節化數據
     deseasonalized_data = data / monthly_expenses_df['Month'].map(seasonal_indices)
     x = np.arange(1, n_total + 1)
     
@@ -2046,7 +2048,10 @@ def run_robust_decomp_forecaster(monthly_expenses_df, steps_ahead, colors=None, 
     future_seasonal_factors = np.array(future_seasonal_factors)
 
     final_prediction_seq = trend_forecast_seq * future_seasonal_factors
-    historical_pred = historical_trend * monthly_expenses_df['Month'].map(seasonal_indices)
+    
+    # [修正點]：加上 .values 將 Series 轉為 Numpy Array，避免索引錯誤 (KeyError)
+    historical_pred = (historical_trend * monthly_expenses_df['Month'].map(seasonal_indices)).values
+    
     lower_seq = trend_lower_seq * future_seasonal_factors if trend_lower_seq is not None else None
     upper_seq = trend_upper_seq * future_seasonal_factors if trend_upper_seq is not None else None
 
