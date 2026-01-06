@@ -17,7 +17,7 @@
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
 SCRIPT_VERSION = "v3.5.4"
-SCRIPT_UPDATE_DATE = "2025-01-04"
+SCRIPT_UPDATE_DATE = "2026-01-04"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
 TABLE_CONFIG = {
