@@ -2,7 +2,7 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.5.4               #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.6.0               #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
@@ -16,8 +16,8 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v3.5.4"
-SCRIPT_UPDATE_DATE = "2026-01-04"
+SCRIPT_VERSION = "v3.6.0"
+SCRIPT_UPDATE_DATE = "2026-01-08"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
 TABLE_CONFIG = {
@@ -50,7 +50,7 @@ import numpy as np
 from scipy.stats import linregress, t
 from scipy.stats import skew, kurtosis, median_abs_deviation, percentileofscore
 from scipy.optimize import nnls, minimize
-from scipy import signal, stats
+from scipy import signal, stats, linalg
 from collections import deque, Counter
 
 # --- 顏色處理類別 ---
@@ -62,6 +62,277 @@ class Colors:
             self.BOLD = '\033[1m'; self.RESET = '\033[0m'
         else:
             self.RED = self.GREEN = self.YELLOW = self.CYAN = self.PURPLE = self.WHITE = self.BOLD = self.RESET = ''
+
+# ==============================================================================
+# [雙軌貝氏分析系統 - 黃金定版]
+# 包含：解析解貝氏引擎、自動參數調優、維度鎖定機制、Prequential 誠實回測
+# ==============================================================================
+
+class BayesianInferenceEngine:
+    """
+    解析解貝氏線性迴歸運算引擎 (Analytical Bayesian Linear Regression Engine)。
+    """
+    def __init__(self, add_bias=True):
+        self.add_bias = add_bias
+        self.w_mean = None
+        self.w_cov = None
+        self.alpha = 1.0
+        self.beta = 1.0
+        # [邏輯修正] 狀態記憶：確保預測階段與訓練階段的特徵維度完全一致
+        self.use_seasonality = False 
+
+    def _build_design_matrix(self, times, cycle=12, force_seasonality=None):
+        """
+        建立設計矩陣。
+        邏輯：若 force_seasonality 指定了 True/False (預測階段)，則強制遵從。
+              否則根據資料長度自動判斷 (訓練階段，門檻 24 個月)。
+        """
+        # 1. 決定是否啟用季節性特徵
+        if force_seasonality is not None:
+            enable_seasonal = force_seasonality
+        else:
+            # 訓練階段自動判斷：若資料跨度 >= 24 個月才啟用季節性
+            enable_seasonal = (len(times) > 0 and (np.max(times) - np.min(times)) >= 24)
+
+        # 2. 建構矩陣
+        if not enable_seasonal:
+            # 資料少於 24 個月：僅使用線性趨勢，避免過度擬合
+            X = times.reshape(-1, 1)
+        else:
+            # 資料充足：加入週期性特徵 (Sin/Cos)
+            X = np.column_stack([
+                times,
+                np.sin(2 * np.pi * times / cycle),
+                np.cos(2 * np.pi * times / cycle)
+            ])
+            
+        if self.add_bias:
+            return np.hstack([np.ones((X.shape[0], 1)), X])
+        return X
+
+    def fit_auto_tune(self, times, y, max_iter=20, tol=1e-5):
+        """
+        經驗貝氏 (Empirical Bayes) 自動參數調優 (Type-II MLE)。
+        """
+        # 1. 構建矩陣，並鎖定特徵模式 (重要！)
+        Phi = self._build_design_matrix(times)
+        # 紀錄訓練時是否使用了季節性，預測時必須一致
+        self.use_seasonality = (Phi.shape[1] > 2) if self.add_bias else (Phi.shape[1] > 1)
+        
+        N, M = Phi.shape
+        
+        # 預計算矩陣乘積
+        PhiT_Phi = Phi.T @ Phi
+        PhiT_y = Phi.T @ y
+        eigvals = linalg.eigvalsh(PhiT_Phi)
+        
+        # 初始化參數
+        self.alpha = 1.0
+        var_y = np.var(y)
+        self.beta = 1.0 / (var_y + 1e-6) if var_y > 1e-9 else 1.0
+        
+        # MacKay 不動點迭代
+        for i in range(max_iter):
+            alpha_old = self.alpha
+            beta_old = self.beta
+            
+            # E-Step: 計算後驗分佈
+            A = self.alpha * np.eye(M) + self.beta * PhiT_Phi
+            try:
+                L = linalg.cholesky(A, lower=True)
+                S_N = linalg.cho_solve((L, True), np.eye(M))
+                self.w_mean = self.beta * S_N @ PhiT_y
+                self.w_cov = S_N
+            except linalg.LinAlgError:
+                # 數值穩定性備案
+                S_N = np.linalg.pinv(A)
+                self.w_mean = self.beta * S_N @ PhiT_y
+                self.w_cov = S_N
+
+            # M-Step: 更新 alpha, beta
+            gamma = np.sum(eigvals / (self.alpha + eigvals))
+            self.alpha = gamma / (np.sum(self.w_mean ** 2) + 1e-8)
+            residuals = y - Phi @ self.w_mean
+            data_error = np.sum(residuals ** 2)
+            self.beta = (N - gamma) / (data_error + 1e-8)
+            
+            # 收斂檢查
+            if (abs(self.alpha - alpha_old) < tol) and (abs(self.beta - beta_old) < tol):
+                break
+
+    def predict(self, times_new):
+        """
+        計算預測值與不確定性。
+        [邏輯修正] 強制使用與訓練時相同的 force_seasonality 設定，防止維度崩潰。
+        """
+        Phi_new = self._build_design_matrix(times_new, force_seasonality=self.use_seasonality)
+        
+        y_pred = Phi_new @ self.w_mean
+        
+        # 計算不確定性 (Variance) = 資料雜訊 + 模型不確定性
+        model_uncertainty = np.sum(Phi_new @ self.w_cov * Phi_new, axis=1)
+        data_noise = 1.0 / self.beta
+        y_std = np.sqrt(data_noise + model_uncertainty)
+        
+        return y_pred, y_std
+    
+    def validate_prequential(self, times, y, start_idx=12):
+        """
+        真實 Prequential 回測迴圈。
+        這會模擬真實的時間推進，逐月訓練並預測下個月，計算出完全誠實的評估指標。
+        """
+        pred_means = []
+        pred_stds = []
+        y_trues = []
+        
+        # 從 start_idx 開始，逐月推進
+        for t in range(start_idx, len(times)):
+            # 切分資料：只看得到過去 (0 ~ t-1)
+            t_train = times[:t]
+            y_train = y[:t]
+            # 測試目標：預測當下 (t)
+            t_test = times[t:t+1]
+            y_test = y[t]
+            
+            # 建立快照引擎，模擬當時的情況
+            engine_snapshot = BayesianInferenceEngine(self.add_bias)
+            # 重新訓練 (完整迭代，不偷工減料)
+            engine_snapshot.fit_auto_tune(t_train, y_train)
+            
+            # 預測
+            pm, ps = engine_snapshot.predict(t_test)
+            
+            pred_means.append(pm[0])
+            pred_stds.append(ps[0])
+            y_trues.append(y_test)
+            
+        return np.array(y_trues), np.array(pred_means), np.array(pred_stds)
+
+    def evaluate_metrics(self, y_true, y_pred_mean, y_pred_std):
+        """計算 CRPS, ICP, Log-Score"""
+        if len(y_true) == 0: return {"CRPS": np.nan, "ICP": np.nan, "LogScore": np.nan}
+        
+        # CRPS
+        z = (y_true - y_pred_mean) / (y_pred_std + 1e-9)
+        pdf = stats.norm.pdf(z)
+        cdf = stats.norm.cdf(z)
+        crps = y_pred_std * (z * (2 * cdf - 1) + 2 * pdf - 1 / np.sqrt(np.pi))
+        
+        # ICP (95% 信賴區間覆蓋率)
+        lower = y_pred_mean - 1.96 * y_pred_std
+        upper = y_pred_mean + 1.96 * y_pred_std
+        is_covered = (y_true >= lower) & (y_true <= upper)
+        
+        # LogScore
+        log_score = -stats.norm.logpdf(y_true, loc=y_pred_mean, scale=y_pred_std)
+        
+        return {
+            "CRPS": np.mean(crps),
+            "ICP": np.mean(is_covered),
+            "LogScore": np.mean(log_score)
+        }
+
+class DualTrackManager:
+    """雙軌決策管理器"""
+    def compare_and_decide(self, freq_val, bayes_val, bayes_std):
+        mean_val = (freq_val + bayes_val) / 2
+        if mean_val == 0: mean_val = 1e-6
+        delta = abs(freq_val - bayes_val) / mean_val * 100
+        
+        bayes_lower = bayes_val - 1.96 * bayes_std
+        bayes_upper = bayes_val + 1.96 * bayes_std
+        freq_in_interval = (freq_val >= bayes_lower) and (freq_val <= bayes_upper)
+
+        status, final_val, msg = "", 0.0, ""
+
+        if delta < 5:
+            status, final_val = "CONSENSUS", mean_val
+            msg = "模型共識 (Consensus): 預測高度一致，採用平均值。"
+        elif delta < 15:
+            status, final_val = "FRICTION", max(freq_val, bayes_val)
+            msg = "輕微差異 (Friction): 採風險趨避原則 (取高值)。"
+        elif delta < 30:
+            status = "DIVERGENCE"
+            if freq_in_interval:
+                final_val = bayes_val
+                msg = "顯著分歧 (Divergence): 頻率值在區間內，採穩健貝氏預測。"
+            else:
+                final_val = freq_val
+                msg = "顯著分歧 (Divergence): 頻率值異常，可能為結構轉變，採頻率預測。"
+        else:
+            status, final_val = "CONFLICT", freq_val
+            msg = "嚴重衝突 (Conflict): 模型矛盾，暫採頻率數值。"
+
+        return status, final_val, delta, msg
+
+    def get_grade(self, icp):
+        if 0.90 <= icp <= 0.98: return "A (優良 - 校準精確)"
+        elif icp > 0.98: return "B (保守 - 區間過寬)"
+        elif 0.70 <= icp < 0.90: return "C (偏差 - 稍顯自信)"
+        else: return "D (失準 - 需重新擬合)"
+
+def execute_bayesian_validation(df, target_col, freq_prediction, colors):
+    """
+    執行貝氏雙軌驗證流程 (接口函數)。
+    """
+    series = df[target_col].values
+    data_len = len(series)
+    
+    # 門檻檢查：資料不足 18 個月則不啟用
+    if data_len < 18:
+        print(f"\n{colors.YELLOW}【系統訊息】雙軌驗證模式未啟用{colors.RESET}")
+        print(f"  └ 原因: 當前歷史資料量為 {data_len} 個月 (門檻值: 18 個月)。")
+        return freq_prediction
+
+    print(f"\n{colors.CYAN}{colors.BOLD}=== 啟動雙軌貝氏推論分析 (Dual-Track Bayesian Inference) ==={colors.RESET}")
+    print(f"{colors.WHITE}資料基礎: {data_len} 個月 | 演算法: 解析解貝氏線性迴歸 + Prequential 驗證{colors.RESET}")
+
+    times = np.arange(data_len)
+    times_next = np.array([data_len])
+    
+    bayes_engine = BayesianInferenceEngine(add_bias=True)
+    manager = DualTrackManager()
+    
+    # 1. 全量訓練 (用於預測未來)
+    bayes_engine.fit_auto_tune(times, series)
+    
+    # 2. 執行貝氏預測 (針對下個月)
+    bayes_pred, bayes_std = bayes_engine.predict(times_next)
+    bayes_val, bayes_sigma = bayes_pred[0], bayes_std[0]
+    
+    # 3. 雙軌比較與決策
+    status, final_val, delta, msg = manager.compare_and_decide(
+        freq_prediction, bayes_val, bayes_sigma
+    )
+    
+    print(f"\n{colors.YELLOW}▧ 雙軌數值對照:{colors.RESET}")
+    print(f"  ● 頻率學派 : {freq_prediction:,.0f}")
+    print(f"  ● 貝氏學派 : {bayes_val:,.0f} (±{1.96*bayes_sigma:,.0f})")
+    print(f"    └ 參數狀態 : Alpha={bayes_engine.alpha:.2f}, Beta={bayes_engine.beta:.2f}")
+    
+    print(f"\n{colors.YELLOW}▧ 差異決策 (Delta = {delta:.2f}%):{colors.RESET}")
+    print(f"  ● 狀態: {status} -> {msg}")
+    print(f"  ● 建議: {colors.GREEN}{colors.BOLD}{final_val:,.0f}{colors.RESET}")
+
+    # 4. 誠實可靠度評估 (Prequential Evaluation)
+    # 從資料的一半開始回測 (至少 12 個月後)，確保有足夠的學習樣本
+    val_start = max(12, int(data_len * 0.5))
+    y_true_seq, y_mean_seq, y_std_seq = bayes_engine.validate_prequential(times, series, start_idx=val_start)
+    
+    if len(y_true_seq) > 0:
+        metrics = bayes_engine.evaluate_metrics(y_true_seq, y_mean_seq, y_std_seq)
+        grade = manager.get_grade(metrics['ICP'])
+        
+        print(f"\n{colors.YELLOW}▧ 模型真實可靠度 (基於過去 {len(y_true_seq)} 個月滾動回測):{colors.RESET}")
+        print(f"  1. ICP (區間覆蓋率) : {metrics['ICP']*100:.1f}%  [目標 95%]")
+        print(f"  2. CRPS (綜合評分)  : {metrics['CRPS']:.4f}")
+        print(f"  3. 綜合評級         : {colors.CYAN}{grade}{colors.RESET}")
+    else:
+        print(f"\n{colors.YELLOW}▧ 模型可靠度: 資料不足，暫無評級。{colors.RESET}")
+
+    print(f"{colors.CYAN}=============================================================={colors.RESET}\n")
+
+    return final_val
 
 # --- 內建台灣歷年通膨率 (CPI 年增率) 資料庫 ---
 INFLATION_RATES = {
@@ -2518,9 +2789,19 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
                 ema = pd.Series(data).ewm(span=num_months, adjust=False).mean()
                 future_pred_seq = np.array([ema.iloc[-1]])
                 historical_pred = ema.values
-        
+
         if future_pred_seq is not None:
             predicted_value = future_pred_seq[-1]
+            
+            # [新增] 雙軌貝氏驗證啟用點
+            if monthly_expenses is not None and not monthly_expenses.empty:
+                predicted_value = execute_bayesian_validation(
+                    monthly_expenses, 
+                    'Real_Amount', 
+                    predicted_value, 
+                    colors
+                )
+
             lower = lower_seq[-1] if lower_seq is not None else None
             upper = upper_seq[-1] if upper_seq is not None else None
             ci_str = f" [下限：{lower:,.2f}，上限：{upper:,.2f}] (95% 信心)" if lower is not None and upper is not None else ""
