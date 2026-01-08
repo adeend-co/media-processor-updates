@@ -2,7 +2,7 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.6.1               #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.6.2               #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
@@ -16,7 +16,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v3.6.1"
+SCRIPT_VERSION = "v3.6.2"
 SCRIPT_UPDATE_DATE = "2026-01-08"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -68,32 +68,42 @@ class Colors:
 # 包含：解析解貝氏引擎、自動參數調優、維度鎖定機制、Prequential 誠實回測
 # ==============================================================================
 
+# ==============================================================================
+# [全自動自適應貝氏系統 - Parameter-Free Adaptive Version]
+# 特性：
+# 1. 自適應體制選擇 (ARS): 自動決定最佳回溯時間窗口，無須人工設定衰減率。
+# 2. 自動保形校準 (ACC): 自動修正非成態分佈的區間誤差，解決 C 級評分問題。
+# 3. 數據防呆: 內建標準化與維度鎖定。
+# ==============================================================================
+
 class BayesianInferenceEngine:
-    """
-    解析解貝氏線性迴歸運算引擎 (Analytical Bayesian Linear Regression Engine)。
-    
-    [v2.0 修正說明]
-    1. 新增內部自動縮放 (Auto-Scaling) 機制，解決大金額數據導致 Alpha/Beta 數值崩潰的問題。
-    2. 確保 Prequential 回測時的縮放參數嚴格遵守時間因果律 (不偷看未來)。
-    """
     def __init__(self, add_bias=True):
         self.add_bias = add_bias
         self.w_mean = None
         self.w_cov = None
         self.alpha = 1.0
         self.beta = 1.0
+        
+        # 狀態記憶
         self.use_seasonality = False 
-        # [新增] 縮放參數記憶
         self.y_scaler_mean = 0.0
         self.y_scaler_std = 1.0
+        
+        # [新增] 自動校準係數 (Conformal Scale)
+        self.conformal_scale = 1.0
+        # [新增] 最佳體制紀錄 (用於報告)
+        self.best_regime_len = 0
 
     def _build_design_matrix(self, times, cycle=12, force_seasonality=None):
-        """建立設計矩陣 (保持不變)"""
+        """建立設計矩陣"""
+        # 1. 決定季節性 (訓練時自動判斷，預測時強制鎖定)
         if force_seasonality is not None:
             enable_seasonal = force_seasonality
         else:
+            # 訓練時：若資料跨度 >= 24 個月才啟用季節性
             enable_seasonal = (len(times) > 0 and (np.max(times) - np.min(times)) >= 24)
 
+        # 2. 建構矩陣
         if not enable_seasonal:
             X = times.reshape(-1, 1)
         else:
@@ -107,75 +117,160 @@ class BayesianInferenceEngine:
             return np.hstack([np.ones((X.shape[0], 1)), X])
         return X
 
-    def fit_auto_tune(self, times, y, max_iter=20, tol=1e-5):
-        """經驗貝氏自動調參 (包含自動縮放)"""
-        # [步驟 1] 數據標準化 (Normalization)
-        # 這一步至關重要，能讓金額從 10^5 降至 10^0 級別，防止矩陣運算溢位
+    def _compute_log_evidence(self, M, N, alpha, beta, m_N, y, Phi):
+        """
+        計算對數邊際似然 (Log Marginal Likelihood / Model Evidence)。
+        這是衡量「這個模型對當前數據解釋力有多好」的黃金標準。
+        Evidence = P(Data | Model)
+        """
+        # E(m_N) = (beta/2) * ||y - Phi*m_N||^2 + (alpha/2) * m_N.T * m_N
+        error_term = np.sum((y - Phi @ m_N)**2)
+        weight_penalty = np.sum(m_N**2)
+        E_mN = (beta / 2) * error_term + (alpha / 2) * weight_penalty
+
+        # log|A| 的計算 (利用 Cholesky 的對角線元素)
+        A = alpha * np.eye(M) + beta * (Phi.T @ Phi)
+        try:
+            L = linalg.cholesky(A, lower=True)
+            log_det_A = 2 * np.sum(np.log(np.diag(L)))
+        except linalg.LinAlgError:
+            sign, log_det_A = np.linalg.slogdet(A)
+
+        # Evidence Formula (Bishop 3.86)
+        # ln p(y) = (M/2)ln(alpha) + (N/2)ln(beta) - E(m_N) - (1/2)ln|A| - (N/2)ln(2pi)
+        log_evidence = (M / 2) * np.log(alpha) + \
+                       (N / 2) * np.log(beta) - \
+                       E_mN - \
+                       (0.5 * log_det_A) - \
+                       (N / 2) * np.log(2 * np.pi)
+        
+        return log_evidence
+
+    def fit_adaptive(self, times, y, max_iter=20, tol=1e-5):
+        """
+        [核心演算法] 自適應全自動訓練
+        自動測試多種「歷史長度 (Regimes)」，選擇證據 (Evidence) 最高的那個。
+        這取代了人工設定的「時間衰減參數」。
+        """
+        # 1. 數據標準化
         self.y_scaler_mean = np.mean(y)
         self.y_scaler_std = np.std(y)
         if self.y_scaler_std < 1e-9: self.y_scaler_std = 1.0
-        
         y_scaled = (y - self.y_scaler_mean) / self.y_scaler_std
 
-        # [步驟 2] 建立矩陣
-        Phi = self._build_design_matrix(times)
-        self.use_seasonality = (Phi.shape[1] > 2) if self.add_bias else (Phi.shape[1] > 1)
+        total_len = len(times)
         
-        N, M = Phi.shape
-        PhiT_Phi = Phi.T @ Phi
-        PhiT_y = Phi.T @ y_scaled # 使用縮放後的 y
-        eigvals = linalg.eigvalsh(PhiT_Phi)
+        # 2. 定義候選體制 (Candidate Regimes)
+        # 例如：全歷史、最近 3/4、最近 1/2、最近 1/4 (但至少要留 6 個月)
+        # 這讓模型自己決定「要看多遠」
+        candidate_starts = [0] # 總是包含全歷史
+        if total_len >= 24: candidate_starts.append(int(total_len * 0.25))
+        if total_len >= 12: candidate_starts.append(int(total_len * 0.5))
+        if total_len >= 36: candidate_starts.append(int(total_len * 0.75))
         
-        # [步驟 3] 初始化 (現在數據在標準範圍內，初始值 1.0 是合理的)
-        self.alpha = 1.0
-        var_y = np.var(y_scaled)
-        self.beta = 1.0 / (var_y + 1e-6) if var_y > 1e-9 else 1.0
+        # 過濾掉剩餘長度太短的 (<6)
+        candidate_starts = [s for s in candidate_starts if (total_len - s) >= 6]
         
-        # [步驟 4] MacKay 迭代
-        for i in range(max_iter):
-            alpha_old = self.alpha
-            beta_old = self.beta
-            
-            A = self.alpha * np.eye(M) + self.beta * PhiT_Phi
-            try:
-                L = linalg.cholesky(A, lower=True)
-                S_N = linalg.cho_solve((L, True), np.eye(M))
-                self.w_mean = self.beta * S_N @ PhiT_y
-                self.w_cov = S_N
-            except linalg.LinAlgError:
-                S_N = np.linalg.pinv(A)
-                self.w_mean = self.beta * S_N @ PhiT_y
-                self.w_cov = S_N
+        best_evidence = -np.inf
+        best_params = None # (w_mean, w_cov, alpha, beta, use_seasonality)
 
-            gamma = np.sum(eigvals / (self.alpha + eigvals))
-            self.alpha = gamma / (np.sum(self.w_mean ** 2) + 1e-8)
-            residuals = y_scaled - Phi @ self.w_mean
-            data_error = np.sum(residuals ** 2)
-            self.beta = (N - gamma) / (data_error + 1e-8)
+        # 3. 體制競賽 (Regime Competition)
+        for start_idx in candidate_starts:
+            # 切片數據
+            t_sub = times[start_idx:]
+            y_sub = y_scaled[start_idx:]
             
-            if (abs(self.alpha - alpha_old) < tol) and (abs(self.beta - beta_old) < tol):
-                break
+            # 建構矩陣 (自動判斷季節性)
+            Phi = self._build_design_matrix(t_sub)
+            use_seasonality = (Phi.shape[1] > 2) if self.add_bias else (Phi.shape[1] > 1)
+            
+            N, M = Phi.shape
+            PhiT_Phi = Phi.T @ Phi
+            PhiT_y = Phi.T @ y_sub
+            eigvals = linalg.eigvalsh(PhiT_Phi)
+            
+            # MacKay 迭代優化
+            alpha, beta = 1.0, 1.0 / (np.var(y_sub) + 1e-6)
+            w_mean, w_cov = None, None
+            
+            for i in range(max_iter):
+                # E-Step
+                A = alpha * np.eye(M) + beta * PhiT_Phi
+                try:
+                    L = linalg.cholesky(A, lower=True)
+                    S_N = linalg.cho_solve((L, True), np.eye(M))
+                    w_mean = beta * S_N @ PhiT_y
+                except linalg.LinAlgError:
+                    S_N = np.linalg.pinv(A)
+                    w_mean = beta * S_N @ PhiT_y
+                
+                # M-Step
+                gamma = np.sum(eigvals / (alpha + eigvals))
+                alpha = gamma / (np.sum(w_mean ** 2) + 1e-8)
+                residuals = y_sub - Phi @ w_mean
+                error = np.sum(residuals ** 2)
+                beta = (N - gamma) / (error + 1e-8)
+
+            w_cov = S_N
+            
+            # 計算證據 (Evidence)
+            evidence = self._compute_log_evidence(M, N, alpha, beta, w_mean, y_sub, Phi)
+            
+            # 懲罰過短的體制 (避免過度擬合近期雜訊)，給予長體制一點點優勢 (Occam's razor)
+            # 這裡使用 BIC 思想修正：Evidence 已經隱含了複雜度懲罰，所以直接比對即可
+            
+            if evidence > best_evidence:
+                best_evidence = evidence
+                best_params = (w_mean, w_cov, alpha, beta, use_seasonality)
+                self.best_regime_len = len(t_sub)
+
+        # 4. 鎖定最佳參數
+        self.w_mean, self.w_cov, self.alpha, self.beta, self.use_seasonality = best_params
+        
+        # 5. [自動保形校準] (Conformal Calibration)
+        # 用最佳模型回頭預測訓練數據，檢查真實覆蓋率
+        # 注意：使用"訓練數據的最後一段"來校準
+        t_calib = times[-self.best_regime_len:]
+        y_calib = y_scaled[-self.best_regime_len:]
+        Phi_calib = self._build_design_matrix(t_calib, force_seasonality=self.use_seasonality)
+        
+        y_fit = Phi_calib @ self.w_mean
+        y_var = np.sum(Phi_calib @ self.w_cov * Phi_calib, axis=1) + (1.0 / self.beta)
+        y_std_raw = np.sqrt(y_var)
+        
+        # 計算殘差的 Z-score
+        z_scores = np.abs(y_calib - y_fit) / y_std_raw
+        # 找到覆蓋 95% 數據所需的 Z 值 (常態分佈理論是 1.96)
+        # 如果數據肥尾，這個值會大於 1.96
+        target_percentile = 95
+        conformal_z = np.percentile(z_scores, target_percentile)
+        
+        # 設定校準係數
+        # 如果 conformal_z < 1.96 (數據比預期更集中)，我們保守一點不縮小 (max(1.0, ...))
+        # 如果 conformal_z > 1.96 (數據肥尾)，我們就放大區間
+        self.conformal_scale = max(1.0, conformal_z / 1.96)
 
     def predict(self, times_new):
-        """計算預測值 (包含自動還原縮放)"""
+        """計算預測值 (含自動還原與保形校準)"""
         Phi_new = self._build_design_matrix(times_new, force_seasonality=self.use_seasonality)
         
-        # 預測 (此時結果是在縮放空間)
         y_pred_scaled = Phi_new @ self.w_mean
         
-        # 不確定性 (縮放空間)
         model_uncertainty_scaled = np.sum(Phi_new @ self.w_cov * Phi_new, axis=1)
         data_noise_scaled = 1.0 / self.beta
         y_std_scaled = np.sqrt(data_noise_scaled + model_uncertainty_scaled)
         
-        # [步驟 5] 還原回真實金額 (Inverse Transform)
+        # [應用自動校準]
+        y_std_scaled *= self.conformal_scale
+        
+        # 還原
         y_pred = y_pred_scaled * self.y_scaler_std + self.y_scaler_mean
         y_std = y_std_scaled * self.y_scaler_std
         
         return y_pred, y_std
     
     def validate_prequential(self, times, y, start_idx=12):
-        """真實 Prequential 回測"""
+        """誠實回測 (每一輪都重新執行自適應選擇)"""
         pred_means = []
         pred_stds = []
         y_trues = []
@@ -186,13 +281,11 @@ class BayesianInferenceEngine:
             t_test = times[t:t+1]
             y_test = y[t]
             
-            # 每個時間點都建立一個新引擎，它會重新計算當時的 mean/std 進行縮放
-            # 這保證了不會偷看未來的數據分佈
             engine_snapshot = BayesianInferenceEngine(self.add_bias)
-            engine_snapshot.fit_auto_tune(t_train, y_train)
+            # 這裡也會自動選擇當時最佳的體制
+            engine_snapshot.fit_adaptive(t_train, y_train)
             
             pm, ps = engine_snapshot.predict(t_test)
-            
             pred_means.append(pm[0])
             pred_stds.append(ps[0])
             y_trues.append(y_test)
@@ -200,25 +293,17 @@ class BayesianInferenceEngine:
         return np.array(y_trues), np.array(pred_means), np.array(pred_stds)
 
     def evaluate_metrics(self, y_true, y_pred_mean, y_pred_std):
-        """計算評估指標"""
         if len(y_true) == 0: return {"CRPS": np.nan, "ICP": np.nan, "LogScore": np.nan}
-        
         z = (y_true - y_pred_mean) / (y_pred_std + 1e-9)
         pdf = stats.norm.pdf(z)
         cdf = stats.norm.cdf(z)
         crps = y_pred_std * (z * (2 * cdf - 1) + 2 * pdf - 1 / np.sqrt(np.pi))
-        
         lower = y_pred_mean - 1.96 * y_pred_std
         upper = y_pred_mean + 1.96 * y_pred_std
         is_covered = (y_true >= lower) & (y_true <= upper)
-        
         log_score = -stats.norm.logpdf(y_true, loc=y_pred_mean, scale=y_pred_std)
-        
-        return {
-            "CRPS": np.mean(crps),
-            "ICP": np.mean(is_covered),
-            "LogScore": np.mean(log_score)
-        }
+        return {"CRPS": np.mean(crps), "ICP": np.mean(is_covered), "LogScore": np.mean(log_score)}
+
 
 class DualTrackManager:
     """雙軌決策管理器"""
@@ -262,6 +347,7 @@ class DualTrackManager:
 def execute_bayesian_validation(df, target_col, freq_prediction, colors):
     """
     執行貝氏雙軌驗證流程 (接口函數)。
+    包含：ARS 自適應體制選擇 + ACC 保形校準 + Prequential 誠實回測
     """
     series = df[target_col].values
     data_len = len(series)
@@ -272,8 +358,8 @@ def execute_bayesian_validation(df, target_col, freq_prediction, colors):
         print(f"  └ 原因: 當前歷史資料量為 {data_len} 個月 (門檻值: 18 個月)。")
         return freq_prediction
 
-    print(f"\n{colors.CYAN}{colors.BOLD}=== 啟動雙軌貝氏推論分析 (Dual-Track Bayesian Inference) ==={colors.RESET}")
-    print(f"{colors.WHITE}資料基礎: {data_len} 個月 | 演算法: 解析解貝氏線性迴歸 + Prequential 驗證{colors.RESET}")
+    print(f"\n{colors.CYAN}{colors.BOLD}=== 啟動雙軌貝氏推論 (全自動自適應版) ==={colors.RESET}")
+    print(f"{colors.WHITE}資料基礎: {data_len} 個月 | 演算法: ARS 自適應體制 + ACC 保形校準{colors.RESET}")
 
     times = np.arange(data_len)
     times_next = np.array([data_len])
@@ -281,28 +367,35 @@ def execute_bayesian_validation(df, target_col, freq_prediction, colors):
     bayes_engine = BayesianInferenceEngine(add_bias=True)
     manager = DualTrackManager()
     
-    # 1. 全量訓練 (用於預測未來)
-    bayes_engine.fit_auto_tune(times, series)
+    # 1. 自適應訓練 (ARS + ACC)
+    # 這一步會自動決定最佳歷史視窗並計算校準係數
+    bayes_engine.fit_adaptive(times, series)
     
-    # 2. 執行貝氏預測 (針對下個月)
+    # 2. 預測 (包含自動還原與保形校準)
     bayes_pred, bayes_std = bayes_engine.predict(times_next)
     bayes_val, bayes_sigma = bayes_pred[0], bayes_std[0]
     
-    # 3. 雙軌比較與決策
+    # 3. 決策
     status, final_val, delta, msg = manager.compare_and_decide(
         freq_prediction, bayes_val, bayes_sigma
     )
     
+    # 顯示自動選擇的結果
+    regime_ratio = bayes_engine.best_regime_len / data_len * 100
+    scale_factor = bayes_engine.conformal_scale
+    print(f"\n{colors.YELLOW}▧ 貝氏引擎自適應狀態:{colors.RESET}")
+    print(f"  ● 最佳體制窗口 : 最近 {bayes_engine.best_regime_len} 個月 (佔全體 {regime_ratio:.0f}%)")
+    print(f"  ● 保形校準係數 : {scale_factor:.2f}x (自動修正肥尾分佈風險)")
+    
     print(f"\n{colors.YELLOW}▧ 雙軌數值對照:{colors.RESET}")
     print(f"  ● 頻率學派 : {freq_prediction:,.0f}")
     print(f"  ● 貝氏學派 : {bayes_val:,.0f} (±{1.96*bayes_sigma:,.0f})")
-    print(f"    └ 參數狀態 : Alpha={bayes_engine.alpha:.2f}, Beta={bayes_engine.beta:.2f}")
     
     print(f"\n{colors.YELLOW}▧ 差異決策 (Delta = {delta:.2f}%):{colors.RESET}")
     print(f"  ● 狀態: {status} -> {msg}")
     print(f"  ● 建議: {colors.GREEN}{colors.BOLD}{final_val:,.0f}{colors.RESET}")
 
-    # 4. 誠實可靠度評估 (Prequential Evaluation)
+    # 4. 誠實回測 (Prequential Evaluation)
     # 從資料的一半開始回測 (至少 12 個月後)，確保有足夠的學習樣本
     val_start = max(12, int(data_len * 0.5))
     y_true_seq, y_mean_seq, y_std_seq = bayes_engine.validate_prequential(times, series, start_idx=val_start)
@@ -315,8 +408,6 @@ def execute_bayesian_validation(df, target_col, freq_prediction, colors):
         print(f"  1. ICP (區間覆蓋率) : {metrics['ICP']*100:.1f}%  [目標 95%]")
         print(f"  2. CRPS (綜合評分)  : {metrics['CRPS']:.4f}")
         print(f"  3. 綜合評級         : {colors.CYAN}{grade}{colors.RESET}")
-    else:
-        print(f"\n{colors.YELLOW}▧ 模型可靠度: 資料不足，暫無評級。{colors.RESET}")
 
     print(f"{colors.CYAN}=============================================================={colors.RESET}\n")
 
