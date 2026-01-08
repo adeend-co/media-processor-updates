@@ -2,7 +2,7 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.6.4               #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.6.5               #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
@@ -16,7 +16,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v3.6.4"
+SCRIPT_VERSION = "v3.6.5"
 SCRIPT_UPDATE_DATE = "2026-01-08"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -336,67 +336,109 @@ class BayesianInferenceEngine:
             "LogScore": np.mean(log_score)
         }
 
-# (DualTrackManager 不變，但需要稍微調整一下輸出格式以顯示權重)
-# 這裡為了方便直接覆蓋，我把 DualTrackManager 也放進來，並加上權重顯示功能
+# ==============================================================================
+# [雙軌決策中樞 - RLF 相對似然融合版 (Zero-Assumption)]
+# ==============================================================================
 
 class DualTrackManager:
+    """
+    雙軌決策管理器 (Dual-Track Manager) - RLF 版
+    核心演算法: Relative Likelihood Fusion (相對似然融合)
+    特性: 無參數、無假設、純機率驅動。適用於任何分佈特性的數據。
+    """
+    def calculate_fused_prediction(self, freq_val, bayes_val, bayes_std, dof):
+        """
+        執行 RLF 演算法。
+        
+        邏輯：
+        計算頻率預測值在貝氏後驗分佈(Student-t)中的「相對機率密度」。
+        該密度直接作為融合權重。
+        """
+        # 1. 建立當下的機率分佈物件 (由數據完全決定，無人為參數)
+        # loc=均值, scale=標準差, df=自由度
+        dist = stats.t(df=dof, loc=bayes_val, scale=bayes_std)
+        
+        # 2. 計算峰值機率密度 (Peak Density)
+        # 這是分佈中心的密度，作為歸一化的基準 (Denominator)
+        # 數學上，這是機率可能性的最大值
+        peak_density = dist.pdf(bayes_val)
+        
+        # 3. 計算頻率值的機率密度 (Point Density)
+        # 這是頻率學派預測值在該分佈下的可能性 (Numerator)
+        freq_density = dist.pdf(freq_val)
+        
+        # 4. 計算相對似然權重 (Relative Likelihood Weight)
+        # w = P(freq) / P(peak)
+        # 範圍必在 0.0 ~ 1.0 之間
+        # - 當 freq 與 bayes 重疊時，w = 1.0
+        # - 當 freq 偏離時，w 依據 t-分佈曲線自然衰減
+        # - 當 freq 為極端離群值時，w -> 0.0
+        # 這個衰減曲線完全由數據的波動性(std)和樣本數(df)決定
+        weight = freq_density / peak_density
+        
+        # 5. 線性融合
+        # 如果 weight 高，代表頻率值在貝氏看來是「非常合理的」，我們予以保留
+        # 如果 weight 低，代表頻率值在貝氏看來是「機率極低的」，我們予以修正
+        fused_val = (weight * freq_val) + ((1 - weight) * bayes_val)
+        
+        return fused_val, weight
+
     def compare_and_decide(self, freq_val, bayes_val, bayes_std, dof):
+        """
+        比較與決策。
+        """
+        # 執行 RLF 融合
+        fused_val, weight = self.calculate_fused_prediction(
+            freq_val, bayes_val, bayes_std, dof
+        )
+        
+        # 計算差異 (僅供顯示)
         mean_val = (freq_val + bayes_val) / 2
         if mean_val == 0: mean_val = 1e-6
         delta = abs(freq_val - bayes_val) / mean_val * 100
         
-        # 使用 t 分佈計算區間
-        t_critical = stats.t.ppf(0.975, df=dof)
-        bayes_lower = bayes_val - t_critical * bayes_std
-        bayes_upper = bayes_val + t_critical * bayes_std
+        # 計算 Z-Score (僅供顯示狀態分級，不影響計算)
+        z_score = abs(freq_val - bayes_val) / (bayes_std + 1e-9)
         
-        freq_in_interval = (freq_val >= bayes_lower) and (freq_val <= bayes_upper)
-
-        status, final_val, msg = "", 0.0, ""
-
-        if delta < 5:
-            status, final_val = "CONSENSUS", mean_val
-            msg = "模型共識 (Consensus): 預測一致，採用平均值。"
-        elif delta < 15:
-            status, final_val = "FRICTION", max(freq_val, bayes_val)
-            msg = "輕微差異 (Friction): 採風險趨避原則 (取高值)。"
-        elif delta < 30:
+        # 狀態判定 (基於標準差倍數，這是統計學通用語言，非人為規則)
+        status, msg = "", ""
+        if z_score < 1.0:
+            status = "CONSENSUS"
+            msg = "模型共識 (1σ內): 數據位於高機率密度區，權重分配均勻。"
+        elif z_score < 2.0:
+            status = "FRICTION"
+            msg = "輕微差異 (2σ內): 數據位於中機率密度區，依據分佈曲線自然修正。"
+        elif z_score < 3.0:
             status = "DIVERGENCE"
-            if freq_in_interval:
-                final_val = bayes_val
-                msg = "顯著分歧 (Divergence): 頻率值在貝氏安全區間內，採貝氏預測。"
-            else:
-                final_val = freq_val
-                msg = "顯著分歧 (Divergence): 頻率值異常，採頻率預測。"
+            msg = "顯著分歧 (3σ內): 數據位於低機率密度區，權重顯著回歸貝氏錨點。"
         else:
-            status, final_val = "CONFLICT", freq_val
-            msg = "嚴重衝突 (Conflict): 模型矛盾，暫採頻率數值。"
+            status = "CONFLICT"
+            msg = "極端衝突 (>3σ): 數據位於極端尾部，系統判定為離群值並予以過濾。"
 
-        return status, final_val, delta, msg, t_critical
+        return status, fused_val, delta, msg, weight
 
     def get_grade(self, icp):
+        # 這是評估標準，不是模型參數，可以保留
         if 0.90 <= icp <= 0.98: return "A (優良)"
         elif icp > 0.98: return "B (保守)"
-        elif 0.70 <= icp < 0.90: return "C (偏差)" # 雖然是 C，但經過 t 分佈修正後很難掉到這裡
+        elif 0.70 <= icp < 0.90: return "C (偏差)"
         else: return "D (失準)"
 
 def execute_bayesian_validation(df, target_col, freq_prediction, colors):
     """
-    執行貝氏雙軌驗證流程 (接口函數)。
-    對應版本: 全自動 BMA + Student-t Robust Intervals
-    修正: 補上 LogScore (驚訝度) 的輸出顯示
+    執行貝氏雙軌驗證流程 (RLF 通用版)。
     """
     series = df[target_col].values
     data_len = len(series)
     
-    # 門檻檢查：資料不足 18 個月則不啟用
     if data_len < 18:
         print(f"\n{colors.YELLOW}【系統訊息】雙軌驗證模式未啟用{colors.RESET}")
         print(f"  └ 原因: 當前歷史資料量為 {data_len} 個月 (門檻值: 18 個月)。")
         return freq_prediction
 
-    print(f"\n{colors.CYAN}{colors.BOLD}=== 啟動雙軌貝氏推論 (BMA 全自動權重版) ==={colors.RESET}")
-    print(f"{colors.WHITE}演算法: BMA (貝氏模型平均) + Student-t Robust Intervals{colors.RESET}")
+    print(f"\n{colors.CYAN}{colors.BOLD}=== 啟動雙軌貝氏推論 (RLF 通用融合版) ==={colors.RESET}")
+    print(f"{colors.WHITE}演算法: BMA 自適應 + Relative Likelihood Fusion (相對似然融合){colors.RESET}")
+    print(f"{colors.WHITE}特性: Zero-Assumption (無人為權重/無方向性假設){colors.RESET}")
 
     times = np.arange(data_len)
     times_next = np.array([data_len])
@@ -404,41 +446,45 @@ def execute_bayesian_validation(df, target_col, freq_prediction, colors):
     bayes_engine = BayesianInferenceEngine(add_bias=True)
     manager = DualTrackManager()
     
-    # 1. BMA 訓練 (自動計算權重)
+    # 1. BMA 訓練
     bayes_engine.fit_bma(times, series)
     
     # 2. 預測
     bayes_pred, bayes_std, dof = bayes_engine.predict_bma(times_next)
     bayes_val, bayes_sigma = bayes_pred[0], bayes_std[0]
     
-    # 3. 決策
-    status, final_val, delta, msg, t_crit = manager.compare_and_decide(
+    # 3. 執行 RLF 融合
+    status, final_val, delta, msg, weight = manager.compare_and_decide(
         freq_prediction, bayes_val, bayes_sigma, dof
     )
     
-    # [輸出報告] 顯示 BMA 權重分配狀態
-    print(f"\n{colors.YELLOW}▧ BMA 自動權重分配 (依據模型證據 Evidence):{colors.RESET}")
-    has_significant_model = False
+    t_crit = stats.t.ppf(0.975, df=dof)
+    
+    # 顯示 BMA 權重
+    print(f"\n{colors.YELLOW}▧ BMA 自動權重分配 (模型證據力):{colors.RESET}")
+    has_sig = False
     for model in bayes_engine.models:
-        start = model['start_idx']
-        window_len = data_len - start
         w_pct = model['weight'] * 100
         if w_pct > 0.1:
-            print(f"  ● 歷史窗口 [{window_len} 個月]: 權重 {w_pct:.1f}%")
-            has_significant_model = True
-    if not has_significant_model:
-        print("  (權重過於分散，無主導模型)")
+            win_len = data_len - model['start_idx']
+            print(f"  ● 歷史窗口 [{win_len} 個月]: {w_pct:.1f}%")
+            has_sig = True
+    if not has_sig: print("  (權重分散)")
 
-    print(f"\n{colors.YELLOW}▧ 雙軌數值對照:{colors.RESET}")
-    print(f"  ● 頻率學派 : {freq_prediction:,.0f}")
-    print(f"  ● 貝氏學派 : {bayes_val:,.0f} (±{t_crit*bayes_sigma:,.0f})")
-    print(f"    └ 自由度 (df) : {dof:.1f} (數值越小代表樣本越少，區間會自動變寬以容納風險)")
+    # 顯示雙軌數值
+    print(f"\n{colors.YELLOW}▧ 雙軌原始數值:{colors.RESET}")
+    print(f"  ● 頻率學派 (外部輸入) : {freq_prediction:,.0f}")
+    print(f"  ● 貝氏學派 (內部錨點) : {bayes_val:,.0f} (±{t_crit*bayes_sigma:,.0f})")
+    print(f"    └ 自由度 (df): {dof:.1f} | 波動率 (sigma): {bayes_sigma:,.0f}")
     
-    print(f"\n{colors.YELLOW}▧ 差異決策 (Delta = {delta:.2f}%):{colors.RESET}")
-    print(f"  ● 狀態: {status} -> {msg}")
-    print(f"  ● 建議: {colors.GREEN}{colors.BOLD}{final_val:,.0f}{colors.RESET}")
+    # 顯示 RLF 融合結果
+    print(f"\n{colors.YELLOW}▧ RLF 相對似然融合 (Delta = {delta:.2f}%):{colors.RESET}")
+    print(f"  ● 狀態: {status}")
+    print(f"  ● 機率密度權重: {weight:.4f} (由 Student-t 分佈自動計算)")
+    print(f"  ● 系統決策: {msg}")
+    print(f"  ● 最終融合預算: {colors.GREEN}{colors.BOLD}{final_val:,.0f}{colors.RESET}")
 
-    # 4. 誠實回測 (Prequential Evaluation)
+    # 4. 誠實回測
     val_start = max(12, int(data_len * 0.5))
     y_true_seq, y_mean_seq, y_std_seq, y_dof_seq = bayes_engine.validate_prequential(times, series, start_idx=val_start)
     
@@ -446,11 +492,10 @@ def execute_bayesian_validation(df, target_col, freq_prediction, colors):
         metrics = bayes_engine.evaluate_metrics(y_true_seq, y_mean_seq, y_std_seq, y_dof_seq)
         grade = manager.get_grade(metrics['ICP'])
         
-        print(f"\n{colors.YELLOW}▧ 模型真實可靠度 (基於 Student-t 分佈評估):{colors.RESET}")
+        print(f"\n{colors.YELLOW}▧ 模型真實可靠度 (Student-t 評估):{colors.RESET}")
         print(f"  1. ICP (區間覆蓋率) : {metrics['ICP']*100:.1f}%  [目標 95%]")
-        print(f"  2. CRPS (綜合評分)  : {metrics['CRPS']:.4f}")
-        # [補上這一行] LogScore 顯示
-        print(f"  3. LogScore (驚訝度) : {metrics['LogScore']:.4f}  [越低越好]")
+        print(f"  2. CRPS (綜合評分)  : {metrics['CRPS']:.4f}  [越低越好]")
+        print(f"  3. LogScore (驚訝度): {metrics['LogScore']:.4f}  [越低越好]")
         print(f"  4. 綜合評級         : {colors.CYAN}{grade}{colors.RESET}")
 
     print(f"{colors.CYAN}=============================================================={colors.RESET}\n")
