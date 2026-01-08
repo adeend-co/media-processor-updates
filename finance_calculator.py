@@ -2,7 +2,7 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.6.3               #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.6.4               #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
@@ -16,7 +16,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v3.6.3"
+SCRIPT_VERSION = "v3.6.4"
 SCRIPT_UPDATE_DATE = "2026-01-08"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -381,11 +381,18 @@ class DualTrackManager:
         else: return "D (失準)"
 
 def execute_bayesian_validation(df, target_col, freq_prediction, colors):
+    """
+    執行貝氏雙軌驗證流程 (接口函數)。
+    對應版本: 全自動 BMA + Student-t Robust Intervals
+    修正: 補上 LogScore (驚訝度) 的輸出顯示
+    """
     series = df[target_col].values
     data_len = len(series)
     
+    # 門檻檢查：資料不足 18 個月則不啟用
     if data_len < 18:
         print(f"\n{colors.YELLOW}【系統訊息】雙軌驗證模式未啟用{colors.RESET}")
+        print(f"  └ 原因: 當前歷史資料量為 {data_len} 個月 (門檻值: 18 個月)。")
         return freq_prediction
 
     print(f"\n{colors.CYAN}{colors.BOLD}=== 啟動雙軌貝氏推論 (BMA 全自動權重版) ==={colors.RESET}")
@@ -409,25 +416,29 @@ def execute_bayesian_validation(df, target_col, freq_prediction, colors):
         freq_prediction, bayes_val, bayes_sigma, dof
     )
     
-    # 顯示 BMA 權重分配
+    # [輸出報告] 顯示 BMA 權重分配狀態
     print(f"\n{colors.YELLOW}▧ BMA 自動權重分配 (依據模型證據 Evidence):{colors.RESET}")
+    has_significant_model = False
     for model in bayes_engine.models:
         start = model['start_idx']
         window_len = data_len - start
         w_pct = model['weight'] * 100
-        if w_pct > 0.1: # 只顯示有顯著權重的
+        if w_pct > 0.1:
             print(f"  ● 歷史窗口 [{window_len} 個月]: 權重 {w_pct:.1f}%")
+            has_significant_model = True
+    if not has_significant_model:
+        print("  (權重過於分散，無主導模型)")
 
     print(f"\n{colors.YELLOW}▧ 雙軌數值對照:{colors.RESET}")
     print(f"  ● 頻率學派 : {freq_prediction:,.0f}")
     print(f"  ● 貝氏學派 : {bayes_val:,.0f} (±{t_crit*bayes_sigma:,.0f})")
-    print(f"    └ 自由度 (df) : {dof:.1f} (數值越小代表不確定性越高，區間越寬)")
+    print(f"    └ 自由度 (df) : {dof:.1f} (數值越小代表樣本越少，區間會自動變寬以容納風險)")
     
     print(f"\n{colors.YELLOW}▧ 差異決策 (Delta = {delta:.2f}%):{colors.RESET}")
     print(f"  ● 狀態: {status} -> {msg}")
     print(f"  ● 建議: {colors.GREEN}{colors.BOLD}{final_val:,.0f}{colors.RESET}")
 
-    # 4. 誠實回測
+    # 4. 誠實回測 (Prequential Evaluation)
     val_start = max(12, int(data_len * 0.5))
     y_true_seq, y_mean_seq, y_std_seq, y_dof_seq = bayes_engine.validate_prequential(times, series, start_idx=val_start)
     
@@ -438,7 +449,9 @@ def execute_bayesian_validation(df, target_col, freq_prediction, colors):
         print(f"\n{colors.YELLOW}▧ 模型真實可靠度 (基於 Student-t 分佈評估):{colors.RESET}")
         print(f"  1. ICP (區間覆蓋率) : {metrics['ICP']*100:.1f}%  [目標 95%]")
         print(f"  2. CRPS (綜合評分)  : {metrics['CRPS']:.4f}")
-        print(f"  3. 綜合評級         : {colors.CYAN}{grade}{colors.RESET}")
+        # [補上這一行] LogScore 顯示
+        print(f"  3. LogScore (驚訝度) : {metrics['LogScore']:.4f}  [越低越好]")
+        print(f"  4. 綜合評級         : {colors.CYAN}{grade}{colors.RESET}")
 
     print(f"{colors.CYAN}=============================================================={colors.RESET}\n")
 
