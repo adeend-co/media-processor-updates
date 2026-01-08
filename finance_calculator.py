@@ -2,7 +2,7 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.6.0               #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.6.1               #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                        #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
@@ -16,7 +16,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v3.6.0"
+SCRIPT_VERSION = "v3.6.1"
 SCRIPT_UPDATE_DATE = "2026-01-08"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -71,6 +71,10 @@ class Colors:
 class BayesianInferenceEngine:
     """
     解析解貝氏線性迴歸運算引擎 (Analytical Bayesian Linear Regression Engine)。
+    
+    [v2.0 修正說明]
+    1. 新增內部自動縮放 (Auto-Scaling) 機制，解決大金額數據導致 Alpha/Beta 數值崩潰的問題。
+    2. 確保 Prequential 回測時的縮放參數嚴格遵守時間因果律 (不偷看未來)。
     """
     def __init__(self, add_bias=True):
         self.add_bias = add_bias
@@ -78,28 +82,21 @@ class BayesianInferenceEngine:
         self.w_cov = None
         self.alpha = 1.0
         self.beta = 1.0
-        # [邏輯修正] 狀態記憶：確保預測階段與訓練階段的特徵維度完全一致
         self.use_seasonality = False 
+        # [新增] 縮放參數記憶
+        self.y_scaler_mean = 0.0
+        self.y_scaler_std = 1.0
 
     def _build_design_matrix(self, times, cycle=12, force_seasonality=None):
-        """
-        建立設計矩陣。
-        邏輯：若 force_seasonality 指定了 True/False (預測階段)，則強制遵從。
-              否則根據資料長度自動判斷 (訓練階段，門檻 24 個月)。
-        """
-        # 1. 決定是否啟用季節性特徵
+        """建立設計矩陣 (保持不變)"""
         if force_seasonality is not None:
             enable_seasonal = force_seasonality
         else:
-            # 訓練階段自動判斷：若資料跨度 >= 24 個月才啟用季節性
             enable_seasonal = (len(times) > 0 and (np.max(times) - np.min(times)) >= 24)
 
-        # 2. 建構矩陣
         if not enable_seasonal:
-            # 資料少於 24 個月：僅使用線性趨勢，避免過度擬合
             X = times.reshape(-1, 1)
         else:
-            # 資料充足：加入週期性特徵 (Sin/Cos)
             X = np.column_stack([
                 times,
                 np.sin(2 * np.pi * times / cycle),
@@ -111,32 +108,34 @@ class BayesianInferenceEngine:
         return X
 
     def fit_auto_tune(self, times, y, max_iter=20, tol=1e-5):
-        """
-        經驗貝氏 (Empirical Bayes) 自動參數調優 (Type-II MLE)。
-        """
-        # 1. 構建矩陣，並鎖定特徵模式 (重要！)
+        """經驗貝氏自動調參 (包含自動縮放)"""
+        # [步驟 1] 數據標準化 (Normalization)
+        # 這一步至關重要，能讓金額從 10^5 降至 10^0 級別，防止矩陣運算溢位
+        self.y_scaler_mean = np.mean(y)
+        self.y_scaler_std = np.std(y)
+        if self.y_scaler_std < 1e-9: self.y_scaler_std = 1.0
+        
+        y_scaled = (y - self.y_scaler_mean) / self.y_scaler_std
+
+        # [步驟 2] 建立矩陣
         Phi = self._build_design_matrix(times)
-        # 紀錄訓練時是否使用了季節性，預測時必須一致
         self.use_seasonality = (Phi.shape[1] > 2) if self.add_bias else (Phi.shape[1] > 1)
         
         N, M = Phi.shape
-        
-        # 預計算矩陣乘積
         PhiT_Phi = Phi.T @ Phi
-        PhiT_y = Phi.T @ y
+        PhiT_y = Phi.T @ y_scaled # 使用縮放後的 y
         eigvals = linalg.eigvalsh(PhiT_Phi)
         
-        # 初始化參數
+        # [步驟 3] 初始化 (現在數據在標準範圍內，初始值 1.0 是合理的)
         self.alpha = 1.0
-        var_y = np.var(y)
+        var_y = np.var(y_scaled)
         self.beta = 1.0 / (var_y + 1e-6) if var_y > 1e-9 else 1.0
         
-        # MacKay 不動點迭代
+        # [步驟 4] MacKay 迭代
         for i in range(max_iter):
             alpha_old = self.alpha
             beta_old = self.beta
             
-            # E-Step: 計算後驗分佈
             A = self.alpha * np.eye(M) + self.beta * PhiT_Phi
             try:
                 L = linalg.cholesky(A, lower=True)
@@ -144,62 +143,54 @@ class BayesianInferenceEngine:
                 self.w_mean = self.beta * S_N @ PhiT_y
                 self.w_cov = S_N
             except linalg.LinAlgError:
-                # 數值穩定性備案
                 S_N = np.linalg.pinv(A)
                 self.w_mean = self.beta * S_N @ PhiT_y
                 self.w_cov = S_N
 
-            # M-Step: 更新 alpha, beta
             gamma = np.sum(eigvals / (self.alpha + eigvals))
             self.alpha = gamma / (np.sum(self.w_mean ** 2) + 1e-8)
-            residuals = y - Phi @ self.w_mean
+            residuals = y_scaled - Phi @ self.w_mean
             data_error = np.sum(residuals ** 2)
             self.beta = (N - gamma) / (data_error + 1e-8)
             
-            # 收斂檢查
             if (abs(self.alpha - alpha_old) < tol) and (abs(self.beta - beta_old) < tol):
                 break
 
     def predict(self, times_new):
-        """
-        計算預測值與不確定性。
-        [邏輯修正] 強制使用與訓練時相同的 force_seasonality 設定，防止維度崩潰。
-        """
+        """計算預測值 (包含自動還原縮放)"""
         Phi_new = self._build_design_matrix(times_new, force_seasonality=self.use_seasonality)
         
-        y_pred = Phi_new @ self.w_mean
+        # 預測 (此時結果是在縮放空間)
+        y_pred_scaled = Phi_new @ self.w_mean
         
-        # 計算不確定性 (Variance) = 資料雜訊 + 模型不確定性
-        model_uncertainty = np.sum(Phi_new @ self.w_cov * Phi_new, axis=1)
-        data_noise = 1.0 / self.beta
-        y_std = np.sqrt(data_noise + model_uncertainty)
+        # 不確定性 (縮放空間)
+        model_uncertainty_scaled = np.sum(Phi_new @ self.w_cov * Phi_new, axis=1)
+        data_noise_scaled = 1.0 / self.beta
+        y_std_scaled = np.sqrt(data_noise_scaled + model_uncertainty_scaled)
+        
+        # [步驟 5] 還原回真實金額 (Inverse Transform)
+        y_pred = y_pred_scaled * self.y_scaler_std + self.y_scaler_mean
+        y_std = y_std_scaled * self.y_scaler_std
         
         return y_pred, y_std
     
     def validate_prequential(self, times, y, start_idx=12):
-        """
-        真實 Prequential 回測迴圈。
-        這會模擬真實的時間推進，逐月訓練並預測下個月，計算出完全誠實的評估指標。
-        """
+        """真實 Prequential 回測"""
         pred_means = []
         pred_stds = []
         y_trues = []
         
-        # 從 start_idx 開始，逐月推進
         for t in range(start_idx, len(times)):
-            # 切分資料：只看得到過去 (0 ~ t-1)
             t_train = times[:t]
             y_train = y[:t]
-            # 測試目標：預測當下 (t)
             t_test = times[t:t+1]
             y_test = y[t]
             
-            # 建立快照引擎，模擬當時的情況
+            # 每個時間點都建立一個新引擎，它會重新計算當時的 mean/std 進行縮放
+            # 這保證了不會偷看未來的數據分佈
             engine_snapshot = BayesianInferenceEngine(self.add_bias)
-            # 重新訓練 (完整迭代，不偷工減料)
             engine_snapshot.fit_auto_tune(t_train, y_train)
             
-            # 預測
             pm, ps = engine_snapshot.predict(t_test)
             
             pred_means.append(pm[0])
@@ -209,21 +200,18 @@ class BayesianInferenceEngine:
         return np.array(y_trues), np.array(pred_means), np.array(pred_stds)
 
     def evaluate_metrics(self, y_true, y_pred_mean, y_pred_std):
-        """計算 CRPS, ICP, Log-Score"""
+        """計算評估指標"""
         if len(y_true) == 0: return {"CRPS": np.nan, "ICP": np.nan, "LogScore": np.nan}
         
-        # CRPS
         z = (y_true - y_pred_mean) / (y_pred_std + 1e-9)
         pdf = stats.norm.pdf(z)
         cdf = stats.norm.cdf(z)
         crps = y_pred_std * (z * (2 * cdf - 1) + 2 * pdf - 1 / np.sqrt(np.pi))
         
-        # ICP (95% 信賴區間覆蓋率)
         lower = y_pred_mean - 1.96 * y_pred_std
         upper = y_pred_mean + 1.96 * y_pred_std
         is_covered = (y_true >= lower) & (y_true <= upper)
         
-        # LogScore
         log_score = -stats.norm.logpdf(y_true, loc=y_pred_mean, scale=y_pred_std)
         
         return {
