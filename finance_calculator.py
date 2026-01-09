@@ -2,7 +2,7 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.7.2         #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.7.3         #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                  #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
@@ -16,7 +16,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v3.7.2"
+SCRIPT_VERSION = "v3.7.3"
 SCRIPT_UPDATE_DATE = "2026-01-09"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -389,6 +389,9 @@ class PerformanceEvaluator:
 
 # ==============================================================================
 # [模組 4] 執行總指揮 (Controller)
+# 修改說明: 
+# 1. 補回遺漏的 'weight' (融合權重) 顯示，讓使用者知道決策的傾斜度。
+# 2. 包含上一輪新增的 MPI 分數透明化計算過程。
 # ==============================================================================
 def execute_bayesian_validation(df, target_col, freq_prediction, colors):
     """
@@ -418,21 +421,24 @@ def execute_bayesian_validation(df, target_col, freq_prediction, colors):
         print(f"\n{colors.CYAN}{colors.BOLD}=== MPI 4.3 效能評估 (單軌模式) ==={colors.RESET}")
         print(f"{colors.WHITE}狀態: 資料量 ({data_len}) 未達雙軌門檻 (18)，僅進行效能評估，不介入決策。{colors.RESET}")
         
-        # [Zero-Assumption Implementation]
-        # 直接呼叫 BMA 引擎進行實時回測。
-        # 不預設任何 Lag-1 假設，讓數學引擎去尋找數據中的最佳結構。
-        # start_idx 不寫死，由函數內部根據 M 動態決定。
         y_true, y_mean, y_std, y_dof = bayes_engine.validate_prequential(times, series, start_idx=None)
         
         if len(y_true) > 0:
             metrics = evaluator.evaluate(y_true, y_mean, y_std, y_dof)
             if metrics:
                 grade = evaluator.get_grade(metrics['MPI'])
+                calib_factor = 1.0 - metrics['KS_Stat']
+                
                 print(f"\n{colors.YELLOW}▧ MPI 4.3 評分報告 (基於 BMA 實測):{colors.RESET}")
                 print(f"  ● MPI 分數   : {colors.GREEN}{metrics['MPI']:.4f}{colors.RESET} (0~1)")
                 print(f"  ● 評級       : {colors.CYAN}{grade}{colors.RESET}")
-                print(f"  ● 資訊增益   : {metrics['InfoGain']:.4f} Nats")
-                print(f"  ● 校準誤差   : {metrics['KS_Stat']:.4f} (KS-Test)")
+                
+                print(f"\n{colors.WHITE}▧ 分數計算過程 (透明化揭露):{colors.RESET}")
+                print(f"  1. 基礎效能 : {metrics['Base_Perf']:.4f} (來自資訊增益 {metrics['InfoGain']:.4f} Nats)")
+                print(f"     └ 意義: 模型相對於隨機猜測的預測準度 (Logistic 轉換)。")
+                print(f"  2. 校準係數 : {calib_factor:.4f} (1.0 - KS誤差 {metrics['KS_Stat']:.4f})")
+                print(f"     └ 意義: 模型對風險評估的誠實程度 (懲罰過度自信或過度保守)。")
+                print(f"  3. 最終得分 : {metrics['Base_Perf']:.4f} × {calib_factor:.4f} = {colors.GREEN}{metrics['MPI']:.4f}{colors.RESET}")
         else:
             print(f"\n{colors.RED}無法計算 MPI: 線性代數求解失敗 (樣本過於奇異){colors.RESET}")
         
@@ -464,22 +470,35 @@ def execute_bayesian_validation(df, target_col, freq_prediction, colors):
     print(f"  ● 貝氏學派 : {bayes_val:,.0f} (±{t_crit*bayes_sigma:,.0f})")
     print(f"\n{colors.YELLOW}▧ RLF 相對似然融合 (Delta = {delta:.2f}%):{colors.RESET}")
     print(f"  ● 狀態: {status} -> {msg}")
-    print(f"  ● 實際採用: {colors.GREEN}{final_val:,.0f}{colors.RESET}")
+    
+    # [修正] 補上融合權重顯示
+    print(f"  ● 融合權重 : 頻率 {colors.BOLD}{weight:.1%}{colors.RESET} | 貝氏 {colors.BOLD}{1-weight:.1%}{colors.RESET}")
+    
+    print(f"  ● 實際採用 : {colors.GREEN}{final_val:,.0f}{colors.RESET}")
 
     # 3. MPI 4.3 誠實回測
-    # 資料充足，讓數學引擎動態決定最佳回測起點
     y_true, y_mean, y_std, y_dof = bayes_engine.validate_prequential(times, series, start_idx=None)
     
     if len(y_true) > 0:
         metrics = evaluator.evaluate(y_true, y_mean, y_std, y_dof)
         if metrics:
             grade = evaluator.get_grade(metrics['MPI'])
+            calib_factor = 1.0 - metrics['KS_Stat']
+            
             print(f"\n{colors.CYAN}=== MPI 4.3 全像式效能評估 (Information-Theoretic) ==={colors.RESET}")
             print(f"{colors.WHITE}基準: 隨機漫步 | 檢定: PIT+KS | 標準: 絕對一致{colors.RESET}")
             
             print(f"\n{colors.YELLOW}▧ 評分結果:{colors.RESET}")
             print(f"  ● MPI 4.3 分數 : {colors.GREEN}{colors.BOLD}{metrics['MPI']:.4f}{colors.RESET}")
             print(f"  ● 效能等級     : {colors.CYAN}{colors.BOLD}{grade}{colors.RESET}")
+            
+            print(f"\n{colors.WHITE}▧ 分數計算過程 (透明化揭露):{colors.RESET}")
+            print(f"  1. 基礎效能 : {metrics['Base_Perf']:.4f} (來自資訊增益 {metrics['InfoGain']:.4f} Nats)")
+            print(f"     └ 意義: 模型相對於隨機猜測的預測準度 (Logistic 轉換)。")
+            print(f"  2. 校準係數 : {calib_factor:.4f} (1.0 - KS誤差 {metrics['KS_Stat']:.4f})")
+            print(f"     └ 意義: 模型對風險評估的誠實程度 (懲罰過度自信或過度保守)。")
+            print(f"  3. 最終得分 : {metrics['Base_Perf']:.4f} × {calib_factor:.4f} = {colors.GREEN}{metrics['MPI']:.4f}{colors.RESET}")
+
             print(f"  ● 資訊增益     : {metrics['InfoGain']:.4f} Nats")
             print(f"  ● 校準誤差     : {metrics['KS_Stat']:.4f}")
             
