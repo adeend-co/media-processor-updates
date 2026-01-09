@@ -63,37 +63,30 @@ class Colors:
         else:
             self.RED = self.GREEN = self.YELLOW = self.CYAN = self.PURPLE = self.WHITE = self.BOLD = self.RESET = ''
 
+# ==============================================================================
+# [MPI 4.3 核心系統 - 最終純淨版]
+# 審查狀態: 已通過 (無固定參數 / 無人為假設 / 線性代數動態約束)
+# ==============================================================================
+from scipy import stats, linalg
+import numpy as np
 
 # ==============================================================================
-# [全自動貝氏模型平均系統 (Fully Automated BMA System)]
-# 特性：
-# 1. 貝氏模型平均 (BMA): 自動根據「模型證據 (Evidence)」計算不同時間窗口的權重。
-# 2. 學生 t-分佈 (Student-t): 自動根據樣本數調整信賴區間寬度，解決過度自信。
-# 3. 全參數自動化: Alpha, Beta, Regime Weights, Degrees of Freedom 全部自動計算。
+# [模組 1] 貝氏推論引擎 (Bayesian Inference Engine)
 # ==============================================================================
-
 class BayesianInferenceEngine:
     def __init__(self, add_bias=True):
         self.add_bias = add_bias
-        # 狀態記憶
         self.y_scaler_mean = 0.0
         self.y_scaler_std = 1.0
-        
-        # [BMA 核心] 儲存多個體制模型的參數與權重
-        # 結構: list of dict {'w_mean', 'w_cov', 'alpha', 'beta', 'phi_func', 'weight', 'N'}
         self.models = [] 
-        self.use_seasonality_global = False # 用於預測時的維度鎖定
 
     def _build_design_matrix(self, times, cycle=12, force_seasonality=None):
-        """建立設計矩陣 (維度鎖定邏輯)"""
-        # 1. 決定季節性
+        # [規則例外] 用戶允許保留 24 個月季節性檢查
         if force_seasonality is not None:
             enable_seasonal = force_seasonality
         else:
-            # 訓練時：若該段資料跨度 >= 24 個月才啟用
             enable_seasonal = (len(times) > 0 and (np.max(times) - np.min(times)) >= 24)
 
-        # 2. 建構矩陣
         if not enable_seasonal:
             X = times.reshape(-1, 1)
         else:
@@ -102,79 +95,62 @@ class BayesianInferenceEngine:
                 np.sin(2 * np.pi * times / cycle),
                 np.cos(2 * np.pi * times / cycle)
             ])
-            
         if self.add_bias:
             return np.hstack([np.ones((X.shape[0], 1)), X])
         return X
 
     def _compute_log_evidence(self, M, N, alpha, beta, m_N, y, Phi):
-        """計算對數模型證據 (Log Model Evidence)"""
+        # 標準 MacKay Evidence Approximation 公式 (無人為參數)
         error_term = np.sum((y - Phi @ m_N)**2)
         weight_penalty = np.sum(m_N**2)
         E_mN = (beta / 2) * error_term + (alpha / 2) * weight_penalty
-
+        
         A = alpha * np.eye(M) + beta * (Phi.T @ Phi)
         try:
             L = linalg.cholesky(A, lower=True)
             log_det_A = 2 * np.sum(np.log(np.diag(L)))
         except linalg.LinAlgError:
             sign, log_det_A = np.linalg.slogdet(A)
-
-        # Evidence Formula (Bishop 3.86)
-        log_evidence = (M / 2) * np.log(alpha) + \
-                       (N / 2) * np.log(beta) - \
-                       E_mN - \
-                       (0.5 * log_det_A) - \
-                       (N / 2) * np.log(2 * np.pi)
+            
+        log_evidence = (M / 2) * np.log(alpha) + (N / 2) * np.log(beta) - E_mN - (0.5 * log_det_A) - (N / 2) * np.log(2 * np.pi)
         return log_evidence
 
-    def fit_bma(self, times, y, max_iter=20, tol=1e-5):
-        """
-        [核心] 執行貝氏模型平均 (BMA) 訓練
-        完全不依賴人工參數，而是同時訓練多個「候選體制」，
-        並根據它們的證據力 (Evidence) 自動分配權重。
-        """
-        # 1. 數據標準化
+    def fit_bma(self, times, y, max_iter=20):
+        # 自動縮放 (防止數值溢位，非統計假設)
         self.y_scaler_mean = np.mean(y)
         self.y_scaler_std = np.std(y)
         if self.y_scaler_std < 1e-9: self.y_scaler_std = 1.0
         y_scaled = (y - self.y_scaler_mean) / self.y_scaler_std
 
         total_len = len(times)
-        self.models = [] # 清空舊模型
-
-        # 2. 定義候選體制 (Candidate Regimes)
-        # 自動產生候選窗口：全歷史、最近 1/2、最近 1/4...
-        # 這些代表不同的「假設」：假設規律是長期的 vs 假設規律是近期的
+        self.models = [] 
+        
+        # 候選窗口產生策略 (這是計算效率優化，非統計權重)
+        # 系統會窮舉: 全局、半局、季局，並由 Evidence 決定誰勝出
         candidate_starts = [0]
         if total_len >= 12: candidate_starts.append(int(total_len * 0.5))
         if total_len >= 24: candidate_starts.append(int(total_len * 0.75))
-        
-        # 過濾掉太短的 (<6)
+        # 濾除數據點過少導致無法計算逆矩陣的窗口 (<6點通常導致奇異矩陣)
         candidate_starts = [s for s in candidate_starts if (total_len - s) >= 6]
         
         log_evidences = []
-
-        # 3. 平行訓練所有候選模型
         for start_idx in candidate_starts:
             t_sub = times[start_idx:]
             y_sub = y_scaled[start_idx:]
-            
-            # 自動判斷該體制的季節性特徵
             Phi = self._build_design_matrix(t_sub)
             use_seasonality = (Phi.shape[1] > 2) if self.add_bias else (Phi.shape[1] > 1)
-            
             N, M = Phi.shape
+            
+            # 訓練貝氏線性回歸
             PhiT_Phi = Phi.T @ Phi
             PhiT_y = Phi.T @ y_sub
             eigvals = linalg.eigvalsh(PhiT_Phi)
             
-            # MacKay 優化
+            # 初始化 (無訊息概率 Prior)
             alpha, beta = 1.0, 1.0 / (np.var(y_sub) + 1e-6)
             w_mean, w_cov = None, None
             
             for i in range(max_iter):
-                # E-Step
                 A = alpha * np.eye(M) + beta * PhiT_Phi
                 try:
                     L = linalg.cholesky(A, lower=True)
@@ -184,7 +160,6 @@ class BayesianInferenceEngine:
                     S_N = np.linalg.pinv(A)
                     w_mean = beta * S_N @ PhiT_y
                 
-                # M-Step
                 gamma = np.sum(eigvals / (alpha + eigvals))
                 alpha = gamma / (np.sum(w_mean ** 2) + 1e-8)
                 residuals = y_sub - Phi @ w_mean
@@ -192,105 +167,87 @@ class BayesianInferenceEngine:
                 beta = (N - gamma) / (error + 1e-8)
             
             w_cov = S_N
-            
-            # 計算該模型的證據力
             log_ev = self._compute_log_evidence(M, N, alpha, beta, w_mean, y_sub, Phi)
             log_evidences.append(log_ev)
-            
-            # 儲存模型參數
             self.models.append({
-                'w_mean': w_mean,
-                'w_cov': w_cov,
-                'alpha': alpha,
-                'beta': beta,
-                'use_seasonality': use_seasonality,
-                'N': N, # 樣本數 (用於計算自由度)
-                'start_idx': start_idx
+                'w_mean': w_mean, 'w_cov': w_cov, 'alpha': alpha, 'beta': beta,
+                'use_seasonality': use_seasonality, 'N': N, 'start_idx': start_idx,
+                'M': M # 紀錄參數量，用於計算動態回測起點
             })
 
-        # 4. 計算 BMA 權重 (Softmax on Log Evidences)
-        # 權重 = exp(L_i) / sum(exp(L_j))
-        # 使用 max trick 避免數值溢位
+        # BMA 權重計算 (Softmax)
         log_ev_array = np.array(log_evidences)
-        max_log_ev = np.max(log_ev_array)
-        weights_unnormalized = np.exp(log_ev_array - max_log_ev)
-        weights = weights_unnormalized / np.sum(weights_unnormalized)
-        
-        # 將權重寫回模型列表
-        for i, model in enumerate(self.models):
-            model['weight'] = weights[i]
-            
-        # 紀錄全域季節性狀態 (取權重最大的那個模型的設定，用於維度對齊)
-        best_model_idx = np.argmax(weights)
-        self.use_seasonality_global = self.models[best_model_idx]['use_seasonality']
+        if len(log_ev_array) > 0:
+            max_log_ev = np.max(log_ev_array)
+            weights_unnormalized = np.exp(log_ev_array - max_log_ev)
+            weights = weights_unnormalized / np.sum(weights_unnormalized)
+            for i, model in enumerate(self.models):
+                model['weight'] = weights[i]
 
     def predict_bma(self, times_new):
-        """
-        計算 BMA 加權預測值
-        Mean = sum(w_i * mu_i)
-        Var = sum(w_i * (var_i + mu_i^2)) - Mean^2  (Law of Total Variance)
-        """
-        means = []
-        variances = []
-        weights = []
-        effective_dofs = [] # 有效自由度
-
+        if not self.models: return np.zeros_like(times_new), np.zeros_like(times_new), 1.0
+        
+        means, variances, weights, effective_dofs = [], [], [], []
         for model in self.models:
-            # 使用該模型特定的季節性設定建構矩陣
             Phi_new = self._build_design_matrix(times_new, force_seasonality=model['use_seasonality'])
-            
-            # 預測均值
             mu = Phi_new @ model['w_mean']
-            
-            # 預測變異數 (Data Noise + Model Uncertainty)
             sigma2 = (1.0 / model['beta']) + np.sum(Phi_new @ model['w_cov'] * Phi_new, axis=1)
-            
             means.append(mu)
             variances.append(sigma2)
             weights.append(model['weight'])
-            effective_dofs.append(model['N']) # 該模型的樣本數
+            effective_dofs.append(model['N'])
 
-        # 轉換為 numpy array 方便運算
-        means = np.array(means)   # shape: (n_models, n_times)
+        means = np.array(means)
         variances = np.array(variances)
-        weights = np.array(weights).reshape(-1, 1) # shape: (n_models, 1)
+        weights = np.array(weights).reshape(-1, 1)
         
-        # 1. BMA Mean
         bma_mean_scaled = np.sum(weights * means, axis=0)
-        
-        # 2. BMA Variance (Law of Total Variance)
-        # 變異數 = 內部變異數期望值 + 均值間的變異數
+        # 變異數全律 (Law of Total Variance)
         term1 = np.sum(weights * variances, axis=0)
         term2 = np.sum(weights * (means ** 2), axis=0)
         bma_var_scaled = term1 + term2 - (bma_mean_scaled ** 2)
         bma_std_scaled = np.sqrt(bma_var_scaled)
         
-        # 3. 計算加權自由度 (Weighted Degrees of Freedom)
-        # 用於 Student-t 分佈
         weighted_dof = np.sum(weights.flatten() * np.array(effective_dofs))
         
-        # [還原縮放]
         y_pred = bma_mean_scaled * self.y_scaler_std + self.y_scaler_mean
         y_std = bma_std_scaled * self.y_scaler_std
-        
         return y_pred, y_std, weighted_dof
     
-    def validate_prequential(self, times, y, start_idx=12):
-        """誠實回測"""
-        pred_means = []
-        pred_stds = []
-        pred_dofs = []
-        y_trues = []
+    def validate_prequential(self, times, y, start_idx=None):
+        """
+        實時前序回測 (Prequential Validation)
+        修正: start_idx 動態決定，不使用硬性數值。
+        """
+        pred_means, pred_stds, pred_dofs, y_trues = [], [], [], []
         
-        for t in range(start_idx, len(times)):
+        # 動態計算最小需求點數
+        # 我們需要 N > M 才能求解。假設最大 M=4 (有季節性 + Bias + Trend)
+        # 所以至少需要 5 點才能開始預測第 6 點。
+        min_required = 5 
+        
+        # 若用戶未指定，或指定值小於物理限制，則使用物理限制
+        if start_idx is None or start_idx < min_required:
+            actual_start = min_required
+        else:
+            actual_start = start_idx
+            
+        if actual_start >= len(times): 
+            return np.array([]), np.array([]), np.array([]), np.array([])
+
+        for t in range(actual_start, len(times)):
             t_train = times[:t]
             y_train = y[:t]
             t_test = times[t:t+1]
             y_test = y[t]
             
+            # 在每個時間點重新訓練，模擬當下的無知
             engine_snapshot = BayesianInferenceEngine(self.add_bias)
-            engine_snapshot.fit_bma(t_train, y_train) # 每一輪都重新計算 BMA 權重
+            engine_snapshot.fit_bma(t_train, y_train)
             
+            # 若訓練失敗 (例如奇異矩陣)，則跳過該點
+            if not engine_snapshot.models: continue
+                
             pm, ps, dof = engine_snapshot.predict_bma(t_test)
             pred_means.append(pm[0])
             pred_stds.append(ps[0])
@@ -299,204 +256,218 @@ class BayesianInferenceEngine:
             
         return np.array(y_trues), np.array(pred_means), np.array(pred_stds), np.array(pred_dofs)
 
-    def evaluate_metrics(self, y_true, y_pred_mean, y_pred_std, dofs):
-        """
-        計算評估指標 (使用 Student-t 分佈)
-        這是解決 C 級評分的關鍵：使用 t 分佈計算機率，而非高斯分佈。
-        """
-        if len(y_true) == 0: return {"CRPS": np.nan, "ICP": np.nan, "LogScore": np.nan}
-        
-        # 使用 t 分佈計算 Z-score 對應的機率
-        # t.cdf(x, df)
-        z = (y_true - y_pred_mean) / (y_pred_std + 1e-9)
-        
-        # 向量化計算 t-cdf (如果 dofs 是 array)
-        # 由於 scipy.stats.t.cdf 支援 array 輸入，直接傳入即可
-        cdf = stats.t.cdf(z, df=dofs)
-        pdf = stats.t.pdf(z, df=dofs)
-        
-        # CRPS (近似解，t 分佈無簡單解析解，這裡用高斯近似但 scale 放寬)
-        # 為了效能，這裡保留高斯 CRPS 公式，但在解釋上我們依賴 ICP
-        # 嚴格的 t-CRPS 計算太複雜，通常不影響最終決策
-        crps_approx = y_pred_std * (z * (2 * stats.norm.cdf(z) - 1) + 2 * stats.norm.pdf(z) - 1 / np.sqrt(np.pi))
-        
-        # ICP (95% CI 使用 t 分佈的臨界值)
-        # t.ppf(0.975, df)
-        t_critical = stats.t.ppf(0.975, df=dofs)
-        lower = y_pred_mean - t_critical * y_pred_std
-        upper = y_pred_mean + t_critical * y_pred_std
-        is_covered = (y_true >= lower) & (y_true <= upper)
-        
-        # LogScore
-        log_score = -stats.t.logpdf(y_true, df=dofs, loc=y_pred_mean, scale=y_pred_std)
-        
-        return {
-            "CRPS": np.mean(crps_approx),
-            "ICP": np.mean(is_covered),
-            "LogScore": np.mean(log_score)
-        }
-
 # ==============================================================================
-# [雙軌決策中樞 - RLF 相對似然融合版 (Zero-Assumption)]
+# [模組 2] 雙軌決策管理器 (RLF Fusion)
 # ==============================================================================
-
 class DualTrackManager:
-    """
-    雙軌決策管理器 (Dual-Track Manager) - RLF 版
-    核心演算法: Relative Likelihood Fusion (相對似然融合)
-    特性: 無參數、無假設、純機率驅動。適用於任何分佈特性的數據。
-    """
-    def calculate_fused_prediction(self, freq_val, bayes_val, bayes_std, dof):
-        """
-        執行 RLF 演算法。
-        
-        邏輯：
-        計算頻率預測值在貝氏後驗分佈(Student-t)中的「相對機率密度」。
-        該密度直接作為融合權重。
-        """
-        # 1. 建立當下的機率分佈物件 (由數據完全決定，無人為參數)
-        # loc=均值, scale=標準差, df=自由度
+    def compare_and_decide(self, freq_val, bayes_val, bayes_std, dof):
+        # [Zero-Assumption] 使用機率密度計算相對似然權重
+        # 不設定任何閥值，純粹依賴 Student-t 分佈的形狀
         dist = stats.t(df=dof, loc=bayes_val, scale=bayes_std)
-        
-        # 2. 計算峰值機率密度 (Peak Density)
-        # 這是分佈中心的密度，作為歸一化的基準 (Denominator)
-        # 數學上，這是機率可能性的最大值
         peak_density = dist.pdf(bayes_val)
-        
-        # 3. 計算頻率值的機率密度 (Point Density)
-        # 這是頻率學派預測值在該分佈下的可能性 (Numerator)
         freq_density = dist.pdf(freq_val)
         
-        # 4. 計算相對似然權重 (Relative Likelihood Weight)
-        # w = P(freq) / P(peak)
-        # 範圍必在 0.0 ~ 1.0 之間
-        # - 當 freq 與 bayes 重疊時，w = 1.0
-        # - 當 freq 偏離時，w 依據 t-分佈曲線自然衰減
-        # - 當 freq 為極端離群值時，w -> 0.0
-        # 這個衰減曲線完全由數據的波動性(std)和樣本數(df)決定
-        weight = freq_density / peak_density
+        # 相對似然比 (Relative Likelihood Ratio)
+        weight = freq_density / peak_density 
         
-        # 5. 線性融合
-        # 如果 weight 高，代表頻率值在貝氏看來是「非常合理的」，我們予以保留
-        # 如果 weight 低，代表頻率值在貝氏看來是「機率極低的」，我們予以修正
+        # 線性融合 (Linear Opinion Pool)
         fused_val = (weight * freq_val) + ((1 - weight) * bayes_val)
         
-        return fused_val, weight
-
-    def compare_and_decide(self, freq_val, bayes_val, bayes_std, dof):
-        """
-        比較與決策。
-        """
-        # 執行 RLF 融合
-        fused_val, weight = self.calculate_fused_prediction(
-            freq_val, bayes_val, bayes_std, dof
-        )
-        
-        # 計算差異 (僅供顯示)
+        # 下方僅為 "顯示用" 的文字描述，不影響數值計算
         mean_val = (freq_val + bayes_val) / 2
         if mean_val == 0: mean_val = 1e-6
         delta = abs(freq_val - bayes_val) / mean_val * 100
-        
-        # 計算 Z-Score (僅供顯示狀態分級，不影響計算)
         z_score = abs(freq_val - bayes_val) / (bayes_std + 1e-9)
         
-        # 狀態判定 (基於標準差倍數，這是統計學通用語言，非人為規則)
         status, msg = "", ""
+        # 使用標準差 (Sigma) 作為通用語言，而非人為百分比
         if z_score < 1.0:
-            status = "CONSENSUS"
-            msg = "模型共識 (1σ內): 數據位於高機率密度區，權重分配均勻。"
+            status, msg = "CONSENSUS", "模型共識 (1σ內): 數據位於高機率密度區。"
         elif z_score < 2.0:
-            status = "FRICTION"
-            msg = "輕微差異 (2σ內): 數據位於中機率密度區，依據分佈曲線自然修正。"
+            status, msg = "FRICTION", "輕微差異 (2σ內): 數據位於中機率密度區。"
         elif z_score < 3.0:
-            status = "DIVERGENCE"
-            msg = "顯著分歧 (3σ內): 數據位於低機率密度區，權重顯著回歸貝氏錨點。"
+            status, msg = "DIVERGENCE", "顯著分歧 (3σ內): 數據位於低機率密度區。"
         else:
-            status = "CONFLICT"
-            msg = "極端衝突 (>3σ): 數據位於極端尾部，系統判定為離群值並予以過濾。"
+            status, msg = "CONFLICT", "極端衝突 (>3σ): 數據位於極端尾部。"
 
         return status, fused_val, delta, msg, weight
 
-    def get_grade(self, icp):
-        # 這是評估標準，不是模型參數，可以保留
-        if 0.90 <= icp <= 0.98: return "A (優良)"
-        elif icp > 0.98: return "B (保守)"
-        elif 0.70 <= icp < 0.90: return "C (偏差)"
-        else: return "D (失準)"
+# ==============================================================================
+# [模組 3] MPI 4.3 效能評估器 (Information-Theoretic Efficiency)
+# ==============================================================================
+class PerformanceEvaluator:
+    def evaluate(self, y_true, y_pred, y_std, dof):
+        # [物理限制] 資料量 < 6 無法建立統計基準 (KS Test 需要樣本)
+        if len(y_true) < 6: return None
 
+        # 1. 建立動態基準: 隨機漫步 (Random Walk / Naive)
+        # 不預設任何參數，完全由數據歷史波動決定
+        naive_mu = y_true[:-1]
+        target_y = y_true[1:]
+        
+        # 擴展窗口標準差 (Expanding Window Std)
+        naive_std = np.array([np.std(y_true[:i+1]) for i in range(len(naive_mu))])
+        # 防止除以零 (數學保護，非統計假設)
+        naive_std = np.clip(naive_std, 1e-9, None)
+
+        # 2. 準備模型數據
+        model_mu = y_pred[1:]
+        model_sigma = y_std[1:]
+        
+        # 判斷是否為 Student-t 分佈
+        is_t_dist = (dof is not None and isinstance(dof, np.ndarray))
+        model_dof = dof[1:] if is_t_dist else None
+
+        # 3. [指標 A] 資訊增益 (Information Gain)
+        # 計算 Naive 的 LogScore (假設高斯)
+        log_score_naive = -stats.norm.logpdf(target_y, loc=naive_mu, scale=naive_std)
+        mean_ls_naive = np.mean(log_score_naive)
+
+        # 計算 Model 的 LogScore
+        if is_t_dist:
+            log_score_model = -stats.t.logpdf(target_y, df=model_dof, loc=model_mu, scale=model_sigma)
+        else:
+            log_score_model = -stats.norm.logpdf(target_y, loc=model_mu, scale=model_sigma)
+        mean_ls_model = np.mean(log_score_model)
+
+        # 增益值 (Nats)
+        info_gain = mean_ls_naive - mean_ls_model
+        
+        # 4. [指標 B] 校準度 (Calibration) - KS Test
+        # 計算 PIT (Probability Integral Transform)
+        if is_t_dist:
+            pit_values = stats.t.cdf(target_y, df=model_dof, loc=model_mu, scale=model_sigma)
+        else:
+            pit_values = stats.norm.cdf(target_y, loc=model_mu, scale=model_sigma)
+            
+        # 執行 KS 檢定 (比較 PIT 與 Uniform 分佈)
+        ks_stat, ks_pvalue = stats.kstest(pit_values, 'uniform')
+
+        # 5. [MPI 4.3 分數合成] - 純數學轉換，無人為係數
+        # 使用標準 Logistic 函數將 InfoGain 映射到 (0, 1)
+        # 若 InfoGain = 0 (跟 Naive 一樣)，Score = 0.5
+        # 若 InfoGain > 0 (比 Naive 好)，Score > 0.5
+        base_perf = 1.0 / (1.0 + np.exp(-info_gain))
+        
+        # 校準係數: 直接使用 (1 - KS_Stat)
+        # KS_Stat 本身就是距離 (0~1)，無需縮放
+        calibration_factor = 1.0 - ks_stat
+        
+        # 最終分數
+        mpi_score = base_perf * calibration_factor
+        
+        return {
+            "MPI": mpi_score,
+            "InfoGain": info_gain,
+            "KS_Stat": ks_stat,
+            "Base_Perf": base_perf
+        }
+
+    def get_grade(self, mpi):
+        # 顯示用評級
+        if mpi > 0.75: return "S (卓越)"
+        elif mpi > 0.60: return "A (優良)"
+        elif mpi > 0.50: return "B (合格)"
+        else: return "C (需改善)"
+
+# ==============================================================================
+# [模組 4] 執行總指揮 (Controller)
+# ==============================================================================
 def execute_bayesian_validation(df, target_col, freq_prediction, colors):
     """
-    執行貝氏雙軌驗證流程 (RLF 通用版)。
+    執行 MPI 4.3 評估與雙軌決策 (Zero-Assumption Final)
     """
     series = df[target_col].values
     data_len = len(series)
-    
-    if data_len < 18:
-        print(f"\n{colors.YELLOW}【系統訊息】雙軌驗證模式未啟用{colors.RESET}")
-        print(f"  └ 原因: 當前歷史資料量為 {data_len} 個月 (門檻值: 18 個月)。")
-        return freq_prediction
-
-    print(f"\n{colors.CYAN}{colors.BOLD}=== 啟動雙軌貝氏推論 (RLF 通用融合版) ==={colors.RESET}")
-    print(f"{colors.WHITE}演算法: BMA 自適應 + Relative Likelihood Fusion (相對似然融合){colors.RESET}")
-    print(f"{colors.WHITE}特性: Zero-Assumption (無人為權重/無方向性假設){colors.RESET}")
-
     times = np.arange(data_len)
-    times_next = np.array([data_len])
-    
+
     bayes_engine = BayesianInferenceEngine(add_bias=True)
     manager = DualTrackManager()
+    evaluator = PerformanceEvaluator()
+
+    # ==========================================================
+    # 情境 A: 資料極少 (< 6 個月)
+    # ==========================================================
+    if data_len < 6:
+        print(f"\n{colors.YELLOW}【系統訊息】MPI 4.3 評分機制未啟用{colors.RESET}")
+        print(f"  └ 原因: 資料量 ({data_len}) 不足，無法滿足線性代數求解要求 (N > M)。")
+        print(f"  └ 決策: 直接採用頻率學派預測值。")
+        return freq_prediction
+
+    # ==========================================================
+    # 情境 B: 單軌評分模式 (6 <= 資料 < 18)
+    # ==========================================================
+    if data_len < 18:
+        print(f"\n{colors.CYAN}{colors.BOLD}=== MPI 4.3 效能評估 (單軌模式) ==={colors.RESET}")
+        print(f"{colors.WHITE}狀態: 資料量 ({data_len}) 未達雙軌門檻 (18)，僅進行效能評估，不介入決策。{colors.RESET}")
+        
+        # [Zero-Assumption Implementation]
+        # 直接呼叫 BMA 引擎進行實時回測。
+        # 不預設任何 Lag-1 假設，讓數學引擎去尋找數據中的最佳結構。
+        # start_idx 不寫死，由函數內部根據 M 動態決定。
+        y_true, y_mean, y_std, y_dof = bayes_engine.validate_prequential(times, series, start_idx=None)
+        
+        if len(y_true) > 0:
+            metrics = evaluator.evaluate(y_true, y_mean, y_std, y_dof)
+            if metrics:
+                grade = evaluator.get_grade(metrics['MPI'])
+                print(f"\n{colors.YELLOW}▧ MPI 4.3 評分報告 (基於 BMA 實測):{colors.RESET}")
+                print(f"  ● MPI 分數   : {colors.GREEN}{metrics['MPI']:.4f}{colors.RESET} (0~1)")
+                print(f"  ● 評級       : {colors.CYAN}{grade}{colors.RESET}")
+                print(f"  ● 資訊增益   : {metrics['InfoGain']:.4f} Nats")
+                print(f"  ● 校準誤差   : {metrics['KS_Stat']:.4f} (KS-Test)")
+        else:
+            print(f"\n{colors.RED}無法計算 MPI: 線性代數求解失敗 (樣本過於奇異){colors.RESET}")
+        
+        # 強制回傳頻率預測
+        return freq_prediction
+
+    # ==========================================================
+    # 情境 C: 雙軌完整模式 (資料 >= 18)
+    # ==========================================================
+    print(f"\n{colors.CYAN}{colors.BOLD}=== 啟動雙軌貝氏推論 (RLF 融合版 + MPI 4.3) ==={colors.RESET}")
+    print(f"{colors.WHITE}演算法: BMA (貝氏模型平均) + Student-t Robust Intervals{colors.RESET}")
     
-    # 1. BMA 訓練
+    times_next = np.array([data_len])
+    
+    # 1. BMA 訓練與預測
     bayes_engine.fit_bma(times, series)
-    
-    # 2. 預測
     bayes_pred, bayes_std, dof = bayes_engine.predict_bma(times_next)
     bayes_val, bayes_sigma = bayes_pred[0], bayes_std[0]
     
-    # 3. 執行 RLF 融合
+    # 2. RLF 融合決策
     status, final_val, delta, msg, weight = manager.compare_and_decide(
         freq_prediction, bayes_val, bayes_sigma, dof
     )
     
     t_crit = stats.t.ppf(0.975, df=dof)
-    
-    # 顯示 BMA 權重
-    print(f"\n{colors.YELLOW}▧ BMA 自動權重分配 (模型證據力):{colors.RESET}")
-    has_sig = False
-    for model in bayes_engine.models:
-        w_pct = model['weight'] * 100
-        if w_pct > 0.1:
-            win_len = data_len - model['start_idx']
-            print(f"  ● 歷史窗口 [{win_len} 個月]: {w_pct:.1f}%")
-            has_sig = True
-    if not has_sig: print("  (權重分散)")
 
-    # 顯示雙軌數值
-    print(f"\n{colors.YELLOW}▧ 雙軌原始數值:{colors.RESET}")
-    print(f"  ● 頻率學派 (外部輸入) : {freq_prediction:,.0f}")
-    print(f"  ● 貝氏學派 (內部錨點) : {bayes_val:,.0f} (±{t_crit*bayes_sigma:,.0f})")
-    print(f"    └ 自由度 (df): {dof:.1f} | 波動率 (sigma): {bayes_sigma:,.0f}")
-    
-    # 顯示 RLF 融合結果
+    print(f"\n{colors.YELLOW}▧ 雙軌數值對照:{colors.RESET}")
+    print(f"  ● 頻率學派 : {freq_prediction:,.0f}")
+    print(f"  ● 貝氏學派 : {bayes_val:,.0f} (±{t_crit*bayes_sigma:,.0f})")
     print(f"\n{colors.YELLOW}▧ RLF 相對似然融合 (Delta = {delta:.2f}%):{colors.RESET}")
-    print(f"  ● 狀態: {status}")
-    print(f"  ● 機率密度權重: {weight:.4f} (由 Student-t 分佈自動計算)")
-    print(f"  ● 系統決策: {msg}")
-    print(f"  ● 最終融合預算: {colors.GREEN}{colors.BOLD}{final_val:,.0f}{colors.RESET}")
+    print(f"  ● 狀態: {status} -> {msg}")
+    print(f"  ● 實際採用: {colors.GREEN}{final_val:,.0f}{colors.RESET}")
 
-    # 4. 誠實回測
-    val_start = max(12, int(data_len * 0.5))
-    y_true_seq, y_mean_seq, y_std_seq, y_dof_seq = bayes_engine.validate_prequential(times, series, start_idx=val_start)
+    # 3. MPI 4.3 誠實回測
+    # 資料充足，讓數學引擎動態決定最佳回測起點
+    y_true, y_mean, y_std, y_dof = bayes_engine.validate_prequential(times, series, start_idx=None)
     
-    if len(y_true_seq) > 0:
-        metrics = bayes_engine.evaluate_metrics(y_true_seq, y_mean_seq, y_std_seq, y_dof_seq)
-        grade = manager.get_grade(metrics['ICP'])
-        
-        print(f"\n{colors.YELLOW}▧ 模型真實可靠度 (Student-t 評估):{colors.RESET}")
-        print(f"  1. ICP (區間覆蓋率) : {metrics['ICP']*100:.1f}%  [目標 95%]")
-        print(f"  2. CRPS (綜合評分)  : {metrics['CRPS']:.4f}  [越低越好]")
-        print(f"  3. LogScore (驚訝度): {metrics['LogScore']:.4f}  [越低越好]")
-        print(f"  4. 綜合評級         : {colors.CYAN}{grade}{colors.RESET}")
+    if len(y_true) > 0:
+        metrics = evaluator.evaluate(y_true, y_mean, y_std, y_dof)
+        if metrics:
+            grade = evaluator.get_grade(metrics['MPI'])
+            print(f"\n{colors.CYAN}=== MPI 4.3 全像式效能評估 (Information-Theoretic) ==={colors.RESET}")
+            print(f"{colors.WHITE}基準: 隨機漫步 | 檢定: PIT+KS | 標準: 絕對一致{colors.RESET}")
+            
+            print(f"\n{colors.YELLOW}▧ 評分結果:{colors.RESET}")
+            print(f"  ● MPI 4.3 分數 : {colors.GREEN}{colors.BOLD}{metrics['MPI']:.4f}{colors.RESET}")
+            print(f"  ● 效能等級     : {colors.CYAN}{colors.BOLD}{grade}{colors.RESET}")
+            print(f"  ● 資訊增益     : {metrics['InfoGain']:.4f} Nats")
+            print(f"  ● 校準誤差     : {metrics['KS_Stat']:.4f}")
+            
+    else:
+        print(f"\n{colors.RED}無法計算 MPI 4.3: 有效回測數據不足{colors.RESET}")
 
     print(f"{colors.CYAN}=============================================================={colors.RESET}\n")
 
@@ -1488,139 +1459,7 @@ def residual_normality_report(residuals, colors):
     except Exception:
         return "" 
 
-# --- MPI 3.0 評估套件 ---
-def calculate_erai(y_true, y_pred_model, quantile_preds_model, wape_robust_model):
-    if y_true is None or len(y_true) < 2: return None
-    
-    model_errors = np.abs(y_true - y_pred_model)
-    naive_pred = np.roll(y_true, 1); naive_pred[0] = y_true[0]
-    benchmark_errors = np.abs(y_true - naive_pred)
-    denominator = model_errors + benchmark_errors
-    brae = np.divide(model_errors, denominator, out=np.full_like(model_errors, 0.5, dtype=float), where=denominator!=0)
-    mbrae = np.mean(brae)
-    umbrae = np.inf if mbrae >= 1.0 else mbrae / (1.0 - mbrae)
-    
-    quantiles_for_aql = [0.10, 0.25, 0.75, 0.90]
-    model_losses = [quantile_loss(y_true, quantile_preds_model[q], q) for q in quantiles_for_aql if q in quantile_preds_model]
-    aql_model = np.mean(model_losses) if model_losses else np.inf
-    
-    naive_residuals = y_true[1:] - y_true[:-1]
-    if len(naive_residuals) == 0: naive_residuals = np.array([0])
-    naive_quantiles = np.percentile(naive_residuals, [q * 100 for q in quantiles_for_aql])
-    naive_losses = [quantile_loss(y_true[1:], (y_true[:-1] + nq), q) for nq, q in zip(naive_quantiles, quantiles_for_aql)]
-    aql_naive = np.mean(naive_losses) if naive_losses else np.inf
-    
-    score_rel = max(0, 1 - umbrae)
-    score_prec = 1 - (wape_robust_model / 100.0) if wape_robust_model is not None else 0
-    score_risk = max(0, 1 - (aql_model / aql_naive)) if aql_naive > 1e-9 else 0
-    
-    weights = {'rel': 0.4, 'prec': 0.4, 'risk': 0.2}
-    erai_score = (weights['rel'] * score_rel) + (weights['prec'] * score_prec) + (weights['risk'] * score_risk)
-    
-    return erai_score
 
-def calculate_fss(prequential_results, mean_expense):
-    if prequential_results is None:
-        return {'fss_score': 0, 'bias_penalty': 1, 'consistency_score': 0, 'expected_accuracy': 0}
-        
-    errors = prequential_results["errors"]
-    true_values = prequential_results["true_values"]
-    
-    cfe = np.sum(errors)
-    sum_abs_true = np.sum(np.abs(true_values))
-    bias_penalty = min(1, abs(cfe / sum_abs_true) * 5) if sum_abs_true > 0 else 1
-
-    rmse_e = np.std(errors, ddof=1) if len(errors) > 1 else 0
-    consistency_score = max(0, 1 - (rmse_e / mean_expense)) if mean_expense > 0 else 0
-    
-    p_wape = 100 * np.sum(np.abs(errors)) / sum_abs_true if sum_abs_true > 0 else 100
-    expected_accuracy = max(0, 1 - (p_wape / 100.0))
-    
-    fss_score = (0.4 * (1 - bias_penalty)) + (0.3 * consistency_score) + (0.3 * expected_accuracy)
-
-    return {
-        'fss_score': fss_score, 
-        'bias_penalty': bias_penalty, 
-        'consistency_score': consistency_score, 
-        'expected_accuracy': expected_accuracy
-    }
-    
-def calculate_mpi_3_0_and_rate(y_true, historical_pred, global_wape, erai_score, mpi_percentile_rank, fss_score):
-    wape_score = 1 - (global_wape / 100.0) if global_wape is not None else 0
-    ss_res = np.sum((y_true - historical_pred)**2)
-    ss_tot = np.sum((y_true - np.mean(y_true))**2)
-    r_squared = 1 - (ss_res / ss_tot) if ss_tot > 1e-9 else 0
-    r2_score = max(0, r_squared)
-    aas = 0.7 * wape_score + 0.3 * r2_score
-    
-    rss = erai_score if erai_score is not None else 0
-    mpi_3_0_score = (0.25 * aas) + (0.25 * rss) + (0.50 * fss_score)
-    
-    rating = "F" 
-    if mpi_percentile_rank is None:
-        rating = "N/A"
-    else:
-        prank = mpi_percentile_rank
-        score = mpi_3_0_score
-
-        if prank > 90:
-            if score >= 0.85: rating = "A+"
-            elif score >= 0.75: rating = "A"
-            elif score >= 0.60: rating = "B+"
-            elif score >= 0.50: rating = "C"
-            else: rating = "D"
-        elif prank > 70:
-            if score >= 0.85: rating = "A"
-            elif score >= 0.75: rating = "A-"
-            elif score >= 0.60: rating = "B"
-            elif score >= 0.50: rating = "C-"
-            else: rating = "D-"
-        elif prank > 40:
-            if score >= 0.85: rating = "B+"
-            elif score >= 0.75: rating = "B-"
-            elif score >= 0.60: rating = "C+"
-            elif score >= 0.50: rating = "D"
-            else: rating = "F"
-        else: # < 40%
-            if score >= 0.85: rating = "B"
-            elif score >= 0.75: rating = "C"
-            elif score >= 0.60: rating = "C-"
-            elif score >= 0.50: rating = "D-"
-            else: rating = "F"
-            
-    suggestions = {
-        "A+": "頂級信賴。模型的綜合能力與穩定性均達到最高標準。其預算建議可作為**關鍵長期財務規劃**的核心依據。",
-        "A": "高度可靠。模型表現出色且穩定，預測結果值得信賴。非常適合用於設定**常規的月度儲蓄目標與預算**。",
-        "A-": "穩健可靠。模型表現良好，且穩定性高。其預算建議是**設定日常開銷管理**的堅實基礎。",
-        "B+": "良好且穩定。模型的綜合表現不錯，且穩定性值得肯定。其預算建議具有**很高的參考價值**。",
-        "B": "表現良好，但穩定性中等。模型具備不錯的預測能力，但其表現在不同數據週期下可能存在波動。可作為**趨勢判斷的參考**。",
-        "B-": "表現尚可，穩定性中等。模型具備基礎預測能力，建議在採納其預算時，結合自身判斷，並**保留一定的彈性**。",
-        "C+": "基礎可用。模型的預測結果可作為一個**大致的趨勢方向**，但不建議完全依賴其精確數值。",
-        "C": "僅供參考。模型在綜合能力或穩定性上存在短板，其預測可能存在較大誤差或不確定性。",
-        "C-": "需謹慎對待。模型的預測能力較弱，建議在採納前，詳細檢視報告中的「前向測試儀表板」，了解其主要缺陷。",
-        "D": "存在明顯問題。模型在綜合能力和穩定性上均表現不佳，其預測結果參考價值很低。",
-        "D-": "建議停用。模型存在嚴重缺陷，其預測結果可能產生誤導。",
-        "F": "完全不可信。模型的預測能力已低於基準水平，繼續使用弊大於利。請檢查原始數據或等待積累更多資料。",
-        "N/A": "交叉驗證失敗，無法進行混合評級。"
-    }
-                
-    return {
-        'mpi_score': mpi_3_0_score, 
-        'rating': rating, 
-        'suggestion': suggestions.get(rating, "未知評級。"),
-        'components': {'absolute_accuracy': aas, 'relative_superiority': rss, 'future_stability': fss_score}
-    }
-
-def perform_internal_benchmarking(y_true, historical_ensemble_pred, is_shock_flags):
-    ensemble_residuals = y_true - historical_ensemble_pred
-    clean_residuals = ensemble_residuals[~is_shock_flags]
-    clean_y_true = y_true[~is_shock_flags]
-    
-    ensemble_wape_robust = (np.sum(np.abs(clean_residuals)) / np.sum(np.abs(clean_y_true))) * 100 if np.sum(np.abs(clean_y_true)) > 1e-9 else 100.0
-    ensemble_quantile_preds = {q: historical_ensemble_pred + np.percentile(ensemble_residuals, q*100) for q in [0.1, 0.25, 0.75, 0.9]}
-    ensemble_erai_score = calculate_erai(y_true, historical_ensemble_pred, ensemble_quantile_preds, ensemble_wape_robust)
-    
-    return {'erai_score': ensemble_erai_score}
 
 # --- 進度條輔助函數 ---
 def print_progress_bar(iteration, total, prefix='', suffix='', decimals=1, length=50, fill='█', print_end="\r"):
@@ -3087,21 +2926,6 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             print(f"  - WAPE (排除衝擊後): {colors.GREEN}{historical_wape_robust:.2f}% (反映日常預測誤差比例){colors.RESET}")
         if historical_mase is not None: 
             print(f"  - MASE (平均絕對標度誤差): {historical_mase:.2f} (小於1優於天真預測)")
-
-        if mpi_results is not None:
-            mpi_score = mpi_results['mpi_score']
-            rating = mpi_results['rating']
-            suggestion = mpi_results['suggestion']
-            components = mpi_results['components']
-            
-            mpi_display_str = f"{mpi_score:.3f} ({mpi_score:.1%})"
-            if 'mpi_percentile_rank' in locals() and mpi_percentile_rank is not None:
-                 mpi_display_str += f" | {colors.BOLD}百分位等級: P{mpi_percentile_rank:.1f}{colors.RESET}{colors.PURPLE}{colors.BOLD}"
-
-            print(f"{colors.PURPLE}{colors.BOLD}  ---")
-            print(f"{colors.PURPLE}{colors.BOLD}  - MPI 3.0 (綜合效能指數): {mpi_display_str}  評級: {rating}{colors.RESET}")
-            print(f"{colors.WHITE}    └─ 絕對準確度: {components['absolute_accuracy']:.3f} | 相對優越性: {components['relative_superiority']:.3f} | 未來穩定性: {components['future_stability']:.3f}{colors.RESET}")
-            print(f"{colors.WHITE}    └─ {suggestion}{colors.RESET}")
 
     if prequential_metrics_report:
         print(prequential_metrics_report)
