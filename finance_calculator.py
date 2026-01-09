@@ -2,7 +2,7 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.7.3         #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.7.4         #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                  #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
@@ -16,7 +16,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v3.7.3"
+SCRIPT_VERSION = "v3.7.4"
 SCRIPT_UPDATE_DATE = "2026-01-09"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -257,37 +257,61 @@ class BayesianInferenceEngine:
 
 # ==============================================================================
 # [模組 2] 雙軌決策管理器 (RLF Fusion)
+# 修正說明 V3: 
+# 1. 引入 CV (變異係數) 作為波動性的數學定義。
+# 2. 區分「統計共識 (Statistical Consensus)」與「經濟分歧 (Economic Divergence)」。
 # ==============================================================================
 class DualTrackManager:
     def compare_and_decide(self, freq_val, bayes_val, bayes_std, dof):
-        # [Zero-Assumption] 使用機率密度計算相對似然權重
-        # 不設定任何閥值，純粹依賴 Student-t 分佈的形狀
-        dist = stats.t(df=dof, loc=bayes_val, scale=bayes_std)
-        peak_density = dist.pdf(bayes_val)
-        freq_density = dist.pdf(freq_val)
+        # 1. 計算貝氏模型的變異係數 (Coefficient of Variation, CV)
+        # 這是定義 "波動大小" 的核心指標：CV > 0.3 定義為高波動
+        bayes_cv = bayes_std / (abs(bayes_val) + 1e-9)
         
-        # 相對似然比 (Relative Likelihood Ratio)
-        weight = freq_density / peak_density 
-        
-        # 線性融合 (Linear Opinion Pool)
-        fused_val = (weight * freq_val) + ((1 - weight) * bayes_val)
-        
-        # 下方僅為 "顯示用" 的文字描述，不影響數值計算
+        # 2. 計算兩派模型的差異率 (Delta)
+        # 這是定義 "意見分歧" 的核心指標
         mean_val = (freq_val + bayes_val) / 2
         if mean_val == 0: mean_val = 1e-6
         delta = abs(freq_val - bayes_val) / mean_val * 100
+        
+        # 3. 計算 Z-Score (統計距離)
         z_score = abs(freq_val - bayes_val) / (bayes_std + 1e-9)
+
+        # 4. RLF 權重計算
+        dist = stats.t(df=dof, loc=bayes_val, scale=bayes_std)
+        peak_density = dist.pdf(bayes_val)
+        freq_density = dist.pdf(freq_val)
+        weight = freq_density / peak_density 
+        fused_val = (weight * freq_val) + ((1 - weight) * bayes_val)
         
         status, msg = "", ""
-        # 使用標準差 (Sigma) 作為通用語言，而非人為百分比
+        
+        # [邏輯決策樹]
+        # 定義: 高波動門檻 = 30% (CV > 0.3)
+        # 定義: 顯著差異門檻 = 30% (Delta > 30.0)
+        
         if z_score < 1.0:
-            status, msg = "CONSENSUS", "模型共識 (1σ內): 數據位於高機率密度區。"
+            # 統計上距離很近 (< 1個標準差)
+            if delta > 30.0:
+                # [特殊情況]：雖然統計距離近，但數值差異巨大 -> 這是因為標準差(波動)太大了！
+                status = "VOLATILE_MASKING"
+                msg = f"波動掩蓋 (CV={bayes_cv:.1%}): 貝氏不確定性極高，掩蓋了 {delta:.0f}% 的巨大分歧。"
+            else:
+                # 數值差異小，統計距離也小 -> 真正的共識
+                status = "CONSENSUS"
+                msg = "模型共識 (1σ內): 兩學派觀點一致，且數據波動在合理範圍。"
+                
         elif z_score < 2.0:
-            status, msg = "FRICTION", "輕微差異 (2σ內): 數據位於中機率密度區。"
+            status, msg = "FRICTION", "輕微差異 (2σ內): 存在觀點摩擦，但未達顯著衝突。"
         elif z_score < 3.0:
-            status, msg = "DIVERGENCE", "顯著分歧 (3σ內): 數據位於低機率密度區。"
+            status, msg = "DIVERGENCE", "顯著分歧 (3σ內): 模型看法分岐，建議採納融合值。"
         else:
-            status, msg = "CONFLICT", "極端衝突 (>3σ): 數據位於極端尾部。"
+            status, msg = "CONFLICT", "極端衝突 (>3σ): 模型完全無法調和，數據可能包含離群特徵。"
+
+        # 為了讓外部顯示更清楚，我們把 CV 也傳出去
+        # 這裡利用 python 的動態特性，將 CV 附加在 msg 後面，或者稍微修改 return 結構
+        # 為了不破壞 main 的解構賦值，我們把 CV 資訊寫進 msg 裡
+        if "CV=" not in msg and bayes_cv > 0.3:
+            msg += f" (注意: 高波動 CV={bayes_cv:.1%})"
 
         return status, fused_val, delta, msg, weight
 
