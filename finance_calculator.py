@@ -2,7 +2,7 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.7.1          #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.7.2         #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                  #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
@@ -16,7 +16,7 @@
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v3.7.1"
+SCRIPT_VERSION = "v3.7.2"
 SCRIPT_UPDATE_DATE = "2026-01-09"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -293,41 +293,56 @@ class DualTrackManager:
 
 # ==============================================================================
 # [模組 3] MPI 4.3 效能評估器 (Information-Theoretic Efficiency)
-# 修正說明: 引入內部標準化 (Internal Normalization) 以解決大數值導致的 InfoGain 溢位問題
+# 修正說明 V2: 
+# 1. 維持 Z-Score 標準化 (解決單位問題)
+# 2. 新增「零變異數陷阱」防護 (解決 N<2 時 Naive 模型過度自信導致的 InfoGain 爆炸)
 # ==============================================================================
 class PerformanceEvaluator:
     def evaluate(self, y_true, y_pred, y_std, dof):
         # [物理限制] 資料量 < 6 無法建立統計基準 (KS Test 需要樣本)
         if len(y_true) < 6: return None
 
-        # --- 步驟 0: 數據標準化 (解決數值爆炸的關鍵) ---
-        # 為了讓 InfoGain 不受貨幣單位(如日幣vs美金)影響，我們先將數據轉為 Z-Score 空間
-        # 這符合 "無參數" 原則：我們不假設單位，而是讓數據自己定義尺度。
+        # --- 步驟 0: 數據標準化 ---
+        # 讓評分機制具備「尺度不變性 (Scale Invariance)」
         scaler_mean = np.mean(y_true)
         scaler_std = np.std(y_true)
-        if scaler_std < 1e-9: scaler_std = 1.0 # 防止除以零
+        if scaler_std < 1e-9: scaler_std = 1.0 
         
-        # 將所有序列轉換為標準常態空間 (無單位化)
-        target_y_raw = y_true[1:]
-        target_y = (target_y_raw - scaler_mean) / scaler_std
+        # 轉為 Z-Score 空間 (無單位)
+        target_y = (y_true[1:] - scaler_mean) / scaler_std
+        naive_mu = (y_true[:-1] - scaler_mean) / scaler_std
+        model_mu = (y_pred[1:] - scaler_mean) / scaler_std
         
-        naive_mu_raw = y_true[:-1]
-        naive_mu = (naive_mu_raw - scaler_mean) / scaler_std
+        # 標準差縮放，並設定物理下限
+        # MIN_STD_Z = 0.01 代表在標準化空間中，我們不相信任何預測能精準到小於 1% 的全域波動
+        # 這能有效防止 logpdf 產生天文數字
+        MIN_STD_Z = 0.01
+        model_sigma = np.clip(y_std[1:] / scaler_std, MIN_STD_Z, None)
         
-        model_mu_raw = y_pred[1:]
-        model_mu = (model_mu_raw - scaler_mean) / scaler_std
-        
-        # 標準差也要縮放
-        model_sigma = y_std[1:] / scaler_std
-        
-        # 1. 建立動態基準: 隨機漫步 (Random Walk / Naive)
-        # 計算 Naive 在標準化空間的標準差
-        naive_std = np.array([np.std(target_y[:i+1]) for i in range(len(target_y))])
-        naive_std = np.clip(naive_std, 1e-6, None) # 在標準化空間中，1e-6 已經是非常微小的波動
-
         # 判斷是否為 Student-t 分佈
         is_t_dist = (dof is not None and isinstance(dof, np.ndarray))
         model_dof = dof[1:] if is_t_dist else None
+
+        # --- 步驟 1: 建立穩健的 Naive 基準 ---
+        # 修正: 當歷史資料不足(N<2)或數值完全相同(Std=0)時，
+        # Naive 不應假設 Std=0 (無限自信)，而應退回全域標準差 (Std=1.0)
+        naive_std_list = []
+        # 使用 expanding window 計算歷史波動
+        for i in range(len(target_y)):
+            # 取直到當下的歷史數據 (對應 target_y[:i+1] 的原始序列部分)
+            history_segment = target_y[:i+1]
+            if len(history_segment) < 2:
+                # 只有 1 筆資料，無法計算標準差 -> 假設為全域標準差 (1.0)
+                current_std = 1.0
+            else:
+                current_std = np.std(history_segment, ddof=1)
+                # 如果計算出來是 0 (數據完全沒變)，也強平為 1.0，避免無限懲罰
+                if current_std < MIN_STD_Z:
+                    current_std = 1.0
+            
+            naive_std_list.append(current_std)
+            
+        naive_std = np.array(naive_std_list)
 
         # 2. [指標 A] 資訊增益 (Information Gain)
         # 計算 Naive 的 LogScore (假設高斯)
@@ -342,28 +357,20 @@ class PerformanceEvaluator:
         mean_ls_model = np.mean(log_score_model)
 
         # 增益值 (Nats)
-        # 由於經過標準化，這個數值現在會落在合理範圍 (例如 -1.0 ~ 5.0 之間)
+        # 由於加上了 MIN_STD_Z 保護，這個數值現在會被限制在合理區間 (例如 -5 到 +5 之間)
         info_gain = mean_ls_naive - mean_ls_model
         
         # 3. [指標 B] 校準度 (Calibration) - KS Test
-        # 計算 PIT (Probability Integral Transform) - 這裡必需用原始數據或一致變換後的數據
-        # 為求精確，我們直接用標準化後的數據計算 CDF，數學上是等價的
         if is_t_dist:
             pit_values = stats.t.cdf(target_y, df=model_dof, loc=model_mu, scale=model_sigma)
         else:
             pit_values = stats.norm.cdf(target_y, loc=model_mu, scale=model_sigma)
             
-        # 執行 KS 檢定 (比較 PIT 與 Uniform 分佈)
         ks_stat, ks_pvalue = stats.kstest(pit_values, 'uniform')
 
-        # 4. [MPI 4.3 分數合成] - 純數學轉換
-        # InfoGain 現在是正常的 Nats 數值，Logistic 函數可以正常運作
+        # 4. [MPI 4.3 分數合成]
         base_perf = 1.0 / (1.0 + np.exp(-info_gain))
-        
-        # 校準係數
         calibration_factor = 1.0 - ks_stat
-        
-        # 最終分數
         mpi_score = base_perf * calibration_factor
         
         return {
