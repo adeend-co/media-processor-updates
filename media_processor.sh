@@ -50,7 +50,7 @@
 ############################################
 # 腳本設定
 ############################################
-SCRIPT_VERSION="v2.7.4" # <<< 版本號更新
+SCRIPT_VERSION="v2.7.5" # <<< 版本號更新
 
 ############################################
 # ★★★ 新增：使用者同意書版本號 ★★★
@@ -61,10 +61,10 @@ AGREEMENT_VERSION="1.6"
 ############################################
 # <<< 新增：腳本更新日期 >>>
 ############################################
-SCRIPT_UPDATE_DATE="2026-01-04" # 請根據實際情況修改此日期
+SCRIPT_UPDATE_DATE="2026-01-22" # 請根據實際情況修改此日期
 
 # ... 其他設定 ...
-TARGET_DATE="2026-01-11" # <<< 新增：設定您的目標日期
+TARGET_DATE="2026-02-23" # <<< 新增：設定您的目標日期
 # DEFAULT_URL, THREADS, MAX_THREADS, MIN_THREADS 保留
 DEFAULT_URL="https://www.youtube.com/watch?v=siNFnlqtd8M"
 THREADS=4
@@ -608,7 +608,7 @@ display_countdown() {
         seconds=$(( remaining_seconds % 60 ))
 
         # 組合顯示訊息 (使用不同顏色區分)
-        countdown_message="${CYAN}距離「寒假」（ ${TARGET_DATE} ）尚餘： ${GREEN}${days} ${WHITE}天 ${GREEN}${hours} ${WHITE}時 ${GREEN}${minutes} ${WHITE}分 ${GREEN}${seconds} ${WHITE}秒${RESET}"
+        countdown_message="${CYAN}距離「開學」（ ${TARGET_DATE} ）尚餘： ${GREEN}${days} ${WHITE}天 ${GREEN}${hours} ${WHITE}時 ${GREEN}${minutes} ${WHITE}分 ${GREEN}${seconds} ${WHITE}秒${RESET}"
     fi
 
     # 輸出倒數計時訊息
@@ -1417,7 +1417,7 @@ normalize_audio() {
     local target_TP=""
 
     # 判定分支
-    if (( $(echo "$measured_LRA > 11.5" | bc -l) )) || [ "$is_keyword_match" = true ]; then
+    if (( $(echo "$measured_LRA > 8.5" | bc -l) )) || [ "$is_keyword_match" = true ]; then
         # >>> 模式 A: 高動態保真模式 <<<
         strategy_mode="HIGH_DYNAMIC"
         mode_display_name="高動態保真模式 (High Dynamic)"
@@ -1426,7 +1426,7 @@ normalize_audio() {
         if [ "$is_keyword_match" = true ]; then
             trigger_reason="關鍵字匹配 [${BASH_REMATCH[0]}]"
         else
-            trigger_reason="高動態偵測 (LRA > 11.5)"
+            trigger_reason="高動態偵測 (LRA > 8.5)"
         fi
 
         target_I="-12 (雙層)" # 最終目標
