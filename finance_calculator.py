@@ -2,21 +2,21 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.7.5         #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.7.6         #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                  #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。           #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。             #
-# 更新 v3.7.5：因應新版Pandas要求，更動部分縮寫。                                     #
+# 更新 v3.7.6：因應新版Pandas要求，更動部分解析日期之邏輯(針對v3.0.2)。            #
 #                                                                              #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v3.7.5"
+SCRIPT_VERSION = "v3.7.6"
 SCRIPT_UPDATE_DATE = "2026-04-15"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -616,6 +616,11 @@ def find_column_by_synonyms(df_columns, synonyms):
 # --- 日期標準化 ---
 def normalize_date(date_str):
     s = str(date_str).strip().replace('月', '').replace('年', '-').replace(' ', '')
+    
+    # 【Pandas 3.0 修復】強制移除浮點數小數點，防止 202101.0 變形
+    if s.endswith('.0'):
+        s = s[:-2]
+        
     current_year = datetime.now().year
     
     if s.replace('.', '', 1).isdigit():
@@ -773,13 +778,16 @@ def process_finance_data_multiple(file_paths, colors):
     
     combined_df = pd.DataFrame(all_extracted_data)
 
-
     def parse_date_enhanced(date_str):
         nonlocal month_missing_count
         if pd.isnull(date_str):
             return pd.NaT
             
         s_val = str(date_str).strip()
+        
+        # 【Pandas 3.0 修復】防止新版解析器將浮點數無聲誤判為「公元1年」
+        if s_val.endswith('.0'):
+            s_val = s_val[:-2]
         
         # 【新增攔截器】強迫 Pandas 將 6 碼數字 (如 202101) 辨識為 年+月
         if len(s_val) == 6 and s_val.isdigit():
@@ -794,7 +802,6 @@ def process_finance_data_multiple(file_paths, colors):
             s_date = s_val
             current_year = datetime.now().year
 
-            
             if ('-' in s_date or '/' in s_date or '月' in s_date) and str(current_year) not in s_date:
                 try:
                     month_missing_count += 1
@@ -853,6 +860,7 @@ def process_finance_data_multiple(file_paths, colors):
     expense_df = combined_df[combined_df['Type'].str.lower() == 'expense']
     monthly_expenses = None
     if not expense_df.empty:
+        # 已保留你的 'ME' 修改，符合 Pandas 3.0 的要求
         monthly_expenses = expense_df.set_index('Parsed_Date').resample('ME')['Amount'].sum().reset_index()
         monthly_expenses['Amount'] = monthly_expenses['Amount'].fillna(0)
         monthly_expenses = monthly_expenses[monthly_expenses['Amount'] > 0]
@@ -964,8 +972,12 @@ def manual_seasonal_decompose(series, period=12, model='additive'):
     if len(series) < period * 2:
         return pd.DataFrame({'trend': series, 'seasonal': 0, 'resid': 0})
     trend = series.rolling(window=period, center=True).mean()
-    trend = trend.rolling(window=2, center=True).mean().shift(-1) if period % 2 == 0 else trend.rolling(window=period, center=True).mean()
-    trend = trend.fillna(method='bfill').fillna(method='ffill')
+    
+    if period % 2 == 0:
+        trend = trend.rolling(window=2, center=True).mean().shift(-1)
+        
+    # 【Pandas 3.0 修復】method='bfill' 已被徹底移除，必須改用原生函式
+    trend = trend.bfill().ffill()
     
     detrended = series - trend if model == 'additive' else series / trend
     seasonal_avg = detrended.groupby(detrended.index.month).mean()
