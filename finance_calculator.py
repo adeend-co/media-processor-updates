@@ -772,16 +772,28 @@ def process_finance_data_multiple(file_paths, colors):
         return None, None, "沒有成功提取任何資料"
     
     combined_df = pd.DataFrame(all_extracted_data)
-    
+
+
     def parse_date_enhanced(date_str):
         nonlocal month_missing_count
         if pd.isnull(date_str):
             return pd.NaT
+            
+        s_val = str(date_str).strip()
+        
+        # 【新增攔截器】強迫 Pandas 將 6 碼數字 (如 202101) 辨識為 年+月
+        if len(s_val) == 6 and s_val.isdigit():
+            try:
+                return pd.to_datetime(s_val, format='%Y%m')
+            except:
+                pass
+                
         try:
-            return pd.to_datetime(str(date_str), errors='raise')
+            return pd.to_datetime(s_val, errors='raise')
         except (ValueError, TypeError):
-            s_date = str(date_str).strip()
+            s_date = s_val
             current_year = datetime.now().year
+
             
             if ('-' in s_date or '/' in s_date or '月' in s_date) and str(current_year) not in s_date:
                 try:
