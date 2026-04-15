@@ -841,7 +841,7 @@ def process_finance_data_multiple(file_paths, colors):
     expense_df = combined_df[combined_df['Type'].str.lower() == 'expense']
     monthly_expenses = None
     if not expense_df.empty:
-        monthly_expenses = expense_df.set_index('Parsed_Date').resample('ME')['Amount'].sum().reset_index()
+        monthly_expenses = expense_df.set_index('Parsed_Date').resample('M')['Amount'].sum().reset_index()
         monthly_expenses['Amount'] = monthly_expenses['Amount'].fillna(0)
         monthly_expenses = monthly_expenses[monthly_expenses['Amount'] > 0]
         
