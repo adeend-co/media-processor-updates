@@ -2,14 +2,15 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.7.6         #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.7.6            #
 #                                                                              #
-# 著作權所有 © 2025 adeend-co。保留一切權利。                                  #
+# 著作權所有 © 2025 adeend-co。保留一切權利。                                     #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
-# 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。           #
-# 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。             #
-# 更新 v3.7.6：因應新版Pandas要求，更動部分解析日期之邏輯(針對v3.0.2)。            #
+# 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                #
+# 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                  #
+# 更新 v3.7.6：因應新版Pandas要求，更動部分解析日期之邏輯(針對v3.0.2)，並改善相關   #
+#             環境偵測及自動安裝流程。                                           #
 #                                                                              #
 #                                                                              #
 ################################################################################
@@ -44,16 +45,10 @@ import os
 import subprocess
 import warnings
 from datetime import datetime
-import pandas as pd
 import argparse
-import numpy as np
-from scipy.stats import linregress, t
-from scipy.stats import skew, kurtosis, median_abs_deviation, percentileofscore
-from scipy.optimize import nnls, minimize
-from scipy import signal, stats, linalg
 from collections import deque, Counter
 
-# --- 顏色處理類別 ---
+# --- 顏色處理類別 (移到最前面，供安裝程序使用) ---
 class Colors:
     def __init__(self, enabled=True):
         if enabled and sys.stdout.isatty():
@@ -62,6 +57,102 @@ class Colors:
             self.BOLD = '\033[1m'; self.RESET = '\033[0m'
         else:
             self.RED = self.GREEN = self.YELLOW = self.CYAN = self.PURPLE = self.WHITE = self.BOLD = self.RESET = ''
+
+# --- 智慧環境感知自動安裝引擎 ---
+def check_and_install_dependencies():
+    _c = Colors(enabled=True)
+    required_packages = ['pandas', 'numpy', 'scipy']
+    missing_packages = []
+    
+    # 1. 檢查缺少哪些套件
+    for pkg in required_packages:
+        try:
+            __import__(pkg)
+        except ImportError:
+            missing_packages.append(pkg)
+            
+    if not missing_packages:
+        return  # 什麼都不缺，直接進入主程式
+        
+    print(f"\n{_c.YELLOW}系統提示：偵測到缺少必要套件 {missing_packages}，正在啟動自動安裝程序...{_c.RESET}")
+    
+    # 2. 判斷是否為 Termux 環境 (Android 手機)
+    is_termux = 'PREFIX' in os.environ and 'com.termux' in os.environ['PREFIX']
+    
+    if is_termux:
+        print(f"{_c.CYAN} 偵測到 Termux (Android) 環境{_c.RESET}")
+        print(f"{_c.WHITE}為避免手機進行漫長的 C/Fortran 原始碼編譯，將優先使用系統級 pkg 預編譯套件...{_c.RESET}")
+        
+        # Termux 專屬的預編譯套件名稱對應
+        termux_pkg_map = {
+            'numpy': 'python-numpy',
+            'scipy': 'python-scipy',
+            'pandas': 'python-pandas'
+        }
+        
+        pkgs_to_install = [termux_pkg_map[p] for p in missing_packages if p in termux_pkg_map]
+        
+        if pkgs_to_install:
+            try:
+                # 安裝第三方軟體庫 (tur-repo) 與底層運算庫 (openblas)，這是 Pandas/Scipy 在手機端順暢運作的前提
+                print(f"{_c.YELLOW}正在配置底層依賴庫 (openblas, tur-repo)...{_c.RESET}")
+                subprocess.check_call(['pkg', 'install', '-y', 'openblas', 'tur-repo'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                
+                # 下載預編譯的 Python 套件
+                cmd = ['pkg', 'install', '-y'] + pkgs_to_install
+                print(f"{_c.YELLOW}正在下載手機端預編譯套件，這可能需要幾十秒鐘...{_c.RESET}")
+                subprocess.check_call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                print(f"{_c.GREEN}手機端預編譯套件安裝完成！{_c.RESET}")
+            except Exception as e:
+                print(f"{_c.RED}Termux pkg 安裝中斷，將由後備系統接管...{_c.RESET}")
+
+    # 3. 跨平台通用 (補齊剛才 pkg 沒裝上的，或是處理 PC 端安裝)
+    print(f"{_c.CYAN}正在驗證與補齊 Python 模組狀態...{_c.RESET}")
+    try:
+        # 靜默升級 pip 工具
+        subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--upgrade', 'pip'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        
+        for pkg in missing_packages:
+            try:
+                # 如果剛剛 Termux 的 pkg 已經成功裝上，這裡就不會報錯
+                __import__(pkg)
+            except ImportError:
+                print(f"{_c.WHITE}使用 pip 標準安裝 {pkg}...{_c.RESET}")
+                subprocess.check_call([sys.executable, '-m', 'pip', 'install', pkg])
+                
+        print(f"{_c.GREEN}所有依賴環境已建立完畢，正在啟動...{_c.RESET}\n")
+        
+    except subprocess.CalledProcessError as e:
+        print(f"\n{_c.RED}嚴重錯誤：自動安裝套件失敗！(錯誤碼: {e.returncode}){_c.RESET}")
+        if is_termux:
+            print(f"\n{_c.YELLOW}⚠️ 【手機端手動修復說明】{_c.RESET}")
+            print(f"由於手機架構限制，請關閉此腳本，並在 Termux 輸入以下指令手動安裝：")
+            print(f"{_c.WHITE}pkg update -y{_c.RESET}")
+            print(f"{_c.WHITE}pkg install tur-repo -y{_c.RESET}")
+            print(f"{_c.WHITE}pkg install python-numpy python-scipy python-pandas openblas -y{_c.RESET}")
+            print(f"執行完畢後再重新運行本腳本即可。")
+        sys.exit(1)
+
+# ==============================================================================
+# 立即執行環境檢查與依賴安裝 (在任何高風險第三方庫被 Import 之前)
+# ==============================================================================
+check_and_install_dependencies()
+
+# ==============================================================================
+# 載入第三方資料科學套件
+# ==============================================================================
+try:
+    import pandas as pd
+    import numpy as np
+    from scipy.stats import linregress, t
+    from scipy.stats import skew, kurtosis, median_abs_deviation, percentileofscore
+    from scipy.optimize import nnls, minimize
+    from scipy import signal, stats, linalg
+except ImportError as e:
+    _c = Colors(enabled=True)
+    print(f"\n{_c.RED}載入失敗：工具雖已嘗試安裝，但仍無法成功載入。{_c.RESET}")
+    print(f"{_c.YELLOW}詳細錯誤訊息: {e}{_c.RESET}")
+    sys.exit(1)
 
 # ==============================================================================
 # [MPI 4.3 核心系統 - 最終純淨版]
@@ -2940,7 +3031,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         rh_idx = -1 
         rh_weight = effective_base_weights[rh_idx]
         if rh_weight > 0.01:
-            print(f"\n{colors.YELLOW}{colors.BOLD}>>> 演算法運作機制透視 (Robust Theta-Hurdle){colors.RESET}")
+            print(f"\n{colors.YELLOW}{colors.BOLD}>>> 穩健混合模型機制說明 (Robust Theta-Hurdle){colors.RESET}")
             print(f"  {colors.WHITE}由於檢測到數據特徵符合條件，系統啟用了穩健混合模型 (權重 {rh_weight:.1%})：{colors.RESET}")
             print(f"  1. {colors.BOLD}Hurdle 機率層{colors.RESET}: 計算支出發生的可能性，排除零值對趨勢線的拉扯。")
             print(f"  2. {colors.BOLD}IRLS-Huber 收斂{colors.RESET}: 透過迭代重加權算法，自動降低異常極端值(Outliers)的影響權重。")
@@ -3010,7 +3101,6 @@ def main():
     print(f"{colors.WHITE}更新日期: {SCRIPT_UPDATE_DATE}{colors.RESET}")
 
     try:
-        install_dependencies(colors)
         file_paths_str = input(f"\n{colors.YELLOW}請貼上一個或多個以分號(;)區隔的 CSV 檔案路徑: {colors.RESET}")
         if not file_paths_str.strip():
             print(f"\n{colors.RED}錯誤：未提供任何檔案路徑。腳本終止。{colors.RESET}")
