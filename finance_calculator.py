@@ -2,22 +2,22 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.7.4         #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.7.5         #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                  #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。           #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。             #
-# 更新 v3.7.0：引入 MPI 4.3 純數學驅動核心 (Zero-Assumption)。                 #
-#             移除人工參數與舊版評分機制，改採線性代數動態約束與資訊理論評估。 #
+# 更新 v3.7.5：因應新版Pandas要求，更動部分縮寫。                                     #
+#                                                                              #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v3.7.4"
-SCRIPT_UPDATE_DATE = "2026-01-09"
+SCRIPT_VERSION = "v3.7.5"
+SCRIPT_UPDATE_DATE = "2026-04-15"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
 TABLE_CONFIG = {
@@ -841,7 +841,7 @@ def process_finance_data_multiple(file_paths, colors):
     expense_df = combined_df[combined_df['Type'].str.lower() == 'expense']
     monthly_expenses = None
     if not expense_df.empty:
-        monthly_expenses = expense_df.set_index('Parsed_Date').resample('M')['Amount'].sum().reset_index()
+        monthly_expenses = expense_df.set_index('Parsed_Date').resample('ME')['Amount'].sum().reset_index()
         monthly_expenses['Amount'] = monthly_expenses['Amount'].fillna(0)
         monthly_expenses = monthly_expenses[monthly_expenses['Amount'] > 0]
         
