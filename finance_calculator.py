@@ -828,7 +828,7 @@ def process_finance_data_multiple(file_paths, colors):
     combined_df['Amount'] = pd.to_numeric(combined_df['Amount'], errors='coerce')
     combined_df = combined_df[combined_df['Amount'] > 0]
     
-    unique_months = combined_df['Parsed_Date'].dt.to_period('M').nunique()
+    unique_months = combined_df['Parsed_Date'].dt.to_period('ME').nunique()
     if unique_months > 0:
         warnings_report.append(f"資料時間橫跨 {colors.BOLD}{unique_months}{colors.RESET} 個不同月份。")
     if month_missing_count > 0:
@@ -841,7 +841,7 @@ def process_finance_data_multiple(file_paths, colors):
     expense_df = combined_df[combined_df['Type'].str.lower() == 'expense']
     monthly_expenses = None
     if not expense_df.empty:
-        monthly_expenses = expense_df.set_index('Parsed_Date').resample('M')['Amount'].sum().reset_index()
+        monthly_expenses = expense_df.set_index('Parsed_Date').resample('ME')['Amount'].sum().reset_index()
         monthly_expenses['Amount'] = monthly_expenses['Amount'].fillna(0)
         monthly_expenses = monthly_expenses[monthly_expenses['Amount'] > 0]
         
@@ -953,7 +953,8 @@ def manual_seasonal_decompose(series, period=12, model='additive'):
         return pd.DataFrame({'trend': series, 'seasonal': 0, 'resid': 0})
     trend = series.rolling(window=period, center=True).mean()
     trend = trend.rolling(window=2, center=True).mean().shift(-1) if period % 2 == 0 else trend.rolling(window=period, center=True).mean()
-    trend = trend.fillna(method='bfill').fillna(method='ffill')
+    trend = trend.bfill().ffill()
+    
     
     detrended = series - trend if model == 'additive' else series / trend
     seasonal_avg = detrended.groupby(detrended.index.month).mean()
@@ -2554,7 +2555,7 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         print(warnings_report)
         print(f"{colors.YELLOW}--------------------{colors.RESET}")
 
-    num_unique_months = monthly_expenses['Parsed_Date'].dt.to_period('M').nunique() if not monthly_expenses.empty else 0
+    num_unique_months = monthly_expenses['Parsed_Date'].dt.to_period('ME').nunique() if not monthly_expenses.empty else 0
 
     seasonal_note = "未使用季節性分解（資料月份不足 24 個月）。"
     analysis_data = None
@@ -2592,12 +2593,12 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
     else:
         target_year, target_month = current_year, current_month + 1
     target_month_str = f"{target_year}-{target_month:02d}"
-    target_period = pd.Period(target_month_str, freq='M')
+    target_period = pd.Period(target_month_str, freq='ME')
     
     steps_ahead, step_warning = 1, ""
     if not monthly_expenses.empty:
         last_date = monthly_expenses['Parsed_Date'].max()
-        last_period = last_date.to_period('M')
+        last_period = last_date.to_period('ME')
         steps_ahead = (target_period.year - last_period.year) * 12 + (target_period.month - last_period.month)
         if steps_ahead <= 0:
             if "數據包含未來月份" not in str(warnings_report):
