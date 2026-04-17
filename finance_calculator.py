@@ -2650,13 +2650,14 @@ def run_drf_prediction(monthly_expenses_df, steps_ahead=1, trend_window=12, mode
     hist_pred_drf = decomposed['trend'] + decomposed['seasonal']
     return drf_predictions, hist_pred_drf.values, None, None
 
-# --- 理論預測上限核心演算法 (全局訊噪比修正版) ---
+# --- 理論預測上限計算模組 (統計學解耦修正版) ---
 def calculate_predictability_ceiling(monthly_expenses):
     """
     計算「理論預測上限」(Theoretical Predictability Ceiling)
-    修正說明：
-    1. AR1 取絕對值，因為負相關(交替支出)也是一種強烈的財務記憶。
-    2. 改用內建的 seasonal_decompose 萃取趨勢與季節性，取代粗糙的滾動中位數，還原真實訊噪比。
+    邏輯重構說明：
+    1. 離群值處理：使用全局中位數絕對偏差 (MAD) 處理極端值。
+    2. 全局記憶掃描：不再侷限於 AR(1)。掃描 Lag 1 至 Lag 12，尋找全局最強的自相關週期。
+    3. 趨勢萃取解耦：採用時間序列標準的 13 個月置中移動平均，徹底分離年度季節性與長期趨勢。
     """
     data = monthly_expenses['Real_Amount'].values
     n_total = len(data)
@@ -2665,41 +2666,73 @@ def calculate_predictability_ceiling(monthly_expenses):
         return None, None
         
     # ==========================================
-    # 步驟一：客觀計算「財務記憶週期」(AR1 Half-life)
+    # 步驟一：離群值評估與動態過濾
     # ==========================================
-    if np.var(data) > 1e-9:
-        ar1_coef = np.corrcoef(data[:-1], data[1:])[0, 1]
-    else:
-        ar1_coef = 0.0
+    from scipy import stats
+    import numpy as np
+    import pandas as pd
+    
+    global_median = np.median(data)
+    mad = np.median(np.abs(data - global_median))
+    # 防呆機制：若 MAD 過小，改用標準差替代
+    if mad < 1e-9:
+        mad = np.std(data) * 0.6745 
         
-    # 【修正1】必須取絕對值！負相關也是一種記憶特徵
-    ar1_coef_abs = abs(ar1_coef)
-    ar1_coef_abs = max(0.01, min(0.99, ar1_coef_abs))
+    skewness = abs(stats.skew(data))
+    dynamic_k = 3.0 + (skewness * 0.5) 
+    shock_upper_bound = global_median + (dynamic_k * mad * 1.4826)
     
-    # 物理半衰期公式：t = ln(0.5) / ln(r)
-    optimal_half_life = np.log(0.5) / np.log(ar1_coef_abs)
-    optimal_half_life = min(60.0, optimal_half_life) 
+    clean_data = np.clip(data, a_min=None, a_max=shock_upper_bound)
     
     # ==========================================
-    # 步驟二：萃取免疫極端值的「結構信號」與「雜訊」
+    # 步驟二：全週期財務記憶掃描 (Global Memory Scan)
+    # 邏輯：掃描 1~12 個月的 ACF，尋找對當下影響力最大的歷史週期
     # ==========================================
-    # 【修正2】使用時間序列分解 (包含趨勢與季節性)，真正分離出雜訊
-    series_pd = pd.Series(data)
-    decomposed = manual_seasonal_decompose(series_pd, period=12, model='additive')
+    max_acf = 0.0
+    dominant_lag = 1.0
     
-    # 雜訊 = 真實數據剝離趨勢與季節性後的殘差
-    noise = decomposed['resid'].dropna().values
+    # 掃描 1 到 12 個月的延遲
+    for lag in range(1, 13):
+        if len(clean_data) > lag:
+            # 計算乾淨數據的自相關係數並取絕對值
+            acf_val = abs(np.corrcoef(clean_data[:-lag], clean_data[lag:])[0, 1])
+            if acf_val > max_acf:
+                max_acf = acf_val
+                dominant_lag = float(lag)
+                
+    # 為了相容前端報告的變數名稱。若最大 ACF 仍無顯著統計意義，則預設為 1.0
+    optimal_half_life = dominant_lag if max_acf > 0.15 else 1.0
+
+    # ==========================================
+    # 步驟三：結構性特徵萃取 (徹底解耦)
+    # 邏輯：採用統計標準的 13 個月置中視窗，確保趨勢線平滑且不吸收季節性雜訊
+    # ==========================================
+    series_clean = pd.Series(clean_data, index=monthly_expenses['Parsed_Date'])
+    
+    # 使用 13 個月置中移動平均 (確保對稱性，無相位延遲)
+    baseline_trend = series_clean.rolling(window=13, min_periods=1, center=True).mean()
+    
+    # 計算季節性成分：取去趨勢後各月份的中位數
+    detrended = series_clean - baseline_trend
+    seasonal_median = detrended.groupby(detrended.index.month).median()
+    seasonal_component = pd.Series(seasonal_median[series_clean.index.month].values, index=series_clean.index)
+    
+    # 結構信號 = 長期趨勢 + 年度季節性
+    structural_signal = baseline_trend + seasonal_component
     
     # ==========================================
-    # 步驟三：計算全局訊噪比 (真實極限)
+    # 步驟四：變異數分解與預測上限計算
     # ==========================================
+    # 殘差 (真實雜訊) = 原始真實數據(含極端值) - 結構信號
+    noise = data - structural_signal.values
+    
     var_total = np.var(data)
-    var_noise = np.var(noise)
+    var_noise = np.var(noise[~np.isnan(noise)]) # 排除因 rolling 產生的邊界 NaN
     
     if var_total < 1e-9:
         return 100.0, optimal_half_life
         
-    # 理論預測上限 = 可解釋變異比例 (相當於 R-squared proxy)
+    # 理論預測上限 = 結構信號變異佔總體變異的比例
     predictability = (1.0 - (var_noise / var_total)) * 100.0
     
     return np.clip(predictability, 0.0, 100.0), optimal_half_life
@@ -2708,29 +2741,29 @@ def calculate_predictability_ceiling(monthly_expenses):
 def format_predictability_report(ceiling_value, optimal_half_life, colors):
     report = [f"\n{colors.CYAN}{colors.BOLD}>>> 數據特性與預測極限分析{colors.RESET}"]
     
+    # 未達 36 個月之顯示
     if ceiling_value is None:
         report.append(f"  ● 理論預測上限：未啟用 (歷史資料需滿 36 個月以建立可靠之數學分析基準)")
         return "\n".join(report)
         
-    # 【修正3】顯示1位小數，避免未滿1個月的週期被四捨五入為 0
-    report.append(f"  ● 財務記憶週期：{optimal_half_life:.1f} 個月")
-    report.append(f"    └ 說明：系統透過歷史誤差最小化算法，判定您的消費模式約在 {optimal_half_life:.1f} 個月前發生代謝與迭代。此週期已作為後續運算之數學基準。")
+    # 達標後之動態顯示
+    report.append(f"  ● 財務記憶週期：{optimal_half_life:.0f} 個月")
+    report.append(f"    └ 說明：系統透過歷史誤差最小化算法，判定您的消費模式約在 {optimal_half_life:.0f} 個月前發生代謝與迭代。此週期已作為後續運算之數學基準。")
     
     report.append(f"\n  ● 理論預測上限：{colors.BOLD}{ceiling_value:.1f}%{colors.RESET}")
     report.append(f"    └ 解釋：在排除通膨並導入財務記憶週期後，您的歷史支出變化中有 {ceiling_value:.1f}% 具備客觀的數學結構，{100-ceiling_value:.1f}% 為隨機性波動。")
     report.append(f"    └ 意義：此數值代表任何數學模型對您次月支出進行預測的最高極限。")
     
     report.append(f"\n  ● 財務結構評估：")
-    # 【修正4】微調評估門檻，使其符合經過季節性分解後較為嚴格的訊噪比標準
-    if ceiling_value > 65.0:
+    if ceiling_value > 70.0:
         report.append(f"    系統判定：{colors.GREEN}高度規律化{colors.RESET}")
         report.append(f"    說明：您的支出軌跡具備強烈的可預測性。預測模型的數值具有高度參考價值，適合進行精確的次月預算編列。")
-    elif ceiling_value >= 35.0:
+    elif ceiling_value >= 40.0:
         report.append(f"    系統判定：{colors.YELLOW}中度混合{colors.RESET}")
         report.append(f"    說明：您的支出由常態規律與偶發事件共同驅動。預測數值可作為基準參考，但需搭配一定比例的彈性預備金。")
     else:
         report.append(f"    系統判定：{colors.RED}高度隨機化{colors.RESET}")
-        report.append(f"    說明：您的歷史支出缺乏固定規律，單月變動幅度較大。建議將財務管理重心轉向「維持高流動性現金」與「總額度控管」。")
+        report.append(f"    說明：您的歷史支出缺乏固定規律，單月變動幅度極大。預測模型的單點數值參考價值受限，建議將財務管理重心轉向「維持高流動性現金」與「總額度控管」，而非追求單月精確預算。")
         
     return "\n".join(report)
 
