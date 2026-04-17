@@ -2,23 +2,23 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.7.6            #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.7.7            #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                     #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                #
-# 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。                  #
-# 更新 v3.7.6：因應新版Pandas要求，更動部分解析日期之邏輯(針對v3.0.2)，並改善相關   #
-#             環境偵測及自動安裝流程。                                           #
+# 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。 
+#                                                                                 #
+# 更新 v3.7.7：新增「理論預測上限」之數值（僅在資料量達36個月以上啟用）。                   #
 #                                                                              #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v3.7.6"
-SCRIPT_UPDATE_DATE = "2026-04-15"
+SCRIPT_VERSION = "v3.7.7"
+SCRIPT_UPDATE_DATE = "2026-04-17"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
 TABLE_CONFIG = {
@@ -2650,6 +2650,87 @@ def run_drf_prediction(monthly_expenses_df, steps_ahead=1, trend_window=12, mode
     hist_pred_drf = decomposed['trend'] + decomposed['seasonal']
     return drf_predictions, hist_pred_drf.values, None, None
 
+# --- 理論預測上限核心演算法 ---
+def calculate_predictability_ceiling(monthly_expenses):
+    """
+    計算「理論預測上限」(Theoretical Predictability Ceiling)
+    結合時間衰減與結構突變懲罰的加權變異數模型
+    """
+    data = monthly_expenses['Real_Amount'].values
+    n_total = len(data)
+    
+    # 限制條件：資料必須 >= 36 個月才啟用
+    if n_total < 36:
+        return None
+        
+    # 取得結構突變點 (呼叫腳本既有的函數)
+    change_point = detect_structural_change_point(monthly_expenses)
+    
+    # 取得殘差 (呼叫腳本既有的季節性分解函數)
+    series_pd = pd.Series(data, index=pd.to_datetime(monthly_expenses['Parsed_Date']))
+    decomposed = manual_seasonal_decompose(series_pd, period=12, model='additive')
+    resid = decomposed['resid'].values
+    
+    # 1. 建立時間衰減權重 (半衰期設為 24 個月)
+    half_life = 24.0
+    decay_rate = np.log(2) / half_life
+    w_time = np.exp(-decay_rate * (n_total - 1 - np.arange(n_total)))
+    
+    # 2. 建立結構突變懲罰權重
+    w_break = np.ones(n_total)
+    if change_point > 0:
+        # 若發生結構轉變，將過去舊時代的資料權重懲罰縮減至 20%
+        w_break[:change_point] = 0.2
+        
+    # 3. 組合最終綜合權重並標準化
+    weights = w_time * w_break
+    weights /= np.sum(weights)
+    
+    # 內部輔助：計算加權變異數
+    def weighted_variance(values, w):
+        mean_val = np.average(values, weights=w)
+        return np.average((values - mean_val)**2, weights=w)
+        
+    var_total = weighted_variance(data, weights)
+    var_resid = weighted_variance(resid, weights)
+    
+    # 防呆機制：如果總變異數趨近於 0，代表數字完全沒變，規律性 100%
+    if var_total < 1e-9:
+        return 100.0
+        
+    # 4. 計算可解釋變異佔比 (1 - 雜訊比例)
+    predictability = (1.0 - (var_resid / var_total)) * 100.0
+    
+    # 限制在 0% ~ 100% 的邏輯區間內
+    return np.clip(predictability, 0.0, 100.0)
+
+# --- 理論預測上限前端顯示排版 ---
+def format_predictability_report(ceiling_value, colors):
+    report = [f"\n{colors.CYAN}{colors.BOLD}>>> 數據特性與預測極限分析{colors.RESET}"]
+    
+    # 未達 36 個月之顯示
+    if ceiling_value is None:
+        report.append(f"  ● 理論預測上限：未啟用 (歷史資料需滿 36 個月以建立可靠之結構分析)")
+        return "\n".join(report)
+        
+    # 達標後之動態顯示
+    report.append(f"  ● 理論預測上限：{ceiling_value:.1f}%")
+    report.append(f"    └ 解釋：在排除通膨並經「近期權重與結構轉變」校正後，您的歷史支出變化中有 {ceiling_value:.1f}% 具備可循之規律，{100-ceiling_value:.1f}% 為隨機性波動。")
+    report.append(f"    └ 意義：此數值代表任何數學模型對您次月支出進行預測的最高極限。")
+    
+    report.append(f"\n  ● 財務結構評估：")
+    if ceiling_value > 70.0:
+        report.append(f"    系統判定：{colors.GREEN}高度規律化{colors.RESET}")
+        report.append(f"    說明：您的支出軌跡具備強烈的可預測性。預測模型的數值具有高度參考價值，適合進行精確的次月預算編列。")
+    elif ceiling_value >= 40.0:
+        report.append(f"    系統判定：{colors.YELLOW}中度混合{colors.RESET}")
+        report.append(f"    說明：您的支出由常態規律與偶發事件共同驅動。預測數值可作為基準參考，但需搭配一定比例的彈性預備金。")
+    else:
+        report.append(f"    系統判定：{colors.RED}高度隨機化{colors.RESET}")
+        report.append(f"    說明：您的歷史支出缺乏固定規律，單月變動幅度極大。預測模型的單點數值參考價值受限，建議將財務管理重心轉向「維持高流動性現金」與「總額度控管」，而非追求單月精確預算。")
+        
+    return "\n".join(report)
+
 # --- 主要分析與預測函數 ---
 def analyze_and_predict(file_paths_str: str, no_color: bool):
     colors = Colors(enabled=not no_color)
@@ -2992,7 +3073,12 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
         if historical_mase is not None: 
             print(f"  - MASE (平均絕對標度誤差): {historical_mase:.2f} (小於1優於天真預測)")
             
-        # [移除] 舊版 MPI 3.0 報告輸出 (因變數已不存在)
+# ---------------- 插入點開始 ----------------
+    # 觸發預測極限分析
+    ceiling_value = calculate_predictability_ceiling(monthly_expenses)
+    predictability_report = format_predictability_report(ceiling_value, colors)
+    print(predictability_report)
+    # ---------------- 插入點結束 ----------------
 
     if prequential_metrics_report:
         print(prequential_metrics_report)
