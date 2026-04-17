@@ -2650,61 +2650,98 @@ def run_drf_prediction(monthly_expenses_df, steps_ahead=1, trend_window=12, mode
     hist_pred_drf = decomposed['trend'] + decomposed['seasonal']
     return drf_predictions, hist_pred_drf.values, None, None
 
-# --- 理論預測上限核心演算法 (全局訊噪比修正版) ---
+# --- 理論預測上限計算模組 (動態自適應版) ---
 def calculate_predictability_ceiling(monthly_expenses):
     """
     計算「理論預測上限」(Theoretical Predictability Ceiling)
-    修正過擬合盲點：
-    1. 透過 AR(1) 自相關係數客觀計算財務記憶半衰期。
-    2. 使用對極端值免疫的「滾動中位數 (Rolling Median)」萃取全局基準線。
-    3. 透過全局變異數分解，計算真實的訊噪比。
+    演算法說明：
+    1. 動態記憶週期：透過 AR(1) 自相關係數絕對值計算時間序列的記憶半衰期。
+    2. 離群值處理：使用全局中位數絕對偏差 (MAD) 與偏態 (Skewness) 動態決定極端值邊界。
+    3. 動態視窗：趨勢計算視窗由數據的記憶半衰期動態決定，取代固定參數。
     """
     data = monthly_expenses['Real_Amount'].values
     n_total = len(data)
     
+    # 限制：資料需滿 36 個月以建立統計基準
     if n_total < 36:
         return None, None
         
     # ==========================================
-    # 步驟一：客觀計算「財務記憶週期」(AR1 Half-life)
+    # 步驟一：計算「財務記憶週期」(AR1 Half-life)
     # ==========================================
-    # 計算延遲 1 個月的自相關係數 (Autocorrelation)
-    # 這代表「上個月的花費對這個月有多大的影響力」
     if np.var(data) > 1e-9:
         ar1_coef = np.corrcoef(data[:-1], data[1:])[0, 1]
     else:
         ar1_coef = 0.0
         
-    # 確保數值在合理範圍 (排除負相關導致的對數錯誤)
-    ar1_coef = max(0.01, min(0.99, ar1_coef))
-    
-    # 物理半衰期公式：t = ln(0.5) / ln(r)
-    # 代表經過多少個月後，過去的影響力會衰減到剩下 50%
-    optimal_half_life = np.log(0.5) / np.log(ar1_coef)
-    optimal_half_life = min(60.0, optimal_half_life) # 設算合理上限
+    # 取絕對值以處理正負相關，並限制範圍避免數值錯誤
+    ar1_coef_abs = max(0.01, min(0.99, abs(ar1_coef)))
+    optimal_half_life = np.log(0.5) / np.log(ar1_coef_abs)
+    optimal_half_life = min(60.0, optimal_half_life)
     
     # ==========================================
-    # 步驟二：萃取免疫極端值的「結構信號」與「雜訊」
+    # 步驟二：離群值評估與動態過濾
+    # 邏輯：考量歷史數據分佈，動態設定極端值門檻
     # ==========================================
-    # 使用 6 個月的滾動中位數作為基準線
-    # 中位數的數學特性：遇到單次高額衝擊時完全不會被拉偏，只反映核心生活水平
-    series_pd = pd.Series(data)
-    baseline_trend = series_pd.rolling(window=6, min_periods=1, center=False).median().values
+    from scipy import stats
     
-    # 雜訊 = 真實數據 - 核心基準線
-    noise = data - baseline_trend
+    global_median = np.median(data)
+    # 使用 MAD (Median Absolute Deviation) 作為波動指標
+    mad = np.median(np.abs(data - global_median))
+    
+    # 動態閾值乘數：根據數據偏態 (Skewness) 進行調整
+    # 高偏態數據將適度放寬門檻，保留較大的常態波動
+    skewness = abs(stats.skew(data))
+    dynamic_k = 3.0 + (skewness * 0.5) 
+    
+    # 計算極端值上限 (基於 Robust Z-Score)
+    shock_upper_bound = global_median + (dynamic_k * mad * 1.4826)
+    
+    # 處理離群值：將超過上限的數值截斷 (Clip) 至邊界值
+    clean_data = np.clip(data, a_min=None, a_max=shock_upper_bound)
     
     # ==========================================
-    # 步驟三：計算全局訊噪比 (真實極限)
+    # 步驟三：計算動態視窗大小
+    # 邏輯：基於記憶半衰期設定趨勢視窗
     # ==========================================
+    # 視窗大小取半衰期的無條件進位
+    dynamic_window = int(np.ceil(optimal_half_life))
+    
+    # 設定視窗限制：最小值 3，最大值為資料長度的 1/3
+    dynamic_window = max(3, min(dynamic_window, n_total // 3))
+    # 確保視窗大小為奇數，以便於移動平均時能對齊中心
+    if dynamic_window % 2 == 0:
+        dynamic_window += 1
+        
+    # ==========================================
+    # 步驟四：萃取結構性特徵 (動態趨勢與季節性)
+    # ==========================================
+    series_clean = pd.Series(clean_data, index=monthly_expenses['Parsed_Date'])
+    
+    # 計算置中移動平均趨勢線
+    baseline_trend = series_clean.rolling(window=dynamic_window, min_periods=1, center=True).mean()
+    
+    # 計算季節性成分：取去趨勢後各月份的中位數
+    detrended = series_clean - baseline_trend
+    seasonal_median = detrended.groupby(detrended.index.month).median()
+    seasonal_component = pd.Series(seasonal_median[series_clean.index.month].values, index=series_clean.index)
+    
+    # 結構信號 = 趨勢 + 季節性成分
+    structural_signal = baseline_trend + seasonal_component
+    
+    # ==========================================
+    # 步驟五：變異數分解與預測上限計算
+    # ==========================================
+    # 殘差 (雜訊) = 原始真實數據 - 結構信號
+    noise = data - structural_signal.values
+    
     var_total = np.var(data)
-    var_noise = np.var(noise)
+    var_noise = np.var(noise[~np.isnan(noise)]) # 排除邊界可能產生的 NaN
     
     if var_total < 1e-9:
         return 100.0, optimal_half_life
         
-    # 計算：1 - (雜訊波動 / 總波動)
-    # 不再使用權重萎縮分母，真實反映 60 個月整體的結構穩定度
+    # 預測上限 = 結構信號變異佔總體變異的比例
     predictability = (1.0 - (var_noise / var_total)) * 100.0
     
     return np.clip(predictability, 0.0, 100.0), optimal_half_life
