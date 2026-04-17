@@ -2,7 +2,7 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.7.7            #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.7.8            #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                     #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
@@ -10,14 +10,14 @@
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。 
 #                                                                                 #
-# 更新 v3.7.7：新增「理論預測上限」之數值（僅在資料量達36個月以上啟用）。                   #
+# 更新 v3.7.8：改進「理論預測上限」之計算方式。                                        #
 #                                                                              #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v3.7.7"
+SCRIPT_VERSION = "v3.7.8"
 SCRIPT_UPDATE_DATE = "2026-04-17"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -2650,72 +2650,96 @@ def run_drf_prediction(monthly_expenses_df, steps_ahead=1, trend_window=12, mode
     hist_pred_drf = decomposed['trend'] + decomposed['seasonal']
     return drf_predictions, hist_pred_drf.values, None, None
 
-# --- 理論預測上限核心演算法 ---
+# --- 理論預測上限核心演算法 (動態半衰期 + 純淨數據驅動版) ---
 def calculate_predictability_ceiling(monthly_expenses):
     """
     計算「理論預測上限」(Theoretical Predictability Ceiling)
-    結合時間衰減與結構突變懲罰的加權變異數模型
+    突破人為參數限制，利用「歷史軌跡誤差最小化 (Error Minimization)」
+    從原始數據中自動反推該使用者專屬的「財務記憶半衰期」，
+    再進行嚴謹的變異數解析。
     """
     data = monthly_expenses['Real_Amount'].values
     n_total = len(data)
     
     # 限制條件：資料必須 >= 36 個月才啟用
     if n_total < 36:
-        return None
+        return None, None
         
-    # 取得結構突變點 (呼叫腳本既有的函數)
-    change_point = detect_structural_change_point(monthly_expenses)
+    # ==========================================
+    # 階段一：動態尋找「最優財務半衰期」 (純數學窮舉)
+    # ==========================================
+    best_sse = float('inf')
+    optimal_half_life = 12.0 # 預設安全值
     
-    # 取得殘差 (呼叫腳本既有的季節性分解函數)
-    series_pd = pd.Series(data, index=pd.to_datetime(monthly_expenses['Parsed_Date']))
-    decomposed = manual_seasonal_decompose(series_pd, period=12, model='additive')
-    resid = decomposed['resid'].values
-    
-    # 1. 建立時間衰減權重 (半衰期設為 24 個月)
-    half_life = 24.0
-    decay_rate = np.log(2) / half_life
-    w_time = np.exp(-decay_rate * (n_total - 1 - np.arange(n_total)))
-    
-    # 2. 建立結構突變懲罰權重
-    w_break = np.ones(n_total)
-    if change_point > 0:
-        # 若發生結構轉變，將過去舊時代的資料權重懲罰縮減至 20%
-        w_break[:change_point] = 0.2
+    # 窮舉測試從 1 個月到 120 個月的半衰期
+    for hl in np.arange(1.0, 121.0, 1.0):
+        # 將半衰期轉換為 EMA 的平滑因子 alpha
+        alpha = 1.0 - np.exp(-np.log(2) / hl)
         
-    # 3. 組合最終綜合權重並標準化
-    weights = w_time * w_break
-    weights /= np.sum(weights)
+        # 手動計算該 alpha 下的 EMA 基準線
+        ema_test = np.zeros(n_total)
+        ema_test[0] = data[0]
+        for i in range(1, n_total):
+            ema_test[i] = alpha * data[i] + (1 - alpha) * ema_test[i-1]
+            
+        # 計算「用前一個月的 EMA 預測當月實際值」的誤差平方和
+        # 誤差越小，代表這個半衰期越符合該使用者的真實生活節奏
+        sse = np.sum((data[1:] - ema_test[:-1])**2)
+        
+        if sse < best_sse:
+            best_sse = sse
+            optimal_half_life = hl
+
+    # ==========================================
+    # 階段二：使用求出的「專屬半衰期」進行核心運算
+    # ==========================================
+    # 1. 建立最優 EMA 基準線
+    final_alpha = 1.0 - np.exp(-np.log(2) / optimal_half_life)
+    ema_baseline = np.zeros(n_total)
+    ema_baseline[0] = data[0]
+    for i in range(1, n_total):
+        ema_baseline[i] = final_alpha * data[i] + (1 - final_alpha) * ema_baseline[i-1]
+        
+    # 2. 萃取純淨殘差 (原始真實數據 - 最優基準線)
+    resid = data - ema_baseline
     
-    # 內部輔助：計算加權變異數
+    # 3. 建立時間衰減權重 (使用專屬半衰期)
+    decay_rate = np.log(2) / optimal_half_life
+    weights = np.exp(-decay_rate * (n_total - 1 - np.arange(n_total)))
+    weights /= np.sum(weights) # 標準化權重
+    
+    # 4. 定義加權變異數函數
     def weighted_variance(values, w):
         mean_val = np.average(values, weights=w)
         return np.average((values - mean_val)**2, weights=w)
         
+    # 5. 計算加權變異數
     var_total = weighted_variance(data, weights)
     var_resid = weighted_variance(resid, weights)
     
-    # 防呆機制：如果總變異數趨近於 0，代表數字完全沒變，規律性 100%
     if var_total < 1e-9:
-        return 100.0
+        return 100.0, optimal_half_life
         
-    # 4. 計算可解釋變異佔比 (1 - 雜訊比例)
+    # 6. 計算訊噪比 (可預測性極限)
     predictability = (1.0 - (var_resid / var_total)) * 100.0
     
-    # 限制在 0% ~ 100% 的邏輯區間內
-    return np.clip(predictability, 0.0, 100.0)
+    return np.clip(predictability, 0.0, 100.0), optimal_half_life
 
 # --- 理論預測上限前端顯示排版 ---
-def format_predictability_report(ceiling_value, colors):
+def format_predictability_report(ceiling_value, optimal_half_life, colors):
     report = [f"\n{colors.CYAN}{colors.BOLD}>>> 數據特性與預測極限分析{colors.RESET}"]
     
     # 未達 36 個月之顯示
     if ceiling_value is None:
-        report.append(f"  ● 理論預測上限：未啟用 (歷史資料需滿 36 個月以建立可靠之結構分析)")
+        report.append(f"  ● 理論預測上限：未啟用 (歷史資料需滿 36 個月以建立可靠之數學分析基準)")
         return "\n".join(report)
         
     # 達標後之動態顯示
-    report.append(f"  ● 理論預測上限：{ceiling_value:.1f}%")
-    report.append(f"    └ 解釋：在排除通膨並經「近期權重與結構轉變」校正後，您的歷史支出變化中有 {ceiling_value:.1f}% 具備可循之規律，{100-ceiling_value:.1f}% 為隨機性波動。")
+    report.append(f"  ● 財務記憶週期：{optimal_half_life:.0f} 個月")
+    report.append(f"    └ 說明：系統透過歷史誤差最小化算法，判定您的消費模式約在 {optimal_half_life:.0f} 個月前發生代謝與迭代。此週期已作為後續運算之數學基準。")
+    
+    report.append(f"\n  ● 理論預測上限：{colors.BOLD}{ceiling_value:.1f}%{colors.RESET}")
+    report.append(f"    └ 解釋：在排除通膨並導入財務記憶週期後，您的歷史支出變化中有 {ceiling_value:.1f}% 具備客觀的數學結構，{100-ceiling_value:.1f}% 為隨機性波動。")
     report.append(f"    └ 意義：此數值代表任何數學模型對您次月支出進行預測的最高極限。")
     
     report.append(f"\n  ● 財務結構評估：")
@@ -3075,8 +3099,8 @@ def analyze_and_predict(file_paths_str: str, no_color: bool):
             
 # ---------------- 插入點開始 ----------------
     # 觸發預測極限分析
-    ceiling_value = calculate_predictability_ceiling(monthly_expenses)
-    predictability_report = format_predictability_report(ceiling_value, colors)
+    ceiling_value, opt_half_life = calculate_predictability_ceiling(monthly_expenses)
+    predictability_report = format_predictability_report(ceiling_value, opt_half_life, colors)
     print(predictability_report)
     # ---------------- 插入點結束 ----------------
 
