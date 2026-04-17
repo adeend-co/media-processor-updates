@@ -2,7 +2,7 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.7.8            #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.7.9            #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                     #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
@@ -10,14 +10,14 @@
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。 
 #                                                                                 #
-# 更新 v3.7.8：改進「理論預測上限」之計算方式。                                        #
+# 更新 v3.7.9：改進「理論預測上限」之計算方式。                                        #
 #                                                                              #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v3.7.8"
+SCRIPT_VERSION = "v3.7.9"
 SCRIPT_UPDATE_DATE = "2026-04-17"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -2650,78 +2650,62 @@ def run_drf_prediction(monthly_expenses_df, steps_ahead=1, trend_window=12, mode
     hist_pred_drf = decomposed['trend'] + decomposed['seasonal']
     return drf_predictions, hist_pred_drf.values, None, None
 
-# --- 理論預測上限核心演算法 (動態半衰期 + 純淨數據驅動版) ---
+# --- 理論預測上限核心演算法 (全局訊噪比修正版) ---
 def calculate_predictability_ceiling(monthly_expenses):
     """
     計算「理論預測上限」(Theoretical Predictability Ceiling)
-    突破人為參數限制，利用「歷史軌跡誤差最小化 (Error Minimization)」
-    從原始數據中自動反推該使用者專屬的「財務記憶半衰期」，
-    再進行嚴謹的變異數解析。
+    修正過擬合盲點：
+    1. 透過 AR(1) 自相關係數客觀計算財務記憶半衰期。
+    2. 使用對極端值免疫的「滾動中位數 (Rolling Median)」萃取全局基準線。
+    3. 透過全局變異數分解，計算真實的訊噪比。
     """
     data = monthly_expenses['Real_Amount'].values
     n_total = len(data)
     
-    # 限制條件：資料必須 >= 36 個月才啟用
     if n_total < 36:
         return None, None
         
     # ==========================================
-    # 階段一：動態尋找「最優財務半衰期」 (純數學窮舉)
+    # 步驟一：客觀計算「財務記憶週期」(AR1 Half-life)
     # ==========================================
-    best_sse = float('inf')
-    optimal_half_life = 12.0 # 預設安全值
+    # 計算延遲 1 個月的自相關係數 (Autocorrelation)
+    # 這代表「上個月的花費對這個月有多大的影響力」
+    if np.var(data) > 1e-9:
+        ar1_coef = np.corrcoef(data[:-1], data[1:])[0, 1]
+    else:
+        ar1_coef = 0.0
+        
+    # 確保數值在合理範圍 (排除負相關導致的對數錯誤)
+    ar1_coef = max(0.01, min(0.99, ar1_coef))
     
-    # 窮舉測試從 1 個月到 120 個月的半衰期
-    for hl in np.arange(1.0, 121.0, 1.0):
-        # 將半衰期轉換為 EMA 的平滑因子 alpha
-        alpha = 1.0 - np.exp(-np.log(2) / hl)
-        
-        # 手動計算該 alpha 下的 EMA 基準線
-        ema_test = np.zeros(n_total)
-        ema_test[0] = data[0]
-        for i in range(1, n_total):
-            ema_test[i] = alpha * data[i] + (1 - alpha) * ema_test[i-1]
-            
-        # 計算「用前一個月的 EMA 預測當月實際值」的誤差平方和
-        # 誤差越小，代表這個半衰期越符合該使用者的真實生活節奏
-        sse = np.sum((data[1:] - ema_test[:-1])**2)
-        
-        if sse < best_sse:
-            best_sse = sse
-            optimal_half_life = hl
-
+    # 物理半衰期公式：t = ln(0.5) / ln(r)
+    # 代表經過多少個月後，過去的影響力會衰減到剩下 50%
+    optimal_half_life = np.log(0.5) / np.log(ar1_coef)
+    optimal_half_life = min(60.0, optimal_half_life) # 設算合理上限
+    
     # ==========================================
-    # 階段二：使用求出的「專屬半衰期」進行核心運算
+    # 步驟二：萃取免疫極端值的「結構信號」與「雜訊」
     # ==========================================
-    # 1. 建立最優 EMA 基準線
-    final_alpha = 1.0 - np.exp(-np.log(2) / optimal_half_life)
-    ema_baseline = np.zeros(n_total)
-    ema_baseline[0] = data[0]
-    for i in range(1, n_total):
-        ema_baseline[i] = final_alpha * data[i] + (1 - final_alpha) * ema_baseline[i-1]
-        
-    # 2. 萃取純淨殘差 (原始真實數據 - 最優基準線)
-    resid = data - ema_baseline
+    # 使用 6 個月的滾動中位數作為基準線
+    # 中位數的數學特性：遇到單次高額衝擊時完全不會被拉偏，只反映核心生活水平
+    series_pd = pd.Series(data)
+    baseline_trend = series_pd.rolling(window=6, min_periods=1, center=False).median().values
     
-    # 3. 建立時間衰減權重 (使用專屬半衰期)
-    decay_rate = np.log(2) / optimal_half_life
-    weights = np.exp(-decay_rate * (n_total - 1 - np.arange(n_total)))
-    weights /= np.sum(weights) # 標準化權重
+    # 雜訊 = 真實數據 - 核心基準線
+    noise = data - baseline_trend
     
-    # 4. 定義加權變異數函數
-    def weighted_variance(values, w):
-        mean_val = np.average(values, weights=w)
-        return np.average((values - mean_val)**2, weights=w)
-        
-    # 5. 計算加權變異數
-    var_total = weighted_variance(data, weights)
-    var_resid = weighted_variance(resid, weights)
+    # ==========================================
+    # 步驟三：計算全局訊噪比 (真實極限)
+    # ==========================================
+    var_total = np.var(data)
+    var_noise = np.var(noise)
     
     if var_total < 1e-9:
         return 100.0, optimal_half_life
         
-    # 6. 計算訊噪比 (可預測性極限)
-    predictability = (1.0 - (var_resid / var_total)) * 100.0
+    # 計算：1 - (雜訊波動 / 總波動)
+    # 不再使用權重萎縮分母，真實反映 60 個月整體的結構穩定度
+    predictability = (1.0 - (var_noise / var_total)) * 100.0
     
     return np.clip(predictability, 0.0, 100.0), optimal_half_life
 
