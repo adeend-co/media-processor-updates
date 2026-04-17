@@ -2,7 +2,7 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.7.9            #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.7.10            #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                     #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
@@ -10,14 +10,14 @@
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。 
 #                                                                                 #
-# 更新 v3.7.9：改進「理論預測上限」之計算方式。                                        #
+# 更新 v3.7.10：改進「理論預測上限」之計算方式。                                        #
 #                                                                              #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v3.7.9"
+SCRIPT_VERSION = "v3.7.10"
 SCRIPT_UPDATE_DATE = "2026-04-17"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
@@ -2650,98 +2650,56 @@ def run_drf_prediction(monthly_expenses_df, steps_ahead=1, trend_window=12, mode
     hist_pred_drf = decomposed['trend'] + decomposed['seasonal']
     return drf_predictions, hist_pred_drf.values, None, None
 
-# --- 理論預測上限計算模組 (動態自適應版) ---
+# --- 理論預測上限核心演算法 (全局訊噪比修正版) ---
 def calculate_predictability_ceiling(monthly_expenses):
     """
     計算「理論預測上限」(Theoretical Predictability Ceiling)
-    演算法說明：
-    1. 動態記憶週期：透過 AR(1) 自相關係數絕對值計算時間序列的記憶半衰期。
-    2. 離群值處理：使用全局中位數絕對偏差 (MAD) 與偏態 (Skewness) 動態決定極端值邊界。
-    3. 動態視窗：趨勢計算視窗由數據的記憶半衰期動態決定，取代固定參數。
+    修正說明：
+    1. AR1 取絕對值，因為負相關(交替支出)也是一種強烈的財務記憶。
+    2. 改用內建的 seasonal_decompose 萃取趨勢與季節性，取代粗糙的滾動中位數，還原真實訊噪比。
     """
     data = monthly_expenses['Real_Amount'].values
     n_total = len(data)
     
-    # 限制：資料需滿 36 個月以建立統計基準
     if n_total < 36:
         return None, None
         
     # ==========================================
-    # 步驟一：計算「財務記憶週期」(AR1 Half-life)
+    # 步驟一：客觀計算「財務記憶週期」(AR1 Half-life)
     # ==========================================
     if np.var(data) > 1e-9:
         ar1_coef = np.corrcoef(data[:-1], data[1:])[0, 1]
     else:
         ar1_coef = 0.0
         
-    # 取絕對值以處理正負相關，並限制範圍避免數值錯誤
-    ar1_coef_abs = max(0.01, min(0.99, abs(ar1_coef)))
+    # 【修正1】必須取絕對值！負相關也是一種記憶特徵
+    ar1_coef_abs = abs(ar1_coef)
+    ar1_coef_abs = max(0.01, min(0.99, ar1_coef_abs))
+    
+    # 物理半衰期公式：t = ln(0.5) / ln(r)
     optimal_half_life = np.log(0.5) / np.log(ar1_coef_abs)
-    optimal_half_life = min(60.0, optimal_half_life)
+    optimal_half_life = min(60.0, optimal_half_life) 
     
     # ==========================================
-    # 步驟二：離群值評估與動態過濾
-    # 邏輯：考量歷史數據分佈，動態設定極端值門檻
+    # 步驟二：萃取免疫極端值的「結構信號」與「雜訊」
     # ==========================================
-    from scipy import stats
+    # 【修正2】使用時間序列分解 (包含趨勢與季節性)，真正分離出雜訊
+    series_pd = pd.Series(data)
+    decomposed = manual_seasonal_decompose(series_pd, period=12, model='additive')
     
-    global_median = np.median(data)
-    # 使用 MAD (Median Absolute Deviation) 作為波動指標
-    mad = np.median(np.abs(data - global_median))
-    
-    # 動態閾值乘數：根據數據偏態 (Skewness) 進行調整
-    # 高偏態數據將適度放寬門檻，保留較大的常態波動
-    skewness = abs(stats.skew(data))
-    dynamic_k = 3.0 + (skewness * 0.5) 
-    
-    # 計算極端值上限 (基於 Robust Z-Score)
-    shock_upper_bound = global_median + (dynamic_k * mad * 1.4826)
-    
-    # 處理離群值：將超過上限的數值截斷 (Clip) 至邊界值
-    clean_data = np.clip(data, a_min=None, a_max=shock_upper_bound)
+    # 雜訊 = 真實數據剝離趨勢與季節性後的殘差
+    noise = decomposed['resid'].dropna().values
     
     # ==========================================
-    # 步驟三：計算動態視窗大小
-    # 邏輯：基於記憶半衰期設定趨勢視窗
+    # 步驟三：計算全局訊噪比 (真實極限)
     # ==========================================
-    # 視窗大小取半衰期的無條件進位
-    dynamic_window = int(np.ceil(optimal_half_life))
-    
-    # 設定視窗限制：最小值 3，最大值為資料長度的 1/3
-    dynamic_window = max(3, min(dynamic_window, n_total // 3))
-    # 確保視窗大小為奇數，以便於移動平均時能對齊中心
-    if dynamic_window % 2 == 0:
-        dynamic_window += 1
-        
-    # ==========================================
-    # 步驟四：萃取結構性特徵 (動態趨勢與季節性)
-    # ==========================================
-    series_clean = pd.Series(clean_data, index=monthly_expenses['Parsed_Date'])
-    
-    # 計算置中移動平均趨勢線
-    baseline_trend = series_clean.rolling(window=dynamic_window, min_periods=1, center=True).mean()
-    
-    # 計算季節性成分：取去趨勢後各月份的中位數
-    detrended = series_clean - baseline_trend
-    seasonal_median = detrended.groupby(detrended.index.month).median()
-    seasonal_component = pd.Series(seasonal_median[series_clean.index.month].values, index=series_clean.index)
-    
-    # 結構信號 = 趨勢 + 季節性成分
-    structural_signal = baseline_trend + seasonal_component
-    
-    # ==========================================
-    # 步驟五：變異數分解與預測上限計算
-    # ==========================================
-    # 殘差 (雜訊) = 原始真實數據 - 結構信號
-    noise = data - structural_signal.values
-    
     var_total = np.var(data)
-    var_noise = np.var(noise[~np.isnan(noise)]) # 排除邊界可能產生的 NaN
+    var_noise = np.var(noise)
     
     if var_total < 1e-9:
         return 100.0, optimal_half_life
         
-    # 預測上限 = 結構信號變異佔總體變異的比例
+    # 理論預測上限 = 可解釋變異比例 (相當於 R-squared proxy)
     predictability = (1.0 - (var_noise / var_total)) * 100.0
     
     return np.clip(predictability, 0.0, 100.0), optimal_half_life
@@ -2750,29 +2708,29 @@ def calculate_predictability_ceiling(monthly_expenses):
 def format_predictability_report(ceiling_value, optimal_half_life, colors):
     report = [f"\n{colors.CYAN}{colors.BOLD}>>> 數據特性與預測極限分析{colors.RESET}"]
     
-    # 未達 36 個月之顯示
     if ceiling_value is None:
         report.append(f"  ● 理論預測上限：未啟用 (歷史資料需滿 36 個月以建立可靠之數學分析基準)")
         return "\n".join(report)
         
-    # 達標後之動態顯示
-    report.append(f"  ● 財務記憶週期：{optimal_half_life:.0f} 個月")
-    report.append(f"    └ 說明：系統透過歷史誤差最小化算法，判定您的消費模式約在 {optimal_half_life:.0f} 個月前發生代謝與迭代。此週期已作為後續運算之數學基準。")
+    # 【修正3】顯示1位小數，避免未滿1個月的週期被四捨五入為 0
+    report.append(f"  ● 財務記憶週期：{optimal_half_life:.1f} 個月")
+    report.append(f"    └ 說明：系統透過歷史誤差最小化算法，判定您的消費模式約在 {optimal_half_life:.1f} 個月前發生代謝與迭代。此週期已作為後續運算之數學基準。")
     
     report.append(f"\n  ● 理論預測上限：{colors.BOLD}{ceiling_value:.1f}%{colors.RESET}")
     report.append(f"    └ 解釋：在排除通膨並導入財務記憶週期後，您的歷史支出變化中有 {ceiling_value:.1f}% 具備客觀的數學結構，{100-ceiling_value:.1f}% 為隨機性波動。")
     report.append(f"    └ 意義：此數值代表任何數學模型對您次月支出進行預測的最高極限。")
     
     report.append(f"\n  ● 財務結構評估：")
-    if ceiling_value > 70.0:
+    # 【修正4】微調評估門檻，使其符合經過季節性分解後較為嚴格的訊噪比標準
+    if ceiling_value > 65.0:
         report.append(f"    系統判定：{colors.GREEN}高度規律化{colors.RESET}")
         report.append(f"    說明：您的支出軌跡具備強烈的可預測性。預測模型的數值具有高度參考價值，適合進行精確的次月預算編列。")
-    elif ceiling_value >= 40.0:
+    elif ceiling_value >= 35.0:
         report.append(f"    系統判定：{colors.YELLOW}中度混合{colors.RESET}")
         report.append(f"    說明：您的支出由常態規律與偶發事件共同驅動。預測數值可作為基準參考，但需搭配一定比例的彈性預備金。")
     else:
         report.append(f"    系統判定：{colors.RED}高度隨機化{colors.RESET}")
-        report.append(f"    說明：您的歷史支出缺乏固定規律，單月變動幅度極大。預測模型的單點數值參考價值受限，建議將財務管理重心轉向「維持高流動性現金」與「總額度控管」，而非追求單月精確預算。")
+        report.append(f"    說明：您的歷史支出缺乏固定規律，單月變動幅度較大。建議將財務管理重心轉向「維持高流動性現金」與「總額度控管」。")
         
     return "\n".join(report)
 
