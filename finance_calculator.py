@@ -2,23 +2,24 @@
 
 ################################################################################
 #                                                                              #
-#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.7.10            #
+#             進階財務分析與預測器 (Advanced Finance Analyzer) v3.7.11            #
 #                                                                              #
 # 著作權所有 © 2025 adeend-co。保留一切權利。                                     #
 # Copyright © 2025 adeend-co. All rights reserved.                             #
 #                                                                              #
 # 本腳本為一個獨立 Python 工具，專為處理複雜且多樣的財務數據而設計。                #
 # 具備自動格式清理、互動式路徑輸入與多種模型預測、信賴區間等功能。 
-#                                                                                 #
-# 更新 v3.7.10：改進「理論預測上限」之計算方式。                                        #
+#                                                                              #
+# 更新 v3.7.11：新增「雙軌共識指數 (CCI, Cross-School Consensus Index)、內隱波動感知   #
+#(IVP, Implicit Volatility Perception)」之指標，並改善RLF演算法。                   #
 #                                                                              #
 #                                                                              #
 ################################################################################
 
 # --- 腳本元數據 ---
 SCRIPT_NAME = "進階財務分析與預測器"
-SCRIPT_VERSION = "v3.7.10"
-SCRIPT_UPDATE_DATE = "2026-04-17"
+SCRIPT_VERSION = "v3.7.11"
+SCRIPT_UPDATE_DATE = "2026-04-18"
 
 # --- 新增：可完全自訂的表格寬度設定 ---
 TABLE_CONFIG = {
@@ -347,64 +348,71 @@ class BayesianInferenceEngine:
         return np.array(y_trues), np.array(pred_means), np.array(pred_stds), np.array(pred_dofs)
 
 # ==============================================================================
-# [模組 2] 雙軌決策管理器 (RLF Fusion)
-# 修正說明 V3: 
-# 1. 引入 CV (變異係數) 作為波動性的數學定義。
-# 2. 區分「統計共識 (Statistical Consensus)」與「經濟分歧 (Economic Divergence)」。
+# [模組 2] 雙軌決策管理器 (RLF Fusion - 動態特徵空間與使用者指標版)
 # ==============================================================================
 class DualTrackManager:
     def compare_and_decide(self, freq_val, bayes_val, bayes_std, dof):
-        # 1. 計算貝氏模型的變異係數 (Coefficient of Variation, CV)
-        # 這是定義 "波動大小" 的核心指標：CV > 0.3 定義為高波動
-        bayes_cv = bayes_std / (abs(bayes_val) + 1e-9)
+        import numpy as np
         
-        # 2. 計算兩派模型的差異率 (Delta)
-        # 這是定義 "意見分歧" 的核心指標
-        mean_val = (freq_val + bayes_val) / 2
-        if mean_val == 0: mean_val = 1e-6
-        delta = abs(freq_val - bayes_val) / mean_val * 100
+        # ---------------------------------------------------------
+        # 1. 核心指標計算 (穩健防護版)
+        # ---------------------------------------------------------
+        soft_denominator = max(abs(bayes_val), 1.0)
+        robust_cv = bayes_std / soft_denominator
+
+        mean_abs_val = (abs(freq_val) + abs(bayes_val)) / 2.0
+        if mean_abs_val < 1e-9:
+            delta = 0.0
+        else:
+            delta = (abs(freq_val - bayes_val) / mean_abs_val) * 100.0
         
-        # 3. 計算 Z-Score (統計距離)
         z_score = abs(freq_val - bayes_val) / (bayes_std + 1e-9)
 
-        # 4. RLF 權重計算
-        dist = stats.t(df=dof, loc=bayes_val, scale=bayes_std)
-        peak_density = dist.pdf(bayes_val)
-        freq_density = dist.pdf(freq_val)
-        weight = freq_density / peak_density 
+        # ---------------------------------------------------------
+        # 2. CCI (雙軌共識指數) 與動態權重 (Gaussian Decay)
+        # ---------------------------------------------------------
+        # 將 Delta 與 Z-score 放進二維高斯衰減公式，得出 0~100 的直覺分數
+        cci = 100.0 * np.exp(-0.5 * ((delta / 25.0)**2 + (z_score / 2.0)**2))
+        
+        # 權重計算：距離越遠，退化為 0.5 (50/50 對沖)，不會讓單一學派權重歸零
+        weight = 0.5 + 0.5 * np.exp(- (z_score ** 2) / 2.0)
+        
+        if bayes_std < 1e-6:
+            weight = 0.5 
+            
         fused_val = (weight * freq_val) + ((1 - weight) * bayes_val)
-        
+
+        # ---------------------------------------------------------
+        # 3. 全域動態狀態判定 (客觀中立辭彙)
+        # ---------------------------------------------------------
+        is_high_delta = delta > 25.0                 
+        is_high_z = z_score > 2.0                    
+        is_high_cv = robust_cv > 0.3                  
+        is_tiny_std = bayes_std < (mean_abs_val * 0.01) 
+
         status, msg = "", ""
-        
-        # [邏輯決策樹]
-        # 定義: 高波動門檻 = 30% (CV > 0.3)
-        # 定義: 顯著差異門檻 = 30% (Delta > 30.0)
-        
-        if z_score < 1.0:
-            # 統計上距離很近 (< 1個標準差)
-            if delta > 30.0:
-                # [特殊情況]：雖然統計距離近，但數值差異巨大 -> 這是因為標準差(波動)太大了！
-                status = "VOLATILE_MASKING"
-                msg = f"波動掩蓋 (CV={bayes_cv:.1%}): 貝氏不確定性極高，掩蓋了 {delta:.0f}% 的巨大分歧。"
-            else:
-                # 數值差異小，統計距離也小 -> 真正的共識
-                status = "CONSENSUS"
-                msg = "模型共識 (1σ內): 兩學派觀點一致，且數據波動在合理範圍。"
-                
-        elif z_score < 2.0:
-            status, msg = "FRICTION", "輕微差異 (2σ內): 存在觀點摩擦，但未達顯著衝突。"
-        elif z_score < 3.0:
-            status, msg = "DIVERGENCE", "顯著分歧 (3σ內): 模型看法分岐，建議採納融合值。"
+
+        if not is_high_delta and not is_high_z:
+            status = "模型高度共識"
+            msg = "兩大學派運算結果一致，預測數值與機率分佈無顯著分歧。"
+            
+        elif not is_high_delta and is_high_z and is_tiny_std:
+            status = "表面統計背離"
+            msg = "數值實質差距極小，統計背離係因貝氏變異數過度收斂所致，視為實質共識。"
+            
+        elif is_high_delta and not is_high_z and is_high_cv:
+            status = "高波動掩蓋效應"
+            msg = "兩派數值差距顯著，但被極高的系統內部波動性所掩蓋。已自動拉高頻率學派(歷史均值)之參考權重。"
+            
+        elif is_high_delta and is_high_z:
+            status = "結構性顯著背離"
+            msg = "兩派數值與分佈均呈現顯著差異，數據可能正經歷結構性轉折，已啟動防禦性平權對沖。"
+            
         else:
-            status, msg = "CONFLICT", "極端衝突 (>3σ): 模型完全無法調和，數據可能包含離群特徵。"
+            status = "常態觀點摩擦"
+            msg = "模型間存在局部評估差異，已執行相對似然動態加權融合。"
 
-        # 為了讓外部顯示更清楚，我們把 CV 也傳出去
-        # 這裡利用 python 的動態特性，將 CV 附加在 msg 後面，或者稍微修改 return 結構
-        # 為了不破壞 main 的解構賦值，我們把 CV 資訊寫進 msg 裡
-        if "CV=" not in msg and bayes_cv > 0.3:
-            msg += f" (注意: 高波動 CV={bayes_cv:.1%})"
-
-        return status, fused_val, delta, msg, weight
+        return status, fused_val, cci, robust_cv, msg, weight
 
 # ==============================================================================
 # [模組 3] MPI 4.3 效能評估器 (Information-Theoretic Efficiency)
@@ -505,8 +513,7 @@ class PerformanceEvaluator:
 # ==============================================================================
 # [模組 4] 執行總指揮 (Controller)
 # 修改說明: 
-# 1. 補回遺漏的 'weight' (融合權重) 顯示，讓使用者知道決策的傾斜度。
-# 2. 包含上一輪新增的 MPI 分數透明化計算過程。
+# 1. 導入全新「雙軌共識指數 (CCI)」與「內隱波動感知 (IVP)」UI 儀表板。
 # ==============================================================================
 def execute_bayesian_validation(df, target_col, freq_prediction, colors):
     """
@@ -563,8 +570,8 @@ def execute_bayesian_validation(df, target_col, freq_prediction, colors):
     # ==========================================================
     # 情境 C: 雙軌完整模式 (資料 >= 18)
     # ==========================================================
-    print(f"\n{colors.CYAN}{colors.BOLD}=== 啟動雙軌貝氏推論 (RLF 融合版 + MPI 4.3) ==={colors.RESET}")
-    print(f"{colors.WHITE}演算法: BMA (貝氏模型平均) + Student-t Robust Intervals{colors.RESET}")
+    print(f"\n{colors.CYAN}{colors.BOLD}=== 啟動雙軌貝氏推論 (RLF 動態特徵空間版 + MPI 4.3) ==={colors.RESET}")
+    print(f"{colors.WHITE}演算法: BMA (貝氏模型平均) + Gaussian Decay Fusion + Student-t Robust Intervals{colors.RESET}")
     
     times_next = np.array([data_len])
     
@@ -573,22 +580,31 @@ def execute_bayesian_validation(df, target_col, freq_prediction, colors):
     bayes_pred, bayes_std, dof = bayes_engine.predict_bma(times_next)
     bayes_val, bayes_sigma = bayes_pred[0], bayes_std[0]
     
-    # 2. RLF 融合決策
-    status, final_val, delta, msg, weight = manager.compare_and_decide(
+    # 2. RLF 融合決策 (呼叫全新改版的 DualTrackManager)
+    status, final_val, cci, robust_cv, msg, weight = manager.compare_and_decide(
         freq_prediction, bayes_val, bayes_sigma, dof
     )
     
     t_crit = stats.t.ppf(0.975, df=dof)
 
+    # 轉換內部波動為易讀字串
+    if robust_cv < 0.15: cv_label = "極度穩定"
+    elif robust_cv < 0.30: cv_label = "常態波動"
+    else: cv_label = f"{colors.YELLOW}高波動干擾{colors.RESET}"
+
+    # 共識指數顏色判定
+    cci_color = colors.GREEN if cci >= 75 else (colors.YELLOW if cci >= 40 else colors.RED)
+
     print(f"\n{colors.YELLOW}▧ 雙軌數值對照:{colors.RESET}")
-    print(f"  ● 頻率學派 : {freq_prediction:,.0f}")
-    print(f"  ● 貝氏學派 : {bayes_val:,.0f} (±{t_crit*bayes_sigma:,.0f})")
-    print(f"\n{colors.YELLOW}▧ RLF 相對似然融合 (Delta = {delta:.2f}%):{colors.RESET}")
-    print(f"  ● 狀態: {status} -> {msg}")
+    print(f"  ● 頻率學派 (絕對定錨) : {freq_prediction:,.0f}")
+    print(f"  ● 貝氏學派 (機率邊界) : {bayes_val:,.0f} (95% CI: ±{t_crit*bayes_sigma:,.0f})")
     
-    # [修正] 補上融合權重顯示
+    print(f"\n{colors.YELLOW}▧ 模型共識診斷儀表板:{colors.RESET}")
+    print(f"  ● 雙軌共識指數 (CCI)  : {cci_color}{colors.BOLD}{cci:.1f}%{colors.RESET} (100%為完美吻合)")
+    print(f"  ● 內隱波動感知 (IVP)  : {robust_cv:.1%} [{cv_label}]")
+    print(f"  ● 研判狀態與處置      : {colors.WHITE}{status}{colors.RESET} -> {msg}")
+    
     print(f"  ● 融合權重 : 頻率 {colors.BOLD}{weight:.1%}{colors.RESET} | 貝氏 {colors.BOLD}{1-weight:.1%}{colors.RESET}")
-    
     print(f"  ● 實際採用 : {colors.GREEN}{final_val:,.0f}{colors.RESET}")
 
     # 3. MPI 4.3 誠實回測
