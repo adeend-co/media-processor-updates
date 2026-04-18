@@ -602,7 +602,7 @@ def execute_bayesian_validation(df, target_col, freq_prediction, colors):
     print(f"\n{colors.YELLOW}▧ 模型共識診斷儀表板:{colors.RESET}")
     print(f"  ● 雙軌共識指數 (CCI)  : {cci_color}{colors.BOLD}{cci:.1f}%{colors.RESET} (100%為完美吻合)")
     print(f"  ● 內隱波動感知 (IVP)  : {robust_cv:.1%} [{cv_label}]")
-    print(f"  ● 狀態與處置        : {colors.WHITE}{status}{colors.RESET} -> {msg}")
+    print(f"  ● 狀態與處置         : {colors.WHITE}{status}{colors.RESET} -> {msg}")
     
     print(f"  ● 融合權重 : 頻率 {colors.BOLD}{weight:.1%}{colors.RESET} | 貝氏 {colors.BOLD}{1-weight:.1%}{colors.RESET}")
     print(f"  ● 實際採用 : {colors.GREEN}{final_val:,.0f}{colors.RESET}")
